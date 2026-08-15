@@ -1,0 +1,15 @@
+{
+  "name": "FIX Appliance CRM",
+  "install": "npm ci && npm run seed",
+  "terminals": [
+    {
+      "name": "api",
+      "command": "npm run dev:server"
+    },
+    {
+      "name": "web",
+      "command": "npm run dev:client"
+    }
+  ],
+  "ports": [4000, 5173]
+}
