@@ -1,0 +1,30 @@
+{
+  "name": "fix-appliance-crm-functions",
+  "description": "Firebase Functions for Fix Appliance CRM",
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "shell": "firebase functions:shell",
+    "start": "npm run shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
+  },
+  "engines": {
+    "node": "22"
+  },
+  "main": "index.js",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "firebase-admin": "^13.5.0",
+    "firebase-functions": "^7.3.2",
+    "imapflow": "^1.7.1",
+    "mailparser": "^3.9.15",
+    "nodemailer": "^9.0.5",
+    "stripe": "^22.5.0",
+    "twilio": "^5.10.2",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "firebase-functions-test": "^3.4.1"
+  },
+  "private": true
+}
