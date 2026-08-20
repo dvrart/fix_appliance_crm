@@ -3,9 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants.dart';
 import '../../../../core/utils/formatters.dart';
+import '../../../../models/document_settings.dart';
 import '../../../../models/warehouse_item.dart';
 import '../../../../services/services.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
+import '../../../../shared/widgets/client_signature_sheet.dart';
 import '../job_details_controller.dart';
 import '../../../../core/l10n/app_locale.dart';
 
@@ -38,6 +40,55 @@ class _FinanceTabState extends State<FinanceTab> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _saveBuilder() async {
+    if (ctrl.builderItems.isEmpty) return;
+    Map<String, dynamic>? signature;
+    if (ctrl.builderDocType == 'Invoice') {
+      final config = await SettingsService.loadConfig();
+      if (SettingsService.boolFlag(config, 'useSignature')) {
+        if (!mounted) return;
+        final bytes = await ClientSignatureSheet.capture(context);
+        if (!mounted) return;
+        if (bytes == null) return;
+        if (bytes.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Нужна подпись клиента'.tr)),
+          );
+          return;
+        }
+        try {
+          signature = await ClientSignatureSheet.uploadToJob(
+            jobId: ctrl.jobId,
+            bytes: bytes,
+          );
+        } catch (_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Не удалось сохранить подпись'.tr)),
+          );
+          return;
+        }
+      }
+    }
+    final number = await SettingsService.takeNextDocumentNumber(ctrl.builderDocType);
+    final doc = {
+      'type': ctrl.builderDocType,
+      'number': number,
+      'items': List.from(ctrl.builderItems),
+      'taxRate': ctrl.builderTaxRate,
+      'payments': <Map<String, dynamic>>[],
+      'createdAt': DateTime.now().toIso8601String(),
+      if (signature != null) 'signature': signature,
+    };
+    await ctrl.addDocument(doc);
+    if (signature != null) {
+      ctrl.addAttachment(signature);
+      await JobService.addAttachment(ctrl.jobId, signature);
+    }
+    ctrl.setViewingDocumentIndex(ctrl.documents.length - 1);
+    ctrl.setFinanceMode('view_document');
+  }
+
   void _createDocument(String type) {
     ctrl.builderItems.clear();
     ctrl.builderDocType = type;
@@ -63,9 +114,13 @@ class _FinanceTabState extends State<FinanceTab> {
         child: ctrl.documents.isEmpty
             ? Center(
                 child: Text(
-                  'Нет счетов.\nНажмите (+) и создайте Invoice или Estimate.\nОтправьте из приложения кнопкой «Отправить счёт».'.tr,
+                  'Нет счетов.\nНажмите (+) и создайте Invoice или Estimate.'.tr,
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey),
+                  style: const TextStyle(
+                    color: Color(0xFF3D3D3D),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 16,
+                  ),
                 ),
               )
             : Column(
@@ -130,7 +185,7 @@ class _FinanceTabState extends State<FinanceTab> {
                 ),
               ),
               ListTile(
-                leading: const Icon(Icons.receipt, color: AppColors.primary),
+                leading: Icon(Icons.receipt, color: AppColors.primary),
                 title: Text('Invoice (Счёт)'.tr),
                 subtitle: Text('Документ для оплаты'.tr),
                 onTap: () {
@@ -209,107 +264,80 @@ class _FinanceTabState extends State<FinanceTab> {
         side: BorderSide(color: borderColor),
       ),
       margin: const EdgeInsets.only(bottom: 12),
-      child: Column(
+      child: Row(
         children: [
-          InkWell(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-            onTap: () {
-              ctrl.setViewingDocumentIndex(index);
-              ctrl.setFinanceMode('view_document');
-            },
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: borderColor.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(10),
+          Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () {
+                ctrl.setViewingDocumentIndex(index);
+                ctrl.setFinanceMode('view_document');
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: borderColor.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(icon, color: borderColor),
                     ),
-                    child: Icon(icon, color: borderColor),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '$type #${index + 1}',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          statusText,
-                          style: TextStyle(
-                            color: isCancelled ? Colors.red : Colors.grey.shade700,
-                          ),
-                        ),
-                        if (!isCancelled &&
-                            doc['stripe'] is Map &&
-                            (doc['stripe']['url'] ?? '').toString().isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              doc['stripe']['status'] == 'paid'
-                                  ? 'Stripe: оплачен'.tr
-                                  : 'Stripe: ссылка отправлена'.tr,
-                              style: TextStyle(
-                                color: doc['stripe']['status'] == 'paid'
-                                    ? Colors.green.shade700
-                                    : const Color(0xFF635BFF),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${doc['type'] ?? 'Invoice'} #${doc['number'] ?? (index + 1)}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
                             ),
                           ),
-                      ],
+                          const SizedBox(height: 4),
+                          Text(
+                            statusText,
+                            style: TextStyle(
+                              color: isCancelled
+                                  ? Colors.red
+                                  : Colors.grey.shade700,
+                            ),
+                          ),
+                          if (!isCancelled &&
+                              doc['stripe'] is Map &&
+                              (doc['stripe']['url'] ?? '').toString().isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                doc['stripe']['status'] == 'paid'
+                                    ? 'Stripe: оплачен'.tr
+                                    : 'Stripe: ссылка отправлена'.tr,
+                                style: TextStyle(
+                                  color: doc['stripe']['status'] == 'paid'
+                                      ? Colors.green.shade700
+                                      : const Color(0xFF635BFF),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
-                  const Icon(Icons.chevron_right, color: Colors.grey),
-                ],
+                    const Icon(Icons.chevron_right, color: Colors.grey),
+                  ],
+                ),
               ),
             ),
           ),
-          if (!isCancelled && !isPaid)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: Column(
-                children: [
-                  if (!isEstimate && due > 0) ...[
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: _busy ? null : () => _runTapToPay(index),
-                        icon: const Icon(Icons.contactless),
-                        label: Text('Приложить карту'.tr),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF635BFF),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _busy ? null : () => _sendAppDocument(index),
-                      icon: const Icon(Icons.sms),
-                      label: Text(isEstimate ? 'Отправить смету'.tr : 'Отправить счёт'.tr),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+          if (!isCancelled && (isEstimate || due <= 0))
+            IconButton(
+              tooltip: 'Отправить'.tr,
+              icon: const Icon(Icons.send, color: Color(0xFF14557F)),
+              onPressed: _busy ? null : () => _sendAppDocument(index),
             ),
         ],
       ),
@@ -334,23 +362,19 @@ class _FinanceTabState extends State<FinanceTab> {
           onPressed: () => ctrl.setFinanceMode('main'),
         ),
         actions: [
-          TextButton(
-            onPressed: ctrl.builderItems.isEmpty
-                ? null
-                : () {
-                    final doc = {
-                      'type': ctrl.builderDocType,
-                      'items': List.from(ctrl.builderItems),
-                      'taxRate': ctrl.builderTaxRate,
-                      'payments': <Map<String, dynamic>>[],
-                      'createdAt': DateTime.now().toIso8601String(),
-                    };
-                    ctrl.addDocument(doc);
-                    ctrl.setFinanceMode('main');
-                  },
-            child: Text(
-              'Сохранить'.tr,
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: FilledButton(
+              onPressed: ctrl.builderItems.isEmpty ? null : _saveBuilder,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: Colors.black,
+                disabledBackgroundColor: Colors.grey.shade300,
+              ),
+              child: Text(
+                'Сохранить'.tr,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ),
         ],
@@ -362,7 +386,11 @@ class _FinanceTabState extends State<FinanceTab> {
                 ? Center(
                     child: Text(
                       'Добавьте позиции'.tr,
-                      style: TextStyle(color: Colors.grey),
+                      style: const TextStyle(
+                        color: Color(0xFF3D3D3D),
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                      ),
                     ),
                   )
                 : ListView.builder(
@@ -449,7 +477,7 @@ class _FinanceTabState extends State<FinanceTab> {
                     ),
                     Text(
                       '\$${total.toStringAsFixed(2)}',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 18,
                         color: AppColors.primary,
@@ -470,18 +498,9 @@ class _FinanceTabState extends State<FinanceTab> {
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    onPressed: _pickWarehouseItem,
-                    icon: const Icon(Icons.inventory_2_outlined),
-                    label: Text('Со склада'.tr),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
                     onPressed: _pickPricebookItem,
                     icon: const Icon(Icons.sell_outlined),
-                    label: Text('Из прайсбука'.tr),
+                    label: Text('Типовая работа'.tr),
                   ),
                 ),
               ],
@@ -490,73 +509,6 @@ class _FinanceTabState extends State<FinanceTab> {
         ],
       ),
     );
-  }
-
-  Future<void> _pickWarehouseItem() async {
-    final items = await WarehouseService.streamAll().first;
-    if (!mounted) return;
-    if (items.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Склад пуст'.tr)),
-      );
-      return;
-    }
-    final selected = await showModalBottomSheet<WarehouseItem>(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) {
-        return KeyboardAvoidingSheet(
-          fraction: 0.7,
-          child: Column(
-              children: [
-                Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text(
-                    'Запчасть со склада'.tr,
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                  ),
-                ),
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: items.length,
-                    itemBuilder: (context, index) {
-                      final item = items[index];
-                      return ListTile(
-                        title: Text(item.name),
-                        subtitle: Text(
-                          '${item.partNumber} · ${'остаток'.tr} ${item.quantity}',
-                        ),
-                        trailing: Text('\$${item.price.toStringAsFixed(2)}'),
-                        onTap: () => Navigator.pop(context, item),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-        );
-      },
-    );
-    if (selected == null) return;
-    final config = await SettingsService.loadConfig();
-    final markup = SettingsService.readPartsMarkupPercent(config);
-    final cost = selected.costPrice;
-    final price = cost != null && markup > 0
-        ? double.parse((cost * (1 + markup / 100)).toStringAsFixed(2))
-        : selected.price;
-    setState(() {
-      ctrl.builderItems.add({
-        'name': selected.name,
-        'price': price,
-        'qty': 1,
-        'type': 'Запчасть'.tr,
-        'warehouseItemId': selected.id,
-        'costPrice': cost,
-      });
-    });
   }
 
   Future<void> _pickPricebookItem() async {
@@ -582,8 +534,15 @@ class _FinanceTabState extends State<FinanceTab> {
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: Text(
-                  'Прайсбук'.tr,
+                  'Типовая работа'.tr,
                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Text(
+                  'Каталог типичных работ с тремя ценами: Good / Better / Best. Это не запчасть со склада.'.tr,
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
                 ),
               ),
               Expanded(
@@ -596,9 +555,9 @@ class _FinanceTabState extends State<FinanceTab> {
                       subtitle: Text(
                         [
                           if (item.applianceType.isNotEmpty) trAny(item.applianceType),
-                          'G \$${item.good.toStringAsFixed(0)}',
-                          'B \$${item.better.toStringAsFixed(0)}',
-                          'B \$${item.best.toStringAsFixed(0)}',
+                          'Good \$${item.good.toStringAsFixed(0)}',
+                          'Better \$${item.better.toStringAsFixed(0)}',
+                          'Best \$${item.best.toStringAsFixed(0)}',
                         ].join(' · '),
                       ),
                       onTap: () => Navigator.pop(context, item),
@@ -654,81 +613,153 @@ class _FinanceTabState extends State<FinanceTab> {
     });
   }
 
-  void _showAddItemDialog() {
+  Future<void> _showAddItemDialog() async {
     final nameCtrl = TextEditingController();
     final priceCtrl = TextEditingController();
     final qtyCtrl = TextEditingController(text: '1');
+    List<WarehouseItem> warehouse = const [];
+    var markup = 0.0;
+    try {
+      warehouse = await WarehouseService.streamAll().first;
+      final config = await SettingsService.loadConfig();
+      markup = SettingsService.readPartsMarkupPercent(config);
+    } catch (_) {}
+    if (!mounted) return;
+    WarehouseItem? picked;
 
-    showDialog(
+    await showDialog<void>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('Добавить позицию'.tr),
-          scrollable: true,
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                decoration: InputDecoration(
-                  labelText: 'Название'.tr,
-                  border: OutlineInputBorder(),
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialog) {
+            final query = nameCtrl.text.trim().toLowerCase();
+            final matches = query.length < 2
+                ? const <WarehouseItem>[]
+                : warehouse.where((item) {
+                    return item.name.toLowerCase().contains(query) ||
+                        item.partNumber.toLowerCase().contains(query) ||
+                        (item.modelNumber ?? '').toLowerCase().contains(query);
+                  }).take(6).toList();
+            return AlertDialog(
+              title: Text('Добавить позицию'.tr),
+              scrollable: true,
+              content: SizedBox(
+                width: 360,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: nameCtrl,
+                      onChanged: (_) {
+                        if (picked != null &&
+                            nameCtrl.text.trim() != picked!.name) {
+                          picked = null;
+                        }
+                        setDialog(() {});
+                      },
+                      decoration: InputDecoration(
+                        labelText: 'Название'.tr,
+                        hintText: 'Начните вводить — поиск по складу'.tr,
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                    if (matches.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      ...matches.map((item) {
+                        final selected = picked?.id == item.id;
+                        return ListTile(
+                          dense: true,
+                          selected: selected,
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.inventory_2_outlined),
+                          title: Text(item.name),
+                          subtitle: Text(
+                            [
+                              if (item.partNumber.isNotEmpty) item.partNumber,
+                              '${'остаток'.tr} ${item.quantity}',
+                            ].join(' · '),
+                          ),
+                          trailing: Text('\$${item.price.toStringAsFixed(2)}'),
+                          onTap: () {
+                            picked = item;
+                            nameCtrl.text = item.name;
+                            final cost = item.costPrice;
+                            final price = cost != null && markup > 0
+                                ? double.parse(
+                                    (cost * (1 + markup / 100)).toStringAsFixed(2),
+                                  )
+                                : item.price;
+                            priceCtrl.text = price.toStringAsFixed(2);
+                            setDialog(() {});
+                          },
+                        );
+                      }),
+                    ],
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: TextField(
+                            controller: priceCtrl,
+                            keyboardType: TextInputType.number,
+                            decoration: InputDecoration(
+                              labelText: 'Цена'.tr,
+                              prefixText: '\$ ',
+                              border: const OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextField(
+                            controller: qtyCtrl,
+                            keyboardType: TextInputType.number,
+                            decoration: InputDecoration(
+                              labelText: 'Кол-во'.tr,
+                              border: const OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: TextField(
-                      controller: priceCtrl,
-                      keyboardType: TextInputType.number,
-                      decoration: InputDecoration(
-                        labelText: 'Цена'.tr,
-                        prefixText: '\$ ',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextField(
-                      controller: qtyCtrl,
-                      keyboardType: TextInputType.number,
-                      decoration: InputDecoration(
-                        labelText: 'Кол-во'.tr,
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Отмена'.tr),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                if (nameCtrl.text.trim().isNotEmpty) {
-                  setState(() {
-                    ctrl.builderItems.add({
-                      'name': nameCtrl.text.trim(),
-                      'price': double.tryParse(priceCtrl.text) ?? 0,
-                      'qty': int.tryParse(qtyCtrl.text) ?? 1,
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: Text('Отмена'.tr),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    if (nameCtrl.text.trim().isEmpty) return;
+                    final selected = picked;
+                    setState(() {
+                      ctrl.builderItems.add({
+                        'name': nameCtrl.text.trim(),
+                        'price': double.tryParse(priceCtrl.text) ?? 0,
+                        'qty': int.tryParse(qtyCtrl.text) ?? 1,
+                        if (selected != null) ...{
+                          'type': 'Запчасть'.tr,
+                          'warehouseItemId': selected.id,
+                          'costPrice': selected.costPrice,
+                        },
+                      });
                     });
-                  });
-                  Navigator.pop(context);
-                }
-              },
-              child: Text('Добавить'.tr),
-            ),
-          ],
+                    Navigator.pop(dialogContext);
+                  },
+                  child: Text('Добавить'.tr),
+                ),
+              ],
+            );
+          },
         );
       },
     );
+    nameCtrl.dispose();
+    priceCtrl.dispose();
+    qtyCtrl.dispose();
   }
 
   Widget _buildDocumentViewer() {
@@ -843,104 +874,46 @@ class _FinanceTabState extends State<FinanceTab> {
             ],
 
             if (!isCancelled) ...[
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _busy
-                      ? null
-                      : () => _sendAppDocument(ctrl.viewingDocumentIndex!),
-                  icon: const Icon(Icons.sms),
-                  label: Text(
-                    isEstimate
-                        ? 'Отправить смету'.tr
-                        : (due == 0 ? 'Отправить чек'.tr : 'Отправить счёт'.tr),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
+              if (isEstimate || due <= 0) ...[
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => _sendAppDocument(ctrl.viewingDocumentIndex!),
+                    icon: const Icon(Icons.send),
+                    label: Text('Отправить'.tr),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF14557F),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
                   ),
                 ),
-              ),
-            ],
-            if (due > 0 && !isCancelled && !isEstimate) ...[
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _busy
-                      ? null
-                      : () => _runTapToPay(ctrl.viewingDocumentIndex!),
-                  icon: const Icon(Icons.contactless),
-                  label: Text('${'Приложить карту'.tr} \$${due.toStringAsFixed(2)}'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF635BFF),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
+              ],
+              if (!isEstimate && due > 0) ...[
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => _showPaySheet(
+                              documentIndex: ctrl.viewingDocumentIndex!,
+                              total: total,
+                              due: due,
+                            ),
+                    icon: const Icon(Icons.payments),
+                    label: Text('Выбор оплаты'.tr),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.accent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _busy
-                      ? null
-                      : () => _runStripeAction(
-                            kind: 'checkout',
-                            documentIndex: ctrl.viewingDocumentIndex!,
-                          ),
-                  icon: const Icon(Icons.link),
-                  label: Text('Ссылка Stripe (если клиента нет рядом)'.tr),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF635BFF),
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _busy ? null : () => _sendStripeInvoice(),
-                  icon: const Icon(Icons.send),
-                  label: Text(
-                    isEstimate ? 'Выставить инвойс Stripe'.tr : 'Отправить инвойс Stripe'.tr,
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF635BFF),
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _busy ? null : () => _showDepositDialog(total, due),
-                  icon: const Icon(Icons.savings),
-                  label: Text('Запросить депозит (Stripe)'.tr),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF635BFF),
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () => _showPaymentDialog(ctrl.viewingDocumentIndex!),
-                  icon: const Icon(Icons.payments),
-                  label: Text('Наличные / e-Transfer'.tr),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                ),
-              ),
+              ],
             ],
           ],
         ),
@@ -1043,9 +1016,14 @@ class _FinanceTabState extends State<FinanceTab> {
     final amount = (doc['stripe'] is Map ? doc['stripe']['amount'] : null);
     final dollars = amount is num ? amount.toStringAsFixed(2) : '';
     final kind = (doc['stripe'] is Map ? doc['stripe']['mode'] : '')?.toString();
-    final body = kind == 'deposit'
-        ? '${'Депозит'.tr} \$$dollars. ${'Оплатить'.tr}: $url'
-        : '${'Счёт на оплату'.tr} \$$dollars. ${'Оплатить'.tr}: $url';
+    final docs = await SettingsService.loadDocumentSettings();
+    final body = DocumentSettings.stripePaySms(
+      deposit: kind == 'deposit',
+      dollars: dollars,
+      url: url,
+      company: docs.companyName,
+      template: docs.paySms,
+    );
     final ok = await SmsService.sendSms(
       to: _toE164(phone),
       body: body,
@@ -1067,9 +1045,7 @@ class _FinanceTabState extends State<FinanceTab> {
     final paid = ctrl.calcPaid(doc['payments'] ?? []);
     final due = ctrl.calcDue(total, paid);
     final type = (doc['type'] ?? 'Invoice').toString();
-    final kind = type == 'Estimate'
-        ? 'estimate'
-        : (due <= 0 && paid > 0 ? 'receipt' : 'invoice');
+    final kind = type == 'Estimate' ? 'estimate' : 'invoice';
 
     await DocumentTemplateService.showSendSheet(
       context: context,
@@ -1088,11 +1064,92 @@ class _FinanceTabState extends State<FinanceTab> {
         total: total,
         paid: paid,
         due: due,
+        payments: List<Map<String, dynamic>>.from(doc['payments'] ?? []),
+        subject: ctrl.workAddress.trim().isEmpty
+            ? ctrl.contactName
+            : ctrl.workAddress,
+        serviceDate: DateTime.tryParse((doc['createdAt'] ?? '').toString()),
+        clientEmail: ctrl.clientEmail,
+        clientCompany: (ctrl.jobData['companyName'] ?? '').toString(),
+        persistPdfUrl: (url) async {
+          final next = Map<String, dynamic>.from(ctrl.documents[documentIndex]);
+          next['pdfUrl'] = url;
+          await ctrl.updateDocument(documentIndex, next);
+        },
       ),
     );
   }
 
-  Future<void> _runTapToPay(int documentIndex) async {
+  Future<void> _sendPaidInvoicePdf(int documentIndex) async {
+    for (var i = 0; i < 10; i++) {
+      if (documentIndex >= 0 && documentIndex < ctrl.documents.length) {
+        final paid = ctrl.calcPaid(
+          ctrl.documents[documentIndex]['payments'] ?? [],
+        );
+        if (paid > 0) break;
+      }
+      await Future.delayed(const Duration(milliseconds: 200));
+      if (!mounted) return;
+    }
+    if (documentIndex < 0 || documentIndex >= ctrl.documents.length) return;
+    final doc = ctrl.documents[documentIndex];
+    final items = doc['items'] as List? ?? [];
+    final subtotal = ctrl.calcSubtotal(items);
+    final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
+    final total = ctrl.calcTotal(subtotal, tax);
+    final paid = ctrl.calcPaid(doc['payments'] ?? []);
+    final due = ctrl.calcDue(total, paid);
+    if (paid <= 0) return;
+
+    final ok = await DocumentTemplateService.sendPdfLinkQuietly(
+      data: DocumentSendData(
+        kind: due <= 0.009 ? 'receipt' : 'invoice',
+        jobId: ctrl.jobId,
+        clientId: ctrl.clientId,
+        clientName: (ctrl.jobData['clientName'] ?? ctrl.contactName).toString(),
+        clientPhone:
+            (ctrl.jobData['clientPhone'] ?? ctrl.contactPhone).toString(),
+        clientAddress:
+            (ctrl.jobData['clientAddress'] ?? ctrl.workAddress).toString(),
+        documentNumber: documentIndex + 1,
+        items: items,
+        subtotal: subtotal,
+        tax: tax,
+        taxRate: (doc['taxRate'] as num?)?.toDouble() ?? 0,
+        total: total,
+        paid: paid,
+        due: due,
+        payments: List<Map<String, dynamic>>.from(doc['payments'] ?? []),
+        subject: ctrl.workAddress.trim().isEmpty
+            ? ctrl.contactName
+            : ctrl.workAddress,
+        serviceDate: DateTime.tryParse((doc['createdAt'] ?? '').toString()),
+        clientEmail: ctrl.clientEmail,
+        clientCompany: (ctrl.jobData['companyName'] ?? '').toString(),
+        persistPdfUrl: (url) async {
+          if (documentIndex < 0 || documentIndex >= ctrl.documents.length) {
+            return;
+          }
+          final next = Map<String, dynamic>.from(ctrl.documents[documentIndex]);
+          next['pdfUrl'] = url;
+          await ctrl.updateDocument(documentIndex, next);
+        },
+      ),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Ссылка на PDF отправлена клиенту'.tr
+              : 'Не удалось отправить ссылку на PDF'.tr,
+        ),
+        backgroundColor: ok ? Colors.green : Colors.red,
+      ),
+    );
+  }
+
+  Future<void> _runTapToPay(int documentIndex, {double? amount}) async {
     if (_busy) return;
     if (documentIndex < 0 || documentIndex >= ctrl.documents.length) return;
     final doc = ctrl.documents[documentIndex];
@@ -1101,16 +1158,22 @@ class _FinanceTabState extends State<FinanceTab> {
     final total = ctrl.calcTotal(subtotal, tax);
     final paid = ctrl.calcPaid(doc['payments'] ?? []);
     final due = ctrl.calcDue(total, paid);
-    if (due <= 0) return;
+    final charge = (amount ?? due);
+    if (charge <= 0) return;
 
     setState(() => _busy = true);
     try {
-      await StripeTerminalService.collectWithDialog(
+      final ok = await StripeTerminalService.collectWithDialog(
         context: context,
         jobId: ctrl.jobId,
         documentIndex: documentIndex,
-        amount: due,
+        amount: charge,
       );
+      if (!mounted) return;
+      await _showPayResult(success: ok, documentIndex: documentIndex);
+    } catch (e) {
+      if (!mounted) return;
+      await _showPayResult(success: false, message: e.toString());
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -1132,11 +1195,16 @@ class _FinanceTabState extends State<FinanceTab> {
       );
       var smsSent = result.smsSent;
       if (!smsSent && ctrl.contactPhone.isNotEmpty) {
+        final docs = await SettingsService.loadDocumentSettings();
         smsSent = await SmsService.sendSms(
           to: ctrl.contactPhone,
-          body: kind == 'deposit'
-              ? '${'Депозит'.tr} \$${result.amount.toStringAsFixed(2)}. ${'Оплатить'.tr}: ${result.url}'
-              : '${'Счёт на оплату'.tr} \$${result.amount.toStringAsFixed(2)}. ${'Оплатить'.tr}: ${result.url}',
+          body: DocumentSettings.stripePaySms(
+            deposit: kind == 'deposit',
+            dollars: result.amount.toStringAsFixed(2),
+            url: result.url,
+            company: docs.companyName,
+            template: docs.paySms,
+          ),
           clientId: ctrl.clientId,
         );
       }
@@ -1145,7 +1213,7 @@ class _FinanceTabState extends State<FinanceTab> {
         context: context,
         builder: (context) {
           return AlertDialog(
-            title: Text('Stripe: ссылка готова'.tr),
+            title: const Text('Payment link sent'),
             scrollable: true,
             content: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1153,28 +1221,30 @@ class _FinanceTabState extends State<FinanceTab> {
               children: [
                 Text(
                   smsSent
-                      ? 'SMS со ссылкой отправлено клиенту.'.tr
-                      : 'SMS не ушло. Скопируйте ссылку и отправьте сами.'.tr,
+                      ? 'The client received an English SMS with a Pay here line.'
+                      : 'SMS did not send. Copy the link and send it yourself.',
                 ),
-                const SizedBox(height: 12),
-                SelectableText(result.url),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: result.url));
+                    Navigator.pop(context);
+                  },
+                  icon: const Icon(Icons.copy),
+                  label: const Text('Copy payment link'),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _openUrl(result.url);
+                  },
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('Open link'),
+                ),
               ],
             ),
             actions: [
-              TextButton(
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: result.url));
-                  Navigator.pop(context);
-                },
-                child: Text('Копировать'.tr),
-              ),
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  _openUrl(result.url);
-                },
-                child: Text('Открыть'.tr),
-              ),
               TextButton(
                 onPressed: () => Navigator.pop(context),
                 child: const Text('OK'),
@@ -1183,6 +1253,7 @@ class _FinanceTabState extends State<FinanceTab> {
           );
         },
       );
+      if (mounted) ctrl.setFinanceMode('main');
     } on StripeServiceException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1198,57 +1269,160 @@ class _FinanceTabState extends State<FinanceTab> {
     }
   }
 
-  Future<void> _sendStripeInvoice() {
-    final index = ctrl.viewingDocumentIndex;
-    if (index == null) return Future.value();
-    return _runStripeAction(kind: 'invoice', documentIndex: index);
-  }
+  void _showPaySheet({
+    required int documentIndex,
+    required double total,
+    required double due,
+  }) {
+    final maxAmount = due > 0 ? due : total;
+    final amountCtrl = TextEditingController(text: maxAmount.toStringAsFixed(2));
 
-  void _showDepositDialog(double total, double due) {
-    final suggested = (due > 0 ? due : total) * 0.5;
-    final amountCtrl = TextEditingController(text: suggested.toStringAsFixed(2));
-    showDialog(
+    showModalBottomSheet<void>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('Депозит'.tr),
-          scrollable: true,
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('${'Остаток'.tr}: ${Formatters.formatCurrency(due > 0 ? due : total)}'),
-              const SizedBox(height: 12),
-              TextField(
-                controller: amountCtrl,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                  labelText: 'Сумма депозита'.tr,
-                  prefixText: '\$ ',
-                  border: OutlineInputBorder(),
+      isScrollControlled: true,
+      useRootNavigator: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return KeyboardAvoidingSheet(
+          child: StatefulBuilder(
+            builder: (context, setSheet) {
+              double parsedAmount() {
+                final value = double.tryParse(
+                      amountCtrl.text.replaceAll(',', '.'),
+                    ) ??
+                    0;
+                if (value <= 0) return 0;
+                return value > maxAmount ? maxAmount : value;
+              }
+
+              return SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'Выбор оплаты'.tr,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${'К оплате'.tr}: ${Formatters.formatCurrency(maxAmount)}',
+                        style: TextStyle(color: Colors.grey.shade700),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: amountCtrl,
+                              keyboardType: const TextInputType.numberWithOptions(
+                                decimal: true,
+                              ),
+                              onChanged: (_) => setSheet(() {}),
+                              decoration: InputDecoration(
+                                labelText: 'Сумма'.tr,
+                                prefixText: '\$ ',
+                                border: const OutlineInputBorder(),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          OutlinedButton(
+                            onPressed: () {
+                              amountCtrl.text = (maxAmount * 0.5).toStringAsFixed(2);
+                              setSheet(() {});
+                            },
+                            child: const Text('50%'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          final amount = parsedAmount();
+                          Navigator.pop(sheetContext);
+                          if (amount > 0) {
+                            _runTapToPay(documentIndex, amount: amount);
+                          }
+                        },
+                        icon: const Icon(Icons.credit_card),
+                        label: Text('Оплатить картой'.tr),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF635BFF),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          final amount = parsedAmount();
+                          Navigator.pop(sheetContext);
+                          if (amount <= 0) return;
+                          final isDeposit = amount < maxAmount - 0.009;
+                          _runStripeAction(
+                            kind: isDeposit ? 'deposit' : 'checkout',
+                            documentIndex: documentIndex,
+                            amount: amount,
+                          );
+                        },
+                        icon: const Icon(Icons.link),
+                        label: Text('Отправить ссылку на оплату'.tr),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF635BFF),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          final amount = parsedAmount();
+                          Navigator.pop(sheetContext);
+                          if (amount > 0) {
+                            _showPaymentDialog(
+                              documentIndex,
+                              amount: amount,
+                              method: 'Наличные',
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.payments),
+                        label: Text('Наличные'.tr),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          final amount = parsedAmount();
+                          Navigator.pop(sheetContext);
+                          if (amount > 0) {
+                            _showPaymentDialog(
+                              documentIndex,
+                              amount: amount,
+                              method: 'e-Transfer',
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.account_balance),
+                        label: Text('E-перевод'.tr),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              );
+            },
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Отмена'.tr),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final amount = double.tryParse(amountCtrl.text.replaceAll(',', '.')) ?? 0;
-                Navigator.pop(context);
-                if (amount > 0) {
-                  _runStripeAction(
-                    kind: 'deposit',
-                    documentIndex: ctrl.viewingDocumentIndex!,
-                    amount: amount,
-                  );
-                }
-              },
-              child: Text('Отправить ссылку'.tr),
-            ),
-          ],
         );
       },
     );
@@ -1281,9 +1455,58 @@ class _FinanceTabState extends State<FinanceTab> {
     );
   }
 
-  void _showPaymentDialog(int docIndex) {
-    final amountCtrl = TextEditingController();
-    String method = 'Наличные';
+  void _addLocalPayment(int docIndex, double amount, String method) {
+    final doc = ctrl.documents[docIndex];
+    final payments = List<Map<String, dynamic>>.from(doc['payments'] ?? []);
+    payments.add({
+      'amount': amount,
+      'method': method,
+      'date': DateTime.now().toIso8601String(),
+    });
+    doc['payments'] = payments;
+    ctrl.updateDocument(docIndex, doc);
+  }
+
+  Future<void> _showPayResult({
+    required bool success,
+    String? message,
+    int? documentIndex,
+  }) async {
+    if (success && documentIndex != null) {
+      _sendPaidInvoicePdf(documentIndex);
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(
+            success
+                ? 'Спасибо, оплата прошла успешно'.tr
+                : 'Оплата не прошла'.tr,
+          ),
+          content: Text(
+            success
+                ? 'Thank you. The payment was successful.'
+                : (message ?? 'The payment was not successful. Please try again.'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    );
+    if (mounted) ctrl.setFinanceMode('main');
+  }
+
+  void _showPaymentDialog(int docIndex, {double? amount, String method = 'Наличные'}) {
+    final amountCtrl = TextEditingController(
+      text: amount != null && amount > 0 ? amount.toStringAsFixed(2) : '',
+    );
+    var selectedMethod = method;
 
     showDialog(
       context: context,
@@ -1303,11 +1526,25 @@ class _FinanceTabState extends State<FinanceTab> {
                       labelText: 'Сумма'.tr,
                       prefixText: '\$ ',
                       border: OutlineInputBorder(),
+                      suffixIcon: TextButton(
+                        onPressed: () {
+                          final doc = ctrl.documents[docIndex];
+                          final subtotal = ctrl.calcSubtotal(doc['items'] ?? []);
+                          final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
+                          final total = ctrl.calcTotal(subtotal, tax);
+                          final paid = ctrl.calcPaid(doc['payments'] ?? []);
+                          final due = ctrl.calcDue(total, paid);
+                          final half = ((due > 0 ? due : total) * 0.5);
+                          amountCtrl.text = half.toStringAsFixed(2);
+                          setDialogState(() {});
+                        },
+                        child: const Text('50%'),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<String>(
-                    value: method,
+                    value: selectedMethod,
                     decoration: InputDecoration(
                       labelText: 'Способ оплаты'.tr,
                       border: OutlineInputBorder(),
@@ -1316,7 +1553,7 @@ class _FinanceTabState extends State<FinanceTab> {
                         .map((m) => DropdownMenuItem(value: m, child: Text(trAny(m))))
                         .toList(),
                     onChanged: (v) {
-                      if (v != null) setDialogState(() => method = v);
+                      if (v != null) setDialogState(() => selectedMethod = v);
                     },
                   ),
                 ],
@@ -1327,21 +1564,12 @@ class _FinanceTabState extends State<FinanceTab> {
                   child: Text('Отмена'.tr),
                 ),
                 ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     final amount = double.tryParse(amountCtrl.text) ?? 0;
-                    if (amount > 0) {
-                      final doc = ctrl.documents[docIndex];
-                      final payments =
-                          List<Map<String, dynamic>>.from(doc['payments'] ?? []);
-                      payments.add({
-                        'amount': amount,
-                        'method': method,
-                        'date': DateTime.now().toIso8601String(),
-                      });
-                      doc['payments'] = payments;
-                      ctrl.updateDocument(docIndex, doc);
-                      Navigator.pop(context);
-                    }
+                    if (amount <= 0) return;
+                    _addLocalPayment(docIndex, amount, selectedMethod);
+                    Navigator.pop(context);
+                    await _showPayResult(success: true, documentIndex: docIndex);
                   },
                   child: Text('Сохранить'.tr),
                 ),

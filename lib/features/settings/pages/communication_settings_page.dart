@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../../core/constants.dart';
 import '../../../services/morning_briefing_service.dart';
 import '../../../services/on_the_way_service.dart';
 import '../../../services/settings_service.dart';
@@ -9,7 +8,7 @@ import '../widgets/company_name_dialog.dart';
 import '../widgets/settings_ui.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../shared/widgets/email_field.dart';
-import 'ai_secretary_settings_page.dart';
+import 'message_templates_page.dart';
 
 class CommunicationSettingsPage extends StatefulWidget {
   const CommunicationSettingsPage({super.key});
@@ -21,32 +20,21 @@ class CommunicationSettingsPage extends StatefulWidget {
 
 class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   bool? _phoneAccountEnabled;
-  final _onWayCtrl = TextEditingController();
-  final _partsCtrl = TextEditingController();
-  final _doneCtrl = TextEditingController();
-  final _bookCtrl = TextEditingController();
-  final _dayCtrl = TextEditingController();
-  final _reviewUrlCtrl = TextEditingController();
-  bool _loadingTemplates = true;
-  bool _saving = false;
+  bool _savingGmail = false;
   String _smsHeader = 'fixappliance.ca';
   bool _morning = true;
   bool _onWayGeo = true;
   bool _bookingSms = true;
   bool _reminderSms = true;
   bool _autoReview = true;
-  bool _aiAnswer = true;
-  int _aiTimeout = SettingsService.defaultAiAnswerTimeoutSeconds;
   final _gmailUserCtrl = TextEditingController();
   final _gmailPassCtrl = TextEditingController();
   bool _gmailSaved = false;
-  bool _savingGmail = false;
 
   @override
   void initState() {
     super.initState();
     _checkPhone();
-    _loadTemplates();
     _loadSmsHeader();
     _loadFlags();
     _loadGmail();
@@ -54,12 +42,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
 
   @override
   void dispose() {
-    _onWayCtrl.dispose();
-    _partsCtrl.dispose();
-    _doneCtrl.dispose();
-    _bookCtrl.dispose();
-    _dayCtrl.dispose();
-    _reviewUrlCtrl.dispose();
     _gmailUserCtrl.dispose();
     _gmailPassCtrl.dispose();
     super.dispose();
@@ -68,17 +50,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   Future<void> _checkPhone() async {
     final enabled = await TwilioService.isPhoneAccountEnabled();
     if (mounted) setState(() => _phoneAccountEnabled = enabled);
-  }
-
-  Future<void> _loadTemplates() async {
-    final templates = await SettingsService.loadSmsTemplates();
-    if (!mounted) return;
-    _onWayCtrl.text = templates['on_way'] ?? '';
-    _partsCtrl.text = templates['part_ordered'] ?? '';
-    _doneCtrl.text = templates['job_done'] ?? '';
-    _bookCtrl.text = templates['booking_confirm'] ?? '';
-    _dayCtrl.text = templates['day_before'] ?? '';
-    setState(() => _loadingTemplates = false);
   }
 
   Future<void> _loadSmsHeader() async {
@@ -96,9 +67,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       _bookingSms = SettingsService.readBookingSmsEnabled(config);
       _reminderSms = SettingsService.readReminderSmsEnabled(config);
       _autoReview = SettingsService.readAutoReviewSmsEnabled(config);
-      _reviewUrlCtrl.text = SettingsService.readGoogleReviewUrl(config);
-      _aiAnswer = SettingsService.readAiAnswerEnabled(config);
-      _aiTimeout = SettingsService.readAiAnswerTimeoutSeconds(config);
     });
   }
 
@@ -112,19 +80,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
     setState(() => _onWayGeo = value);
     await SettingsService.updateConfig('onTheWayPromptEnabled', value);
     if (!value) await OnTheWayService.instance.stop();
-  }
-
-  Future<void> _setAiAnswer(bool value) async {
-    setState(() => _aiAnswer = value);
-    await SettingsService.updateConfig('aiAnswerEnabled', value);
-  }
-
-  Future<void> _openSecretary() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const AiSecretarySettingsPage()),
-    );
-    if (mounted) _loadFlags();
   }
 
   Future<void> _loadGmail() async {
@@ -171,29 +126,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
     setState(() => _smsHeader = saved);
   }
 
-  Future<void> _saveTemplates() async {
-    setState(() => _saving = true);
-    await SettingsService.saveSmsTemplates({
-      'on_way': _onWayCtrl.text.trim(),
-      'part_ordered': _partsCtrl.text.trim(),
-      'job_done': _doneCtrl.text.trim(),
-      'booking_confirm': _bookCtrl.text.trim(),
-      'day_before': _dayCtrl.text.trim(),
-    });
-    await SettingsService.updateConfig(
-      'googleReviewUrl',
-      _reviewUrlCtrl.text.trim(),
-    );
-    if (!mounted) return;
-    setState(() => _saving = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Шаблоны сохранены'.tr),
-        backgroundColor: Colors.green,
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return SettingsPageScaffold(
@@ -230,36 +162,33 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
               ),
               SettingsRow(
                 title: 'Разрешения звонков Android'.tr,
-                subtitle: 'Системный экран учётки телефона приложения'.tr,
+                subtitle:
+                    'Samsung не показывает VoIP рядом с SIM. Ищите FIX APPLIANCE, не «телефон по умолчанию».'.tr,
                 icon: Icons.settings_phone,
                 iconColor: Colors.blueGrey,
+                showDivider: false,
                 onTap: () async {
                   await TwilioService.openPhoneAccountSettings();
-                  Future.delayed(const Duration(seconds: 2), _checkPhone);
+                  if (!context.mounted) return;
+                  await showDialog<void>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: Text('Где искать'.tr),
+                      content: Text(
+                        'Приложение не стоит в списке «Телефон / Сообщения» — это не замена звонилке Samsung.\n\n'
+                        'Если открылся список учёток: ищите FIX APPLIANCE и включите.\n\n'
+                        'Если списка нет — так и задумано. Звонки идут через приложение, не через SIM. Первый входящий может спросить разрешение на звонки — нажмите Разрешить.'.tr,
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('OK'),
+                        ),
+                      ],
+                    ),
+                  );
+                  Future.delayed(const Duration(seconds: 1), _checkPhone);
                 },
-              ),
-              SettingsRow(
-                title: 'ИИ берёт трубку'.tr,
-                subtitle: _aiAnswer
-                    ? context.tr(
-                        'Если не ответить за $_aiTimeout секунд, ИИ сам примет заказ',
-                        'If you do not pick up within $_aiTimeout seconds, AI takes the request',
-                      )
-                    : 'Выключен'.tr,
-                icon: Icons.smart_toy_outlined,
-                iconColor: Colors.deepPurple,
-                trailing: Switch(value: _aiAnswer, onChanged: _setAiAnswer),
-              ),
-              SettingsRow(
-                title: context.tr('Критерии секретаря', 'Secretary criteria'),
-                subtitle: context.tr(
-                  'Что спрашивать, зона, приветствие и тон',
-                  'What to ask, service area, greeting and tone',
-                ),
-                icon: Icons.rule,
-                iconColor: Colors.deepPurple,
-                showDivider: false,
-                onTap: _openSecretary,
               ),
             ],
           ),
@@ -275,8 +204,9 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                 onTap: _editSmsHeader,
               ),
               SettingsRow(
-                title: 'Заявки в 7:00'.tr,
-                subtitle: 'Уведомление, что взять с собой на день'.tr,
+                title: 'Заявки утром и вечером'.tr,
+                subtitle:
+                    'В 7:00 — сегодняшний день. В 19:00 — завтра и что взять.'.tr,
                 icon: Icons.wb_sunny_outlined,
                 iconColor: Colors.orange,
                 trailing: Switch(value: _morning, onChanged: _setMorning),
@@ -385,78 +315,24 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
               ],
             ),
           ),
-          Padding(
-            padding: EdgeInsets.fromLTRB(20, 8, 20, 8),
-            child: Text(
-              'SMS-ШАБЛОНЫ'.tr,
-              style: TextStyle(
-                color: Colors.grey,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.1,
+          SettingsGroup(
+            children: [
+              SettingsRow(
+                title: 'Шаблоны сообщений'.tr,
+                subtitle: 'Все SMS клиенту, всегда English'.tr,
+                icon: Icons.sms_outlined,
+                iconColor: Colors.blue,
+                showDivider: false,
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const MessageTemplatesPage()),
+                  );
+                },
               ),
-            ),
+            ],
           ),
-          if (_loadingTemplates)
-            const Center(child: CircularProgressIndicator(color: AppColors.accent))
-          else
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Column(
-                children: [
-                  _templateField('Шаблон «Запись на визит»'.tr, _bookCtrl),
-                  _templateField('Шаблон «Напоминание за сутки»'.tr, _dayCtrl),
-                  _templateField('Шаблон «Я в пути»'.tr, _onWayCtrl),
-                  _templateField('Шаблон «Ожидание запчасти»'.tr, _partsCtrl),
-                  _templateField('Шаблон «Ремонт завершен»'.tr, _doneCtrl),
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: TextField(
-                      controller: _reviewUrlCtrl,
-                      decoration: InputDecoration(
-                        labelText: 'Ссылка на Google-отзыв'.tr,
-                        hintText: '{review} в шаблоне «Ремонт завершен»'.tr,
-                        border: const OutlineInputBorder(),
-                        filled: true,
-                        fillColor: Colors.white,
-                      ),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Text(
-                      '{name} {date} {time} {address} {review}'.tr,
-                      style: const TextStyle(color: Colors.black54, fontSize: 12),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: ElevatedButton(
-                      onPressed: _saving ? null : _saveTemplates,
-                      child: Text(_saving ? 'Сохранение…'.tr : 'Сохранить шаблоны'.tr),
-                    ),
-                  ),
-                ],
-              ),
-            ),
         ],
-      ),
-    );
-  }
-
-  Widget _templateField(String label, TextEditingController controller) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextField(
-        controller: controller,
-        maxLines: 3,
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
-          filled: true,
-          fillColor: Colors.white,
-        ),
       ),
     );
   }

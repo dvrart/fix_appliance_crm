@@ -5,6 +5,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:syncfusion_flutter_calendar/calendar.dart';
 import '../../core/constants.dart';
+import '../../core/ui_scale.dart';
+import '../../core/app_commands.dart';
 import '../../models/job.dart';
 import '../../services/job_service.dart';
 import '../../services/settings_service.dart';
@@ -13,12 +15,13 @@ import '../../services/app_time_service.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import '../jobs/create_job_screen.dart';
 import '../jobs/jobs_screen.dart';
+import '../jobs/job_filter_groups_screen.dart';
 import '../jobs/route_map_view.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/widgets/animated_app_logo.dart';
 import '../../shared/widgets/appliance_logo.dart';
-import '../../shared/widgets/job_status_filter_bar.dart';
 import '../../shared/widgets/calendar_hatch.dart';
+import '../../shared/widgets/visit_confirm_badge.dart';
 
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
@@ -27,7 +30,7 @@ class CalendarScreen extends StatefulWidget {
   State<CalendarScreen> createState() => _CalendarScreenState();
 }
 
-class _CalendarScreenState extends State<CalendarScreen> {
+class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   final CalendarController _calendarController = CalendarController();
   StreamSubscription? _configSub;
 
@@ -45,9 +48,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
   DateTime? _lastTapDate;
   bool _showRouteMap = false;
   DateTime _routeDate = DateTime.now();
-  String _jobFilter = JobStatuses.call;
+  String _jobFilter = SettingsService.listAllFilter;
   final ValueNotifier<RouteMapChrome?> _routeChrome = ValueNotifier(null);
-  double _timeIntervalHeight = -1;
+  final ValueNotifier<double> _slotHeight = ValueNotifier<double>(-1);
+  final ValueNotifier<bool> _pinching = ValueNotifier<bool>(false);
+  late final Stream<QuerySnapshot> _jobsSnap;
   int? _pinchId1;
   int? _pinchId2;
   Offset? _pinchP1;
@@ -55,6 +60,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
   double? _pinchStartDistance;
   double? _pinchStartHeight;
   double _calendarViewHeight = 600;
+  List<TimeRegion> _cachedRegions = const [];
+  int _regionsStamp = 0;
 
   static const Color _nonWorkingHourColor = Color(0xFFF3F4F6);
 
@@ -62,7 +69,20 @@ class _CalendarScreenState extends State<CalendarScreen> {
   void initState() {
     super.initState();
     _calendarController.view = CalendarView.week;
+    _jobsSnap = FirebaseFirestore.instance
+        .collection('companies')
+        .doc(kCompanyId)
+        .collection('jobs')
+        .snapshots();
     _listenCalendarSettings();
+    AppCommands.calendarMode.addListener(_onCalendarCommand);
+  }
+
+  void _onCalendarCommand() {
+    final mode = AppCommands.calendarMode.value;
+    if (mode == null || !mounted) return;
+    AppCommands.calendarMode.value = null;
+    _selectCalendarMode(mode);
   }
 
   void _listenCalendarSettings() {
@@ -90,6 +110,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
         }
         _isLoadingSettings = false;
       });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_showList) _scrollWorkHoursIntoView();
+      });
     }, onError: (e) {
       debugPrint('Ошибка загрузки настроек: $e');
       if (mounted) setState(() => _isLoadingSettings = false);
@@ -98,12 +121,20 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   @override
   void dispose() {
+    AppCommands.calendarMode.removeListener(_onCalendarCommand);
     _configSub?.cancel();
     _routeChrome.dispose();
+    _slotHeight.dispose();
+    _pinching.dispose();
     super.dispose();
   }
 
   List<TimeRegion> _nonWorkingRegions() {
+    final stamp = Object.hash(_workStartMinutes, _workEndMinutes);
+    if (stamp == _regionsStamp && _cachedRegions.isNotEmpty) {
+      return _cachedRegions;
+    }
+    _regionsStamp = stamp;
     final today = DateTime.now();
     final startDay = DateTime(today.year, today.month, today.day)
         .subtract(const Duration(days: 60));
@@ -136,26 +167,117 @@ class _CalendarScreenState extends State<CalendarScreen> {
       }
     }
 
+    _cachedRegions = regions;
     return regions;
   }
 
   Color _appointmentColor(Job job, JobVisit visit) {
-    if (job.status == JobStatuses.cancelled) {
+    final status = job.displayStatusForVisit(visit);
+    if (JobStatuses.isCancelledStatus(status)) {
       return StatusService.colorOf(JobStatuses.cancelled);
     }
-    if (visit.isDone || job.status == JobStatuses.completed) {
+    if (status == JobStatuses.rescheduled) {
+      return StatusService.colorOf(JobStatuses.rescheduled);
+    }
+    if (visit.isDone || JobStatuses.isCompletedStatus(status)) {
       return StatusService.colorOf(JobStatuses.completed);
     }
-    return StatusService.colorOf(job.status);
+    return StatusService.colorOf(status);
   }
 
   bool _showJobOnCalendar(Job job) {
-    if (job.status == JobStatuses.completed ||
-        job.status == JobStatuses.cancelled ||
-        job.status == JobStatuses.rescheduled) {
-      return true;
-    }
     return SettingsService.jobMatchesListFilter(job, _jobFilter);
+  }
+
+  bool get _filterActive => _jobFilter != SettingsService.listAllFilter;
+
+  void _openFilterGroups() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => JobFilterGroupsScreen(
+          selectedId: _jobFilter,
+          onSelected: (id) {
+            if (mounted) setState(() => _jobFilter = id);
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _filterHeaderButton() {
+    final active = _filterActive;
+    return _headerChip(
+      icon: active ? Icons.filter_alt : Icons.filter_alt_outlined,
+      label: active
+          ? trAny(SettingsService.listFilterLabel(_jobFilter))
+          : 'Фильтр'.tr,
+      selected: active,
+      onPressed: _openFilterGroups,
+    );
+  }
+
+  Widget _headerChip({
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+    bool selected = false,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(18),
+          child: _headerChipLook(
+            icon: icon,
+            label: label,
+            selected: selected,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _headerChipLook({
+    required IconData icon,
+    required String label,
+    bool selected = false,
+  }) {
+    final fg = selected ? Colors.black : AppColors.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: selected
+            ? const Color(0xFFFCC520)
+            : AppColors.primary.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: selected
+              ? const Color(0xFFC9A218)
+              : AppColors.primary.withValues(alpha: 0.45),
+          width: 1.2,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: fg),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 12,
+              color: fg,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   String _formatRouteDate(DateTime date) {
@@ -165,6 +287,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }
 
   String get _currentViewMode {
+    if (_showList && _showRouteMap) return 'route';
     if (_showList) return 'list';
     final view = _calendarController.view == CalendarView.month
         ? _lastDropdownView
@@ -178,13 +301,27 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   void _selectCalendarMode(String newValue) {
     setState(() {
-      if (newValue == 'list') {
+      if (newValue == 'list' || newValue == 'route') {
         _showList = true;
+        _showRouteMap = newValue == 'route';
+        if (!_showRouteMap) _routeChrome.value = null;
+        final display = _calendarController.displayDate;
+        if (display != null) {
+          final wall = AppTimeService.wallClock(display);
+          _routeDate = DateTime(wall.year, wall.month, wall.day);
+        }
         return;
       }
       _showList = false;
       _showRouteMap = false;
       _routeChrome.value = null;
+      _calendarController.displayDate = DateTime(
+        _routeDate.year,
+        _routeDate.month,
+        _routeDate.day,
+        _workStartMinutes ~/ 60,
+        _workStartMinutes % 60,
+      );
       final view = newValue == 'day'
           ? CalendarView.day
           : newValue == 'week'
@@ -192,8 +329,108 @@ class _CalendarScreenState extends State<CalendarScreen> {
               : CalendarView.workWeek;
       _calendarController.view = view;
       _lastDropdownView = view;
-      _timeIntervalHeight = -1;
+      _slotHeight.value = -1;
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_showList) _scrollWorkHoursIntoView();
+    });
+  }
+
+  Future<void> _showViewPicker() async {
+    final current = _currentViewMode;
+    const options = <({String id, String label, IconData icon})>[
+      (id: 'day', label: '1 день', icon: Icons.view_day_outlined),
+      (id: 'workWeek', label: '5 дней', icon: Icons.view_week_outlined),
+      (id: 'week', label: 'Неделя', icon: Icons.calendar_view_week),
+      (id: 'list', label: 'Список', icon: Icons.view_agenda_outlined),
+    ];
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      useRootNavigator: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Вид календаря'.tr,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF14557F),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                GridView.count(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 12,
+                  childAspectRatio: 1.35,
+                  children: [
+                    for (final option in options)
+                      Material(
+                        color: current == option.id
+                            ? AppColors.accent
+                            : const Color(0xFFF3F6F9),
+                        borderRadius: BorderRadius.circular(18),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(18),
+                          onTap: () => Navigator.pop(sheetContext, option.id),
+                          child: Padding(
+                            padding: const EdgeInsets.all(14),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  option.icon,
+                                  size: 32,
+                                  color: current == option.id
+                                      ? Colors.black
+                                      : AppColors.primary,
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  option.label.tr,
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 15,
+                                    color: current == option.id
+                                        ? Colors.black
+                                        : const Color(0xFF1B2A3A),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (selected != null && mounted) _selectCalendarMode(selected);
   }
 
   Future<void> _pickRouteDate() async {
@@ -216,7 +453,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              icon: const Icon(Icons.chevron_left, color: Color(0xFF14557F)),
+              icon: Icon(Icons.chevron_left, color: AppColors.primary),
               onPressed: () {
                 setState(() => _routeDate = _routeDate.subtract(const Duration(days: 1)));
               },
@@ -227,9 +464,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 child: Text(
                   _formatRouteDate(_routeDate),
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFF14557F),
+                    color: AppColors.primary,
                   ),
                 ),
               ),
@@ -238,7 +475,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              icon: const Icon(Icons.chevron_right, color: Color(0xFF14557F)),
+              icon: Icon(Icons.chevron_right, color: AppColors.primary),
               onPressed: () {
                 setState(() => _routeDate = _routeDate.add(const Duration(days: 1)));
               },
@@ -249,7 +486,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                 tooltip: 'Расставить время по маршруту'.tr,
-                icon: const Icon(Icons.schedule, color: Color(0xFF14557F)),
+                icon: Icon(Icons.schedule, color: AppColors.primary),
                 onPressed: chrome.applyTimes,
               ),
               IconButton(
@@ -257,7 +494,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                 tooltip: 'Открыть в Google Maps'.tr,
-                icon: const Icon(Icons.map_outlined, color: Color(0xFF14557F)),
+                icon: Icon(Icons.map_outlined, color: AppColors.primary),
                 onPressed: chrome.openMaps,
               ),
               IconButton(
@@ -265,16 +502,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                 tooltip: 'Оптимизировать заново'.tr,
-                icon: const Icon(Icons.refresh, color: Color(0xFF14557F)),
+                icon: Icon(Icons.refresh, color: AppColors.primary),
                 onPressed: chrome.refresh,
               ),
               Flexible(
                 child: Text(
                   chrome.distanceText,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFF14557F),
+                    color: AppColors.primary,
                   ),
                 ),
               ),
@@ -286,9 +523,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }
 
   double get _fittedSlotHeight {
-    final hours = 24.0;
+    final hours =
+        ((_workEndMinutes - _workStartMinutes) / 60).clamp(8.0, 12.0);
     final usable = (_calendarViewHeight - 72).clamp(240.0, 4000.0);
-    return (usable / hours).clamp(16.0, 80.0);
+    return (usable / hours).clamp(16.0, 120.0);
+  }
+
+  void _scrollWorkHoursIntoView() {
+    final base = _calendarController.displayDate ?? _routeDate;
+    _calendarController.displayDate = DateTime(
+      base.year,
+      base.month,
+      base.day,
+      _workStartMinutes ~/ 60,
+      _workStartMinutes % 60,
+    );
   }
 
   void _onPointerDown(PointerDownEvent event) {
@@ -300,10 +549,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
       _pinchP2 = event.position;
       if (_pinchP1 != null && _pinchP2 != null) {
         _pinchStartDistance = (_pinchP1! - _pinchP2!).distance;
-        _pinchStartHeight =
-            _timeIntervalHeight < 0 ? _fittedSlotHeight : _timeIntervalHeight;
+        _pinchStartHeight = _currentSlotHeight;
+        _pinching.value = true;
       }
     }
+  }
+
+  double get _currentSlotHeight {
+    final value = _slotHeight.value;
+    return value < 0 ? _fittedSlotHeight : value;
   }
 
   void _onPointerMove(PointerMoveEvent event) {
@@ -320,10 +574,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
     }
     final scale = (_pinchP1! - _pinchP2!).distance / _pinchStartDistance!;
     final next = (_pinchStartHeight! * scale).clamp(16.0, 160.0);
-    if ((next - (_timeIntervalHeight < 0 ? _fittedSlotHeight : _timeIntervalHeight)).abs() < 0.5) {
-      return;
-    }
-    setState(() => _timeIntervalHeight = next);
+    if ((next - _currentSlotHeight).abs() < 2.4) return;
+    _slotHeight.value = next;
   }
 
   void _onPointerUp(PointerEvent event) {
@@ -338,33 +590,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     }
     _pinchStartDistance = null;
     _pinchStartHeight = null;
-  }
-
-  // --- ВСПЛЫВАЮЩЕЕ ОКНО ПРИ ОДИНАРНОМ КЛИКЕ ---
-  void _showQuickInfoDialog(String clientName, String description) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(
-          clientName,
-          style: const TextStyle(
-            color: Color(0xFF14557F),
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        content: Text(
-          description.isNotEmpty ? description : 'Нет описания поломки'.tr,
-          style: const TextStyle(fontSize: 16),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('ЗАКРЫТЬ'.tr, style: TextStyle(color: Colors.grey)),
-          ),
-        ],
-      ),
-    );
+    if (_pinchId2 == null) _pinching.value = false;
   }
 
   @override
@@ -383,89 +609,79 @@ class _CalendarScreenState extends State<CalendarScreen> {
           color: Colors.white,
           child: Row(
             children: [
-              PopupMenuButton<String>(
-                tooltip: 'Вид'.tr,
-                icon: const Icon(Icons.more_vert, color: Color(0xFF14557F)),
-                padding: EdgeInsets.zero,
-                onSelected: _selectCalendarMode,
-                itemBuilder: (context) {
-                  final current = _currentViewMode;
-                  Widget item(String value, String label) {
-                    return Row(
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: _showViewPicker,
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(
-                          width: 24,
-                          child: current == value
-                              ? const Icon(
-                                  Icons.check,
-                                  size: 18,
-                                  color: Color(0xFF14557F),
-                                )
-                              : null,
+                        const Icon(Icons.calendar_view_week, color: Colors.white, size: 18),
+                        const SizedBox(width: 5),
+                        Text(
+                          'Вид'.tr,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 13,
+                          ),
                         ),
-                        const SizedBox(width: 8),
-                        Text(label),
                       ],
-                    );
-                  }
-
-                  return [
-                    PopupMenuItem(
-                      value: 'day',
-                      child: item('day', '1 день'.tr),
                     ),
-                    PopupMenuItem(
-                      value: 'workWeek',
-                      child: item('workWeek', '5 дней'.tr),
-                    ),
-                    PopupMenuItem(
-                      value: 'week',
-                      child: item('week', 'неделя'.tr),
-                    ),
-                    PopupMenuItem(
-                      value: 'list',
-                      child: item('list', 'список'.tr),
-                    ),
-                  ];
-                },
+                  ),
+                ),
               ),
-              if (_showList && _showRouteMap)
-                Expanded(child: _compactRouteDate())
-              else
+              if (_showList && _showRouteMap) ...[
+                Expanded(child: _compactRouteDate()),
+                _filterHeaderButton(),
+              ] else
                 Expanded(
                   child: Align(
                     alignment: Alignment.centerRight,
-                    child: TextButton.icon(
-                  style: TextButton.styleFrom(
-                    backgroundColor:
-                        !_showList && _calendarController.view == CalendarView.month
-                            ? const Color(0xFFFCC520)
-                            : Colors.transparent,
-                    foregroundColor:
-                        !_showList && _calendarController.view == CalendarView.month
-                            ? Colors.black
-                            : const Color(0xFF14557F),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                  onPressed: () {
-                    setState(() {
-                      _showList = false;
-                      if (_calendarController.view == CalendarView.month) {
-                        _calendarController.view = _lastDropdownView;
-                      } else {
-                        _lastDropdownView =
-                            _calendarController.view ?? CalendarView.week;
-                        _calendarController.view = CalendarView.month;
-                      }
-                    });
-                  },
-                  icon: const Icon(Icons.calendar_month),
-                  label: Text(
-                    'Месяц'.tr,
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      reverse: true,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _filterHeaderButton(),
+                          _headerChip(
+                            icon: Icons.route,
+                            label: 'Маршрут'.tr,
+                            selected: _showList && _showRouteMap,
+                            onPressed: () => _selectCalendarMode('route'),
+                          ),
+                          _headerChip(
+                            icon: Icons.calendar_month,
+                            label: 'Месяц'.tr,
+                            selected: !_showList &&
+                                _calendarController.view == CalendarView.month,
+                            onPressed: () {
+                              setState(() {
+                                _showList = false;
+                                _showRouteMap = false;
+                                _routeChrome.value = null;
+                                if (_calendarController.view ==
+                                    CalendarView.month) {
+                                  _calendarController.view = _lastDropdownView;
+                                } else {
+                                  _lastDropdownView =
+                                      _calendarController.view ??
+                                          CalendarView.week;
+                                  _calendarController.view = CalendarView.month;
+                                }
+                              });
+                            },
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -473,21 +689,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         ),
         const Divider(height: 1, color: Colors.grey),
-        if (!(_showList && _showRouteMap))
-          JobStatusFilterBar(
-            selectedId: _jobFilter,
-            onSelected: (id) => setState(() => _jobFilter = id),
-          ),
 
         // --- САМ КАЛЕНДАРЬ И ЕГО ДАННЫЕ ---
         Expanded(
           child: _showList
               ? JobsScreen(
                   showRouteMap: _showRouteMap,
-                  onShowRouteMapChanged: (value) {
-                    setState(() => _showRouteMap = value);
-                    if (!value) _routeChrome.value = null;
-                  },
                   routeDate: _routeDate,
                   onRouteDateChanged: (value) => setState(() => _routeDate = value),
                   hideRouteDateBar: true,
@@ -503,16 +710,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
             stream: StatusService.streamDefs(),
             builder: (context, statusSnap) {
               return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('companies')
-                .doc(kCompanyId)
-                .collection('jobs')
-                .snapshots(),
+            stream: _jobsSnap,
             builder: (context, snapshot) {
               if (snapshot.hasError) {
                 return Center(child: Text('Ошибка загрузки'.tr));
               }
-              if (snapshot.connectionState == ConnectionState.waiting) {
+              if (!snapshot.hasData) {
                 return const AppLoading();
               }
 
@@ -551,15 +754,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
               return LayoutBuilder(
                 builder: (context, constraints) {
                   _calendarViewHeight = constraints.maxHeight;
-                  final slotHeight = _timeIntervalHeight < 0
-                      ? _fittedSlotHeight
-                      : _timeIntervalHeight;
                   return Listener(
                     onPointerDown: _onPointerDown,
                     onPointerMove: _onPointerMove,
                     onPointerUp: _onPointerUp,
                     onPointerCancel: _onPointerUp,
-                    child: SfCalendar(
+                    child: ValueListenableBuilder<double>(
+                      valueListenable: _slotHeight,
+                      builder: (context, height, _) {
+                        final slotHeight =
+                            height < 0 ? _fittedSlotHeight : height;
+                        return ValueListenableBuilder<bool>(
+                          valueListenable: _pinching,
+                          builder: (context, pinching, _) {
+                            return RepaintBoundary(
+                              child: SfCalendar(
                 controller: _calendarController,
                 firstDayOfWeek: _firstDayOfWeek,
                 backgroundColor: Colors.white,
@@ -574,7 +783,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 dataSource: JobDataSource(appointments),
 
                 // --- ПЕРЕТАСКИВАНИЕ ЗАЯВОК ДЛЯ ПЕРЕНОСА ДАТЫ/ВРЕМЕНИ ---
-                allowDragAndDrop: _pinchId2 == null,
+                allowDragAndDrop: !pinching,
                 dragAndDropSettings: const DragAndDropSettings(
                   allowNavigation: true,
                   allowScroll: true,
@@ -763,7 +972,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           jobData['jobSiteName'].toString().isNotEmpty
                       ? jobData['jobSiteName']
                       : (jobData['clientName'] ?? 'Клиент'.tr);
-                  final String description = jobData['description'] ?? '';
                   Job? parsedJob;
                   try {
                     parsedJob = Job.fromMap(jobData, jobId);
@@ -781,10 +989,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       }
                     }
                   }
+                  final displayStatus = parsedJob?.displayStatusForVisit(visit) ??
+                      (jobData['status'] ?? '').toString();
                   final hatch = calendarHatchFor(
-                    status: parsedJob?.status ??
-                        (jobData['status'] ?? '').toString(),
-                    visitDone: visit?.isDone == true,
+                    status: displayStatus,
+                    visitDone: visit?.isDone == true &&
+                        displayStatus != JobStatuses.rescheduled,
                   );
                   final hatchIcon = calendarHatchIcon(hatch);
                   final bounds = calendarAppointmentDetails.bounds;
@@ -794,17 +1004,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     _calendarController.view == CalendarView.month ? 4 : 8,
                   );
 
-                  // Обертка для обработки двойных и одинарных кликов
+                  // Обертка: один тап открывает заявку
                   return SizedBox(
                     width: bounds.width,
                     height: bounds.height,
                     child: GestureDetector(
                     onTap: () {
-                      // Одинарный клик -> Показываем Инфо
-                      _showQuickInfoDialog(clientName, description);
-                    },
-                    onDoubleTap: () {
-                      // Двойной клик -> Проваливаемся в заявку
                       Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -825,6 +1030,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         child: showName
                             ? Row(
                                 children: [
+                                  VisitConfirmBadge.mark(visit, size: 16),
+                                  const SizedBox(width: 3),
                                   if (hatchIcon != null) ...[
                                     Icon(hatchIcon, color: Colors.white, size: 14),
                                     const SizedBox(width: 3),
@@ -852,6 +1059,24 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                     size: logoSize,
                                     onDark: true,
                                   ),
+                                  if (visit != null &&
+                                      visit.effectiveConfirmStatus ==
+                                          JobVisit.confirmConfirmed) ...[
+                                    const SizedBox(width: 3),
+                                    const Icon(
+                                      Icons.check_circle,
+                                      color: Colors.white,
+                                      size: 14,
+                                    ),
+                                  ] else if (visit != null &&
+                                      visit.effectiveConfirmStatus.isNotEmpty) ...[
+                                    const SizedBox(width: 3),
+                                    const Icon(
+                                      Icons.sms_failed,
+                                      color: Colors.white,
+                                      size: 14,
+                                    ),
+                                  ],
                                 ],
                               )
                             : Center(
@@ -868,6 +1093,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     ),
                   );
                 },
+                              ),
+                            );
+                          },
+                        );
+                      },
                     ),
                   );
                 },

@@ -1,0 +1,300 @@
+import 'package:flutter/material.dart';
+
+import '../../core/constants.dart';
+import '../../core/ui_scale.dart';
+import '../../core/l10n/app_locale.dart';
+import '../../models/models.dart';
+import '../../services/services.dart';
+import '../../features/ai/assistant/assistant_host.dart';
+import '../../features/warehouse/warehouse_screen.dart';
+import '../../features/reports/reports_screen.dart';
+import '../../features/finance/documents_list_screen.dart';
+import '../../features/settings/settings_screen.dart';
+import '../../features/settings/widgets/company_logo.dart';
+import '../unsaved_navigation_gate.dart';
+
+class CustomDrawer extends StatelessWidget {
+  const CustomDrawer({super.key});
+
+  void _openSettings(BuildContext context) async {
+    if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
+    if (!context.mounted) return;
+    Navigator.pop(context);
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const SettingsScreen()),
+    );
+  }
+
+  void _open(BuildContext context, Widget page) async {
+    if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
+    if (!context.mounted) return;
+    Navigator.pop(context);
+    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: AppUiSettings.instance,
+      builder: (context, _) {
+        return Drawer(
+      backgroundColor: Colors.grey.shade100,
+      child: Column(
+        children: [
+          StreamBuilder<DocumentSettings>(
+            stream: SettingsService.watchDocumentSettings(),
+            builder: (context, snapshot) {
+              final docs = snapshot.data;
+              final name = docs?.companyName ?? 'Fix Appliance';
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.only(
+                  top: 60,
+                  bottom: 20,
+                  left: 20,
+                  right: 20,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.primary,
+                  borderRadius: BorderRadius.only(
+                    bottomRight: Radius.circular(30),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        CompanyLogo(
+                          url: docs?.logoUrl,
+                          size: 64,
+                          onTap: () => _openSettings(context),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () => _openSettings(context),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  name,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 19,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  context.tr(
+                                    'Нажмите логотип — настройки',
+                                    'Tap the logo for settings',
+                                  ),
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    _buildQuickStats(context),
+                  ],
+                ),
+              );
+            },
+          ),
+          Expanded(
+            child: StreamBuilder<Map<String, dynamic>>(
+              stream: SettingsService.watchConfig(),
+              builder: (context, snapshot) {
+                final config = snapshot.data ?? <String, dynamic>{};
+                final tiles = <Widget>[
+                  if (SettingsService.menuFlag(config, 'menuShowAi'))
+                    _buildTile(
+                      context,
+                      title: context.tr('Ассистент', 'Assistant'),
+                      icon: Icons.mic,
+                      color: Colors.deepPurple,
+                      onTap: () async {
+                        if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
+                        if (!context.mounted) return;
+                        final open = AssistantHost.opener(context);
+                        Navigator.pop(context);
+                        open?.call();
+                      },
+                    ),
+                  if (SettingsService.menuFlag(config, 'menuShowWarehouse'))
+                    _buildTile(
+                      context,
+                      title: context.tr('Склад', 'Warehouse'),
+                      icon: Icons.inventory_2_outlined,
+                      color: Colors.orange,
+                      onTap: () => _open(context, const WarehouseScreen()),
+                    ),
+                  if (SettingsService.menuFlag(config, 'menuShowReports'))
+                    _buildTile(
+                      context,
+                      title: context.tr('Отчеты', 'Reports'),
+                      icon: Icons.bar_chart,
+                      color: Colors.green,
+                      onTap: () => _open(context, const ReportsScreen()),
+                    ),
+                  if (SettingsService.menuFlag(config, 'menuShowInvoices') ||
+                      SettingsService.menuFlag(config, 'menuShowEstimates'))
+                    _buildTile(
+                      context,
+                      title: context.tr('Счета', 'Invoices'),
+                      icon: Icons.receipt_long,
+                      color: Colors.teal,
+                      onTap: () => _open(context, const DocumentsListScreen()),
+                    ),
+                  _buildTile(
+                    context,
+                    title: context.tr('Настройки', 'Settings'),
+                    icon: Icons.settings_outlined,
+                    color: Colors.grey.shade700,
+                    onTap: () => _openSettings(context),
+                  ),
+                ];
+
+                return GridView.count(
+                  padding: const EdgeInsets.all(16),
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 16,
+                  mainAxisSpacing: 16,
+                  childAspectRatio: 1,
+                  children: tiles,
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+      },
+    );
+  }
+
+  Widget _buildQuickStats(BuildContext context) {
+    return StreamBuilder<List<Job>>(
+      stream: JobService.streamAll(),
+      builder: (context, snapshot) {
+        final jobs = snapshot.data ?? [];
+        final now = DateTime.now();
+
+        final todayCount = jobs.where((j) => j.hasVisitOn(now)).length;
+
+        final activeCount = jobs
+            .where((j) => !JobStatuses.isClosed(j.status))
+            .length;
+
+        return Row(
+          children: [
+            Expanded(
+              child: _statChip(
+                icon: Icons.calendar_today,
+                label: context.tr('Сегодня', 'Today'),
+                value: todayCount,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _statChip(
+                icon: Icons.build_circle_outlined,
+                label: context.tr('Активные', 'Active'),
+                value: activeCount,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _statChip({
+    required IconData icon,
+    required String label,
+    required int value,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: AppColors.accent, size: 20),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$value',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                  height: 1.1,
+                ),
+              ),
+              Text(
+                label,
+                style: const TextStyle(color: Colors.white70, fontSize: 11),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTile(
+    BuildContext context, {
+    required String title,
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      elevation: 2,
+      shadowColor: Colors.black12,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: color, size: 36),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+                color: Colors.black87,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
