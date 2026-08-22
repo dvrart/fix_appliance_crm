@@ -14,8 +14,10 @@ const twilio = require('twilio');
 const crypto = require('crypto');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const voiceRelay = require('./voice_relay');
+const voiceFacts = require('./voice_facts');
 const { withSmsHeader, sanitizeSmsHeader } = require('./sms_header');
 const visitSms = require('./visit_sms');
+const schedule = require('./schedule');
 
 admin.initializeApp();
 
@@ -47,6 +49,9 @@ const client =
 
 const db = admin.firestore();
 const callsRef = db.collection('companies').doc(COMPANY_ID).collection('calls');
+const secretaryLearnApi = {
+  proposeFromCall: async () => {},
+};
 const messagesRef = db.collection('companies').doc(COMPANY_ID).collection('messages');
 const clientsRef = db.collection('companies').doc(COMPANY_ID).collection('clients');
 const jobsRef = db.collection('companies').doc(COMPANY_ID).collection('jobs');
@@ -99,7 +104,7 @@ async function findClientByPhone(phone) {
     const snapshot = await clientsRef.get();
     for (const doc of snapshot.docs) {
       const data = doc.data();
-      if (normalizePhone(data.phone) === normalized) {
+      if (voiceFacts.phonesOfClient(data).has(normalized)) {
         return { id: doc.id, ...data };
       }
     }
@@ -115,8 +120,15 @@ async function findClientByEmail(email) {
   try {
     const snapshot = await clientsRef.get();
     for (const doc of snapshot.docs) {
-      const data = doc.data();
-      if (String(data.email || '').trim().toLowerCase() === normalized) {
+      const data = doc.data() || {};
+      const emails = [data.email];
+      for (const location of data.locations || []) {
+        emails.push(location.email);
+        for (const contact of location.contacts || []) {
+          emails.push(contact.email);
+        }
+      }
+      if (emails.some((value) => String(value || '').trim().toLowerCase() === normalized)) {
         return { id: doc.id, ...data };
       }
     }
@@ -133,24 +145,230 @@ function buildFullAddress(extracted, existingClient) {
     extracted.postal_code,
   ].filter((part) => part && String(part).trim());
   if (parts.length) return parts.join(', ');
-  return (existingClient && (existingClient.address || '')) || '';
+  return voiceFacts.clientAddressFrom(existingClient);
+}
+
+function locationAddressKey(street, city, postal) {
+  return [street, city, postal]
+    .map((part) => String(part || '').trim().toLowerCase().replace(/\s+/g, ' '))
+    .join('|');
+}
+
+function isJobSiteExtract(extracted) {
+  if (!extracted) return false;
+  if (extracted.has_job_site === true || extracted.has_job_site === 'true') return true;
+  if (
+    String(extracted.contact_on_site_name || '').trim() ||
+    String(extracted.contact_on_site_phone || '').trim()
+  ) {
+    return true;
+  }
+  if (
+    extracted.owner_address &&
+    extracted.address &&
+    voiceFacts.addressesLookDifferent(extracted.owner_address, extracted.address)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function tenantContactFromExtracted(extracted) {
+  const name = String((extracted && extracted.contact_on_site_name) || '').trim();
+  const phone = normalizePhone(extracted && extracted.contact_on_site_phone);
+  return {
+    id: 'tenant',
+    name: name || 'Tenant',
+    phone: phone || '',
+    role: 'tenant',
+    isPrimary: true,
+  };
+}
+
+function jobSiteLocationFromExtracted(extracted, ownerName, ownerPhone) {
+  const street = String((extracted && extracted.address) || '').trim();
+  const city = String((extracted && extracted.city) || '').trim();
+  const postal = String((extracted && extracted.postal_code) || '').trim();
+  const contacts = [tenantContactFromExtracted(extracted)];
+  if (ownerName || ownerPhone) {
+    contacts.push({
+      id: 'owner',
+      name: ownerName || '',
+      phone: ownerPhone || '',
+      role: 'owner',
+      isPrimary: false,
+    });
+  }
+  return {
+    id: `site_${Date.now()}`,
+    street,
+    city,
+    postalCode: postal,
+    notes: 'Job site',
+    contacts,
+  };
+}
+
+async function upsertClientJobSite(clientId, existingClient, extracted, ownerName, ownerPhone) {
+  if (!clientId || !isJobSiteExtract(extracted)) return;
+  const street = String((extracted && extracted.address) || '').trim();
+  const city = String((extracted && extracted.city) || '').trim();
+  const postal = String((extracted && extracted.postal_code) || '').trim();
+  if (!street && !city) return;
+
+  const locations = Array.isArray(existingClient && existingClient.locations)
+    ? existingClient.locations.map((loc) => ({ ...(loc || {}) }))
+    : [];
+  const key = locationAddressKey(street, city, postal);
+  const matchIdx = locations.findIndex(
+    (loc) => locationAddressKey(loc.street, loc.city, loc.postalCode || loc.postal) === key
+  );
+  const tenant = tenantContactFromExtracted(extracted);
+
+  if (matchIdx >= 0) {
+    const loc = locations[matchIdx];
+    const contacts = Array.isArray(loc.contacts) ? [...loc.contacts] : [];
+    const tenantIdx = contacts.findIndex((c) => String(c.role || '') === 'tenant');
+    if (tenantIdx >= 0) {
+      contacts[tenantIdx] = {
+        ...contacts[tenantIdx],
+        ...tenant,
+        id: contacts[tenantIdx].id || 'tenant',
+      };
+    } else {
+      contacts.push(tenant);
+    }
+    loc.contacts = contacts;
+    if (!loc.notes) loc.notes = 'Job site (tenant)';
+    locations[matchIdx] = loc;
+  } else {
+    locations.push(jobSiteLocationFromExtracted(extracted, ownerName, ownerPhone));
+  }
+
+  await clientsRef.doc(clientId).set(
+    {
+      locations,
+      lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 function parseScheduledAt(extracted) {
-  const dateStr = extracted.scheduled_date;
-  if (!dateStr) return null;
-  const dateParts = String(dateStr).split('-').map((v) => Number(v));
-  if (dateParts.length < 3 || dateParts.some((n) => !n && n !== 0)) return null;
-  let hours = 9;
-  let mins = 0;
-  if (extracted.scheduled_time) {
-    const timeParts = String(extracted.scheduled_time).split(':');
-    hours = Number(timeParts[0]) || 9;
-    mins = Number(timeParts[1]) || 0;
+  const date = voiceFacts.parseScheduledAtDate(extracted);
+  return date ? admin.firestore.Timestamp.fromDate(date) : null;
+}
+
+function jobFillScore(data) {
+  const job = data || {};
+  let score = 0;
+  const name = String(job.clientName || '').trim();
+  if (name && name !== 'Клиент' && !/^Клиент\s+\d/.test(name)) score += 4;
+  if (String(job.clientAddress || '').trim()) score += 3;
+  const type = String(job.applianceType || '').trim();
+  if (type && type !== 'Техника') score += 3;
+  if (String(job.description || '').trim()) score += 2;
+  if (String(job.brand || '').trim()) score += 1;
+  const visits = Array.isArray(job.visits) ? job.visits : [];
+  if (visits.length || job.scheduledAt || job.scheduledDate) score += 1;
+  return score;
+}
+
+async function findJobsBySourceCall(callId) {
+  if (!callId) return [];
+  const snap = await jobsRef.where('sourceCallId', '==', callId).limit(10).get();
+  return snap.docs;
+}
+
+async function mergeDuplicateSourceCallJobs(callId, keepId) {
+  const docs = await findJobsBySourceCall(callId);
+  for (const doc of docs) {
+    if (doc.id === keepId) continue;
+    if (jobFillScore(doc.data() || {}) > 4) continue;
+    console.log(`mergeDuplicateSourceCallJobs: удаляю пустую ${doc.id}, оставляю ${keepId}`);
+    await doc.ref.delete().catch((error) => {
+      console.warn('mergeDuplicateSourceCallJobs delete:', error.message);
+    });
   }
-  return admin.firestore.Timestamp.fromDate(
-    new Date(dateParts[0], dateParts[1] - 1, dateParts[2], hours, mins)
-  );
+}
+
+async function claimOrReuseCallJob(callId) {
+  const existing = await findJobsBySourceCall(callId);
+  if (existing.length) {
+    existing.sort((a, b) => jobFillScore(b.data() || {}) - jobFillScore(a.data() || {}));
+    const keep = existing[0];
+    const data = keep.data() || {};
+    await callsRef.doc(callId).set(
+      {
+        createdJobId: keep.id,
+        jobId: keep.id,
+        clientId: data.clientId || null,
+      },
+      { merge: true }
+    );
+    if (existing.length > 1) {
+      await mergeDuplicateSourceCallJobs(callId, keep.id);
+    }
+    return { jobId: keep.id, clientId: data.clientId || null, existed: true };
+  }
+
+  return db.runTransaction(async (tx) => {
+    const ref = callsRef.doc(callId);
+    const snap = await tx.get(ref);
+    const data = snap.exists ? snap.data() || {} : {};
+    if (data.createdJobId) {
+      return {
+        jobId: data.createdJobId,
+        clientId: data.clientId || null,
+        existed: true,
+      };
+    }
+    const jobId = jobsRef.doc().id;
+    tx.set(
+      ref,
+      {
+        createdJobId: jobId,
+        jobId,
+      },
+      { merge: true }
+    );
+    return { jobId, clientId: data.clientId || null, existed: false };
+  });
+}
+
+async function applyPersonNameToClient(clientId, name) {
+  const spoken = voiceFacts.usableClientName(name);
+  if (!clientId || !spoken) return;
+  const snap = await clientsRef.doc(clientId).get();
+  if (!snap.exists) return;
+  const data = snap.data() || {};
+  const current = String(data.fullName || data.name || '').trim();
+  const updates = {};
+  if (voiceFacts.isPlaceholderClientName(current) || !current) {
+    updates.fullName = spoken;
+    updates.name = spoken;
+  }
+  const locations = Array.isArray(data.locations) ? data.locations : [];
+  let locChanged = false;
+  const nextLocations = locations.map((loc) => {
+    const contacts = Array.isArray(loc.contacts) ? loc.contacts : [];
+    const nextContacts = contacts.map((contact) => {
+      if (
+        contact &&
+        (contact.role === 'owner' || contact.isPrimary) &&
+        voiceFacts.isPlaceholderClientName(contact.name)
+      ) {
+        locChanged = true;
+        return { ...contact, name: spoken };
+      }
+      return contact;
+    });
+    return locChanged ? { ...loc, contacts: nextContacts } : loc;
+  });
+  if (locChanged) updates.locations = nextLocations;
+  if (!Object.keys(updates).length) return;
+  updates.lastActiveAt = admin.firestore.FieldValue.serverTimestamp();
+  await clientsRef.doc(clientId).set(updates, { merge: true });
 }
 
 /**
@@ -160,8 +378,23 @@ function parseScheduledAt(extracted) {
 async function createDraftJobFromCall(callId, extracted, existingClient) {
   const callSnap = await callsRef.doc(callId).get();
   const callData = callSnap.exists ? callSnap.data() || {} : {};
-  if (callData.createdJobId) {
-    return { jobId: callData.createdJobId, clientId: callData.clientId || null };
+
+  extracted = voiceFacts.enrichExtracted(
+    extracted,
+    (callData.aiReception || {}).history,
+    callData.transcription
+  );
+
+  const claimed = await claimOrReuseCallJob(callId);
+  if (claimed.existed && claimed.jobId) {
+    const existingJob = await jobsRef.doc(claimed.jobId).get();
+    if (existingJob.exists) {
+      await patchDraftJobFromCall(claimed.jobId, extracted);
+      return {
+        jobId: claimed.jobId,
+        clientId: claimed.clientId || existingJob.data().clientId || null,
+      };
+    }
   }
 
   const phone =
@@ -169,35 +402,62 @@ async function createDraftJobFromCall(callId, extracted, existingClient) {
     normalizePhone(callData.direction === 'inbound' ? callData.fromNumber : callData.toNumber);
 
   let clientId = existingClient && existingClient.id;
+  let extractedName = voiceFacts.usableClientName(
+    (extracted && extracted.client_name) || ''
+  );
+  const existingRealName = voiceFacts.usableClientName(
+    (existingClient && (existingClient.fullName || existingClient.name)) || ''
+  );
   let clientName =
-    (extracted.client_name && String(extracted.client_name).trim()) ||
-    (existingClient && existingClient.fullName) ||
+    extractedName ||
+    existingRealName ||
     (phone ? `Клиент ${phone}` : 'Клиент');
   const address = buildFullAddress(extracted, existingClient);
-  const city = (extracted.city && String(extracted.city).trim()) || '';
-  const street = (extracted.address && String(extracted.address).trim()) || '';
-  const postal = (extracted.postal_code && String(extracted.postal_code).trim()) || '';
+  const city = extracted.address_uncertain
+    ? ''
+    : ((extracted.city && String(extracted.city).trim()) || '');
+  const street = extracted.address_uncertain
+    ? ''
+    : ((extracted.address && String(extracted.address).trim()) || '');
+  const postal = extracted.address_uncertain
+    ? ''
+    : ((extracted.postal_code && String(extracted.postal_code).trim()) || '');
 
   if (!clientId) {
+    const locationContacts = isJobSiteExtract(extracted)
+      ? [
+          {
+            id: 'owner',
+            name: clientName,
+            phone: phone || '',
+            role: 'owner',
+            isPrimary: false,
+          },
+          tenantContactFromExtracted(extracted),
+        ]
+      : [
+          {
+            id: 'owner',
+            name: clientName,
+            phone: phone || '',
+            role: 'owner',
+            isPrimary: true,
+          },
+        ];
     const clientDoc = await clientsRef.add({
       fullName: clientName,
       phone: phone || '',
-      address,
+      address: isJobSiteExtract(extracted)
+        ? String(extracted.owner_address || '').trim() || ''
+        : address,
       locations: [
         {
-          id: 'primary',
+          id: isJobSiteExtract(extracted) ? `site_${Date.now()}` : 'primary',
           street,
           city,
           postalCode: postal,
-          contacts: [
-            {
-              id: 'owner',
-              name: clientName,
-              phone: phone || '',
-              role: 'owner',
-              isPrimary: true,
-            },
-          ],
+      notes: isJobSiteExtract(extracted) ? 'Job site' : '',
+          contacts: locationContacts,
         },
       ],
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -209,30 +469,54 @@ async function createDraftJobFromCall(callId, extracted, existingClient) {
     const updates = {
       lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
     };
-    if (extracted.client_name && !existingClient.fullName) {
-      updates.fullName = clientName;
+    if (extractedName) {
+      await applyPersonNameToClient(clientId, extractedName);
     }
-    if (address && !existingClient.address) {
+    if (address && !existingClient.address && !isJobSiteExtract(extracted)) {
       updates.address = address;
     }
     await clientsRef.doc(clientId).set(updates, { merge: true });
+    await upsertClientJobSite(clientId, existingClient, extracted, clientName, phone);
   }
 
   const applianceType = (extracted.appliance_type && String(extracted.appliance_type).trim()) || 'Техника';
   const brand = (extracted.brand && String(extracted.brand).trim()) || '';
   const model = (extracted.model && String(extracted.model).trim()) || '';
-  const issue = (extracted.problem_description && String(extracted.problem_description).trim()) || '';
-  const scheduledAt = parseScheduledAt(extracted);
+  const issueParts = [
+    extracted.problem_description && String(extracted.problem_description).trim(),
+    extracted.wants_callback === true ? 'Клиент просит, чтобы перезвонил мастер' : '',
+  ].filter(Boolean);
+  const issue = issueParts.join('\n');
+  const resolved = await resolveJobSchedule(extracted);
+  const scheduleFields = resolved.fields;
+  let reviewNotes = String((extracted && extracted.review_notes) || '').trim();
+  if (resolved.blocked) {
+    reviewNotes = [reviewNotes, schedule.reviewNote(resolved.blocked)].filter(Boolean).join('\n');
+  }
 
-  const jobRef = await jobsRef.add({
+  const jobSite = isJobSiteExtract(extracted);
+  const ownerAddress = jobSite
+    ? String(extracted.owner_address || '').trim() ||
+      voiceFacts.clientAddressFrom(existingClient) ||
+      ''
+    : address;
+  const workAddress = address || ownerAddress;
+
+  const jobId = claimed.jobId || jobsRef.doc().id;
+  const jobRef = jobsRef.doc(jobId);
+  await jobRef.set({
     clientId,
     clientName,
     clientPhone: phone || '',
-    clientAddress: address,
-    hasJobSite: extracted.has_job_site === true,
-    jobSiteName: extracted.contact_on_site_name || null,
-    jobSitePhone: extracted.contact_on_site_phone || null,
-    jobSiteAddress: extracted.has_job_site === true ? address : null,
+    clientAddress: ownerAddress || workAddress,
+    hasJobSite: jobSite,
+    jobSiteName: jobSite
+      ? String(extracted.contact_on_site_name || '').trim() || null
+      : null,
+    jobSitePhone: jobSite
+      ? normalizePhone(extracted.contact_on_site_phone) || null
+      : null,
+    jobSiteAddress: jobSite ? workAddress || null : null,
     appliances: [
       {
         type: applianceType,
@@ -249,11 +533,15 @@ async function createDraftJobFromCall(callId, extracted, existingClient) {
     description: issue,
     status: 'Вызов',
     priority: '🟢 Обычный',
-    scheduledAt,
-    scheduledDate: scheduledAt,
+    ...scheduleFields,
     needsReview: true,
     sourceCallId: callId,
+    source: 'phone',
     createdByAi: true,
+    aiReviewNotes: reviewNotes,
+    aiConfidence:
+      typeof extracted.confidence === 'number' ? extracted.confidence : null,
+    addressUncertain: extracted.address_uncertain === true,
     city,
     documents: [],
     attachments: [],
@@ -261,7 +549,240 @@ async function createDraftJobFromCall(callId, extracted, existingClient) {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 
+  await callsRef.doc(callId).set(
+    {
+      createdJobId: jobRef.id,
+      jobId: jobRef.id,
+      clientId,
+    },
+    { merge: true }
+  );
+
+  if (extractedName) {
+    await applyPersonNameToClient(clientId, extractedName);
+  }
+
   return { jobId: jobRef.id, clientId };
+}
+
+async function patchDraftJobFromCall(jobId, extracted) {
+  if (!jobId || !extracted) return;
+  const snap = await jobsRef.doc(jobId).get();
+  if (!snap.exists) return;
+  const job = snap.data() || {};
+  const updates = {};
+  const visits = Array.isArray(job.visits) ? job.visits : [];
+  if (!job.scheduledAt && !job.scheduledDate && visits.length === 0) {
+    const resolved = await resolveJobSchedule(extracted, { excludeJobId: jobId });
+    Object.assign(updates, resolved.fields);
+    if (resolved.blocked) {
+      const note = schedule.reviewNote(resolved.blocked);
+      if (note) {
+        updates.aiReviewNotes = [String(job.aiReviewNotes || '').trim(), note]
+          .filter(Boolean)
+          .join('\n');
+      }
+    }
+  } else {
+    const scheduledAt = parseScheduledAt(extracted);
+    if (scheduledAt && !job.scheduledAt && !job.scheduledDate) {
+      updates.scheduledAt = scheduledAt;
+      updates.scheduledDate = scheduledAt;
+    }
+  }
+  const name = voiceFacts.usableClientName(extracted.client_name);
+  if (
+    name &&
+    (!job.clientName ||
+      voiceFacts.isPlaceholderClientName(job.clientName) ||
+      voiceFacts.looksLikeGarbageName(job.clientName))
+  ) {
+    updates.clientName = name;
+  }
+  const address = buildFullAddress(extracted, null);
+  if (address && !String(job.clientAddress || '').trim()) {
+    updates.clientAddress = address;
+  }
+  const applianceType = String(extracted.appliance_type || '').trim();
+  if (applianceType && (!job.applianceType || job.applianceType === 'Техника')) {
+    updates.applianceType = applianceType;
+  }
+  const brand = String(extracted.brand || '').trim();
+  if (brand && !String(job.brand || '').trim()) updates.brand = brand;
+  const model = String(extracted.model || '').trim();
+  if (model && !String(job.model || '').trim()) updates.model = model;
+  const issue = String(extracted.problem_description || '').trim();
+  if (issue && !String(job.description || '').trim()) {
+    updates.description = issue;
+  }
+  const phone = normalizePhone(extracted.client_phone);
+  if (phone && !String(job.clientPhone || '').trim()) {
+    updates.clientPhone = phone;
+  }
+  if (isJobSiteExtract(extracted)) {
+    updates.hasJobSite = true;
+    const tenantName = String(extracted.contact_on_site_name || '').trim();
+    const tenantPhone = normalizePhone(extracted.contact_on_site_phone);
+    if (tenantName && !String(job.jobSiteName || '').trim()) {
+      updates.jobSiteName = tenantName;
+    }
+    if (tenantPhone && !String(job.jobSitePhone || '').trim()) {
+      updates.jobSitePhone = tenantPhone;
+    }
+    if (address && !String(job.jobSiteAddress || '').trim()) {
+      updates.jobSiteAddress = address;
+    }
+    if (job.clientId) {
+      const clientSnap = await clientsRef.doc(job.clientId).get();
+      const client = clientSnap.exists ? { id: clientSnap.id, ...clientSnap.data() } : null;
+      await upsertClientJobSite(
+        job.clientId,
+        client,
+        extracted,
+        job.clientName,
+        job.clientPhone
+      );
+    }
+  }
+  if (!Object.keys(updates).length) {
+    const spoken = name || voiceFacts.usableClientName(job.clientName);
+    if (spoken && job.clientId) await applyPersonNameToClient(job.clientId, spoken);
+    return;
+  }
+  updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+  await jobsRef.doc(jobId).update(updates);
+  const spoken = name || voiceFacts.usableClientName(updates.clientName || job.clientName);
+  if (spoken && job.clientId) await applyPersonNameToClient(job.clientId, spoken);
+}
+
+async function attachCallRecordingToJob({
+  jobId,
+  callId,
+  recordingUrl,
+  transcription,
+  summary,
+  transcriptionRu,
+  transcriptionEn,
+  storageUrl,
+  answeredBy,
+  history,
+}) {
+  if (!jobId) return;
+  const snap = await jobsRef.doc(jobId).get();
+  if (!snap.exists) return;
+  const attachments = Array.isArray(snap.data().attachments)
+    ? [...snap.data().attachments]
+    : [];
+  const next = {
+    kind: 'call',
+    url: recordingUrl || '',
+    name: 'Звонок',
+    transcription: transcription || '',
+    transcriptionRu: transcriptionRu || transcription || '',
+    transcriptionEn: transcriptionEn || '',
+    summary: summary || '',
+    storageUrl: storageUrl || '',
+    answeredBy: answeredBy || '',
+    history: history || null,
+    callId,
+    uploadedAt: new Date().toISOString(),
+  };
+  const index = attachments.findIndex(
+    (item) => item && (item.callId === callId || (item.kind === 'call' && item.url === recordingUrl))
+  );
+  if (index >= 0) {
+    const prev = attachments[index];
+    attachments[index] = {
+      ...prev,
+      ...next,
+      url: next.url || prev.url || '',
+      transcription: (function pickTranscript() {
+        const nextT = String(next.transcription || '');
+        const prevT = String(prev.transcription || '');
+        if (speakerCount(nextT) >= 2 && speakerCount(prevT) < 2) return nextT;
+        if (speakerCount(prevT) >= 2 && speakerCount(nextT) < 2) return prevT;
+        return nextT.length >= prevT.length ? nextT : prevT;
+      })(),
+      summary: next.summary || prev.summary || '',
+    };
+  } else {
+    attachments.push(next);
+  }
+  await jobsRef.doc(jobId).set(
+    {
+      attachments,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+async function attachLiveCallNotesToJob({
+  jobId,
+  callId,
+  transcription,
+  recordingUrl,
+  history,
+  answeredBy,
+}) {
+  if (!jobId) return;
+  const labeled = labeledTranscriptFromHistory(history, transcription, answeredBy);
+  const raw = pickLongestTranscript(labeled, transcription);
+  let russian = hasCyrillic(raw) ? relabelTranscript(raw, answeredBy) : '';
+  let english = raw;
+  let summary = '';
+  if (raw.length > 20) {
+    try {
+      const shopRu = shopSpeaker(answeredBy, 'ru');
+      const result = await generateContentWithModelFallback([
+        {
+          text: `Переведи этот ПОЛНЫЙ телефонный разговор на русский. Сохрани каждую реплику, тот же порядок, те же говорящие (${shopRu}: / Клиент:). Ничего не сокращай и не выкидывай конец. Потом краткое резюме на 2–4 предложения.
+
+Разговор:
+${raw}
+
+Верни СТРОГО JSON:
+{"transcription_ru":"...полный текст...","summary":"..."}`,
+        },
+      ]);
+      let text = (result.response.text() || '').trim();
+      if (text.startsWith('```json')) text = text.slice(7);
+      else if (text.startsWith('```')) text = text.slice(3);
+      if (text.endsWith('```')) text = text.slice(0, -3);
+      const parsed = extractJsonObject(text.trim()) || {};
+      const nextRu = relabelTranscript(
+        String(parsed.transcription_ru || parsed.transcription || '').trim(),
+        answeredBy
+      );
+      if (nextRu && nextRu.length >= raw.length * 0.7) russian = nextRu;
+      if (parsed.summary) summary = String(parsed.summary).trim();
+    } catch (error) {
+      console.warn('attachLiveCallNotesToJob translate:', error.message);
+    }
+  }
+  if (!russian) russian = raw;
+  const playableUrl = `${functionUrl({}, 'callRecordingAudio')}?callId=${encodeURIComponent(callId)}`;
+  await attachCallRecordingToJob({
+    jobId,
+    callId,
+    recordingUrl: playableUrl || recordingUrl,
+    transcription: pickLongestTranscript(raw, russian, english),
+    transcriptionRu: russian,
+    transcriptionEn: english || raw,
+    answeredBy: answeredBy || '',
+    history,
+    summary,
+  });
+  await callsRef.doc(callId).set(
+    {
+      playableUrl,
+      transcription: pickLongestTranscript(raw, russian),
+      transcriptionRu: russian || raw,
+      transcriptionEn: english || raw,
+      ...(summary ? { summary } : {}),
+    },
+    { merge: true }
+  );
 }
 
 // ============================================================================
@@ -368,36 +889,137 @@ async function findTwilioRecordingMp3(callSid) {
   if (!client || !callSid || !TWILIO_ACCOUNT_SID) return null;
 
   async function firstRecording(sid) {
-    const recs = await client.recordings.list({ callSid: sid, limit: 5 });
-    if (!recs.length) return null;
-    return `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Recordings/${recs[0].sid}.mp3`;
+    if (!sid) return null;
+    try {
+      const recs = await client.recordings.list({ callSid: sid, limit: 8 });
+      if (!recs.length) return null;
+      recs.sort((a, b) => Number(b.duration || 0) - Number(a.duration || 0));
+      return `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Recordings/${recs[0].sid}.mp3`;
+    } catch (error) {
+      console.warn(`firstRecording ${sid}:`, error.message);
+      return null;
+    }
   }
 
   const own = await firstRecording(callSid);
   if (own) return own;
-  const children = await client.calls.list({ parentCallSid: callSid, limit: 10 });
-  for (const child of children) {
-    const url = await firstRecording(child.sid);
-    if (url) return url;
+  try {
+    const children = await client.calls.list({ parentCallSid: callSid, limit: 10 });
+    for (const child of children) {
+      const url = await firstRecording(child.sid);
+      if (url) return url;
+    }
+  } catch (error) {
+    console.warn('findTwilioRecordingMp3 children:', error.message);
+  }
+  try {
+    const twilioCall = await client.calls(callSid).fetch();
+    if (twilioCall.parentCallSid) {
+      const parentRec = await firstRecording(twilioCall.parentCallSid);
+      if (parentRec) return parentRec;
+      const siblings = await client.calls.list({
+        parentCallSid: twilioCall.parentCallSid,
+        limit: 10,
+      });
+      for (const sibling of siblings) {
+        const url = await firstRecording(sibling.sid);
+        if (url) return url;
+      }
+    }
+  } catch (error) {
+    console.warn('findTwilioRecordingMp3 parent:', error.message);
   }
   return null;
 }
 
-async function downloadRecordingBuffer(recordingUrl) {
-  const authHeader =
-    'Basic ' + Buffer.from(`${REST_AUTH_USER}:${REST_AUTH_SECRET}`).toString('base64');
-  let lastError;
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    const response = await fetch(recordingUrl, {
-      headers: { Authorization: authHeader },
-    });
-    if (response.ok) {
-      return Buffer.from(await response.arrayBuffer());
-    }
-    lastError = new Error(`Не удалось скачать запись (HTTP ${response.status})`);
-    await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+function isTwilioMediaUrl(url) {
+  return /twilio\.com/i.test(String(url || ''));
+}
+
+function isCallRecordingProxyUrl(url) {
+  return /callRecordingAudio/i.test(String(url || ''));
+}
+
+async function resolveCallRecordingSource(callId, data = {}) {
+  const stored = String(data.storageUrl || '').trim();
+  if (stored) return stored;
+  const candidates = [data.twilioRecordingUrl, data.recordingUrl];
+  for (const raw of candidates) {
+    const url = String(raw || '').trim();
+    if (!url || isCallRecordingProxyUrl(url)) continue;
+    return url;
   }
-  throw lastError;
+  const sids = [
+    data.recordingCallSid,
+    data.callSid,
+    data.sid,
+    callId,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+  const seen = new Set();
+  for (const sid of sids) {
+    if (seen.has(sid)) continue;
+    seen.add(sid);
+    const found = await findTwilioRecordingMp3(sid);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function cacheRecordingToStorage(callId, buffer) {
+  if (!callId || !buffer || !buffer.length) return null;
+  try {
+    const project =
+      process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || 'fix-appliance-crm';
+    const bucket = admin.storage().bucket(`${project}.firebasestorage.app`);
+    const path = `companies/${COMPANY_ID}/calls/${callId}.mp3`;
+    const token = crypto.randomUUID();
+    await bucket.file(path).save(buffer, {
+      resumable: false,
+      metadata: {
+        contentType: 'audio/mpeg',
+        metadata: { firebaseStorageDownloadTokens: token },
+      },
+    });
+    const encoded = encodeURIComponent(path);
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encoded}?alt=media&token=${token}`;
+    await callsRef.doc(callId).set({ storageUrl: url }, { merge: true });
+    return url;
+  } catch (error) {
+    console.warn('cacheRecordingToStorage:', error.message);
+    return null;
+  }
+}
+
+async function downloadRecordingBuffer(recordingUrl) {
+  const raw = String(recordingUrl || '').trim();
+  const urls = [];
+  if (raw) urls.push(raw);
+  if (raw && isTwilioMediaUrl(raw) && !/\.mp3(\?|$)/i.test(raw)) {
+    urls.push(`${raw.replace(/\/$/, '')}.mp3`);
+  }
+  let lastError;
+  for (const url of urls) {
+    const headers = {};
+    if (isTwilioMediaUrl(url) && REST_AUTH_USER && REST_AUTH_SECRET) {
+      headers.Authorization =
+        'Basic ' + Buffer.from(`${REST_AUTH_USER}:${REST_AUTH_SECRET}`).toString('base64');
+    }
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const response = await fetch(url, { headers, redirect: 'follow' });
+      if (response.ok) {
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const head = buffer.slice(0, 16).toString('utf8');
+        if (/^\s*</.test(head) || /Not Found|Unauthorized/i.test(head)) {
+          lastError = new Error(`Запись не аудио (${url})`);
+          break;
+        }
+        return buffer;
+      }
+      lastError = new Error(`Не удалось скачать запись (HTTP ${response.status})`);
+      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+    }
+  }
+  throw lastError || new Error('Не удалось скачать запись');
 }
 
 function extractJsonObject(text) {
@@ -417,6 +1039,12 @@ function sendTwiml(res, twiml) {
 }
 
 function functionUrl(_req, name) {
+  if (name === 'callRecordingAudio') {
+    return (
+      process.env.CALL_RECORDING_AUDIO_URL ||
+      'https://callrecordingaudio-wmdrqa3n7q-uc.a.run.app'
+    );
+  }
   const project =
     process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || 'fix-appliance-crm';
   return `https://us-central1-${project}.cloudfunctions.net/${name}`;
@@ -430,37 +1058,96 @@ function dialActionUrl(req) {
   return functionUrl(req, 'dialAction');
 }
 
-const DEFAULT_VOICE_GREETING = "Hi, you've reached {company}. How can I help?";
+const DEFAULT_VOICE_GREETING = "Hi, you've reached FIX Appliance. How can I help?";
 
 const STALE_VOICE_GREETINGS = [
+  "Hi, you've reached {company}. How can I help?",
   "Hi, you've reached {company}. How can I help you today?",
   "Hi, you've reached {company}. I can take your repair details. How can I help you today?",
   "Hi, you've reached {company}. The technician's with a customer, but I can take your details. What's going on?",
+  'Hi, FIX ApplianceCA. How can I help you?',
+  'Hi, FIX Appliance. How can I help you?',
+  'Hi, FIX Appliance. How can I help?',
+  'Hi, FIX Appliance. How can I help? Чем могу помочь?',
 ];
 
-const DEFAULT_VOICE_INSTRUCTIONS = `Tone: friendly and professional.
+const OWNER_EXTRA_RULES_EN = `Sunday is closed. Do not book Sunday.
+Saturday: do not put a visit on the calendar. Say a technician will contact them and arrange a time if he can.
+Price: do not mention $99 unless they asked. If they asked: a service call is $99. If they approve the repair after diagnosis, they do not pay the service call — only the repair.
+If the appliance is at another house: keep their home address, take the repair address, who will be there, and that person's phone.
+Near the end, if they can, they may text this number a photo or the text of the model-number sticker. Optional — do not stall the call.`;
 
-You MUST collect:
-- full name
-- address (street and town)
-- a convenient day AND time window for the technician
-- what is broken
-- how the problem shows up (leaks, won't drain, no heat, error code, noise, etc.)
-- where the appliance is in the home, if that matters
-- ask if they can text a photo of the model sticker to this same number
+const DEFAULT_VOICE_INSTRUCTIONS = `Tone: friendly and professional. Listen first. Do not run a survey.
 
-Do NOT promise a price or an exact arrival time. A technician will call back to confirm.
+Short turns: one sentence, then wait. Do not fill silence with extra questions. If they already told you something, do not ask it again.
 
-Service area only: Brant area (Brantford, Paris, Scotland), Norfolk area (Tillsonburg, Delhi, Port Dover, Norwich), and the First Nations reserve near Tillsonburg. If they are clearly outside this area, politely say we do not travel there, set done=true and createJob=false.
+Book visits Monday–Friday, 7 a.m. to 9 p.m. America/Toronto. Same-day is OK if it is still in those hours.
+Each visit is 2 hours — one job in that window. Never confirm a time if that 2-hour window is taken. Offer another time the same day first, then another weekday.
+Saturday: do not book. Say a technician will contact them and set a time if he can.
+Sunday: closed. Do not book Sunday.
+If they call at night or on Sunday: still answer. Only offer visits Monday–Friday 7 a.m. to 9 p.m.
+If they want 6 a.m. or after 9 p.m.: do not book it. Say we don't work then. Offer another weekday or a time in those hours.
 
-If the caller is angry or yelling: stay calm. Say that a company employee will contact them within 30 minutes. Then set done=true and createJob=true with whatever you already have. Do not keep asking questions.`;
+Collect naturally, without interrogating: first name, what broke, appliance kind and brand, repair address, and a day and time if booking a weekday visit.
+If the appliance is at another house: take that address, who will be there, and that phone. Keep the client's home. Do not hang up.
+Do not grill for model or serial. At the end, optionally ask them to text this number a photo or the text of the model-number sticker. Do not stall the call for it.
+
+If they want a live person: do not grill for a visit time. Say a technician will call back within 30 minutes. Pass the details along.
+
+Household appliances only. We do not repair laptops, computers, phones, TVs, or cars.
+
+After you confirm, stay on the line. Do not say goodbye. Do not hang up. The caller hangs up.
+
+Do not bring up price. If they asked: a service call is $99. If they approve the repair after diagnosis, they do not pay the service call — only the repair.
+
+If the caller is angry: stay calm. Say a company employee will contact them within 30 minutes. Then wait. Do not hang up for them.
+
+Spoken language: English only. Understand any language, including Russian, but always answer in English.`;
 
 const VOICE_MODEL_CANDIDATES = [
-  'gemini-2.0-flash',
   'gemini-flash-lite-latest',
   'gemini-flash-latest',
   'gemini-2.5-flash',
+  'gemini-3.6-flash',
 ];
+
+function describeServiceArea(config) {
+  return String((config && config.serviceAreaLabel) || '').trim();
+}
+
+function describeWorkHours(config) {
+  let start = Number(config && config.workStartMinutes);
+  let end = Number(config && config.workEndMinutes);
+  if (start === 9 * 60 && end === 19 * 60) {
+    start = 7 * 60;
+    end = 21 * 60;
+  }
+  if (!Number.isFinite(start)) start = 7 * 60;
+  if (!Number.isFinite(end)) end = 21 * 60;
+  return {
+    startMinutes: start,
+    endMinutes: end,
+    label: voiceFacts.workHoursSpeech(start, end),
+  };
+}
+
+function stripServiceAreaLines(text) {
+  return String(text || '')
+    .split('\n')
+    .filter((line) => !/^\s*(зона\b|service area\b)/i.test(line.trim()))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function withMappedServiceArea(instructions, serviceArea) {
+  const base = stripServiceAreaLines(instructions) || DEFAULT_VOICE_INSTRUCTIONS;
+  const area = String(serviceArea || '').trim();
+  if (!area) {
+    return `${base}\n\nService area map is not set. Do not refuse a caller based on town names from memory.`;
+  }
+  return `${base}\n\nService area (from Settings → Service area map): ${area}. If the caller is clearly outside this area, politely say we do not travel there, set done=true and createJob=false.`;
+}
 
 async function getAiAnswerSettings() {
   try {
@@ -474,17 +1161,83 @@ async function getAiAnswerSettings() {
     const docs = docsSnap.exists ? docsSnap.data() || {} : {};
     const timeout = Number(config.aiAnswerTimeoutSeconds);
     const greeting = String(voice.greeting || '').trim();
-    const instructions = String(voice.instructions || '').trim();
     const companyName = String(docs.companyName || '').trim() || 'Fix Appliance';
-    const staleGreeting = STALE_VOICE_GREETINGS.includes(greeting);
+    const staleGreeting =
+      voiceFacts.isStaleVoiceGreeting(greeting) || STALE_VOICE_GREETINGS.includes(greeting);
+    const nextGreeting = !greeting || staleGreeting ? DEFAULT_VOICE_GREETING : greeting;
+    const serviceArea = describeServiceArea(config);
+    const hours = describeWorkHours(config);
+    const extraSaved = String(voice.extraRules || '').trim();
+    const extra =
+      Number(voice.briefVersion) === 1
+        ? extraSaved || OWNER_EXTRA_RULES_EN
+        : OWNER_EXTRA_RULES_EN;
+    if (Number(voice.briefVersion) !== 1 || staleGreeting) {
+      db.collection('companies')
+        .doc(COMPANY_ID)
+        .collection('settings')
+        .doc('ai_voice')
+        .set(
+          {
+            greeting: nextGreeting,
+            extraRules: Number(voice.briefVersion) === 1 ? extraSaved : OWNER_EXTRA_RULES_EN,
+            briefVersion: 1,
+            rulesVersion: 10,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        )
+        .catch((error) => console.warn('ai_voice brief migrate:', error.message));
+    }
+    if (
+      Number(config.workStartMinutes) === 9 * 60 &&
+      Number(config.workEndMinutes) === 19 * 60
+    ) {
+      db.collection('companies')
+        .doc(COMPANY_ID)
+        .collection('settings')
+        .doc('config')
+        .set(
+          {
+            workStartMinutes: hours.startMinutes,
+            workEndMinutes: hours.endMinutes,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        )
+        .catch((error) => console.warn('work hours migrate:', error.message));
+    }
+    const learned = Array.isArray(voice.learnedRules) ? voice.learnedRules : [];
+    const learnedLines = learned
+      .map((item) => {
+        if (!item) return '';
+        if (typeof item === 'string') return item.trim();
+        return String(item.ruleEn || '').trim();
+      })
+      .filter(Boolean);
+    let nextInstructions = withMappedServiceArea(DEFAULT_VOICE_INSTRUCTIONS, serviceArea);
+    if (extra) {
+      nextInstructions += `\n\nOwner extra rules:\n${extra}`;
+    }
+    nextInstructions +=
+      `\n\nShop hours: Monday–Friday ${hours.label} America/Toronto. Saturday: do not book, technician will follow up. Sunday: closed. If they want a visit before ${voiceFacts.formatHour12(hours.startMinutes)} or after ${voiceFacts.formatHour12(hours.endMinutes)}, do not book it.`
+      + '\n\nCalendar: each visit is 2 hours. Never confirm a taken window. If the time they want overlaps another job, offer another time the same day first.'
+      + '\n\nSpoken language lock: Always speak English on the phone. Understand Russian or any other language, but never answer in it. JSON "language" is always "en".';
+    if (learnedLines.length) {
+      nextInstructions += `\n\nOwner-approved habits. Use them only if they fit what the caller already said. Never interrupt to grill.\n${learnedLines.map((line) => `- ${line}`).join('\n')}`;
+    }
     return {
       enabled: config.aiAnswerEnabled !== false,
       timeoutSeconds: Number.isFinite(timeout)
-        ? Math.min(60, Math.max(8, Math.round(timeout)))
+        ? Math.min(60, Math.max(0, Math.round(timeout)))
         : 20,
       companyName,
-      greeting: !greeting || staleGreeting ? DEFAULT_VOICE_GREETING : greeting,
-      instructions: instructions || DEFAULT_VOICE_INSTRUCTIONS,
+      greeting: nextGreeting,
+      serviceArea,
+      workHours: hours.label,
+      workStartMinutes: hours.startMinutes,
+      workEndMinutes: hours.endMinutes,
+      instructions: nextInstructions,
     };
   } catch (_) {
     return {
@@ -492,7 +1245,11 @@ async function getAiAnswerSettings() {
       timeoutSeconds: 20,
       companyName: 'Fix Appliance',
       greeting: DEFAULT_VOICE_GREETING,
-      instructions: DEFAULT_VOICE_INSTRUCTIONS,
+      serviceArea: '',
+      workHours: voiceFacts.workHoursSpeech(7 * 60, 21 * 60),
+      workStartMinutes: 7 * 60,
+      workEndMinutes: 21 * 60,
+      instructions: withMappedServiceArea(DEFAULT_VOICE_INSTRUCTIONS, ''),
     };
   }
 }
@@ -506,7 +1263,7 @@ function fillVoiceTemplate(template, vars) {
 }
 
 function firstNameOf(fullName) {
-  const name = String(fullName || '').trim();
+  const name = voiceFacts.usableClientName(fullName);
   if (!name) return '';
   return name.split(/\s+/)[0];
 }
@@ -598,7 +1355,7 @@ function twimlDialMaster(req, fromNumber, timeoutSeconds) {
   const twiml = new twilio.twiml.VoiceResponse();
   const dial = twiml.dial({
     callerId: fromNumber,
-    timeout: timeoutSeconds || 20,
+    timeout: timeoutSeconds > 0 ? timeoutSeconds : 20,
     answerOnBridge: true,
     record: 'record-from-answer',
     recordingStatusCallback: recordingUrl(req),
@@ -644,11 +1401,39 @@ async function logCall(callSid, data) {
   }
 }
 
+async function consumePendingOutboundJobId(dest) {
+  const ref = db
+    .collection('companies')
+    .doc(COMPANY_ID)
+    .collection('settings')
+    .doc('pending_outbound_call');
+  try {
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+    const data = snap.data() || {};
+    const jobId = String(data.jobId || '').trim();
+    if (!jobId) return null;
+    const want = digitsOf(dest).slice(-10);
+    const have = digitsOf(data.phone).slice(-10);
+    if (want.length >= 10 && have.length >= 10 && want !== have) return null;
+    const at = data.at;
+    if (at && typeof at.toMillis === 'function' && Date.now() - at.toMillis() > 3 * 60 * 1000) {
+      return null;
+    }
+    await ref.delete().catch(() => {});
+    return jobId;
+  } catch (error) {
+    console.warn('consumePendingOutboundJobId:', error.message);
+    return null;
+  }
+}
+
 async function handleOutboundFromApp(req, res, source) {
   const dest = outboundDestination(req.body);
   const callSid = req.body.CallSid;
+  const jobId = dest ? await consumePendingOutboundJobId(dest) : null;
   console.log(
-    `${source}: outbound from=${req.body.From || ''} toParam=${req.body.To || ''} phone=${req.body.phone || ''} dest=${dest || '-'}`
+    `${source}: outbound from=${req.body.From || ''} toParam=${req.body.To || ''} phone=${req.body.phone || ''} dest=${dest || '-'} job=${jobId || '-'}`
   );
   await logCall(callSid, {
     fromNumber: TWILIO_PHONE_NUMBER || '',
@@ -656,6 +1441,7 @@ async function handleOutboundFromApp(req, res, source) {
     direction: 'outbound',
     status: 'in-progress',
     twilioTime: req.body.Timestamp || req.body.StartTime,
+    ...(jobId ? { jobId } : {}),
   });
   if (!dest) {
     const twiml = new twilio.twiml.VoiceResponse();
@@ -681,6 +1467,11 @@ async function handleInboundToMaster(req, res, source) {
     status: 'ringing',
     twilioTime: req.body.Timestamp || req.body.StartTime,
   });
+  if (aiSettings.enabled && Number(aiSettings.timeoutSeconds) === 0) {
+    console.log(`${source}: AI answers immediately, skip master ring`);
+    await startAiReception(req, res, callSid);
+    return;
+  }
   sendTwiml(res, twimlDialMaster(req, fromNumber, aiSettings.timeoutSeconds));
 }
 
@@ -734,6 +1525,18 @@ exports.callStatusCallback = functions.https.onRequest(async (req, res) => {
       }
 
       await callsRef.doc(callSid).set(updates, { merge: true });
+      if (callStatus === 'completed') {
+        setTimeout(() => {
+          recoverCallRecording(callSid).catch((error) => {
+            console.warn('recoverCallRecording:', error.message);
+          });
+        }, 8000);
+        setTimeout(() => {
+          recoverCallRecording(callSid).catch((error) => {
+            console.warn('recoverCallRecording:', error.message);
+          });
+        }, 25000);
+      }
     }
   } catch (error) {
     console.error('Error updating call status:', error);
@@ -743,15 +1546,35 @@ exports.callStatusCallback = functions.https.onRequest(async (req, res) => {
   res.send('<Response></Response>');
 });
 
-const AI_VOICE_MAX_TURNS = 10;
-const voiceAiRuntime = { timeoutSeconds: 60, memory: '512MiB', invoker: 'public' };
+const AI_VOICE_MAX_TURNS = 80;
+const voiceAiRuntime = { timeoutSeconds: 180, memory: '512MiB', invoker: 'public' };
 
-function sayLang(language) {
-  return language === 'ru' ? 'ru-RU' : 'en-US';
+function sayLang(_language) {
+  return 'en-US';
 }
 
 function gatherLang(language) {
-  return language === 'ru' ? 'ru-RU' : 'en-US';
+  if (language === 'ru') return 'ru-RU';
+  if (language === 'uk') return 'uk-UA';
+  if (language === 'es') return 'es-US';
+  return 'en-US';
+}
+
+function voiceLanguage(value) {
+  const v = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace('_', '-');
+  if (v.startsWith('ru')) return 'ru';
+  if (v.startsWith('uk')) return 'uk';
+  if (v.startsWith('es')) return 'es';
+  return 'en';
+}
+
+function ensureSpokenFarewell(parsed, extracted) {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  parsed.language = 'en';
+  return parsed;
 }
 
 function spokenText(value, fallback) {
@@ -766,39 +1589,181 @@ function spokenText(value, fallback) {
   );
   if (!text) text = String(fallback || '').trim();
   const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
-  if (sentences.length > 2) text = `${sentences[0]} ${sentences[1]}`;
-  return text.slice(0, 280);
+  const isGoodbye = voiceFacts.saidGoodbye(text);
+  if (sentences.length > 2 && !isGoodbye) text = `${sentences[0]} ${sentences[1]}`;
+  else if (sentences.length > 4) text = sentences.slice(0, 4).join(' ');
+  return text.slice(0, isGoodbye ? 420 : 280);
 }
 
-function mergeExtracted(prev, next) {
-  const out = { ...(prev || {}) };
-  if (!next || typeof next !== 'object') return out;
-  for (const [key, value] of Object.entries(next)) {
-    if (value === null || value === undefined || value === '') continue;
-    out[key] = value;
-  }
-  return out;
+function mergeExtracted(prev, next, history) {
+  return voiceFacts.mergeExtracted(prev, next, history);
 }
 
 function hasEnoughForJob(extracted) {
   if (!extracted) return false;
+  if (extracted.wants_callback === true) return true;
   const problem = Boolean(extracted.appliance_type || extracted.problem_description);
   const name = Boolean(extracted.client_name);
-  const address = Boolean(extracted.address);
-  const when = Boolean(extracted.scheduled_date || extracted.scheduled_time);
+  const address = Boolean(extracted.address) && extracted.address_uncertain !== true;
+  const when = Boolean(extracted.scheduled_date && extracted.scheduled_time);
   return problem && name && address && when;
 }
 
-function appendTranscript(current, line) {
-  const next = [String(current || '').trim(), line].filter(Boolean).join('\n');
-  return next.slice(-8000);
+function hasConversationToBook(extracted, callData) {
+  if (voiceFacts.isServiceDeclined(extracted, callData)) return false;
+  if (hasEnoughForJob(extracted)) return true;
+  if (extracted && extracted.wants_callback === true) return true;
+  if (callData && callData.aiReception && callData.aiReception.createJob === true) {
+    return true;
+  }
+  const data = extracted && typeof extracted === 'object' ? extracted : {};
+  const problem = Boolean(data.appliance_type || data.problem_description);
+  const who = Boolean(data.client_name || data.client_phone);
+  return problem && who;
 }
 
-function sayAttrs(language) {
-  if (language === 'ru') {
-    return { voice: 'Google.ru-RU-Chirp3-HD-Aoede', language: 'ru-RU' };
+function jobScheduleFields(extracted, durationMinutes = schedule.BOOKING_MINUTES) {
+  const start = parseScheduledAt(extracted);
+  if (!start) {
+    return {
+      scheduledAt: null,
+      scheduledDate: null,
+      durationMinutes,
+      visits: [],
+      scheduleUnconfirmed: true,
+    };
   }
+  return {
+    scheduledAt: start,
+    scheduledDate: start,
+    durationMinutes,
+    scheduleUnconfirmed: false,
+    visits: [
+      {
+        id: 'v1',
+        startAt: start,
+        durationMinutes,
+        note: '',
+        outcome: 'scheduled',
+        smsDialog: '',
+      },
+    ],
+  };
+}
+
+async function resolveJobSchedule(extracted, opts = {}) {
+  const durationMinutes = await schedule.bookingDurationMinutes();
+  const start = parseScheduledAt(extracted);
+  if (!start) {
+    return { fields: jobScheduleFields(extracted, durationMinutes) };
+  }
+  const check = await schedule.checkSlot(start.toDate(), {
+    excludeJobId: opts.excludeJobId,
+    durationMinutes,
+  });
+  if (!check.ok) {
+    return {
+      fields: {
+        scheduledAt: null,
+        scheduledDate: null,
+        durationMinutes,
+        visits: [],
+        scheduleUnconfirmed: true,
+      },
+      blocked: check,
+    };
+  }
+  return { fields: jobScheduleFields(extracted, durationMinutes) };
+}
+
+function appendTranscript(current, line) {
+  const nextLine = String(line || '').trim();
+  if (!nextLine) return String(current || '').trim();
+  const cur = String(current || '').trim();
+  const last = cur.split('\n').pop() || '';
+  if (isSameVoiceLine(last, nextLine)) return cur;
+  return [cur, nextLine].filter(Boolean).join('\n').slice(-60000);
+}
+
+function shopSpeaker(answeredBy, lang) {
+  const master = String(answeredBy || '') === 'master';
+  if (lang === 'en') return master ? 'Master' : 'AI';
+  return master ? 'Мастер' : 'ИИ';
+}
+
+function relabelTranscript(text, answeredBy) {
+  const shopRu = shopSpeaker(answeredBy, 'ru');
+  return String(text || '')
+    .replace(/^(AI|Assistant|Secretary|Секретарь|ИИ)\s*:/gim, `${shopRu}:`)
+    .replace(/^(Master|Technician|Мастер)\s*:/gim, 'Мастер:')
+    .replace(/^(Client|User|Caller|Клиент)\s*:/gim, 'Клиент:');
+}
+
+function labeledTranscriptFromHistory(history, fallback, answeredBy) {
+  const shop = shopSpeaker(answeredBy, 'ru');
+  const lines = [];
+  for (const item of history || []) {
+    const text = String((item && item.text) || '').trim();
+    if (!text) continue;
+    const who = item.role === 'assistant' ? shop : 'Клиент';
+    lines.push(`${who}: ${text}`);
+  }
+  if (lines.length >= 2) return lines.join('\n');
+  return relabelTranscript(fallback || lines.join('\n'), answeredBy);
+}
+
+function speakerCount(text) {
+  const raw = String(text || '');
+  const hasShop = /(^|\n)\s*(ИИ|AI|Assistant|Master|Мастер|Секретарь)\s*:/i.test(raw);
+  const hasClient = /(^|\n)\s*(Клиент|Client|User|Caller)\s*:/i.test(raw);
+  return (hasShop ? 1 : 0) + (hasClient ? 1 : 0);
+}
+
+function pickLongestTranscript(...parts) {
+  return parts
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .sort((a, b) => {
+      const speakers = speakerCount(b) - speakerCount(a);
+      if (speakers) return speakers;
+      return b.length - a.length;
+    })[0] || '';
+}
+
+function normalizeVoiceLine(text) {
+  return String(text || '')
+    .replace(/^(AI|Client|User):\s*/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isSameVoiceLine(a, b) {
+  const na = normalizeVoiceLine(a);
+  const nb = normalizeVoiceLine(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const [shorter, longer] = na.length <= nb.length ? [na, nb] : [nb, na];
+  return shorter.length >= 12 && longer.includes(shorter) && shorter.length / longer.length >= 0.78;
+}
+
+function sayAttrs(_language) {
   return { voice: 'Google.en-US-Chirp3-HD-Aoede', language: 'en-US' };
+}
+
+function englishGreetingOnly(greeting) {
+  return String(greeting || '')
+    .replace(/\s*Чем могу помочь\??/gi, '')
+    .replace(/[\u0400-\u04FF]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sayGreeting(gather, greeting, _language) {
+  const text = englishGreetingOnly(greeting);
+  if (!text) return;
+  gather.say(sayAttrs('en'), text);
 }
 
 const VOICE_HINTS =
@@ -871,7 +1836,7 @@ function twimlGatherSpeech(req, { say, language }) {
   const gather = twiml.gather({
     input: ['speech'],
     language: gatherLang(language),
-    speechTimeout: 'auto',
+    speechTimeout: 1,
     timeout: 10,
     bargeIn: true,
     enhanced: true,
@@ -882,19 +1847,89 @@ function twimlGatherSpeech(req, { say, language }) {
     method: 'POST',
     actionOnEmptyResult: true,
   });
-  if (say) gather.say(sayAttrs(language), say);
+  if (say) sayGreeting(gather, say, language);
   twiml.redirect({ method: 'POST' }, functionUrl(req, 'aiVoiceTurn'));
   return twiml;
 }
 
+function startCallRecordingNoun(twiml, req) {
+  try {
+    const start = twiml.start();
+    start.recording({
+      recordingTrack: 'both',
+      recordingStatusCallback: recordingUrl(req),
+      recordingStatusCallbackEvent: 'completed',
+    });
+  } catch (error) {
+    console.warn('startCallRecordingNoun:', error.message);
+  }
+}
+
+function scheduleCallRecording(callSid, req) {
+  if (!client || !callSid) return;
+  setTimeout(() => {
+    client
+      .calls(callSid)
+      .recordings.create({
+        recordingChannels: 'dual',
+        recordingStatusCallback: recordingUrl(req),
+        recordingStatusCallbackEvent: ['in-progress', 'completed'],
+      })
+      .then((rec) => {
+        console.log(`scheduleCallRecording ${callSid} ${rec.sid}`);
+        return callsRef.doc(callSid).set(
+          { recordingSid: rec.sid, recordingCallSid: callSid },
+          { merge: true }
+        );
+      })
+      .catch((error) => {
+        console.warn('scheduleCallRecording:', error.message);
+      });
+  }, 1500);
+}
+
+async function recoverCallRecording(callSid) {
+  if (!callSid) return;
+  const callId = await resolveLoggedCallId(callSid);
+  const snap = await callsRef.doc(callId).get();
+  const data = snap.exists ? snap.data() || {} : {};
+  if (data.storageUrl) return;
+  const source = await resolveCallRecordingSource(callId, data);
+  if (!source) {
+    const found = await findTwilioRecordingMp3(callId);
+    if (!found) {
+      console.log(`recoverCallRecording: still none for ${callId}`);
+      return;
+    }
+    await callsRef.doc(callId).set(
+      {
+        twilioRecordingUrl: found,
+        recordingUrl: found,
+        playableUrl: `${functionUrl({}, 'callRecordingAudio')}?callId=${encodeURIComponent(callId)}`,
+      },
+      { merge: true }
+    );
+    if (data.aiStatus !== 'done' && data.aiStatus !== 'processing') {
+      processRecordingWithAi(callId, found).catch((error) => {
+        console.warn('recoverCallRecording process:', error.message);
+      });
+    }
+    return;
+  }
+  if (!data.twilioRecordingUrl && !isCallRecordingProxyUrl(source)) {
+    await callsRef.doc(callId).set({ twilioRecordingUrl: source }, { merge: true });
+  }
+}
+
 function twimlConversationRelay(req, { url, greeting, callSid }) {
   const twiml = new twilio.twiml.VoiceResponse();
+  startCallRecordingNoun(twiml, req);
   const connect = twiml.connect({
     action: functionUrl(req, 'aiRelayComplete'),
   });
   const relay = connect.conversationRelay({
     url,
-    welcomeGreeting: greeting,
+    welcomeGreeting: englishGreetingOnly(greeting),
     welcomeGreetingInterruptible: 'speech',
     language: 'en-US',
     ttsProvider: 'Google',
@@ -905,7 +1940,7 @@ function twimlConversationRelay(req, { url, greeting, callSid }) {
     interruptSensitivity: 'high',
     ignoreBackchannel: true,
     reportInputDuringAgentSpeech: 'none',
-    speechTimeout: 700,
+    speechTimeout: 400,
     hints: VOICE_HINTS,
   });
   if (callSid && typeof relay.parameter === 'function') {
@@ -918,24 +1953,19 @@ function twimlConversationRelay(req, { url, greeting, callSid }) {
     transcriptionProvider: 'Deepgram',
     speechModel: 'nova-3-general',
   });
-  relay.language({
-    code: 'ru-RU',
-    ttsProvider: 'Google',
-    voice: 'ru-RU-Chirp3-HD-Aoede',
-    transcriptionProvider: 'Deepgram',
-    speechModel: 'nova-2-general',
-  });
   return twiml;
 }
 
 function twimlGeminiLiveStream(req, { url, callSid }) {
   const twiml = new twilio.twiml.VoiceResponse();
+  startCallRecordingNoun(twiml, req);
   const connect = twiml.connect({
     action: functionUrl(req, 'aiRelayComplete'),
   });
   const stream = connect.stream({
     url,
     name: 'gemini-live',
+    timeLimit: 3600,
   });
   if (callSid && typeof stream.parameter === 'function') {
     stream.parameter({ name: 'callSid', value: callSid });
@@ -958,33 +1988,28 @@ async function startAiReception(req, res, callSid, options = {}) {
   const alreadyAi = data.answeredBy === 'ai' && data.aiReception;
 
   if (alreadyAi && forceGather) {
-    const language = data.aiReception.language === 'ru' ? 'ru' : 'en';
     sendTwiml(
       res,
       twimlGatherSpeech(req, {
-        say: language === 'ru' ? 'Да, слушаю вас.' : 'Go ahead.',
-        language,
+        say: 'Go ahead.',
+        language: 'en',
       })
     );
     return;
   }
 
   if (alreadyAi && data.aiReception && Array.isArray(data.aiReception.history) && data.aiReception.history.length) {
-    const language = data.aiReception.language === 'ru' ? 'ru' : 'en';
     const last = [...data.aiReception.history].reverse().find((item) => item && item.role === 'assistant');
-    const say = spokenText(
-      last && last.text,
-      language === 'ru' ? 'Да, слушаю вас.' : 'Go ahead.'
-    );
-    sendTwiml(res, twimlGatherSpeech(req, { say, language }));
+    const say = spokenText(last && last.text, 'Go ahead.');
+    sendTwiml(res, twimlGatherSpeech(req, { say, language: 'en' }));
     return;
   }
 
   const profile = await getAiAnswerSettings();
   const existingClient = await findClientByPhone(data.fromNumber);
-  const clientName = existingClient
-    ? existingClient.fullName || existingClient.name || ''
-    : '';
+  const clientName = voiceFacts.usableClientName(
+    existingClient ? existingClient.fullName || existingClient.name || '' : ''
+  );
   const dialSeconds = parseInt(req.body.DialCallDuration || req.body.CallDuration, 10) || 0;
   const greeting = data.handoffToAi && dialSeconds > 1
     ? 'The technician had to step away. How can I help?'
@@ -993,6 +2018,11 @@ async function startAiReception(req, res, callSid, options = {}) {
         name: firstNameOf(clientName),
       });
 
+  const knownAddress = voiceFacts.clientAddressFrom(existingClient);
+  const extracted = {};
+  if (clientName) extracted.client_name = clientName;
+  if (knownAddress) extracted.address = knownAddress;
+
   await callRef.set(
     {
       status: 'in-progress',
@@ -1000,33 +2030,29 @@ async function startAiReception(req, res, callSid, options = {}) {
       clientId: existingClient ? existingClient.id : data.clientId || null,
       aiReception: {
         history: [{ role: 'assistant', text: greeting }],
-        extracted: clientName ? { client_name: clientName } : {},
+        extracted,
         language: 'en',
         turns: 0,
         knownClient: Boolean(existingClient),
+        knownAddress,
       },
       transcription: appendTranscript(data.transcription, `AI: ${greeting}`),
     },
     { merge: true }
   );
 
-  if (client) {
-    try {
-      await client.calls(callSid).recordings.create({
-        recordingStatusCallback: recordingUrl(req),
-        recordingStatusCallbackEvent: ['completed'],
-      });
-    } catch (error) {
-      console.warn('startAiReception recording:', error.message);
-    }
-  }
-
   try {
-    await notifyMaster('ИИ взял звонок', data.fromNumber || callSid, {
-      type: 'call',
-      callSid,
-      answeredBy: 'ai',
-    });
+    const calledAt = voiceFacts.formatTorontoStamp();
+    await notifyMaster(
+      'ИИ взял звонок',
+      `${data.fromNumber || callSid}\n${calledAt}`,
+      {
+        type: 'call',
+        callSid,
+        answeredBy: 'ai',
+        calledAt,
+      }
+    );
   } catch (error) {
     console.warn('startAiReception notify:', error.message);
   }
@@ -1036,14 +2062,17 @@ async function startAiReception(req, res, callSid, options = {}) {
     if (process.env.USE_CONVERSATION_RELAY === '1') {
       console.log(`startAiReception relay ${callSid} ${wss}`);
       sendTwiml(res, twimlConversationRelay(req, { url: wss, greeting, callSid }));
+      scheduleCallRecording(callSid, req);
       return;
     }
     console.log(`startAiReception live ${callSid} ${wss}`);
     sendTwiml(res, twimlGeminiLiveStream(req, { url: wss, callSid }));
+    scheduleCallRecording(callSid, req);
     return;
   }
 
   sendTwiml(res, twimlGatherSpeech(req, { say: greeting, language: 'en' }));
+  scheduleCallRecording(callSid, req);
 }
 
 async function finishAiReception(req, res, callSid, callData, say, language, extracted, createJob, options = {}) {
@@ -1058,31 +2087,68 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
     },
   };
   if (say && !silent) {
-    updates.transcription = appendTranscript(callData.transcription, `AI: ${say}`);
+    updates.transcription = appendTranscript(callData.transcription, `ИИ: ${say}`);
   }
+  const historyText = labeledTranscriptFromHistory(
+    (callData.aiReception || {}).history,
+    updates.transcription || callData.transcription,
+    callData.answeredBy || 'ai'
+  );
+  updates.transcription = pickLongestTranscript(
+    updates.transcription,
+    callData.transcription,
+    historyText
+  );
 
-  if (createJob && extracted) {
+  const declined = voiceFacts.isServiceDeclined(extracted, callData);
+  if (declined) {
+    updates.serviceDeclined = true;
+    updates.reviewed = false;
+    updates.aiStatus = 'done';
+    updates.extractedData = extracted && typeof extracted === 'object' ? extracted : {};
+    const reason = String((extracted && extracted.decline_reason) || '').trim();
+    if (reason) updates.declineReason = reason;
+    try {
+      await notifyMaster(
+        'Звонок: заявку не создаём',
+        reason || (extracted && extracted.client_name) || callData.fromNumber || '',
+        { type: 'call', callSid }
+      );
+    } catch (error) {
+      console.warn('finishAiReception declined notify:', error.message);
+    }
+  } else if (createJob || hasConversationToBook(extracted, callData)) {
     try {
       const matchedClient = await findClientByPhone(
-        extracted.client_phone || callData.fromNumber
+        (extracted && extracted.client_phone) || callData.fromNumber
       );
+      extracted = extracted && typeof extracted === 'object' ? extracted : {};
       if (!extracted.client_phone && callData.fromNumber) {
         extracted.client_phone = normalizePhone(callData.fromNumber);
       }
-      if (!extracted.scheduled_date) {
-        extracted.scheduled_date = new Date().toISOString().slice(0, 10);
-      }
+      extracted = voiceFacts.enrichExtracted(
+        extracted,
+        (callData.aiReception || {}).history,
+        callData.transcription
+      );
       const created = await createDraftJobFromCall(callSid, extracted, matchedClient);
       updates.createdJobId = created.jobId || null;
       updates.clientId = created.clientId || (matchedClient ? matchedClient.id : null);
       updates.extractedData = extracted;
       updates.aiStatus = created.jobId ? 'done' : 'none';
+      updates.jobId = created.jobId || null;
       if (created.jobId) {
+        updates.reviewed = true;
         try {
+          const calledAt = voiceFacts.formatTorontoStamp(
+            callData.startTime && callData.startTime.toDate
+              ? callData.startTime.toDate()
+              : new Date()
+          );
           await notifyMaster(
-            'ИИ создал заявку',
-            extracted.client_name || extracted.appliance_type || callData.fromNumber || '',
-            { type: 'job', jobId: created.jobId, callSid }
+            'Заявка с телефона',
+            `${extracted.client_name || extracted.appliance_type || callData.fromNumber || ''}\n${calledAt}`,
+            { type: 'job', source: 'phone', jobId: created.jobId, callSid, calledAt }
           );
         } catch (error) {
           console.warn('finishAiReception notify:', error.message);
@@ -1097,20 +2163,37 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
 
   await callsRef.doc(callSid).set(updates, { merge: true });
   sendTwiml(res, twimlHangup(silent ? '' : say, language));
+  const merged = { ...(callData || {}), ...updates };
+  const jobId = updates.createdJobId || callData.createdJobId || null;
+  if (jobId) {
+    attachLiveCallNotesToJob({
+      jobId,
+      callId: callSid,
+      transcription: merged.transcription || '',
+      recordingUrl: merged.playableUrl || merged.recordingUrl || '',
+      history: (merged.aiReception || callData.aiReception || {}).history,
+      answeredBy: merged.answeredBy || callData.answeredBy || 'ai',
+    }).catch((error) => console.warn('finishAiReception notes:', error.message));
+  }
+  secretaryLearnApi.proposeFromCall(callSid, merged).catch((error) => {
+    console.warn('secretaryLearn finish:', error.message);
+  });
 }
 
 async function nextAiVoiceTurn(callSid, callData, userText) {
   const reception = callData.aiReception || {};
   const history = Array.isArray(reception.history) ? [...reception.history] : [];
-  const extracted = mergeExtracted(reception.extracted, {});
-  const today = new Date().toISOString().slice(0, 10);
+  const extracted = mergeExtracted(reception.extracted, {}, reception.history);
+  const today = voiceFacts.torontoTodayYmd();
   const profile = await getAiAnswerSettings();
   const companyName = profile.companyName;
   const instructions = profile.instructions;
   const caller = callData.fromNumber || '';
   const known = await findClientByPhone(caller);
-  const existingName = (known && (known.fullName || known.name)) || '';
-  const existingAddress = (known && (known.address || '')) || '';
+  const existingName = voiceFacts.usableClientName(
+    (known && (known.fullName || known.name)) || ''
+  );
+  const existingAddress = voiceFacts.clientAddressFrom(known);
 
   if (userText) {
     history.push({ role: 'user', text: userText });
@@ -1120,35 +2203,46 @@ async function nextAiVoiceTurn(callSid, callData, userText) {
 The technician didn't pick up. YOU answered. You are a real person in the office — a warm woman, maybe mid-thirties, a little busy, never an IVR, never a chatbot, never a survey.
 
 Caller phone (already known, do not ask for it): ${caller || 'unknown'}
-Today: ${today}
+Today (America/Toronto): ${today}
 Known CRM client: ${existingName || 'new caller'}
 Known address if any: ${existingAddress || 'none'}
+Shop hours: ${profile.workHours || '7 a.m. to 9 p.m.'} America/Toronto.
 
 Company rules from the owner (facts and policy — follow these):
 ${instructions}
 
+${voiceFacts.VOICE_CALL_FLOW}
+
 HOW TO TALK — this is the most important part:
 - Speak like a real Ontario phone call. Contractions: "what's", "that's", "you're", "I'll".
 - "say" is 1 short sentence, maybe 2. Usually under 16 words. One question only.
+- Then STOP. Do not fill silence with extra questions.
 - First, briefly react like a human ("oh, the fridge isn't cooling", "okay, Brantford").
-- Then ask the next missing thing in everyday words: "what's your name?", "and where's that at?", "what day's better for you?"
+- Then ask only the next missing thing, if you still need it.
 - If they already told you something, NEVER ask it again.
-- Repeat the address back once, casually: "so that's 12 King in Paris, yeah?"
-- Never answer with only "got it", "okay", or "I understand" — always continue with a real sentence, or stay quiet by asking one thing.
-- Never say: "please provide", "I have noted", "thank you for that information", "how may I assist you", "I understand your concern", "certainly", "absolutely", "please be advised", "I am an AI".
+- Never answer with only "got it" or "I understand".
+- Never say: "please provide", "I have noted", "thank you for that information", "how may I assist you", "I am an AI".
 - Never list questions. Never sound like a website form.
-- If they are angry: stop collecting. Say a person from the company will call within 30 minutes. done=true, createJob=true.
-- If you have full name, address, what broke, AND a day or time: wrap up like a person. "Perfect, I'll pass this to the tech and he'll call you back to confirm." No price, no exact ETA. done=true, createJob=true.
-- Outside the service area: politely say you don't travel there. done=true, createJob=false.
-- Wrong number / spam: done=true, createJob=false.
-- Answer in the caller's language. Ontario is usually English. Russian only if they speak Russian.
+- If they say the repair is at another address, take that street, keep their home, keep talking. Do not hang up in that moment.
+- LIVE CALLBACK: if they want a live person / the technician to call them, do not grill for address or time. Say: "Okay, I'll pass your details along and a technician will call you back shortly."
+- If they are angry: stop collecting. Say a person from the company will call within 30 minutes. Then wait. Do not hang up.
+- If they want a visit before shop hours or after shop hours (6 a.m., 10 p.m., etc.), do not book it. Say we don't work then and offer another day or a time inside shop hours. Then wait. done=false.
+- If we cannot take the job (outside the service area, laptop/computer/phone, they cancel, not a home appliance), say so in one short sentence, set createJob=false, extracted.service_declined=true, extracted.decline_reason to a short English reason. Do not create a repair job. Stay on the line. done=false.
+- When you have a name, what broke, where to go, and a day or time in shop hours — or they asked for a callback — confirm once ("I'll pass this to the tech"), createJob=true, then STOP. done=false. Do not say goodbye. Do not hang up.
+- done=false. The caller hangs up. If they go quiet after you confirmed, keep waiting.
+- Never say bye / goodbye / see you then / have a good day.
+- Speak English only. Understand Russian or any other language, but never answer in it.
+- "language" in JSON is always "en".
 - appliance_type in extracted must be Russian: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
+- scheduled_date must be YYYY-MM-DD relative to Today ${today} in America/Toronto. scheduled_time must be HH:mm 24-hour.
+- client_name: a normal short name as they said it. Never a phonetic spelling.
 
 Good "say" examples:
-- "Oh, the fridge isn't cooling. What's your name?"
-- "Okay John — what's the address there?"
-- "Paris, perfect. What day works for a tech to come by?"
-- "Alright, I'll have him call you back to confirm. Thanks."
+- "Oh, the fridge isn't cooling. What brand is it?"
+- "Okay Artem — what's the address there?"
+- "Paris, perfect. What day works for a tech?"
+- "I'll pass this to the tech and he'll call you back to confirm."
+- "We don't work at 6 a.m. — we're 7 to 9. Another time after 7, or another day?"
 
 Bad examples (never):
 - "Thank you for providing that information. May I please have your full name?"
@@ -1170,13 +2264,20 @@ Return STRICT JSON, no markdown:
     "address": null,
     "city": null,
     "postal_code": null,
+    "owner_address": null,
     "appliance_type": null,
     "brand": null,
     "model": null,
     "problem_description": null,
     "scheduled_date": null,
     "scheduled_time": null,
-    "notes": null
+    "wants_callback": false,
+    "contact_on_site_name": null,
+    "contact_on_site_phone": null,
+    "has_job_site": false,
+    "notes": null,
+    "service_declined": false,
+    "decline_reason": null
   }
 }`;
 
@@ -1186,7 +2287,9 @@ Return STRICT JSON, no markdown:
   else if (text.startsWith('```')) text = text.slice(3);
   if (text.endsWith('```')) text = text.slice(0, -3);
   try {
-    return extractJsonObject(text.trim());
+    const parsed = extractJsonObject(text.trim());
+    const nextExtracted = mergeExtracted(extracted, parsed.extracted, history);
+    return ensureSpokenFarewell(parsed, nextExtracted);
   } catch (error) {
     console.warn('nextAiVoiceTurn JSON:', error.message);
     return {
@@ -1265,7 +2368,7 @@ exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res)
     const snap = await callsRef.doc(callSid).get();
     const data = snap.exists ? snap.data() || {} : {};
     const reception = data.aiReception || {};
-    const language = reception.language === 'ru' ? 'ru' : 'en';
+    const language = voiceLanguage(reception.language);
     const speech = incomingSpeech || String(reception.pendingSpeech || '').trim();
     const emptyTurns = Number(reception.emptyTurns || 0);
     const turns = Number(reception.turns || 0) + (speech ? 1 : 0);
@@ -1286,10 +2389,8 @@ exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res)
           res,
           callSid,
           data,
-          language === 'ru'
-            ? 'Спасибо. Мастер перезвонит.'
-            : 'Thanks — a technician will call you back.',
-          language,
+          voiceFacts.farewellFor(reception.extracted, 'en'),
+          'en',
           reception.extracted,
           hasEnoughForJob(reception.extracted)
         );
@@ -1298,33 +2399,39 @@ exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res)
       sendTwiml(
         res,
         twimlGatherSpeech(req, {
-          say: nextEmpty >= 2
-            ? (language === 'ru' ? 'Я вас слушаю.' : "I'm here — go ahead.")
-            : '',
-          language,
+          say: nextEmpty >= 2 ? "I'm here — go ahead." : '',
+          language: 'en',
         })
       );
       return;
     }
 
     const parsed = (await nextAiVoiceTurn(callSid, { ...data, aiReception: receptionNow }, speech)) || {};
-    const nextLanguage = parsed.language === 'ru' ? 'ru' : 'en';
-    const extracted = mergeExtracted(reception.extracted, parsed.extracted);
+    const nextLanguage = 'en';
+    const say = spokenText(parsed.say, 'Yeah, go ahead.');
+    const history = Array.isArray(reception.history) ? [...reception.history] : [];
+    history.push({ role: 'user', text: speech });
+    const extracted = mergeExtracted(reception.extracted, parsed.extracted, history);
     if (!extracted.client_phone && data.fromNumber) {
       extracted.client_phone = normalizePhone(data.fromNumber);
     }
-    const say = spokenText(
-      parsed.say,
-      nextLanguage === 'ru' ? 'Да, слушаю вас.' : 'Yeah, go ahead.'
-    );
-    const history = Array.isArray(reception.history) ? [...reception.history] : [];
-    history.push({ role: 'user', text: speech });
-    history.push({ role: 'assistant', text: say });
-
     const forceDone = turns >= AI_VOICE_MAX_TURNS;
-    const done = parsed.done === true || forceDone;
+    const checkIn = voiceFacts.isCheckInUtterance(speech);
+    const allowed = voiceFacts.mayHangUp({
+      extracted,
+      lastUser: speech,
+      lastAsst: say,
+      hasEnough: hasEnoughForJob,
+      turns,
+      history,
+    });
+    const done = !checkIn && ((parsed.done === true && allowed) || forceDone);
     const createJob =
       parsed.createJob === true || (forceDone && hasEnoughForJob(extracted));
+    const hangupSay = done && !voiceFacts.saidGoodbye(say)
+      ? `${say} ${voiceFacts.farewellFor(extracted, nextLanguage)}`.trim()
+      : say;
+    history.push({ role: 'assistant', text: hangupSay });
 
     const nextData = {
       ...data,
@@ -1344,18 +2451,14 @@ exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res)
       {
         answeredBy: 'ai',
         extractedData: extracted,
-        transcription: appendTranscript(nextData.transcription, `AI: ${say}`),
+        transcription: appendTranscript(nextData.transcription, `AI: ${hangupSay}`),
         aiReception: nextData.aiReception,
       },
       { merge: true }
     );
 
     if (done) {
-      const confirm =
-        say ||
-        (nextLanguage === 'ru'
-          ? 'Спасибо, заявка принята. Мастер перезвонит.'
-          : "Perfect — I'll have the tech call you back to confirm.");
+      const confirm = hangupSay || voiceFacts.farewellFor(extracted, nextLanguage);
       await finishAiReception(
         req,
         res,
@@ -1409,16 +2512,30 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
     }
 
     if (data.aiReception && data.aiReception.engine === 'gemini-live' && !data.aiReception.done) {
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      const again = await callsRef.doc(callSid).get();
-      if (again.exists) data = again.data() || data;
+      for (let i = 0; i < 10; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        const again = await callsRef.doc(callSid).get();
+        if (again.exists) data = again.data() || data;
+        if (data.aiReception && data.aiReception.done) break;
+      }
     }
 
-    const extracted = (data.aiReception && data.aiReception.extracted) || data.extractedData;
+    const extracted = (data.aiReception && data.aiReception.extracted) || data.extractedData || {};
+    const declined = voiceFacts.isServiceDeclined(extracted, data);
     const createJob =
-      (data.aiReception && data.aiReception.createJob === true) || hasEnoughForJob(extracted);
-    if (data.status === 'completed' && (data.createdJobId || !createJob)) {
-      sendTwiml(res, twimlHangup('', 'en'));
+      !declined &&
+      ((data.aiReception && data.aiReception.createJob === true) ||
+        hasEnoughForJob(extracted) ||
+        hasConversationToBook(extracted, data));
+    const lastAsst = [...((data.aiReception && data.aiReception.history) || [])]
+      .reverse()
+      .find((item) => item && item.role === 'assistant');
+    const alreadyBye = voiceFacts.saidGoodbye(lastAsst && lastAsst.text);
+    if (data.createdJobId) {
+      sendTwiml(
+        res,
+        twimlHangup(alreadyBye ? '' : voiceFacts.farewellFor(extracted, 'en'), 'en')
+      );
       return;
     }
     await finishAiReception(
@@ -1426,11 +2543,11 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
       res,
       callSid,
       data,
-      '',
+      alreadyBye ? '' : voiceFacts.farewellFor(extracted, 'en'),
       'en',
       extracted,
       createJob,
-      { silent: true }
+      { silent: alreadyBye }
     );
   } catch (error) {
     console.error('aiRelayComplete error:', error);
@@ -1452,14 +2569,19 @@ voiceRelay.init({
   callsRef,
   appendTranscript,
   saveRelayHost,
+  torontoTodayYmd: voiceFacts.torontoTodayYmd,
+  calendarBrief: () => schedule.calendarBrief(),
+  checkBookingSlot: (start, opts) => schedule.checkSlot(start, opts),
+  voiceCallFlow: voiceFacts.VOICE_CALL_FLOW,
+  defaultVoiceGreeting: DEFAULT_VOICE_GREETING,
 });
 
 exports.aiVoiceRelay = onRequestV2(
   {
     region: 'us-central1',
     timeoutSeconds: 3600,
-    memory: '1GiB',
-    cpu: 1,
+    memory: '2GiB',
+    cpu: 2,
     concurrency: 8,
     minInstances: 1,
     invoker: 'public',
@@ -1487,10 +2609,23 @@ exports.recordingComplete = functions.https.onRequest(recordingRuntime, async (r
     }
 
     const callId = await resolveLoggedCallId(rawSid);
+    if (duration === 0) {
+      console.log(`Recording complete ${callId}: duration 0, wait for a longer take`);
+      res.status(200).send('OK');
+      return;
+    }
+    const existing = await callsRef.doc(callId).get();
+    const prevDur = Number((existing.exists && existing.data() && existing.data().recordingDurationSeconds) || 0);
+    if (prevDur > duration) {
+      console.log(`Recording complete ${callId}: keep longer recording ${prevDur}s > ${duration}s`);
+      res.status(200).send('OK');
+      return;
+    }
     const mp3Url = `${recordingUrl}.mp3`;
     await callsRef.doc(callId).set(
       {
         recordingUrl: mp3Url,
+        twilioRecordingUrl: mp3Url,
         recordingSid,
         recordingCallSid: rawSid,
         recordingDurationSeconds: duration,
@@ -1510,6 +2645,65 @@ exports.recordingComplete = functions.https.onRequest(recordingRuntime, async (r
     res.status(500).send('Error');
   }
 });
+
+// Аудиозапись без Twilio-логина: приложение открывает эту ссылку.
+exports.callRecordingAudio = onRequestV2(
+  {
+    region: 'us-central1',
+    timeoutSeconds: 120,
+    memory: '1GiB',
+    invoker: 'public',
+    cors: true,
+  },
+  async (req, res) => {
+    setCors(res);
+    if (handleOptions(req, res)) return;
+    const requested = String(req.query.callId || req.body.callId || '').trim();
+    if (!requested) {
+      res.status(400).send('callId required');
+      return;
+    }
+    try {
+      const callId = await resolveLoggedCallId(requested);
+      const snap = await callsRef.doc(callId).get();
+      if (!snap.exists) {
+        const sourceOnly = await findTwilioRecordingMp3(requested);
+        if (!sourceOnly) {
+          res.status(404).send('not found');
+          return;
+        }
+        const buffer = await downloadRecordingBuffer(sourceOnly);
+        res.set('Content-Type', 'audio/mpeg');
+        res.set('Content-Length', String(buffer.length));
+        res.set('Accept-Ranges', 'bytes');
+        res.set('Content-Disposition', 'inline; filename="call.mp3"');
+        res.status(200).send(buffer);
+        return;
+      }
+      const data = snap.data() || {};
+      const source = await resolveCallRecordingSource(callId, data);
+      if (!source) {
+        res.status(404).send('no recording');
+        return;
+      }
+      const buffer = await downloadRecordingBuffer(source);
+      if (!data.storageUrl) {
+        cacheRecordingToStorage(callId, buffer).catch((error) => {
+          console.warn('callRecordingAudio cache:', error.message);
+        });
+      }
+      res.set('Content-Type', 'audio/mpeg');
+      res.set('Content-Length', String(buffer.length));
+      res.set('Accept-Ranges', 'bytes');
+      res.set('Content-Disposition', 'inline; filename="call.mp3"');
+      res.set('Cache-Control', 'private, max-age=86400');
+      res.status(200).send(buffer);
+    } catch (error) {
+      console.error('callRecordingAudio:', error);
+      res.status(500).send('Error');
+    }
+  }
+);
 
 /**
  * Gemini иногда временно недоступен (503 "high demand") или случается
@@ -1545,7 +2739,7 @@ const GEMINI_MODEL_CANDIDATES = [
   'gemini-flash-lite-latest',
   'gemini-flash-latest',
   'gemini-2.5-flash',
-  'gemini-2.0-flash',
+  'gemini-3.6-flash',
 ];
 
 async function generateContentWithModelFallback(parts) {
@@ -1563,6 +2757,79 @@ async function generateContentWithModelFallback(parts) {
     }
   }
   throw lastError;
+}
+
+function hasCyrillic(text) {
+  return /[А-Яа-яЁё]/.test(String(text || ''));
+}
+
+function hasLatin(text) {
+  return /[A-Za-z]/.test(String(text || ''));
+}
+
+function skipTranslate(text) {
+  const t = String(text || '').trim();
+  if (!t) return true;
+  if (t.length < 3 && !hasCyrillic(t)) return true;
+  if (/^[\d\s.,:+\-/#]+$/.test(t)) return true;
+  if (/^(1|2|0|5|yes|no|ok|ок|да|нет)$/i.test(t.replace(/[.!,]/g, ''))) return true;
+  return false;
+}
+
+async function polishChat(text, options = {}) {
+  const t = String(text || '').trim();
+  if (!t) return t;
+  const variant = Math.max(1, Number(options.variant || 1) || 1);
+  const emoji = String(options.emoji || 'normal').toLowerCase();
+  const previous = String(options.previous || '').trim();
+  const layouts = [
+    'greeting on its own line, then one fact per line, then a short closing',
+    'short punchy lines with a blank line between greeting, body, and thanks',
+    'compact: greeting plus 2–3 fact lines, close with a short question',
+    'friendly checklist: hello line, then hyphen facts, then a warm sign-off',
+  ];
+  const layout = layouts[(variant - 1) % layouts.length];
+  const emojiRule =
+    emoji === 'more'
+      ? 'Use 6–8 emojis. Put them in the greeting, on several fact lines, and in the closing.'
+      : emoji === 'less'
+        ? 'Use exactly 2 emojis total — one in the greeting and one in the closing. No more.'
+        : 'Use 3–5 emojis. Never fewer than 2.';
+  const avoid = previous
+    ? `\nDo NOT copy this previous version. Change line order, emoji placement, and wording while keeping the same facts:\n${previous}\n`
+    : '';
+  const instruction =
+    'Edit this technician draft into a client SMS. Keep the original language '
+    + '(Russian stays Russian, English stays English). '
+    + `${emojiRule} Variation #${variant}. Use this structure: ${layout}. `
+    + 'Break the text into short structured lines. Use blank lines between blocks. '
+    + 'Do not write one long paragraph. '
+    + 'Do not change facts, names, addresses, times, model numbers, phone numbers, or URLs. '
+    + avoid
+    + 'Return ONLY the edited message.';
+  const result = await generateContentWithModelFallback([{ text: `${instruction}\n\n${t}` }]);
+  const out = String((result.response && result.response.text()) || '').trim();
+  return out || t;
+}
+
+async function translateChat(text, to) {
+  const t = String(text || '').trim();
+  if (!t || skipTranslate(t)) return t;
+  if (to === 'en' && !hasCyrillic(t)) return t;
+  if (to === 'ru' && hasCyrillic(t) && !hasLatin(t)) return t;
+  if (to === 'ru' && !hasLatin(t)) return t;
+  const isDialogue = /(^|\n)\s*(ИИ|AI|Клиент|Client|User|Assistant)\s*:/i.test(t);
+  const instruction =
+    to === 'en'
+      ? 'Translate the technician message to the client into natural Canadian English. Keep names, addresses, model numbers, and URLs unchanged. Return ONLY the English translation, no quotes or notes.'
+      : isDialogue
+        ? 'Переведи этот диалог на естественный русский. Сохрани метки говорящих ИИ: и Клиент: на каждой строке. Нельзя выкидывать реплики ИИ. Верни ТОЛЬКО диалог, без кавычек и пояснений.'
+        : 'Переведи сообщение клиента мастеру на естественный русский. Имена, адреса, модели и ссылки не меняй. Верни ТОЛЬКО перевод, без кавычек и пояснений.';
+  const result = await generateContentWithModelFallback([
+    { text: `${instruction}\n\n${t}` },
+  ]);
+  const out = String((result.response && result.response.text()) || '').trim();
+  return out || t;
 }
 
 function fallbackExtractFromSms(body) {
@@ -1626,61 +2893,122 @@ async function processRecordingWithAi(callId, recordingUrl) {
   );
 }
 
+async function selfCheckCallExtract(transcription, extracted, summary) {
+  const transcript = String(transcription || '').trim();
+  if (transcript.length < 20) return null;
+  const prompt = `You are a second-pass checker for an appliance-repair CRM in Ontario.
+Compare the transcript with the first-pass JSON. Fix fields that are clearly in the transcript but missing or wrong.
+NEVER invent an address, city, postal code, brand, or model.
+If the address was mumbled, incomplete, or you would be guessing: address=null, city=null, postal_code=null, address_uncertain=true.
+If the name is phonetic garbage, set client_name=null.
+Keep client_phone as 10 digits if present.
+appliance_type must stay Russian if known: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
+confidence is 0..1.
+review_notes: short Russian notes for the technician (what to double-check). Empty string if solid.
+
+TRANSCRIPT:
+${transcript}
+
+SUMMARY:
+${String(summary || '').trim()}
+
+FIRST PASS JSON:
+${JSON.stringify(extracted || {})}
+
+Return STRICT JSON only:
+{"extracted":{"client_name":null,"client_phone":null,"address":null,"city":null,"postal_code":null,"owner_address":null,"appliance_type":null,"brand":null,"model":null,"problem_description":null,"scheduled_date":null,"scheduled_time":null,"wants_callback":false,"contact_on_site_name":null,"contact_on_site_phone":null,"has_job_site":false,"notes":null},"confidence":0.8,"address_uncertain":false,"review_notes":""}`;
+
+  const result = await generateContentWithModelFallback([{ text: prompt }]);
+  let raw = String((result.response && result.response.text()) || '').trim();
+  if (raw.startsWith('```json')) raw = raw.slice(7);
+  else if (raw.startsWith('```')) raw = raw.slice(3);
+  if (raw.endsWith('```')) raw = raw.slice(0, -3);
+  return extractJsonObject(raw.trim());
+}
+
 async function processRecordingWithAiOnce(callId, recordingUrl) {
     const audioBuffer = await downloadRecordingBuffer(recordingUrl);
+    const storedUrl = await cacheRecordingToStorage(callId, audioBuffer);
     const audioBase64 = audioBuffer.toString('base64');
 
     let callerNumber = '';
     let direction = 'inbound';
+    let liveHistory = [];
+    let liveTranscription = '';
+    let answeredBy = '';
     try {
       const callDoc = await callsRef.doc(callId).get();
       const data = callDoc.data() || {};
       direction = data.direction || 'inbound';
       callerNumber =
         direction === 'outbound' ? data.toNumber || '' : data.fromNumber || '';
+      liveHistory = (data.aiReception && data.aiReception.history) || [];
+      liveTranscription = data.transcription || '';
+      answeredBy = String(data.answeredBy || '').trim();
+      if (!answeredBy && direction === 'outbound') answeredBy = 'master';
+      if (!answeredBy) answeredBy = liveHistory.length ? 'ai' : 'master';
     } catch (_) {}
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = voiceFacts.torontoTodayYmd();
+    const shopEn = shopSpeaker(answeredBy, 'en');
+    const shopRu = shopSpeaker(answeredBy, 'ru');
 
     const prompt = `Ты — ассистент сервиса по ремонту бытовой техники в Канаде.
-Прослушай запись телефонного разговора и сделай два действия:
-1) Дай точную текстовую транскрипцию разговора на языке, на котором говорят.
-2) Извлеки структурированные данные для заявки на ремонт.
+Прослушай запись телефонного разговора ЦЕЛИКОМ и сделай четыре действия.
+Кто говорил со стороны сервиса: ${answeredBy === 'master' ? 'мастер (техник), не ИИ' : 'ИИ-секретарь'}.
+1) Полная дословная расшифровка на ЯЗЫКЕ РАЗГОВОРА (обычно английский), ОБЕ стороны, ничего не выкидывай:
+${shopEn}: ...
+Client: ...
+2) Полный перевод того же диалога на русский, те же реплики в том же порядке:
+${shopRu}: ...
+Клиент: ...
+Нельзя оставлять только клиента. Нельзя склеивать реплики. Нельзя обрезать конец разговора.
+3) Краткая выжимка на русском: 2–4 предложения (техника, проблема, договорённость).
+4) Извлеки структурированные данные для заявки на ремонт.
 
 Известные данные звонка (уже определены системой, не выдумывай другие):
-- Сегодняшняя дата: ${today}
+- Сегодняшняя дата (America/Toronto): ${today}
 - Номер клиента: ${callerNumber || 'неизвестен'}
 - Направление: ${direction === 'outbound' ? 'мастер звонил клиенту' : 'клиент звонил мастеру'}
 
 Правила извлечения:
 - client_phone: если клиент не назвал другой номер — обязательно поставь номер клиента (${callerNumber || 'null'}), 10 цифр без пробелов и плюса
-- scheduled_date: если дата визита не названа — поставь сегодняшнюю дату ${today} в формате YYYY-MM-DD. «Завтра»/«послезавтра» считай от ${today}
-- address, city, postal_code: извлеки улицу, дом, город и индекс, если они хоть как-то упомянуты (даже частично)
-- Телефон форматируй как 10 цифр без пробелов
-- Время форматируй как HH:MM (24-часовой формат)
-- Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
-- Если клиент — владелец, а техника находится у арендатора, установи has_job_site: true
-- Если что-то не упомянуто или разговор не про ремонт техники — поставь null
+- scheduled_date: YYYY-MM-DD. «Завтра»/tomorrow = следующий день от ${today}. Если день не назван — null, не подставляй сегодня просто так
+- scheduled_time: HH:MM 24-часа. Если сказали «11:00» или «at 11» — запиши 11:00
+- client_name: обычное короткое имя (Artem). Никогда фонетическая транскрипция вроде R Tamiyzhpurush
+- address = where the technician drives (repair / job site). city, postal_code only if heard clearly
+- owner_address = caller's home if it is a different place from the repair
+- Если ремонт не дома у звонящего (аренда, другой дом, another address): has_job_site: true, не затирай домашний адрес владельца
+- wants_callback: true, если клиент просил живого человека / мастера перезвонить
+- If something was not mentioned, or the call is not about a home-appliance repair we can take, put null
+- service_declined=true if we cannot take the job (outside the area, laptop/computer, they cancelled, not our work). Then do not fill a visit.
 
-Верни СТРОГО один JSON-объект без markdown и пояснений, в формате:
+Return STRICT one JSON object without markdown:
 {
-  "transcription": "полный текст разговора",
+  "transcription_en": "полный диалог на языке разговора с метками ${shopEn}: и Client:",
+  "transcription_ru": "полный диалог на русском с метками ${shopRu}: и Клиент:",
+  "transcription": "то же, что transcription_ru",
+  "summary": "краткая выжимка на русском",
   "extracted": {
     "client_name": "Имя клиента (владельца)",
     "client_phone": "Телефон клиента",
-    "address": "Улица и номер дома",
-    "city": "Город",
+    "address": "Адрес ремонта (улица и дом)",
+    "city": "Город ремонта",
     "postal_code": "Почтовый индекс",
+    "owner_address": "Домашний адрес владельца, если он другой",
     "appliance_type": "Тип техники",
     "brand": "Бренд",
     "model": "Модель",
     "problem_description": "Описание проблемы",
     "scheduled_date": "Дата визита",
     "scheduled_time": "Время визита",
+    "wants_callback": false,
     "contact_on_site_name": "Имя контакта на месте (арендатор)",
     "contact_on_site_phone": "Телефон контакта на месте",
     "has_job_site": false,
-    "notes": "Дополнительные заметки"
+    "notes": "Дополнительные заметки",
+    "service_declined": false,
+    "decline_reason": "Why we are not taking the job, English, short"
   }
 }`;
 
@@ -1696,50 +3024,202 @@ async function processRecordingWithAiOnce(callId, recordingUrl) {
     text = text.trim();
 
     const parsed = extractJsonObject(text);
-    const transcription = parsed.transcription || '';
-    const extracted = parsed.extracted || {};
+    const liveLabeled = labeledTranscriptFromHistory(
+      liveHistory,
+      liveTranscription,
+      answeredBy
+    );
+    const fromAudioRu = relabelTranscript(
+      parsed.transcription_ru || parsed.transcription || '',
+      answeredBy
+    );
+    const fromAudioEn = String(parsed.transcription_en || '').trim();
+    const liveEn = liveHistory.length
+      ? liveHistory
+          .map((item) => {
+            const who = item.role === 'assistant' ? shopEn : 'Client';
+            return `${who}: ${item.text}`;
+          })
+          .join('\n')
+      : '';
+    const transcription = pickLongestTranscript(
+      fromAudioRu,
+      fromAudioEn,
+      liveLabeled,
+      liveTranscription,
+      liveEn
+    );
+    const transcriptionEn = pickLongestTranscript(fromAudioEn, liveEn, liveTranscription, liveLabeled);
+    const transcriptionRu = pickLongestTranscript(fromAudioRu, hasCyrillic(transcription) ? transcription : '');
+    const summary = String(parsed.summary || '').trim();
+    let extracted = voiceFacts.enrichExtracted(
+      parsed.extracted || {},
+      [{ role: 'user', text: transcription }],
+      transcription
+    );
+
+    try {
+      const reviewed = await selfCheckCallExtract(transcription, extracted, summary);
+      if (reviewed && reviewed.extracted) {
+        extracted = voiceFacts.mergeExtracted(
+          extracted,
+          reviewed.extracted,
+          [{ role: 'user', text: transcription }]
+        );
+        if (reviewed.address_uncertain === true) {
+          extracted.address_uncertain = true;
+          extracted.address = null;
+          extracted.city = null;
+          extracted.postal_code = null;
+        }
+        if (typeof reviewed.confidence === 'number') {
+          extracted.confidence = reviewed.confidence;
+        }
+        if (reviewed.review_notes) {
+          extracted.review_notes = reviewed.review_notes;
+        }
+      }
+    } catch (error) {
+      console.warn(`selfCheckCallExtract(${callId}):`, error.message);
+    }
+
+    if (extracted.address_uncertain === true && !String(extracted.address || '').trim()) {
+      extracted.address = null;
+    }
 
     if (!extracted.client_phone && callerNumber) {
       extracted.client_phone = callerNumber.replace(/\D/g, '').slice(-10);
-    }
-    if (!extracted.scheduled_date) {
-      extracted.scheduled_date = today;
     }
 
     const matchedClient = await findClientByPhone(
       extracted.client_phone || (await getCallFromNumber(callId))
     );
 
-    const hasSubstance = Boolean(
-      extracted.appliance_type ||
-        extracted.problem_description ||
-        extracted.address ||
-        extracted.client_name ||
-        transcription.length > 40
-    );
+    const callSnap = await callsRef.doc(callId).get();
+    const callData = callSnap.exists ? callSnap.data() || {} : {};
+    const declined = voiceFacts.isServiceDeclined(extracted, callData);
+    const hasSubstance =
+      !declined &&
+      Boolean(
+        extracted.appliance_type ||
+          extracted.problem_description ||
+          extracted.wants_callback
+      );
 
-    let created = { jobId: null, clientId: matchedClient ? matchedClient.id : null };
-    if (hasSubstance) {
+    let jobId = callData.jobId || callData.createdJobId || null;
+    if (!jobId) {
+      const bySource = await findJobsBySourceCall(callId);
+      if (bySource.length) {
+        bySource.sort((a, b) => jobFillScore(b.data() || {}) - jobFillScore(a.data() || {}));
+        jobId = bySource[0].id;
+      }
+    }
+    if (!jobId && callData.answeredBy === 'ai') {
+      for (let i = 0; i < 6 && !jobId; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const again = await callsRef.doc(callId).get();
+        const latest = again.exists ? again.data() || {} : {};
+        jobId = latest.jobId || latest.createdJobId || null;
+        if (!jobId) {
+          const bySource = await findJobsBySourceCall(callId);
+          if (bySource.length) jobId = bySource[0].id;
+        }
+      }
+    }
+    if (!jobId && callData.answeredBy !== 'ai') {
+      const existingJob = await findJobByPhone(
+        extracted.client_phone || callerNumber
+      );
+      if (existingJob && existingJob.id) jobId = existingJob.id;
+    }
+
+    if (declined) {
+      jobId = null;
+    }
+
+    let created = { jobId: jobId || null, clientId: matchedClient ? matchedClient.id : null };
+    const existedJob = Boolean(jobId);
+    if (!jobId && hasSubstance) {
       try {
         created = await createDraftJobFromCall(callId, extracted, matchedClient);
+        jobId = created.jobId || jobId;
+        if (!existedJob && created.jobId) {
+          try {
+            await notifyMaster(
+              'Заявка с телефона',
+              String(extracted.client_name || extracted.appliance_type || callerNumber || ''),
+              { type: 'job', source: 'phone', jobId: created.jobId, callId }
+            );
+          } catch (error) {
+            console.warn('processRecording job notify:', error.message);
+          }
+        }
       } catch (jobError) {
         console.error(`createDraftJobFromCall(${callId}) failed:`, jobError);
+      }
+    } else if (jobId && hasSubstance) {
+      try {
+        await patchDraftJobFromCall(jobId, extracted);
+      } catch (_) {}
+    }
+
+    if (jobId) {
+      await mergeDuplicateSourceCallJobs(callId, jobId);
+      try {
+        const playableUrl = `${functionUrl({}, 'callRecordingAudio')}?callId=${encodeURIComponent(callId)}`;
+        await attachCallRecordingToJob({
+          jobId,
+          callId,
+          recordingUrl: playableUrl,
+          transcription,
+          transcriptionRu: transcriptionRu || transcription,
+          transcriptionEn: transcriptionEn || transcription,
+          storageUrl: storedUrl || '',
+          answeredBy,
+          history: liveHistory,
+          summary,
+        });
+        await callsRef.doc(callId).set({ playableUrl }, { merge: true });
+      } catch (attachError) {
+        console.error(`attachCallRecordingToJob(${callId}) failed:`, attachError);
       }
     }
 
     await callsRef.doc(callId).set(
       {
         transcription,
+        transcriptionRu: transcriptionRu || transcription,
+        transcriptionEn: transcriptionEn || transcription,
+        summary,
         extractedData: extracted,
         aiStatus: 'done',
         clientId: created.clientId || (matchedClient ? matchedClient.id : null),
-        createdJobId: created.jobId || null,
-        reviewed: Boolean(created.jobId),
+        createdJobId: created.jobId || jobId || null,
+        jobId: jobId || null,
+        reviewed: Boolean(jobId),
+        serviceDeclined: declined,
+        declineReason: String(extracted.decline_reason || '').trim() || null,
       },
       { merge: true }
     );
 
-    console.log(`AI processing done for call ${callId}, job=${created.jobId || 'none'}`);
+    if (declined && !jobId && callData.serviceDeclined !== true) {
+      try {
+        await notifyMaster(
+          'Звонок: заявку не создаём',
+          String(extracted.decline_reason || extracted.client_name || callerNumber || ''),
+          { type: 'call', callId }
+        );
+      } catch (error) {
+        console.warn('processRecording declined notify:', error.message);
+      }
+    }
+
+    console.log(`AI processing done for call ${callId}, job=${jobId || 'none'}`);
+    const latest = await callsRef.doc(callId).get();
+    secretaryLearnApi
+      .proposeFromCall(callId, latest.exists ? latest.data() || {} : { transcription, answeredBy: 'ai' })
+      .catch((error) => console.warn('secretaryLearn recording:', error.message));
 }
 
 async function getCallFromNumber(callId) {
@@ -1781,12 +3261,12 @@ exports.processCallRecording = functions.https.onRequest(
     }
 
     const data = doc.data() || {};
-    let recordingUrl = data.recordingUrl;
-    if (!recordingUrl) {
-      recordingUrl = await findTwilioRecordingMp3(resolvedId);
-      if (recordingUrl) {
-        await callsRef.doc(resolvedId).set({ recordingUrl }, { merge: true });
-      }
+    let recordingUrl = await resolveCallRecordingSource(resolvedId, data);
+    if (recordingUrl && recordingUrl !== data.recordingUrl) {
+      await callsRef.doc(resolvedId).set(
+        { recordingUrl, twilioRecordingUrl: recordingUrl },
+        { merge: true }
+      );
     }
     if (!recordingUrl) {
       res.status(400).json({ error: 'Запись ещё не готова' });
@@ -1830,6 +3310,110 @@ function shouldAutoRetryCallAi(data) {
   return false;
 }
 
+async function recoverJobsMissingVisits(limit = 15) {
+  const snap = await jobsRef.orderBy('createdAt', 'desc').limit(80).get();
+  const fixed = [];
+  for (const doc of snap.docs) {
+    if (fixed.length >= limit) break;
+    const job = doc.data() || {};
+    if (!job.createdByAi && !job.sourceCallId) continue;
+    const visits = Array.isArray(job.visits) ? job.visits : [];
+    if (visits.length || job.scheduledAt || job.scheduledDate) continue;
+    const fields = jobScheduleFields({}, schedule.BOOKING_MINUTES);
+    await doc.ref.set(
+      {
+        ...fields,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    fixed.push(doc.id);
+    console.log(`recoverJobsMissingVisits: ${doc.id} ${job.clientName || job.clientPhone || ''}`);
+  }
+  return fixed;
+}
+
+async function recoverAiCallsMissingJobs(limit = 12) {
+  const snap = await callsRef.orderBy('startTime', 'desc').limit(80).get();
+  const recovered = [];
+  for (const doc of snap.docs) {
+    if (recovered.length >= limit) break;
+    const data = doc.data() || {};
+    if ((data.createdJobId || data.jobId) && data.aiStatus === 'done') continue;
+    const bySource = await findJobsBySourceCall(doc.id);
+    if (bySource.length) {
+      bySource.sort((a, b) => jobFillScore(b.data() || {}) - jobFillScore(a.data() || {}));
+      const keep = bySource[0];
+      await callsRef.doc(doc.id).set(
+        {
+          createdJobId: keep.id,
+          jobId: keep.id,
+          clientId: (keep.data() || {}).clientId || data.clientId || null,
+          aiStatus: data.aiStatus === 'processing' ? data.aiStatus : 'done',
+          reviewed: true,
+        },
+        { merge: true }
+      );
+      await mergeDuplicateSourceCallJobs(doc.id, keep.id);
+      continue;
+    }
+    if (data.createdJobId || data.jobId) continue;
+    const inbound = data.direction !== 'outbound';
+    const answeredAi = data.answeredBy === 'ai';
+    const extracted = (data.aiReception && data.aiReception.extracted) || data.extractedData || {};
+    if (voiceFacts.isServiceDeclined(extracted, data)) continue;
+    const canBook = hasConversationToBook(extracted, data) || Boolean(data.recordingUrl);
+    if (!inbound || !answeredAi || !canBook) continue;
+    if (Number(data.jobRecoverCount || 0) >= 3) continue;
+
+    await callsRef.doc(doc.id).set(
+      { jobRecoverCount: admin.firestore.FieldValue.increment(1) },
+      { merge: true }
+    );
+
+    if (!data.createdJobId && !data.jobId && data.recordingUrl && data.aiStatus !== 'done') {
+      console.log(`recoverAiCallsMissingJobs: запись ${doc.id}`);
+      await processRecordingWithAi(doc.id, data.recordingUrl);
+      recovered.push(doc.id);
+      continue;
+    }
+
+    try {
+      const matchedClient = await findClientByPhone(extracted.client_phone || data.fromNumber);
+      if (!extracted.client_phone && data.fromNumber) {
+        extracted.client_phone = normalizePhone(data.fromNumber);
+      }
+      const created = await createDraftJobFromCall(
+        doc.id,
+        voiceFacts.enrichExtracted(
+          extracted,
+          (data.aiReception && data.aiReception.history) || [],
+          data.transcription
+        ),
+        matchedClient
+      );
+      if (created.jobId) {
+        await callsRef.doc(doc.id).set(
+          {
+            createdJobId: created.jobId,
+            jobId: created.jobId,
+            clientId: created.clientId || (matchedClient && matchedClient.id) || null,
+            aiStatus: 'done',
+            reviewed: true,
+            extractedData: extracted,
+          },
+          { merge: true }
+        );
+        recovered.push(created.jobId);
+        console.log(`recoverAiCallsMissingJobs: заявка ${created.jobId} из ${doc.id}`);
+      }
+    } catch (error) {
+      console.warn(`recoverAiCallsMissingJobs ${doc.id}:`, error.message);
+    }
+  }
+  return recovered;
+}
+
 /**
  * Сам подбирает звонки с ошибкой ИИ или зависшей обработкой и запускает повтор.
  */
@@ -1852,12 +3436,12 @@ async function retryStuckCallAiJobs(limit = 3) {
   }
 
   for (const item of picked) {
-    let recordingUrl = item.recordingUrl;
-    if (!recordingUrl) {
-      recordingUrl = await findTwilioRecordingMp3(item.id);
-      if (recordingUrl) {
-        await callsRef.doc(item.id).set({ recordingUrl }, { merge: true });
-      }
+    let recordingUrl = await resolveCallRecordingSource(item.id, item);
+    if (recordingUrl && recordingUrl !== item.recordingUrl) {
+      await callsRef.doc(item.id).set(
+        { recordingUrl, twilioRecordingUrl: recordingUrl },
+        { merge: true }
+      );
     }
     if (!recordingUrl) {
       console.log(`retryStuckCallAi: нет записи для ${item.id}`);
@@ -1878,8 +3462,23 @@ exports.retryStuckCallAi = functions.scheduler.onSchedule(
   },
   async () => {
     await retryStuckCallAiJobs(3);
+    await recoverJobsMissingVisits(12);
+    await recoverAiCallsMissingJobs(8);
   }
 );
+
+exports.recoverStuckCallJobs = functions.https.onRequest(async (req, res) => {
+  if (handleOptions(req, res)) return;
+  setCors(res);
+  try {
+    const jobs = await recoverJobsMissingVisits(20);
+    const calls = await recoverAiCallsMissingJobs(15);
+    res.json({ ok: true, jobs, calls });
+  } catch (error) {
+    console.error('recoverStuckCallJobs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 exports.registerFcmToken = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
@@ -1919,7 +3518,7 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
     return;
   }
 
-  const { to, body, clientId } = req.body || {};
+    const { to, body, clientId, bodyRu } = req.body || {};
   const mediaUrls = Array.isArray((req.body || {}).mediaUrls)
     ? (req.body.mediaUrls)
         .map((url) => String(url || '').trim())
@@ -1946,7 +3545,17 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
 
   try {
     const header = await getSmsHeader();
-    const text = withSmsHeader(body || '', header);
+    let sendBody = body || '';
+    let storedRu = typeof bodyRu === 'string' ? bodyRu.trim() : '';
+    if (hasCyrillic(sendBody)) {
+      storedRu = storedRu || sendBody;
+      sendBody = await translateChat(sendBody, 'en');
+      if (hasCyrillic(sendBody) && !hasLatin(sendBody)) {
+        res.status(500).json({ error: 'Не удалось перевести SMS на английский' });
+        return;
+      }
+    }
+    const text = withSmsHeader(sendBody || '', header);
     const payload = {
       from: TWILIO_PHONE_NUMBER,
       to: e164,
@@ -1963,6 +3572,7 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
       from: TWILIO_PHONE_NUMBER,
       to: e164,
       body: text || '',
+      bodyRu: storedRu,
       direction: 'outbound',
       status: message.status,
       clientId: clientId || null,
@@ -1978,6 +3588,38 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+exports.translateMessage = functions.https.onRequest(
+  { timeoutSeconds: 30, memory: '256MiB', invoker: 'public' },
+  async (req, res) => {
+    setCors(res);
+    if (handleOptions(req, res)) return;
+    const payload = req.body || {};
+    const text = String(payload.text || payload.body || '').trim();
+    const mode = String(payload.mode || '').trim().toLowerCase();
+    const to = String(payload.to || '').trim().toLowerCase() === 'en' ? 'en' : 'ru';
+    if (!text) {
+      res.status(400).json({ error: 'text required' });
+      return;
+    }
+    try {
+      if (mode === 'polish') {
+        const polished = await polishChat(text, {
+          variant: payload.variant,
+          emoji: payload.emoji,
+          previous: payload.previous,
+        });
+        res.json({ success: true, polished, translated: polished });
+        return;
+      }
+      const translated = await translateChat(text, to);
+      res.json({ success: true, translated, to });
+    } catch (error) {
+      console.error('translateMessage:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
 
 // ============================================================================
 // SMS: webhook входящего сообщения — Messaging URL номера в консоли Twilio
@@ -2010,7 +3652,8 @@ exports.incomingSms = functions.https.onRequest(
       if (!existing.empty) {
         docRef = existing.docs[0].ref;
         const prev = existing.docs[0].data() || {};
-        alreadyProcessed = prev.aiStatus === 'done';
+        alreadyProcessed =
+          prev.aiStatus === 'done' || prev.aiStatus === 'skipped_confirm';
         const missingPhoto =
           Array.isArray(prev.twilioMedia) &&
           prev.twilioMedia.length &&
@@ -2037,21 +3680,6 @@ exports.incomingSms = functions.https.onRequest(
 
     if (!docRef) {
       matchedClient = await findClientByPhone(from);
-      docRef = await messagesRef.add({
-        sid,
-        from,
-        to,
-        body,
-        direction: 'inbound',
-        status: 'received',
-        clientId: matchedClient ? matchedClient.id : null,
-        mediaUrls: [],
-        twilioMedia,
-        channel: 'sms',
-        aiStatus: twilioMedia.length || body.trim() ? 'processing' : 'none',
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        read: false,
-      });
     }
   } catch (error) {
     console.error('incomingSms error:', error);
@@ -2071,26 +3699,66 @@ exports.incomingSms = functions.https.onRequest(
   res.send('<Response></Response>');
 
   let confirmHandled = false;
-  if (docRef && !alreadyProcessed) {
+  if (!alreadyProcessed) {
     try {
       confirmHandled = await visitSms.tryHandleConfirmReply({
         from,
         body,
         clientId: matchedClient ? matchedClient.id : null,
       });
-      if (confirmHandled) {
-        await docRef.set({ aiStatus: 'skipped_confirm', read: true }, { merge: true });
-      }
     } catch (error) {
       console.error('incomingSms confirm error:', error);
     }
   }
 
-  if (!alreadyProcessed && !confirmHandled) {
+  if (!docRef) {
+    try {
+      docRef = await messagesRef.add({
+        sid,
+        from,
+        to,
+        body,
+        direction: 'inbound',
+        status: 'received',
+        clientId: matchedClient ? matchedClient.id : null,
+        mediaUrls: [],
+        twilioMedia,
+        channel: 'sms',
+        aiStatus: confirmHandled
+          ? 'skipped_confirm'
+          : twilioMedia.length || body.trim()
+            ? 'processing'
+            : 'none',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        read: confirmHandled,
+      });
+    } catch (error) {
+      console.error('incomingSms save error:', error);
+    }
+  } else if (confirmHandled) {
+    try {
+      await docRef.set({ aiStatus: 'skipped_confirm', read: true }, { merge: true });
+    } catch (error) {
+      console.error('incomingSms confirm mark error:', error);
+    }
+  }
+
+  if (!alreadyProcessed) {
     try {
       await notifyMaster(title, preview, { type: 'sms', from: from || '' });
     } catch (error) {
       console.error('incomingSms notify error:', error);
+    }
+  }
+
+  if (docRef && !alreadyProcessed && !confirmHandled && String(body || '').trim()) {
+    try {
+      const ru = await translateChat(body, 'ru');
+      if (ru && ru.trim() && ru.trim() !== String(body).trim()) {
+        await docRef.set({ bodyRu: ru.trim() }, { merge: true });
+      }
+    } catch (error) {
+      console.warn('incomingSms translate:', error.message);
     }
   }
 
@@ -2153,10 +3821,26 @@ async function notifyMaster(title, body, data = {}) {
   }
 
   const type = String(data.type || 'sms');
-  const channelId = type === 'email' ? 'email_messages' : 'sms_messages';
+  const source = String(data.source || '');
+  const secretaryAnswered = type === 'call' && String(data.answeredBy || '') === 'ai';
+    const channelId =
+    type === 'email' ||
+    type === 'email_offer' ||
+    type === 'shipment' ||
+    (type === 'job' && source === 'email')
+      ? 'email_messages'
+      : type === 'visit_confirm'
+        ? 'visit_confirm'
+        : type === 'secretary_lesson'
+          ? 'secretary_learn'
+          : type === 'call' || type === 'job' || secretaryAnswered
+            ? 'incoming_calls'
+            : 'sms_messages';
   const tag = `crm_${type}_${String(data.from || data.to || 'inbox')}`.slice(0, 50);
   stringData.type = type;
   stringData.tag = tag;
+  stringData.title = String(title || '');
+  stringData.body = String(body || '');
 
   const response = await admin.messaging().sendEachForMulticast({
     tokens,
@@ -2169,12 +3853,17 @@ async function notifyMaster(title, body, data = {}) {
         sound: 'default',
         defaultSound: true,
         tag,
-        priority: 'high',
+        clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+        priority: 'max',
+        visibility: 'public',
       },
     },
     apns: {
       payload: {
-        aps: { sound: 'default' },
+        aps: {
+          sound: 'default',
+          'interruption-level': 'time-sensitive',
+        },
       },
     },
   });
@@ -2262,28 +3951,42 @@ async function uploadSmsMedia(sid, index, buffer, mime) {
   }
 }
 
-async function findJobByPhone(phone) {
+async function findOpenJobForContact({ phone, clientId }) {
+  const pickLatest = (items) => {
+    items.sort((a, b) => {
+      const millis = (v) =>
+        v && typeof v.toMillis === 'function' ? v.toMillis() : 0;
+      return millis(b.createdAt) - millis(a.createdAt);
+    });
+    const open = items.filter(
+      (item) => item.status !== 'Завершено' && item.status !== 'Отменено'
+    );
+    if (open.length) return open[0];
+    return items[0] || null;
+  };
+
+  if (clientId) {
+    const snap = await jobsRef.where('clientId', '==', clientId).get();
+    const items = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const picked = pickLatest(items);
+    if (picked) return picked;
+  }
+
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
   const snapshot = await jobsRef.get();
-  const open = [];
   const all = [];
   for (const doc of snapshot.docs) {
     const data = doc.data();
     const phones = [data.clientPhone, data.jobSitePhone].map(normalizePhone);
     if (!phones.includes(normalized)) continue;
-    const item = { id: doc.id, ...data };
-    all.push(item);
-    if (data.status !== 'Завершено' && data.status !== 'Отменено') open.push(item);
+    all.push({ id: doc.id, ...data });
   }
-  const byDate = (a, b) => {
-    const millis = (v) => (v && typeof v.toMillis === 'function' ? v.toMillis() : 0);
-    return millis(b.createdAt) - millis(a.createdAt);
-  };
-  open.sort(byDate);
-  if (open.length) return open[0];
-  all.sort(byDate);
-  return all[0] || null;
+  return pickLatest(all);
+}
+
+async function findJobByPhone(phone) {
+  return findOpenJobForContact({ phone });
 }
 
 function hasRepairData(extracted) {
@@ -2330,37 +4033,132 @@ function mergeJobDescription(existing, note) {
   return [base, note].filter(Boolean).join('\n\n');
 }
 
-async function processSmsWithAi({ messageId, from, body, twilioMedia, clientId, clientName }) {
-  const messageRef = messagesRef.doc(messageId);
-  const existing = await messageRef.get();
-  const messageSid = existing.exists ? existing.data().sid : '';
+function hasIntakeLead(extracted) {
+  if (!extracted) return false;
+  return Boolean(
+    hasRepairData(extracted) ||
+      extracted.client_name ||
+      extracted.client_phone ||
+      extracted.address ||
+      extracted.city
+  );
+}
 
-  let mediaItems = Array.isArray(twilioMedia) ? [...twilioMedia] : [];
-  if (!mediaItems.length && messageSid) {
-    try {
-      mediaItems = await listTwilioMedia(messageSid);
-    } catch (error) {
-      console.warn('listTwilioMedia failed:', error.message);
-    }
+async function ensureClientFromEmailIntake({ extracted, fromEmail, existingClientId }) {
+  const phone = normalizePhone(extracted && extracted.client_phone);
+  const email = String((extracted && extracted.client_email) || fromEmail || '')
+    .trim()
+    .toLowerCase();
+  const name =
+    String((extracted && extracted.client_name) || '').trim() ||
+    (phone ? `Клиент ${phone}` : email);
+  let client = null;
+  if (existingClientId) {
+    const snap = await clientsRef.doc(existingClientId).get();
+    if (snap.exists) client = { id: snap.id, ...snap.data() };
+  }
+  if (!client && phone) client = await findClientByPhone(phone);
+  if (!client && email.includes('@')) client = await findClientByEmail(email);
+  const address = buildFullAddress(extracted || {}, client);
+  const city = String((extracted && extracted.city) || '').trim();
+  const street = String((extracted && extracted.address) || '').trim();
+  const postal = String((extracted && extracted.postal_code) || '').trim();
+
+  if (!client) {
+    const clientDoc = await clientsRef.add({
+      fullName: name,
+      phone: phone || '',
+      email: email.includes('@') ? email : '',
+      address,
+      locations: [
+        {
+          id: 'primary',
+          street,
+          city,
+          postalCode: postal,
+          email: email.includes('@') ? email : '',
+          contacts: [
+            {
+              id: 'owner',
+              name,
+              phone: phone || '',
+              email: email.includes('@') ? email : '',
+              role: 'owner',
+              isPrimary: true,
+            },
+          ],
+        },
+      ],
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdByAi: true,
+      createdFromEmail: true,
+    });
+    return { id: clientDoc.id, fullName: name, phone, email, address };
   }
 
-  const images = [];
+  const updates = { lastActiveAt: admin.firestore.FieldValue.serverTimestamp() };
+  if (name && !client.fullName) updates.fullName = name;
+  if (phone && !client.phone) updates.phone = phone;
+  if (email.includes('@') && !client.email) updates.email = email;
+  if (address && !client.address) updates.address = address;
+  await clientsRef.doc(client.id).set(updates, { merge: true });
+  return {
+    id: client.id,
+    fullName: updates.fullName || client.fullName || name,
+    phone: updates.phone || client.phone || phone,
+    email: updates.email || client.email || email,
+    address: updates.address || client.address || address,
+  };
+}
+
+async function processSmsWithAi({
+  messageId,
+  from,
+  body,
+  twilioMedia,
+  clientId,
+  clientName,
+  preloadedImages,
+  channel,
+  intake,
+}) {
+  const messageRef = messagesRef.doc(messageId);
+  const existing = await messageRef.get();
+  const existingData = existing.exists ? existing.data() || {} : {};
+  const messageSid = existingData.sid || '';
+  const isIntake = Boolean(intake || existingData.emailIntake);
+  const fromIsEmail = String(from || '').includes('@');
+
+  const images = Array.isArray(preloadedImages) ? [...preloadedImages] : [];
   const storedUrls = [];
-  for (let i = 0; i < mediaItems.length; i++) {
-    const item = mediaItems[i];
-    if (!item.url) continue;
-    if (item.contentType &&
-        !String(item.contentType).startsWith('image/') &&
-        item.contentType !== 'application/octet-stream') {
-      continue;
+  if (!images.length) {
+    let mediaItems = Array.isArray(twilioMedia) ? [...twilioMedia] : [];
+    if (!mediaItems.length && messageSid) {
+      try {
+        mediaItems = await listTwilioMedia(messageSid);
+      } catch (error) {
+        console.warn('listTwilioMedia failed:', error.message);
+      }
     }
-    try {
-      const downloaded = await downloadTwilioMedia(item.url);
-      images.push(downloaded);
-      const url = await uploadSmsMedia(messageId, i, downloaded.buffer, downloaded.mime);
-      if (url) storedUrls.push(url);
-    } catch (error) {
-      console.warn('SMS media download failed:', error.message);
+    for (let i = 0; i < mediaItems.length; i++) {
+      const item = mediaItems[i];
+      if (!item.url) continue;
+      if (
+        item.contentType &&
+        !String(item.contentType).startsWith('image/') &&
+        item.contentType !== 'application/octet-stream'
+      ) {
+        continue;
+      }
+      try {
+        const downloaded = await downloadTwilioMedia(item.url);
+        images.push(downloaded);
+        const url = await uploadSmsMedia(messageId, i, downloaded.buffer, downloaded.mime);
+        if (url) storedUrls.push(url);
+      } catch (error) {
+        console.warn('SMS media download failed:', error.message);
+      }
     }
   }
 
@@ -2381,7 +4179,41 @@ async function processSmsWithAi({ messageId, from, body, twilioMedia, clientId, 
     return;
   }
 
-  const prompt = `Ты — ассистент сервиса по ремонту бытовой техники в Канаде.
+  const prompt = isIntake
+    ? `Ты — ассистент сервиса по ремонту бытовой техники в Канаде.
+Клиент прислал письмо с заявкой на ремонт${images.length ? ' и фото' : ''}.
+Из письма нужно собрать карточку клиента и новую заявку.
+
+Правила:
+- Не путай отправителя письма с мастером — это клиент или агрегатор заявок
+- Имя, телефон, адрес, город, индекс извлеки, если они есть
+- Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
+- Телефон форматируй как 10 цифр
+- Если письмо НЕ про ремонт бытовой техники — relevant: false
+- Если данных мало, но это ремонт техники — relevant: true, если есть хотя бы имя, телефон, адрес, email или техника
+
+Верни СТРОГО один JSON без markdown:
+{
+  "relevant": true,
+  "client_name": null,
+  "client_phone": null,
+  "client_email": null,
+  "address": null,
+  "city": null,
+  "postal_code": null,
+  "appliance_type": null,
+  "brand": null,
+  "model": null,
+  "serial_number": null,
+  "problem_description": null,
+  "scheduled_date": null,
+  "scheduled_time": null,
+  "notes": null
+}
+
+Письмо: ${body || '(нет текста)'}
+Отправитель: ${from || ''}`
+    : `Ты — ассистент сервиса по ремонту бытовой техники в Канаде.
 Клиент прислал SMS${images.length ? ' и фото (шильдик, модель, техника)' : ''}.
 Извлеки данные для заявки на ремонт.
 
@@ -2429,7 +4261,9 @@ async function processSmsWithAi({ messageId, from, body, twilioMedia, clientId, 
       return;
     }
   }
-  const relevant = extracted.relevant !== false && hasRepairData(extracted);
+  const relevant = isIntake
+    ? extracted.relevant !== false && hasIntakeLead(extracted)
+    : extracted.relevant !== false && hasRepairData(extracted);
 
   const updates = {
     extractedData: extracted,
@@ -2441,9 +4275,46 @@ async function processSmsWithAi({ messageId, from, body, twilioMedia, clientId, 
     return;
   }
 
-  let job = await findJobByPhone(from);
+  if (isIntake) {
+    updates.emailOfferPending = relevant;
+    updates.aiStatus = relevant ? 'offer' : 'none';
+    if (clientId) updates.clientId = clientId;
+    await messageRef.set(updates, { merge: true });
+    if (!relevant) {
+      console.log(`Email intake AI skipped (not repair) ${messageId}`);
+      return;
+    }
+    const who =
+      String((extracted && extracted.client_name) || clientName || from || '').trim();
+    const appliance = String((extracted && extracted.appliance_type) || '').trim();
+    try {
+      await notifyMaster(
+        'Письмо о ремонте',
+        [who, appliance, 'Создать клиента и встречу?'].filter(Boolean).join('\n'),
+        {
+          type: 'email_offer',
+          source: 'email',
+          messageId,
+          from: from || '',
+        }
+      );
+    } catch (error) {
+      console.warn('email intake offer notify:', error.message);
+    }
+    console.log(`Email intake offer ready for ${messageId}`);
+    return;
+  }
+
+  const fromPhone = fromIsEmail ? '' : from;
+  let job = await findOpenJobForContact({ phone: fromPhone, clientId });
   const appliance = mergeAppliance(job && (job.appliances || [])[0], extracted);
-  const smsNote = extracted.model ? `Модель: ${extracted.model}` : '';
+  const smsNote = [
+    extracted.model ? `Модель: ${extracted.model}` : '',
+    extracted.serial_number ? `Серийный номер: ${extracted.serial_number}` : '',
+    extracted.brand ? `Бренд: ${extracted.brand}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   if (job) {
     const appliances = Array.isArray(job.appliances) && job.appliances.length
@@ -2473,7 +4344,7 @@ async function processSmsWithAi({ messageId, from, body, twilioMedia, clientId, 
     const created = await jobsRef.add({
       clientId: clientId || '',
       clientName: clientName || from || '',
-      clientPhone: from || '',
+      clientPhone: fromPhone || '',
       clientAddress: '',
       hasJobSite: false,
       appliances: [appliance],
@@ -2487,7 +4358,7 @@ async function processSmsWithAi({ messageId, from, body, twilioMedia, clientId, 
       attachments: storedUrls.map((url) => ({
         url,
         type: 'image',
-        source: 'sms',
+        source: channel === 'email' ? 'email' : 'sms',
         createdAt: new Date().toISOString(),
       })),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2506,17 +4377,28 @@ async function processSmsWithAi({ messageId, from, body, twilioMedia, clientId, 
 
 const stripeHandlers = require('./stripe');
 exports.createStripePayment = stripeHandlers.createStripePayment;
+exports.getStripeBalance = stripeHandlers.getStripeBalance;
 exports.createTerminalConnectionToken = stripeHandlers.createTerminalConnectionToken;
 exports.createTerminalPaymentIntent = stripeHandlers.createTerminalPaymentIntent;
 exports.completeTerminalPayment = stripeHandlers.completeTerminalPayment;
 exports.stripeWebhook = stripeHandlers.stripeWebhook;
 exports.stripePaymentComplete = stripeHandlers.stripePaymentComplete;
+exports.estimateConfirm = require('./estimate_confirm').estimateConfirm;
+
+const expenseHandlers = require('./expenses')({
+  setCors,
+  handleOptions,
+  generateContentWithModelFallback,
+});
+exports.parseExpenseReceipt = expenseHandlers.parseExpenseReceipt;
 
 const createEmailModule = require('./email');
 const emailHandlers = createEmailModule({
   notifyMaster,
   setCors,
   handleOptions,
+  processInboundAi: processSmsWithAi,
+  translateChat,
 });
 exports.sendEmail = functions.https.onRequest(
   { timeoutSeconds: 120, memory: '512MiB', invoker: 'public' },
@@ -2532,5 +4414,29 @@ exports.syncGmailInbox = functions.scheduler.onSchedule(
   },
   async () => {
     await emailHandlers.syncGmailInbox();
+  }
+);
+
+const secretaryLearn = require('./secretary_learn')({
+  db,
+  COMPANY_ID,
+  extractJsonObject,
+  generateContentWithModelFallback,
+  notifyMaster,
+  callsRef,
+  FieldValue: admin.firestore.FieldValue,
+});
+secretaryLearnApi.proposeFromCall = secretaryLearn.proposeFromCall;
+
+exports.secretaryLearningDigest = functions.scheduler.onSchedule(
+  {
+    schedule: 'every monday 09:00',
+    timeZone: 'America/Toronto',
+    timeoutSeconds: 60,
+    memory: '256MiB',
+    retryCount: 0,
+  },
+  async () => {
+    await secretaryLearn.weeklyDigest();
   }
 );

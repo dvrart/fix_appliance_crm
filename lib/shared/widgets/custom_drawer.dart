@@ -7,7 +7,10 @@ import '../../models/models.dart';
 import '../../services/services.dart';
 import '../../features/ai/assistant/assistant_host.dart';
 import '../../features/warehouse/warehouse_screen.dart';
+import '../../features/jobs/basket_screen.dart';
 import '../../features/reports/reports_screen.dart';
+import '../../features/reports/statistics_screen.dart';
+import '../../features/expenses/expenses_screen.dart';
 import '../../features/finance/documents_list_screen.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/settings/widgets/company_logo.dart';
@@ -137,7 +140,15 @@ class CustomDrawer extends StatelessWidget {
                       color: Colors.orange,
                       onTap: () => _open(context, const WarehouseScreen()),
                     ),
-                  if (SettingsService.menuFlag(config, 'menuShowReports'))
+                  if (SettingsService.menuFlag(config, 'menuShowStatistics'))
+                    _buildTile(
+                      context,
+                      title: context.tr('Статистика', 'Statistics'),
+                      icon: Icons.query_stats,
+                      color: const Color(0xFF1565C0),
+                      onTap: () => _open(context, const StatisticsScreen()),
+                    ),
+                  if (SettingsService.menuFlag(config, 'menuShowReports')) ...[
                     _buildTile(
                       context,
                       title: context.tr('Отчеты', 'Reports'),
@@ -145,6 +156,14 @@ class CustomDrawer extends StatelessWidget {
                       color: Colors.green,
                       onTap: () => _open(context, const ReportsScreen()),
                     ),
+                    _buildTile(
+                      context,
+                      title: context.tr('Расходы', 'Expenses'),
+                      icon: Icons.receipt_long_outlined,
+                      color: Colors.deepOrange,
+                      onTap: () => _open(context, const ExpensesScreen()),
+                    ),
+                  ],
                   if (SettingsService.menuFlag(config, 'menuShowInvoices') ||
                       SettingsService.menuFlag(config, 'menuShowEstimates'))
                     _buildTile(
@@ -163,13 +182,32 @@ class CustomDrawer extends StatelessWidget {
                   ),
                 ];
 
-                return GridView.count(
-                  padding: const EdgeInsets.all(16),
-                  crossAxisCount: 2,
-                  crossAxisSpacing: 16,
-                  mainAxisSpacing: 16,
-                  childAspectRatio: 1,
-                  children: tiles,
+                return Column(
+                  children: [
+                    Expanded(
+                      child: GridView.count(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                        crossAxisCount: 2,
+                        crossAxisSpacing: 16,
+                        mainAxisSpacing: 16,
+                        childAspectRatio: 1,
+                        children: tiles,
+                      ),
+                    ),
+                    SafeArea(
+                      top: false,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: _buildSmallTrashTile(
+                            context,
+                            onTap: () => _open(context, const BasketScreen()),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 );
               },
             ),
@@ -252,6 +290,42 @@ class CustomDrawer extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSmallTrashTile(
+    BuildContext context, {
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: const Color(0xFFE53935),
+      borderRadius: BorderRadius.circular(14),
+      elevation: 2,
+      shadowColor: Colors.black26,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: SizedBox(
+          width: 72,
+          height: 72,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.delete_outline, color: Colors.white, size: 26),
+              const SizedBox(height: 4),
+              Text(
+                context.tr('Корзина', 'Trash'),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 10,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

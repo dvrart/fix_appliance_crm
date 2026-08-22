@@ -14,6 +14,7 @@ function refs() {
     messagesRef: company.collection('messages'),
     clientsRef: company.collection('clients'),
     gmailRef: company.collection('settings').doc('gmail'),
+    configRef: company.collection('settings').doc('config'),
     documentsRef: company.collection('settings').doc('documents'),
     jobsRef: company.collection('jobs'),
     shipmentEventsRef: company.collection('shipment_events'),
@@ -90,6 +91,143 @@ function collectHeaderIds(parsed) {
   return ids;
 }
 
+async function readEmailIntakeTitle() {
+  try {
+    const snap = await refs().configRef.get();
+    return String((snap.exists ? snap.data() || {} : {}).emailIntakeTitle || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+async function readWatchedEmailSenders() {
+  try {
+    const snap = await refs().configRef.get();
+    const raw = (snap.exists ? snap.data() || {} : {}).watchedEmailSenders;
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set();
+    const result = [];
+    for (const item of raw) {
+      const email = String(item || '').trim().toLowerCase();
+      if (!email.includes('@') || seen.has(email)) continue;
+      seen.add(email);
+      result.push(email);
+    }
+    return result;
+  } catch (_) {
+    return [];
+  }
+}
+
+function subjectMatchesIntake(subject, title) {
+  const needle = String(title || '').trim().toLowerCase();
+  if (needle.length < 3) return false;
+  return String(subject || '').toLowerCase().includes(needle);
+}
+
+function looksLikeApplianceRepair(subject, body) {
+  const blob = `${subject} ${body}`.toLowerCase();
+  if (blob.length < 24) return false;
+  if (isPromoOrSocialCopy(blob)) return false;
+
+  const hasAppliance =
+    /refrigerator|\bfridge\b|холодильник/.test(blob) ||
+    /\bfreezer\b|морозил/.test(blob) ||
+    /washing machine|\bwasher\b|стиральн/.test(blob) ||
+    /\bdryer\b|сушильн|\bсушилка\b/.test(blob) ||
+    /dishwasher|посудомо/.test(blob) ||
+    /\bstove\b|\bcooktop\b|\bcook top\b|плита|варочн/.test(blob) ||
+    /\boven\b|духовк/.test(blob) ||
+    /microwave|микроволн/.test(blob) ||
+    /ice maker|льдогенератор/.test(blob) ||
+    /\bgas range\b|\belectric range\b|\bkitchen range\b|\brange hood\b|вытяжк/.test(blob) ||
+    /бытов\w*\s+техник/.test(blob);
+
+  const hasIntent =
+    /\brepair(ing|s)?\b|\bремонт\b/.test(blob) ||
+    /fix(ing)? (my|the|our|this|a) /.test(blob) ||
+    /not working|doesn['’]?t work|does not work|won['’]?t (start|turn on|drain|spin|cool|heat|agitate)/.test(
+      blob
+    ) ||
+    /не работает|не включа/.test(blob) ||
+    /\bbroken\b|сломал/.test(blob) ||
+    /leaking|\bleak\b|течёт|течет/.test(blob) ||
+    /no (cool|cold|heat|ice|power)/.test(blob) ||
+    /service call|book(ing)? .*(tech|technician|repair)/.test(blob) ||
+    /need(s)? (a |the )?(tech|technician|repairman|service)/.test(blob) ||
+    /вызвать мастера|нужен мастер/.test(blob);
+
+  if (hasAppliance && hasIntent) return true;
+  if (
+    /appliance repair|ремонт (бытовой )?техник|fix (my|the|our) (fridge|refrigerator|washer|dryer|dishwasher|stove|oven|freezer|microwave)/.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function mightBeApplianceRepair(subject, body) {
+  if (looksLikeApplianceRepair(subject, body)) return true;
+  const blob = `${subject} ${body}`.toLowerCase();
+  if (blob.length < 40) return false;
+  if (isPromoOrSocialCopy(blob)) return false;
+  return (
+    /refrigerator|\bfridge\b|холодильник/.test(blob) ||
+    /\bfreezer\b|морозил/.test(blob) ||
+    /washing machine|\bwasher\b|стиральн/.test(blob) ||
+    /\bdryer\b|сушильн|\bсушилка\b/.test(blob) ||
+    /dishwasher|посудомо/.test(blob) ||
+    /\bstove\b|\bcooktop\b|\bcook top\b|плита|варочн/.test(blob) ||
+    /\boven\b|духовк/.test(blob) ||
+    /microwave|микроволн/.test(blob) ||
+    /ice maker|льдогенератор/.test(blob) ||
+    /\bgas range\b|\belectric range\b|\bkitchen range\b|\brange hood\b|вытяжк/.test(blob) ||
+    /бытов\w*\s+техник|\bappliance\b/.test(blob)
+  );
+}
+
+function isPromoOrSocialCopy(blob) {
+  return /pins? (for you|you might like)|inspired by your|trending on pinterest|shop these ideas|weekly digest|you might like these pins/.test(
+    blob
+  );
+}
+
+function isBulkPromoMail(fromEmail, subject, body, parsed) {
+  const from = String(fromEmail || '').toLowerCase();
+  if (
+    /pinterest|pinimg|facebookmail|\bfacebook\.com|instagram|twitter\.com|\bx\.com|linkedin|tiktok|mailchimp|sendgrid\.net|constantcontact|hubspot|substack|beehiiv/.test(
+      from
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^(noreply|no-reply|no_reply|notifications|news|newsletter|promo|marketing|deals|offers|pinbot)@/.test(
+      from
+    )
+  ) {
+    return true;
+  }
+  const blob = `${subject} ${body}`.toLowerCase();
+  if (isPromoOrSocialCopy(blob)) return true;
+  if (/pinterest\.com|\bpin\.it\b/.test(blob) && /\bpin(s|ned|ning)?\b|board/.test(blob)) {
+    return true;
+  }
+  const headers = parsed && parsed.headers;
+  let unsub = false;
+  if (headers) {
+    if (typeof headers.get === 'function') {
+      unsub = Boolean(headers.get('list-unsubscribe'));
+    } else {
+      unsub = Boolean(headers['list-unsubscribe']);
+    }
+  }
+  if (unsub && !looksLikeApplianceRepair(subject, body)) return true;
+  return false;
+}
+
 async function loadCrmEmailGate() {
   const snap = await refs().messagesRef.where('channel', '==', 'email').get();
   const sentTo = new Map();
@@ -124,6 +262,75 @@ function extractAddress(value) {
   return '';
 }
 
+function wrapAngleId(value) {
+  const id = String(value || '').trim();
+  if (!id) return '';
+  return id.startsWith('<') ? id : `<${id}>`;
+}
+
+async function sendCrmEmail({
+  to,
+  body,
+  subject,
+  clientId,
+  jobId,
+  kind,
+  inReplyTo,
+  references,
+  phone,
+}) {
+  const dest = String(to || '').trim().toLowerCase();
+  const text = String(body || '').trim();
+  if (!dest.includes('@') || !text) return false;
+  const auth = await getGmailAuth();
+  if (!auth) {
+    console.warn('sendCrmEmail: Gmail is not connected');
+    return false;
+  }
+  const companyName = await getCompanyName();
+  const mailSubject = String(subject || '').trim() || companyName;
+  const messageId = `<crm-${crypto.randomUUID()}@${String(auth.user).split('@')[1] || 'gmail.com'}>`;
+  const headers = { 'X-Fix-CRM': '1' };
+  const replyTo = wrapAngleId(inReplyTo);
+  const refsHeader = wrapAngleId(references || inReplyTo);
+  if (replyTo) headers['In-Reply-To'] = replyTo;
+  if (refsHeader) headers.References = refsHeader;
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth,
+  });
+  const info = await transporter.sendMail({
+    from: `"${companyName}" <${auth.user}>`,
+    to: dest,
+    subject: mailSubject,
+    text,
+    messageId,
+    headers,
+  });
+  const storedId = normalizeMessageId(info.messageId || messageId);
+  await refs().messagesRef.add({
+    sid: storedId || `email-${Date.now()}`,
+    from: auth.user,
+    to: dest,
+    fromEmail: auth.user,
+    toEmail: dest,
+    body: text,
+    subject: mailSubject,
+    direction: 'outbound',
+    channel: 'email',
+    status: 'sent',
+    clientId: clientId || null,
+    jobId: jobId || null,
+    kind: kind || null,
+    phone: phone || null,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    read: true,
+    emailMessageId: storedId,
+    crmThread: true,
+  });
+  return true;
+}
+
 function parseReqBody(req) {
   const raw = req.body;
   if (typeof raw === 'string') {
@@ -143,6 +350,9 @@ function extractTrackingNumber(text) {
     /\b(\d{3}-\d{7}-\d{7})\b/,
     /\b(1Z[A-Z0-9]{16})\b/i,
     /\b([A-Z]{2}\d{9}CA)\b/i,
+    /\b(\d{16})\b/,
+    /\b(FX\d{12})\b/i,
+    /\b(\d{12,14})\b/,
   ];
   for (const pattern of patterns) {
     const match = blob.match(pattern);
@@ -151,14 +361,37 @@ function extractTrackingNumber(text) {
   return '';
 }
 
-function isAmazonMail(fromEmail, subject, body) {
-  const blob = `${fromEmail} ${subject} ${body}`.toLowerCase();
-  return /amazon\.ca|amazon\.com|amazon\.co|shipment-tracking@|auto-confirm@amazon|order-update@amazon|marketplace\.amazon/.test(
-    blob
+function extractOrderId(text) {
+  const blob = String(text || '');
+  const amazon = blob.match(/\b(\d{3}-\d{7}-\d{7})\b/);
+  if (amazon) return amazon[1];
+  const labeled = blob.match(
+    /(?:order(?:\s*(?:id|number|#))?|commande|заказ)[:\s#]*([A-Z0-9-]{6,})\b/i
   );
+  if (labeled) return labeled[1];
+  return '';
 }
 
-function amazonShipmentStatus(subject, body) {
+const PARTS_SUPPLIERS = [
+  { id: 'amazon', label: 'Amazon', match: /amazon\.(ca|com)|shipment-tracking@|auto-confirm@amazon|order-update@amazon|marketplace\.amazon/i },
+  { id: 'reliable_parts', label: 'Reliable Parts', match: /reliableparts\.(ca|com)|reliable.?parts/i },
+  { id: 'partselect', label: 'PartSelect', match: /partselect\.(ca|com)/i },
+  { id: 'encompass', label: 'Encompass', match: /encompass\.com|repairclinic\.com|appliancepartspros/i },
+  { id: 'marcone', label: 'Marcone', match: /marcone\.com/i },
+  { id: 'ebay', label: 'eBay', match: /ebay\.(ca|com)|@ebay\./i },
+  { id: 'carrier', label: 'UPS / FedEx / Purolator', match: /ups\.com|fedex\.com|purolator\.com|canadapost|canadapost-postescanada|shipnotify|tracking@/i },
+];
+
+function detectSupplier(fromEmail, subject, body) {
+  const blob = `${fromEmail} ${subject} ${body}`;
+  return PARTS_SUPPLIERS.find((item) => item.match.test(blob)) || null;
+}
+
+function isShipmentMail(fromEmail, subject, body) {
+  return Boolean(detectSupplier(fromEmail, subject, body));
+}
+
+function shipmentStatus(subject, body) {
   const blob = `${subject} ${body}`.toLowerCase();
   if (/delivered|was delivered|has been delivered|left at|доставлено/.test(blob)) {
     return 'delivered';
@@ -166,13 +399,19 @@ function amazonShipmentStatus(subject, body) {
   if (/out for delivery|arriving today|today's delivery|курьер/.test(blob)) {
     return 'out_for_delivery';
   }
-  if (/shipped|has shipped|on the way|отправлен/.test(blob)) {
+  if (/shipped|has shipped|on the way|отправлен|in transit|dispatched/.test(blob)) {
     return 'shipped';
   }
   return '';
 }
 
-module.exports = function createEmailModule({ notifyMaster, setCors, handleOptions }) {
+module.exports = function createEmailModule({
+  notifyMaster,
+  setCors,
+  handleOptions,
+  processInboundAi,
+  translateChat,
+}) {
   async function sendEmail(req, res) {
     if (handleOptions(req, res)) return;
     setCors(res);
@@ -183,6 +422,7 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
     const subject = String(payload.subject || '').trim();
     const clientId = payload.clientId || null;
     const phone = payload.phone || null;
+    const bodyRu = String(payload.bodyRu || '').trim();
     const mediaUrls = Array.isArray(payload.mediaUrls)
       ? payload.mediaUrls
           .map((url) => String(url || '').trim())
@@ -203,6 +443,12 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
 
     try {
       const companyName = await getCompanyName();
+      let sendBody = body;
+      let storedRu = bodyRu;
+      if (typeof translateChat === 'function' && /[А-Яа-яЁё]/.test(body)) {
+        storedRu = storedRu || body;
+        sendBody = await translateChat(body, 'en');
+      }
       const mailSubject = subject || `${companyName}`;
       const messageId = `<crm-${crypto.randomUUID()}@${String(auth.user).split('@')[1] || 'gmail.com'}>`;
       const transporter = nodemailer.createTransport({
@@ -231,7 +477,7 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
         from: `"${companyName}" <${auth.user}>`,
         to,
         subject: mailSubject,
-        text: body || (attachments.length ? ' ' : ''),
+        text: sendBody || (attachments.length ? ' ' : ''),
         attachments,
         messageId,
         headers: { 'X-Fix-CRM': '1' },
@@ -250,7 +496,8 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
         to,
         fromEmail: auth.user,
         toEmail: to,
-        body,
+        body: sendBody,
+        bodyRu: storedRu || '',
         subject: mailSubject,
         direction: 'outbound',
         channel: 'email',
@@ -271,7 +518,7 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
     }
   }
 
-  async function ingestAmazonShipment(parsed, uid) {
+  async function ingestShipmentMail(parsed, uid) {
     const fromEmail = extractAddress(parsed.from);
     const subject = String(parsed.subject || '').trim();
     const text = String(parsed.text || '')
@@ -281,23 +528,24 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
       ? String(parsed.html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 12000)
       : '';
     const body = `${text} ${htmlFallback}`;
-    if (!isAmazonMail(fromEmail, subject, body)) return false;
-    const status = amazonShipmentStatus(subject, body);
+    const supplier = detectSupplier(fromEmail, subject, body);
+    if (!supplier) return false;
+    const status = shipmentStatus(subject, body);
     if (!status) return false;
 
-    const messageId = normalizeMessageId(parsed.messageId || `amazon-${uid}`);
+    const messageId = normalizeMessageId(parsed.messageId || `ship-${uid}`);
     const eventRef = refs().shipmentEventsRef.doc(messageId.slice(0, 700) || `uid-${uid}`);
     const existingEvent = await eventRef.get();
     if (existingEvent.exists) return true;
 
     const tracking = extractTrackingNumber(`${subject} ${body}`);
-    const orderId = (String(`${subject} ${body}`).match(/\b(\d{3}-\d{7}-\d{7})\b/) || [])[1] || '';
+    const orderId = extractOrderId(`${subject} ${body}`);
     const jobsSnap = await refs().jobsRef.get();
     let matched = null;
     for (const doc of jobsSnap.docs) {
       const data = doc.data() || {};
       const jobTrack = String(data.trackingNumber || '').replace(/\s/g, '');
-      const jobOrder = String(data.amazonOrderId || '').trim();
+      const jobOrder = String(data.amazonOrderId || data.trackingOrderId || '').trim();
       if (tracking && jobTrack && jobTrack.toLowerCase() === tracking.replace(/\s/g, '').toLowerCase()) {
         matched = { id: doc.id, ...data };
         break;
@@ -312,6 +560,7 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
       messageId,
       uid: uid || null,
       status,
+      supplier: supplier.id,
       trackingNumber: tracking,
       amazonOrderId: orderId,
       jobId: matched ? matched.id : null,
@@ -325,7 +574,7 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
           trackingStatus: status,
           trackingNumber: tracking || matched.trackingNumber || '',
           amazonOrderId: orderId || matched.amazonOrderId || '',
-          trackingCarrier: 'amazon',
+          trackingCarrier: supplier.id,
           trackingUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
@@ -338,10 +587,10 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
         : tracking || orderId || subject;
       const title =
         status === 'delivered'
-          ? 'Amazon: доставлено'
+          ? `${supplier.label}: доставлено`
           : status === 'out_for_delivery'
-            ? 'Amazon: курьер сегодня'
-            : 'Amazon: отправлено';
+            ? `${supplier.label}: курьер сегодня`
+            : `${supplier.label}: отправлено`;
       await notifyMaster(title, who, {
         type: 'shipment',
         jobId: matched ? matched.id : '',
@@ -357,17 +606,38 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
     if (!fromEmail.includes('@')) return false;
     if (fromEmail === ourUser.toLowerCase()) return false;
 
-    if (await ingestAmazonShipment(parsed, uid)) {
+    if (await ingestShipmentMail(parsed, uid)) {
       return true;
     }
 
     const replyIds = collectHeaderIds(parsed);
     const replyClientId = replyIds.map((id) => gate.messageIds.get(id)).find(Boolean) || null;
     const isCrmReply = gate.sentTo.has(fromEmail) || replyIds.some((id) => gate.messageIds.has(id));
-    if (!isCrmReply) {
+    const intakeTitle = await readEmailIntakeTitle();
+    const subject = String(parsed.subject || '').trim();
+    const isIntake = subjectMatchesIntake(subject, intakeTitle);
+    const watched = await readWatchedEmailSenders();
+    const isWatched = watched.includes(fromEmail);
+    const textPreview = String(parsed.text || '')
+      .trim()
+      .slice(0, 4000);
+    const htmlPreview = parsed.html
+      ? String(parsed.html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000)
+      : '';
+    const looksRepair = looksLikeApplianceRepair(subject, `${textPreview} ${htmlPreview}`);
+    const maybeRepair = mightBeApplianceRepair(subject, `${textPreview} ${htmlPreview}`);
+    if (
+      !isCrmReply &&
+      isBulkPromoMail(fromEmail, subject, `${textPreview} ${htmlPreview}`, parsed)
+    ) {
+      console.log(`syncGmailInbox skip promo ${fromEmail} uid=${uid || '-'}`);
+      return false;
+    }
+    if (!isCrmReply && !isIntake && !isWatched && !maybeRepair) {
       console.log(`syncGmailInbox skip non-CRM ${fromEmail} uid=${uid || '-'}`);
       return false;
     }
+    const treatIntake = isIntake || (!isCrmReply && maybeRepair);
 
     const messageId = normalizeMessageId(parsed.messageId || `uid-${uid}`);
     const existing = await refs().messagesRef.where('emailMessageId', '==', messageId).limit(1).get();
@@ -382,10 +652,38 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
       ? String(parsed.html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 8000)
       : '';
     const body = text || htmlFallback || '(пустое письмо)';
-    const subject = String(parsed.subject || '').trim();
     const created = parsed.date instanceof Date ? parsed.date : new Date();
 
-    await refs().messagesRef.add({
+    const preloadedImages = [];
+    for (const att of parsed.attachments || []) {
+      const mime = String(att.contentType || '');
+      if (!mime.startsWith('image/')) continue;
+      const buf = att.content;
+      if (!Buffer.isBuffer(buf) || !buf.length || buf.length > 6_000_000) continue;
+      preloadedImages.push({
+        mime,
+        buffer: buf,
+        base64: buf.toString('base64'),
+      });
+      if (preloadedImages.length >= 3) break;
+    }
+
+    let confirmHandled = false;
+    try {
+      const visitSms = require('./visit_sms');
+      if (typeof visitSms.tryHandleConfirmReply === 'function') {
+        confirmHandled = await visitSms.tryHandleConfirmReply({
+          from: fromEmail,
+          body,
+          clientId,
+        });
+      }
+    } catch (error) {
+      console.warn('email visit confirm:', error.message);
+    }
+
+    const runAi = !confirmHandled && (isCrmReply || treatIntake);
+    const added = await refs().messagesRef.add({
       sid: messageId,
       from: fromEmail,
       to: toEmail,
@@ -398,15 +696,47 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
       status: 'received',
       clientId,
       createdAt: admin.firestore.Timestamp.fromDate(created),
-      read: false,
+      read: confirmHandled,
       emailMessageId: messageId,
       gmailUid: uid || null,
       crmThread: true,
+      emailIntake: treatIntake && !confirmHandled,
+      watchedSender: isWatched,
+      applianceRepair: looksRepair || maybeRepair,
       inReplyTo: replyIds[0] || null,
+      aiStatus: confirmHandled
+        ? 'skipped_confirm'
+        : runAi && (body.trim() || preloadedImages.length)
+          ? 'processing'
+          : 'none',
     });
 
-    const isFresh = Date.now() - created.getTime() < 20 * 60 * 1000;
-    if (isFresh && notifyMaster) {
+    if (typeof processInboundAi === 'function' && runAi && (body.trim() || preloadedImages.length)) {
+      processInboundAi({
+        messageId: added.id,
+        from: fromEmail,
+        body: [subject, body].filter(Boolean).join('\n'),
+        twilioMedia: [],
+        clientId,
+        clientName: matched ? matched.fullName || matched.name || '' : '',
+        preloadedImages,
+        channel: 'email',
+        intake: treatIntake,
+      }).catch((error) => console.warn('email inbound AI:', error.message));
+    }
+
+    if (typeof translateChat === 'function' && body.trim()) {
+      translateChat(body, 'ru')
+        .then((ru) => {
+          if (ru && ru.trim() && ru.trim() !== body.trim()) {
+            return added.update({ bodyRu: ru.trim() });
+          }
+        })
+        .catch((error) => console.warn('email inbound translate:', error.message));
+    }
+
+    const isFresh = Date.now() - created.getTime() < 24 * 60 * 60 * 1000;
+    if (isFresh && notifyMaster && isCrmReply && !treatIntake) {
       const who = matched
         ? (matched.fullName || matched.name || fromEmail)
         : fromEmail;
@@ -414,6 +744,7 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
         type: 'email',
         from: fromEmail,
         to: toEmail,
+        messageId: added.id,
       });
     }
     return true;
@@ -510,3 +841,5 @@ module.exports = function createEmailModule({ notifyMaster, setCors, handleOptio
 
   return { sendEmail, syncGmailInbox };
 };
+
+module.exports.sendCrmEmail = sendCrmEmail;

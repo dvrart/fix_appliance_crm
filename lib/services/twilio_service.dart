@@ -26,15 +26,22 @@ class CallRecord {
   final DateTime? endTime;
   final int? durationSeconds;
   final String? recordingUrl;
+  final String? storageUrl;
   final String? transcription;
+  final String? transcriptionRu;
+  final String? transcriptionEn;
+  final String? summary;
   final String status; // 'ringing' | 'in-progress' | 'completed' | 'no-answer' | 'failed' | 'busy'
   final String aiStatus; // 'none' | 'processing' | 'done' | 'error'
   final String? aiError;
   final Map<String, dynamic>? extractedData;
+  final Map<String, dynamic>? aiReception;
   final String? clientId;
   final String? createdJobId;
   final bool reviewed;
   final String answeredBy; // '' | 'master' | 'ai'
+  final bool serviceDeclined;
+  final String declineReason;
 
   CallRecord({
     required this.id,
@@ -46,18 +53,52 @@ class CallRecord {
     this.endTime,
     this.durationSeconds,
     this.recordingUrl,
+    this.storageUrl,
     this.transcription,
+    this.transcriptionRu,
+    this.transcriptionEn,
+    this.summary,
     this.status = 'ringing',
     this.aiStatus = 'none',
     this.aiError,
     this.extractedData,
+    this.aiReception,
     this.clientId,
     this.createdJobId,
     this.reviewed = false,
     this.answeredBy = '',
+    this.serviceDeclined = false,
+    this.declineReason = '',
   });
 
   bool get isIncoming => direction == 'inbound';
+  bool get answeredByAi => answeredBy == 'ai';
+  bool get hasRecording =>
+      (storageUrl ?? '').trim().isNotEmpty ||
+      (recordingUrl ?? '').trim().isNotEmpty;
+
+  String get liveError {
+    final reception = aiReception;
+    if (reception == null) return '';
+    return (reception['liveError'] ?? '').toString().trim();
+  }
+
+  bool get liveFailed => aiReception?['liveFailed'] == true;
+
+  Map<String, dynamic> toAttachment() {
+    return {
+      'callId': id,
+      'url': recordingUrl ?? '',
+      'storageUrl': storageUrl ?? '',
+      'transcription': transcription ?? '',
+      'transcriptionRu': transcriptionRu ?? transcription ?? '',
+      'transcriptionEn': transcriptionEn ?? '',
+      'summary': summary ?? '',
+      'history': aiReception?['history'],
+      'answeredBy': answeredBy,
+      'extracted': extractedData,
+    };
+  }
 
   static DateTime? parseStamp(dynamic value) {
     if (value == null) return null;
@@ -78,17 +119,46 @@ class CallRecord {
       endTime: parseStamp(map['endTime']),
       durationSeconds: map['durationSeconds'],
       recordingUrl: map['recordingUrl'],
+      storageUrl: (map['storageUrl'] ?? '').toString().trim().isEmpty
+          ? null
+          : (map['storageUrl'] ?? '').toString(),
       transcription: map['transcription'],
+      transcriptionRu: (map['transcriptionRu'] ?? '').toString().trim().isEmpty
+          ? null
+          : (map['transcriptionRu'] ?? '').toString(),
+      transcriptionEn: (map['transcriptionEn'] ?? '').toString().trim().isEmpty
+          ? null
+          : (map['transcriptionEn'] ?? '').toString(),
+      summary: (map['summary'] ?? '').toString().trim().isEmpty
+          ? null
+          : (map['summary'] ?? '').toString(),
       status: map['status'] ?? 'ringing',
       aiStatus: map['aiStatus'] ?? 'none',
       aiError: map['aiError'],
       extractedData: map['extractedData'] != null
           ? Map<String, dynamic>.from(map['extractedData'])
           : null,
+      aiReception: map['aiReception'] is Map
+          ? Map<String, dynamic>.from(map['aiReception'] as Map)
+          : null,
       clientId: map['clientId'],
       createdJobId: map['createdJobId'],
       reviewed: map['reviewed'] == true,
       answeredBy: (map['answeredBy'] ?? '').toString(),
+      serviceDeclined: map['serviceDeclined'] == true ||
+          (map['extractedData'] is Map &&
+              map['extractedData']['service_declined'] == true) ||
+          (map['aiReception'] is Map &&
+              map['aiReception']['serviceDeclined'] == true),
+      declineReason: () {
+        final top = (map['declineReason'] ?? '').toString().trim();
+        if (top.isNotEmpty) return top;
+        final extracted = map['extractedData'];
+        if (extracted is Map) {
+          return (extracted['decline_reason'] ?? '').toString().trim();
+        }
+        return '';
+      }(),
     );
   }
 }
@@ -445,6 +515,46 @@ class TwilioService {
     pendingJobId = null;
   }
 
+  /// Incoming UI leftover after the secretary already answered, or after the
+  /// invite was cancelled while the app was closed.
+  static Future<bool> dropStaleIncomingIfNeeded() async {
+    final active = _activeCall ?? TwilioVoicePlatform.instance.call.activeCall;
+    if (active == null) return false;
+    if (active.callDirection != CallDirection.incoming) return false;
+    if (callStatus == 'connected') return false;
+
+    var stale = false;
+    try {
+      final snapshot = await _callsRef
+          .where('direction', isEqualTo: 'inbound')
+          .orderBy('startTime', descending: true)
+          .limit(1)
+          .get();
+      if (snapshot.docs.isNotEmpty) {
+        final data = snapshot.docs.first.data() as Map<String, dynamic>;
+        final status = (data['status'] ?? '').toString();
+        final answeredBy = (data['answeredBy'] ?? '').toString();
+        final start = CallRecord.parseStamp(data['startTime']);
+        final tooOld = start != null &&
+            DateTime.now().difference(start) > const Duration(seconds: 40);
+        stale = tooOld ||
+            answeredBy == 'ai' ||
+            status == 'in-progress' ||
+            status == 'completed' ||
+            status == 'no-answer' ||
+            status == 'busy' ||
+            status == 'failed';
+      }
+    } catch (e) {
+      debugPrint('TwilioService.dropStaleIncomingIfNeeded: $e');
+    }
+
+    if (!stale) return false;
+    debugPrint('TwilioService: dropping stale incoming invite');
+    await hangUp();
+    return true;
+  }
+
   static Future<bool> toggleMute() async {
     final isMuted = await TwilioVoicePlatform.instance.call.isMuted() ?? false;
     await TwilioVoicePlatform.instance.call.toggleMute(!isMuted);
@@ -492,8 +602,38 @@ class TwilioService {
         );
   }
 
+  static Stream<List<CallRecord>> streamAll() {
+    return _callsRef.snapshots().map(
+          (snapshot) => snapshot.docs
+              .map((doc) => CallRecord.fromMap(doc.data() as Map<String, dynamic>, doc.id))
+              .toList(),
+        );
+  }
+
+  static Stream<CallRecord?> watchCall(String callId) {
+    if (callId.trim().isEmpty) return Stream.value(null);
+    return _callsRef.doc(callId).snapshots().map((snapshot) {
+      final data = snapshot.data();
+      if (data == null) return null;
+      return CallRecord.fromMap(data as Map<String, dynamic>, snapshot.id);
+    });
+  }
+
   static Future<void> markReviewed(String callId) async {
     await _callsRef.doc(callId).set({'reviewed': true}, SetOptions(merge: true));
+  }
+
+  static Future<void> markAllPendingReviewed() async {
+    final snap = await _callsRef
+        .where('aiStatus', isEqualTo: 'done')
+        .where('reviewed', isEqualTo: false)
+        .get();
+    if (snap.docs.isEmpty) return;
+    final batch = FirebaseFirestore.instance.batch();
+    for (final doc in snap.docs) {
+      batch.set(doc.reference, {'reviewed': true}, SetOptions(merge: true));
+    }
+    await batch.commit();
   }
 
   static Future<void> markJobCallsReviewed(String jobId) async {

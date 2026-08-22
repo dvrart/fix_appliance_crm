@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/l10n/app_locale.dart';
+import '../../../core/utils/app_time_picker.dart';
 import '../../../services/morning_briefing_service.dart';
 import '../../../services/on_the_way_service.dart';
 import '../../../services/settings_service.dart';
 import '../../../services/twilio_service.dart';
+import '../../../shared/widgets/app_bar_save.dart';
+import '../../../shared/widgets/email_field.dart';
 import '../widgets/company_name_dialog.dart';
 import '../widgets/settings_ui.dart';
-import '../../../core/l10n/app_locale.dart';
-import '../../../shared/widgets/email_field.dart';
 import 'message_templates_page.dart';
 
 class CommunicationSettingsPage extends StatefulWidget {
@@ -27,9 +29,22 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   bool _bookingSms = true;
   bool _reminderSms = true;
   bool _autoReview = true;
+  List<String> _reminderOffsets = const ['24h'];
+  int _morningHour = 7;
+  int _eveningHour = 19;
+  int _reminderMorningHour = 8;
+  int _onWayMeters = 2000;
+  String _onWayText = '';
   final _gmailUserCtrl = TextEditingController();
   final _gmailPassCtrl = TextEditingController();
+  final _emailIntakeCtrl = TextEditingController();
+  final _watchCtrl = TextEditingController();
+  List<String> _watchedSenders = [];
+  String _savedGmailUser = '';
+  String _savedIntake = '';
+  List<String> _savedWatchers = [];
   bool _gmailSaved = false;
+  bool _gmailListening = false;
 
   @override
   void initState() {
@@ -44,6 +59,8 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   void dispose() {
     _gmailUserCtrl.dispose();
     _gmailPassCtrl.dispose();
+    _emailIntakeCtrl.dispose();
+    _watchCtrl.dispose();
     super.dispose();
   }
 
@@ -61,12 +78,25 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   Future<void> _loadFlags() async {
     final config = await SettingsService.loadConfig();
     if (!mounted) return;
+    final intake = SettingsService.readEmailIntakeTitle(config);
+    final watched = SettingsService.readWatchedEmailSenders(config);
+    _emailIntakeCtrl.text = intake;
+    if (!mounted) return;
     setState(() {
       _morning = SettingsService.boolFlag(config, 'morningBriefingEnabled');
       _onWayGeo = SettingsService.boolFlag(config, 'onTheWayPromptEnabled');
       _bookingSms = SettingsService.readBookingSmsEnabled(config);
       _reminderSms = SettingsService.readReminderSmsEnabled(config);
       _autoReview = SettingsService.readAutoReviewSmsEnabled(config);
+      _reminderOffsets = SettingsService.readReminderOffsets(config);
+      _morningHour = SettingsService.readMorningBriefingHour(config);
+      _eveningHour = SettingsService.readEveningBriefingHour(config);
+      _reminderMorningHour = SettingsService.readReminderMorningHour(config);
+      _onWayMeters = SettingsService.readOnTheWayMeters(config);
+      _onWayText = SettingsService.readOnTheWayText(config);
+      _savedIntake = intake;
+      _watchedSenders = watched;
+      _savedWatchers = List<String>.from(watched);
     });
   }
 
@@ -88,7 +118,17 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
     if (!mounted) return;
     final savedUser = (gmail['user'] ?? '').toString();
     _gmailUserCtrl.text = savedUser.isNotEmpty ? savedUser : docs.companyEmail;
-    setState(() => _gmailSaved = (gmail['appPassword'] ?? '').toString().isNotEmpty);
+    setState(() {
+      _gmailSaved = (gmail['appPassword'] ?? '').toString().isNotEmpty;
+      _savedGmailUser = _gmailUserCtrl.text.trim();
+    });
+    if (_gmailListening) return;
+    _gmailListening = true;
+    for (final controller in [_gmailUserCtrl, _gmailPassCtrl, _emailIntakeCtrl]) {
+      controller.addListener(() {
+        if (mounted) setState(() {});
+      });
+    }
   }
 
   Future<void> _saveGmail() async {
@@ -104,14 +144,247 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       user: user,
       appPassword: _gmailPassCtrl.text.trim().isEmpty ? null : _gmailPassCtrl.text.trim(),
     );
+    await SettingsService.updateConfigMap({
+      'emailIntakeTitle': _emailIntakeCtrl.text.trim(),
+      'watchedEmailSenders': _watchedSenders,
+    });
     if (!mounted) return;
     _gmailPassCtrl.clear();
     setState(() {
       _savingGmail = false;
       _gmailSaved = true;
+      _savedGmailUser = user;
+      _savedIntake = _emailIntakeCtrl.text.trim();
+      _savedWatchers = List<String>.from(_watchedSenders);
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Gmail сохранён'.tr), backgroundColor: Colors.green),
+    );
+  }
+
+  bool get _gmailDirty {
+    if (_gmailPassCtrl.text.trim().isNotEmpty) return true;
+    if (_gmailUserCtrl.text.trim() != _savedGmailUser) return true;
+    if (_emailIntakeCtrl.text.trim() != _savedIntake) return true;
+    if (_watchedSenders.join('|') != _savedWatchers.join('|')) return true;
+    return false;
+  }
+
+  void _addWatcher() {
+    final email = _watchCtrl.text.trim().toLowerCase();
+    if (!email.contains('@')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Укажите email отправителя'.tr)),
+      );
+      return;
+    }
+    if (_watchedSenders.contains(email)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Этот адрес уже в списке'.tr)),
+      );
+      return;
+    }
+    setState(() {
+      _watchedSenders = [..._watchedSenders, email];
+      _watchCtrl.clear();
+    });
+  }
+
+  String _hh(int hour) => '${hour.toString().padLeft(2, '0')}:00';
+
+  String _offsetLabel(String key) {
+    switch (key) {
+      case '48h':
+        return 'За 2 дня'.tr;
+      case '24h':
+        return 'За сутки'.tr;
+      case 'morning':
+        return '${'Утром в день визита'.tr} (${_hh(_reminderMorningHour)})';
+      case '2h':
+        return 'За 2 часа'.tr;
+      default:
+        return key;
+    }
+  }
+
+  String get _reminderSubtitle {
+    if (!_reminderSms) return 'Авто-SMS клиенту перед визитом'.tr;
+    if (_reminderOffsets.isEmpty) return 'Выберите, когда отправлять'.tr;
+    return _reminderOffsets.map(_offsetLabel).join(', ');
+  }
+
+  Future<void> _editBriefingTimes() async {
+    final morning = await showAppTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: _morningHour, minute: 0),
+      helpText: 'Утреннее уведомление'.tr,
+    );
+    if (morning == null || !mounted) return;
+    final evening = await showAppTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: _eveningHour, minute: 0),
+      helpText: 'Вечернее уведомление'.tr,
+    );
+    if (evening == null || !mounted) return;
+    setState(() {
+      _morningHour = morning.hour;
+      _eveningHour = evening.hour;
+    });
+    await SettingsService.updateConfigMap({
+      'morningBriefingHour': _morningHour,
+      'eveningBriefingHour': _eveningHour,
+    });
+    await MorningBriefingService.refresh();
+  }
+
+  Future<void> _editOnWay() async {
+    final kmCtrl = TextEditingController(
+      text: (_onWayMeters / 1000).toStringAsFixed(
+        _onWayMeters % 1000 == 0 ? 0 : 1,
+      ),
+    );
+    final textCtrl = TextEditingController(text: _onWayText);
+    final saved = await showDialog<bool>(
+      context: context,
+      useRootNavigator: true,
+      builder: (context) => AlertDialog(
+        title: Text('SMS «я в пути»'.tr),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: kmCtrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'Расстояние, км'.tr,
+                helperText: 'Спросить после этого отъезда от клиента'.tr,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: textCtrl,
+              minLines: 2,
+              maxLines: 4,
+              decoration: InputDecoration(
+                labelText: 'Текст SMS'.tr,
+                hintText: 'Hi, this is your technician. I am on the way.'.tr,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Отмена'.tr),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('Сохранить'.tr),
+          ),
+        ],
+      ),
+    );
+    if (saved != true || !mounted) return;
+    final km = double.tryParse(kmCtrl.text.replaceAll(',', '.').trim()) ?? 2;
+    final meters = (km * 1000).round().clamp(200, 20000);
+    final text = textCtrl.text.trim();
+    setState(() {
+      _onWayMeters = meters;
+      _onWayText = text;
+    });
+    await SettingsService.updateConfigMap({
+      'onTheWayMeters': meters,
+      'onTheWayText': text,
+    });
+  }
+
+  Future<void> _editReminders() async {
+    var selected = List<String>.from(_reminderOffsets);
+    var morningHour = _reminderMorningHour;
+    await showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      isScrollControlled: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheet) {
+            Future<void> persist() async {
+              if (selected.isEmpty) selected = ['24h'];
+              setState(() {
+                _reminderOffsets = List<String>.from(selected);
+                _reminderMorningHour = morningHour;
+                _reminderSms = true;
+              });
+              await SettingsService.updateConfigMap({
+                'reminderSmsEnabled': true,
+                'reminderOffsets': selected,
+                'reminderMorningHour': morningHour,
+              });
+            }
+
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Когда слать напоминание'.tr,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Можно выбрать несколько раз. Клиенту уходит English SMS.'.tr,
+                      style: TextStyle(color: Colors.grey.shade700),
+                    ),
+                    const SizedBox(height: 8),
+                    for (final key in SettingsService.reminderOffsetKeys)
+                      CheckboxListTile(
+                        value: selected.contains(key),
+                        title: Text(
+                          key == 'morning'
+                              ? 'Утром в день визита'.tr
+                              : _offsetLabel(key).replaceAll(RegExp(r' \(.*\)$'), ''),
+                        ),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        onChanged: (on) {
+                          setSheet(() {
+                            if (on == true) {
+                              if (!selected.contains(key)) selected.add(key);
+                            } else {
+                              selected.remove(key);
+                            }
+                          });
+                          persist();
+                        },
+                      ),
+                    if (selected.contains('morning'))
+                      ListTile(
+                        title: Text('Время утреннего SMS'.tr),
+                        subtitle: Text(_hh(morningHour)),
+                        trailing: const Icon(Icons.schedule),
+                        onTap: () async {
+                          final picked = await showAppTimePicker(
+                            context: context,
+                            initialTime: TimeOfDay(hour: morningHour, minute: 0),
+                            helpText: 'Утреннее SMS'.tr,
+                          );
+                          if (picked == null) return;
+                          setSheet(() => morningHour = picked.hour);
+                          await persist();
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -130,6 +403,13 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   Widget build(BuildContext context) {
     return SettingsPageScaffold(
       title: 'Связь'.tr,
+      actions: [
+        AppBarSaveButton(
+          dirty: _gmailDirty,
+          saving: _savingGmail,
+          onPressed: _saveGmail,
+        ),
+      ],
       body: ListView(
         padding: const EdgeInsets.only(top: 20, bottom: 40),
         children: [
@@ -206,21 +486,24 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
               SettingsRow(
                 title: 'Заявки утром и вечером'.tr,
                 subtitle:
-                    'В 7:00 — сегодняшний день. В 19:00 — завтра и что взять.'.tr,
+                    '${'Утром'.tr} ${_hh(_morningHour)}, ${'вечером'.tr} ${_hh(_eveningHour)}',
                 icon: Icons.wb_sunny_outlined,
                 iconColor: Colors.orange,
                 trailing: Switch(value: _morning, onChanged: _setMorning),
+                onTap: _editBriefingTimes,
               ),
               SettingsRow(
                 title: 'SMS «я в пути»'.tr,
-                subtitle: 'Спросить после 2 км от клиента'.tr,
+                subtitle:
+                    '${'После'.tr} ${(_onWayMeters / 1000).toStringAsFixed(_onWayMeters % 1000 == 0 ? 0 : 1)} ${'км'.tr}',
                 icon: Icons.near_me,
                 iconColor: Colors.teal,
                 trailing: Switch(value: _onWayGeo, onChanged: _setOnWayGeo),
+                onTap: _editOnWay,
               ),
               SettingsRow(
                 title: 'SMS при записи'.tr,
-                subtitle: 'Подтверждение даты и ответ 1 / 2'.tr,
+                subtitle: 'После вашего подтверждения заявки. Клиент отвечает 1 / 0 / 5. С почты — письмо на e-mail.'.tr,
                 icon: Icons.event_available,
                 iconColor: Colors.blue,
                 trailing: Switch(
@@ -232,8 +515,8 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                 ),
               ),
               SettingsRow(
-                title: 'Напоминание за сутки'.tr,
-                subtitle: 'Авто-SMS накануне визита'.tr,
+                title: 'Напоминание о визите'.tr,
+                subtitle: _reminderSubtitle,
                 icon: Icons.notifications_active_outlined,
                 iconColor: Colors.indigo,
                 trailing: Switch(
@@ -243,6 +526,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                     SettingsService.updateConfig('reminderSmsEnabled', value);
                   },
                 ),
+                onTap: _editReminders,
               ),
               SettingsRow(
                 title: 'Авто-отзыв после работы'.tr,
@@ -276,8 +560,22 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
             child: Column(
               children: [
                 Text(
-                  'В CRM попадают только письма клиентам из приложения и их ответы. Остальная почта Gmail не загружается. Пароль — «Пароль приложения» Google, не обычный пароль от почты.'.tr,
+                  'Каждое новое письмо проверяется. Если там ремонт бытовой техники — придёт уведомление, и можно создать карточку клиента и встречу. Ответы клиентов на ваши письма попадают в переписку. Пароль — «Пароль приложения» Google, не обычный пароль от почты.'.tr,
                   style: const TextStyle(color: Colors.black54),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _emailIntakeCtrl,
+                  textCapitalization: TextCapitalization.sentences,
+                  decoration: InputDecoration(
+                    labelText: 'Заголовок для заявок с почты'.tr,
+                    helperText: 'Если тема содержит эту фразу — письмо сразу идёт как заявка на проверку. Письма про ремонт техники тоже разбираются.'.tr,
+                    helperMaxLines: 2,
+                    prefixIcon: const Icon(Icons.title),
+                    border: const OutlineInputBorder(),
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
                 ),
                 const SizedBox(height: 12),
                 EmailAutocompleteField(
@@ -303,15 +601,75 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                     fillColor: Colors.white,
                   ),
                 ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  height: 48,
-                  child: ElevatedButton(
-                    onPressed: _savingGmail ? null : _saveGmail,
-                    child: Text(_savingGmail ? 'Сохранение…'.tr : 'Сохранить Gmail'.tr),
+                const SizedBox(height: 16),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Отслеживание писем'.tr,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                 ),
+                const SizedBox(height: 6),
+                Text(
+                  'Письма с этих адресов попадут в CRM, даже если это не ответ клиенту.'.tr,
+                  style: const TextStyle(color: Colors.black54),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: EmailAutocompleteField(
+                        controller: _watchCtrl,
+                        textInputAction: TextInputAction.done,
+                        onFieldSubmitted: (_) => _addWatcher(),
+                        decoration: InputDecoration(
+                          labelText: 'Добавить адрес отправителя'.tr,
+                          prefixIcon: const Icon(Icons.mark_email_unread_outlined),
+                          border: const OutlineInputBorder(),
+                          filled: true,
+                          fillColor: Colors.white,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      height: 56,
+                      child: IconButton.filled(
+                        style: IconButton.styleFrom(
+                          backgroundColor: const Color(0xFFFCC520),
+                          foregroundColor: Colors.black,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        onPressed: _addWatcher,
+                        icon: const Icon(Icons.add),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_watchedSenders.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final email in _watchedSenders)
+                        InputChip(
+                          label: Text(email),
+                          onDeleted: () {
+                            setState(() {
+                              _watchedSenders = [
+                                for (final item in _watchedSenders)
+                                  if (item != email) item,
+                              ];
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

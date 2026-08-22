@@ -7,6 +7,19 @@ const Map<String, String> kEnglishUi = {
   'Настройки': 'Settings',
   'Компания': 'Company',
   'Связь': 'Communication',
+  'Счета': 'Invoices',
+  'Сметы': 'Estimates',
+  'Скопировано': 'Copied',
+  'Входящий': 'Incoming',
+  'Исходящий': 'Outgoing',
+  'Нумерация': 'Numbering',
+  'Префикс номера': 'Number prefix',
+  'Следующий счёт': 'Next invoice',
+  'Следующая смета': 'Next estimate',
+  'Нет счетов': 'No invoices',
+  'Нет смет': 'No estimates',
+  'Изменить имя': 'Edit name',
+  'Изменить компанию': 'Edit company',
   'Финансы': 'Finance',
   'Финансы и документы': 'Finance & documents',
   'Ассистент': 'Assistant',
@@ -40,16 +53,44 @@ const Map<String, String> kEnglishUi = {
   'Укажите Gmail': 'Enter a Gmail address',
   'Gmail сохранён': 'Gmail saved',
   'Сохранить Gmail': 'Save Gmail',
+  'Отслеживание писем': 'Watch emails',
+  'Письма с этих адресов попадут в CRM, даже если это не ответ клиенту.':
+      'Mail from these addresses is saved in the CRM even if it is not a client reply.',
+  'Добавить адрес отправителя': 'Add sender address',
+  'Укажите email отправителя': 'Enter a sender email',
+  'Этот адрес уже в списке': 'This address is already on the list',
+  'Unit': 'Unit',
   'Пароль приложения': 'App password',
   'Новый пароль приложения': 'New app password',
   'Оставьте пустым, чтобы не менять': 'Leave empty to keep the current password',
-  'В CRM попадают только письма клиентам из приложения и их ответы. Остальная почта Gmail не загружается. Пароль — «Пароль приложения» Google, не обычный пароль от почты.':
-      'Only emails you send to clients from the app, and their replies, appear in chats. The rest of Gmail is not imported. Use a Google App Password, not your regular Gmail password.',
+  'В CRM попадают ответы клиентов на ваши письма. Письма про ремонт бытовой техники тоже становятся заявкой. Если в теме есть заданная фраза — заявка создаётся сразу. Пароль — «Пароль приложения» Google, не обычный пароль от почты.':
+      'Client replies appear in chats. Emails about appliance repair also become jobs. If the subject contains the phrase you set, a job is created right away. Use a Google App Password, not your regular Gmail password.',
+  'Каждое новое письмо проверяется. Если там ремонт бытовой техники — придёт уведомление, и можно создать карточку клиента и встречу. Ответы клиентов на ваши письма попадают в переписку. Пароль — «Пароль приложения» Google, не обычный пароль от почты.':
+      'Every new email is checked. If it is about appliance repair, you get a notification and can create a client card and a visit. Client replies to your letters appear in chat. Use a Google App Password, not your regular Gmail password.',
+  'Заголовок для заявок с почты': 'Email subject for new jobs',
+  'Если тема содержит эту фразу — заявка. Письма про ремонт техники тоже разбираются.':
+      'If the subject contains this phrase — a job is created. Appliance-repair emails are scanned too.',
+  'Если тема содержит эту фразу — письмо сразу идёт как заявка на проверку. Письма про ремонт техники тоже разбираются.':
+      'If the subject contains this phrase, the letter is offered as a job. Appliance-repair emails are scanned too.',
+  'Письмо о ремонте': 'Repair email',
+  'Укажите телефон или email': 'Enter a phone or email',
+  'Нет текста письма': 'No email text',
+  'Письмо · создать': 'Email · create',
+  'Заявки по времени': 'Jobs over time',
+  'Нет заявок за этот период': 'No jobs in this period',
+  'Инвойсы': 'Invoices',
+  'Оплаты': 'Payments',
+  'Визиты': 'Visits',
+  'Письма': 'Emails',
+  'Не удалось перевести на английский. Сообщение не отправлено.':
+      'Could not translate to English. The message was not sent.',
+  'Запись ещё не готова': 'Recording is not ready yet',
   'Какие плитки показывать в боковом меню. Звонки и переписка — в нижней вкладке «Связь». Настройки всегда остаются.':
       'Which tiles to show in the side menu. Calls and messages are in the Communication tab. Settings always stay.',
   'Склад': 'Warehouse',
   'Запчасти': 'Parts',
   'Отчеты': 'Reports',
+  'Статистика': 'Statistics',
   'Нажмите логотип — настройки': 'Tap the logo for settings',
   'Сегодня': 'Today',
   'Завтра': 'Tomorrow',
@@ -73,13 +114,20 @@ const Map<String, String> kEnglishUi = {
   'Отменено': 'Cancelled',
   'Отмена': 'Cancel',
   'Сохранить': 'Save',
+  'Не сохранять': 'Don\'t save',
+  'Сохранить изменения?': 'Save changes?',
+  'Без подтверждения изменения не сохранятся.':
+      'Changes will not be saved unless you confirm.',
   'Сохранение…': 'Saving…',
   'Сохранение...': 'Saving...',
+  'Не удалось сохранить': 'Could not save',
   'Готово': 'Done',
   'Открыть': 'Open',
   'Удалить': 'Delete',
   'Удалить?': 'Delete?',
   'Добавить': 'Add',
+  'Добавить фотографии': 'Add photos',
+  'Список пуст — добавьте позицию': 'The list is empty — add an item',
   'Повторить': 'Retry',
   'Проверить': 'Review',
   'Проверено': 'Reviewed',
@@ -161,6 +209,40 @@ const Map<String, String> kEnglishUi = {
   'ИИ берёт трубку': 'AI answers the phone',
   'Если не ответить за 20 секунд, ИИ сам примет заказ':
       'If you do not pick up within 20 seconds, AI takes the request',
+  'Чему учиться': 'What to learn',
+  'Самообучение по вашему «можно»': 'Learn only what you approve',
+  'После звонка пришлёт, чему хочет научиться. В скрипт попадёт только после вашего подтверждения.':
+      'After a call it sends what it wants to learn. Nothing enters the script until you confirm.',
+  'Подтвердить или сказать «не надо»': 'Approve or say no',
+  'Обучение': 'Learning',
+  'Ждёт вашего «можно»': 'Waiting for your yes',
+  'Разобрано': 'Reviewed',
+  'Можно, выучи': 'Yes, learn it',
+  'Только это': 'Only this',
+  'Не надо': 'No need',
+  'Выучено': 'Learned',
+  'Из разговора': 'From the call',
+  'Секретарь хочет научиться': 'The secretary wants to learn',
+  'Разбор секретаря': 'Secretary review',
+  'Разобрать секретаря': 'Review the secretary',
+  'Разобрать ошибку секретаря': 'Review the secretary error',
+  'Нет текста разговора': 'There is no call text',
+  'Так и надо': 'That was fine',
+  'Сохранить правку': 'Save the correction',
+  'Написать правку самому': 'Write a correction yourself',
+  'Все предложения': 'All proposals',
+  'Можно уточнить: выучи это, остальное не надо…':
+      'Optional: learn this, nothing else…',
+  'После звонка секретарь пришлёт, чему хочет научиться. Скрипт не меняется, пока вы не скажете «можно».':
+      'After a call the secretary will send what it wants to learn. The script does not change until you say yes.',
+  'Критерии из настроек всегда главнее. Вы подтверждаете только привычки из реальных звонков.':
+      'Your criteria always win. You only confirm habits from real calls.',
+  'Обучение секретаря': 'Secretary learning',
+  'Разбор звонка секретаря': 'Secretary call review',
+  'Полный отчёт ошибки секретаря — вы пишете, как действовать дальше':
+      'Full secretary error report — you write how it should act next time',
+  'Секретарь хочет научиться — сначала ваше «можно»':
+      'The secretary wants to learn — your yes comes first',
   'Критерии секретаря': 'Secretary criteria',
   'Что спрашивать, зона, приветствие и тон':
       'What to ask, service area, greeting and tone',
@@ -190,7 +272,27 @@ const Map<String, String> kEnglishUi = {
       'A blank line follows it. Example: fixappliance.ca. Leave empty if you do not need a header.',
   'Только эта строка ставится в начало каждого SMS. Название компании и FIX ApplianceCA туда не добавляются. Пример: www.FIX-Appliance.CA. Оставьте пустым, если шапка не нужна.':
       'Only this line is added at the start of every SMS. The company name and FIX ApplianceCA are not added. Example: www.FIX-Appliance.CA. Leave empty if you do not need a header.',
+  'Подтверждена': 'Confirmed',
+  'Не подтверждена': 'Not confirmed',
+  'Отменена': 'Cancelled',
+  'Язык ассистента': 'Assistant language',
+  'Через 1.5 часа заявка': 'Job in 1.5 hours',
+  'Скоро заявка': 'Upcoming job',
+  'Напоминание за 1.5 часа до визита': 'Reminder 1.5 hours before the visit',
+  'Клиент отменил заявку': 'The client cancelled the job',
+  'Нужен перенос': 'Needs reschedule',
+  'Заявка подтверждена': 'Job confirmed',
+  'Заявка не подтверждена': 'Job not confirmed',
+  'Подтверждение визита': 'Visit confirmation',
+  'Клиент подтвердил или не подтвердил визит':
+      'Client confirmed or did not confirm a visit',
   'Заявки в 7:00': 'Jobs at 7:00',
+  'Заявки утром и вечером': 'Jobs morning and evening',
+  'В 7:00 — сегодняшний день. В 19:00 — завтра и что взять.':
+      'At 7:00 — today. At 19:00 — tomorrow and what to take.',
+  'Выбор оплаты': 'Choose payment',
+  'Начните вводить — поиск по складу': 'Start typing — search warehouse',
+  'Ссылка Stripe': 'Stripe link',
   'Уведомление, что взять с собой на день': 'Notification of what to bring for the day',
   'SMS «я в пути»': 'On-the-way SMS',
   'Спросить после 2 км от клиента': 'Ask after 2 km from the client',
@@ -204,6 +306,16 @@ const Map<String, String> kEnglishUi = {
   'Шаблоны SMS. PDF всегда на английском': 'SMS templates. PDFs are always in English',
   'Электронная подпись': 'E-signature',
   'Спрашивать подпись в конце работы': 'Ask for a signature at the end of the job',
+  'Спрашивать подпись при создании счёта':
+      'Ask for a signature when creating an invoice',
+  'Расписка на счёте': 'Signature for the invoice',
+  'Не удалось сохранить подпись': 'Could not save the signature',
+  '«Перенос» ставится сам, когда после запчасти вы назначаете новый визит.':
+      '“Rescheduled” is set automatically when you book a new visit after a part.',
+  'После сохранения статус станет «Перенос».':
+      'After saving, the status will become “Rescheduled”.',
+  'Сам, после нового визита': 'Automatic, after a new visit',
+  'Больше не используется': 'No longer used',
   'Налог по умолчанию': 'Default tax',
   'HST 13%': 'HST 13%',
   'GST 5%': 'GST 5%',
@@ -233,6 +345,15 @@ const Map<String, String> kEnglishUi = {
   'Зона обслуживания сохранена': 'Service area saved',
   'Выберите провинцию и отметьте район на карте. Нажимайте по карте, чтобы поставить точки.':
       'Pick a province and mark your area on the map. Tap the map to drop points.',
+  'Выберите провинцию и отметьте район на карте. Нажимайте по карте, чтобы поставить точки. Секретарь на звонках берёт зону отсюда.':
+      'Pick a province and mark your area on the map. Tap the map to drop points. The phone secretary uses this area.',
+  'Не отмечена на карте': 'Not marked on the map',
+  'Район отмечен на карте': 'Area marked on the map',
+  'Секретарь берёт зону с карты': 'Secretary uses the map area',
+  'Не отмечена на карте. Откройте зону обслуживания и нарисуйте район.':
+      'Not marked on the map. Open Service area and draw the region.',
+  'Что спрашивать, приветствие и тон. Зона — с карты обслуживания.':
+      'What to ask, greeting and tone. Coverage comes from the service-area map.',
   'Новая заявка': 'New job',
   'Новая заявка из звонка': 'New job from call',
   'Создать заявку': 'Create job',
@@ -319,6 +440,8 @@ const Map<String, String> kEnglishUi = {
   'Занято': 'Busy',
   'К ОБРАБОТКЕ': 'TO REVIEW',
   'ВСЕ ЗВОНКИ': 'ALL CALLS',
+  'Звонки секретаря': 'Secretary calls',
+  'Секретарь обрабатывает': 'Secretary is processing',
   'Все звонки обработаны!': 'All calls have been reviewed!',
   'Нет звонков': 'No calls',
   'После звонка ИИ сам расшифрует разговор\nи заявка появится здесь для проверки':
@@ -336,6 +459,11 @@ const Map<String, String> kEnglishUi = {
   'Нет заявок, которые нужно проверить': 'No jobs need review',
   'ИИ создал эту заявку после звонка. Проверьте данные и подтвердите.':
       'AI created this job after the call. Check the details and confirm.',
+  'ИИ создал эту заявку из письма. Проверьте данные и подтвердите.':
+      'AI created this job from an email. Check the details and confirm.',
+  'Почта': 'Email',
+  'Заявка с телефона': 'Job from a phone call',
+  'Заявка с почты': 'Job from email',
   'Склад пуст': 'Warehouse is empty',
   'Склад пуст.': 'Warehouse is empty.',
   'Поиск (Название или Номер)...': 'Search (name or number)...',
@@ -415,6 +543,8 @@ const Map<String, String> kEnglishUi = {
   'Печать': 'Print',
   'Нет счетов.\nНажмите (+) и создайте Invoice или Estimate.\nОтправьте из приложения кнопкой «Отправить счёт».':
       'No documents yet.\nTap (+) to create an Invoice or Estimate.\nSend it from the app with Send invoice.',
+  'Нет счетов.\nНажмите (+) и создайте Invoice или Estimate.':
+      'No invoices.\nTap (+) and create an Invoice or Estimate.',
   'Счёт и смету отправляете вы из приложения. Текст настраивается в Настройках. Карту на месте — отдельно, «Приложить карту».':
       'You send invoices and estimates from the app. Text is set in Settings. Card on site is separate: Tap to pay.',
   'Stripe: ссылка готова': 'Stripe: link ready',
@@ -452,8 +582,14 @@ const Map<String, String> kEnglishUi = {
   'Удалить клиента': 'Delete client',
   'Удалить клиента?': 'Delete this client?',
   'Клиент удалён': 'Client deleted',
+  'Клиент в корзине': 'Client moved to trash',
+  'Клиенты в корзине': 'Clients moved to trash',
   'Карточка будет удалена. Заявки в календаре останутся.':
       'The client card will be deleted. Jobs in the calendar will stay.',
+  'Карточка попадёт в корзину на 30 дней.':
+      'The card goes to trash for 30 days.',
+  'Карточки попадут в корзину на 30 дней.':
+      'The cards go to trash for 30 days.',
   'Выберите приоритет': 'Choose priority',
   'Приоритет': 'Priority',
   '🟢 Обычный': '🟢 Normal',
@@ -465,8 +601,10 @@ const Map<String, String> kEnglishUi = {
   'Нет описания': 'No description',
   'Нет описания поломки': 'No problem description',
   'Что взять с собой': 'What to bring',
+  'С собой': 'To bring',
   'Фильтр, плата, ключи…': 'Filter, board, keys…',
   'Фото': 'Photos',
+  'Смотреть фото': 'View photos',
   'Нет фотографий': 'No photos',
   'Загружается фото…': 'Uploading photo…',
   'Фото загружено': 'Photo uploaded',
@@ -487,7 +625,10 @@ const Map<String, String> kEnglishUi = {
   'Удалить заявку?': 'Delete this job?',
   'Это действие нельзя отменить. Все данные заявки будут удалены.':
       'This cannot be undone. All job data will be deleted.',
+  'Заявка попадёт в корзину на 30 дней. Потом удалится навсегда.':
+      'The job goes to trash for 30 days, then it is deleted forever.',
   'Заявка удалена': 'Job deleted',
+  'Заявка в корзине': 'Job moved to trash',
   'Работа завершена': 'Job completed',
   'Отправить SMS с просьбой об отзыве': 'Send a review request SMS',
   'Сначала создайте Invoice на вкладке Финансы': 'First create an Invoice on the Finance tab',
@@ -512,12 +653,24 @@ const Map<String, String> kEnglishUi = {
   'График выручки': 'Revenue chart',
   'Запчасти (себест.)': 'Parts (cost)',
   'ЧИСТАЯ ПРИБЫЛЬ': 'NET PROFIT',
+  'Квартал': 'Quarter',
+  'кв.': 'Q',
+  'После запчастей': 'After parts',
+  'С HST, не для налогов. Для CRA — блок выше.':
+      'Includes HST, not for taxes. Use the Canada taxes block above for CRA.',
+  'Счета с HST': 'Invoices incl. HST',
+  'Получено с HST': 'Collected incl. HST',
+  'Выручка без HST': 'Revenue excluding HST',
   'Поиск клиентов, заявок, склада...': 'Search clients, jobs, warehouse...',
   'Введите минимум 2 символа\nдля поиска по клиентам, заявкам и складу':
       'Enter at least 2 characters\nto search clients, jobs, and warehouse',
   'Остаток': 'Stock',
   'Реквизиты компании и HST — в Настройки → Компания и Финансы. Здесь только тексты счетов и смет.':
       'Company details and HST are in Settings → Company and Finance. Here are invoice texts only.',
+  'Реквизиты компании и HST — в Настройки → Компания и Финансы. Тексты счетов, смет и SMS клиенту всегда на английском, даже если интерфейс русский.':
+      'Company details and HST are in Settings → Company and Finance. Invoice, estimate, and client SMS text stays English even if the app is in Russian.',
+  'Эти тексты уходят клиенту и всегда на английском, даже если интерфейс русский.':
+      'These texts go to the client and stay English even if the app is in Russian.',
   'Шаблон счёта': 'Invoice template',
   'Шаблон сметы': 'Estimate template',
   'Шаблон после полной оплаты': 'Receipt template after full payment',
@@ -628,7 +781,7 @@ const Map<String, String> kEnglishUi = {
   'Слушаю — нажмите для паузы': 'Listening — tap to pause',
   'Пауза': 'Paused',
   'Пауза — нажмите, чтобы слушать': 'Paused — tap to listen',
-  'Фикс отвечает': 'Fix is speaking',
+  'Фикс отвечает': 'Assistant is speaking',
   'Нажмите кружок — пауза. В сторону — закрыть.':
       'Tap the circle to pause. Tap outside to close.',
   'Звонки Twilio, шапка SMS и шаблоны': 'Twilio calls, SMS header and templates',
@@ -666,6 +819,10 @@ const Map<String, String> kEnglishUi = {
   'мин по умолчанию': 'min default',
   'мин буфер в календаре': 'min buffer in calendar',
   'Завершено работ': 'Jobs completed',
+  'Новые заявки': 'New jobs',
+  'Собрано': 'Collected',
+  'На счёте Stripe': 'Stripe balance',
+  'Ожидает Stripe': 'Stripe pending',
   'Новое SMS': 'New SMS',
   'Счёт на оплату': 'Invoice',
   'Оплатить': 'Pay',
@@ -694,8 +851,17 @@ const Map<String, String> kEnglishUi = {
   'Категория техники': 'Appliance category',
   'Поиск': 'Search',
   'Фильтр': 'Filter',
+  'Нет заявок в этой группе': 'No jobs in this group',
+  'Клиенту уйдёт SMS на английском. Нажмите «Отправить» и выберите файл или ссылку.':
+      'The client will get an English SMS. Tap Send and choose a file or a link.',
+  'Как отправить?': 'How to send?',
+  'Ссылка': 'Link',
+  'PDF уйдёт вложением в SMS.': 'The PDF will be attached to the SMS.',
+  'Клиент получит ссылку, чтобы скачать PDF.':
+      'The client will get a link to download the PDF.',
   'Сбросить': 'Reset',
   'Закрыть': 'Close',
+  'Нет данных': 'No data',
   'Да': 'Yes',
   'Выбрать': 'Select',
   'Изменить': 'Edit',
@@ -706,6 +872,11 @@ const Map<String, String> kEnglishUi = {
   'Нет позиций': 'No line items',
   'Скидка': 'Discount',
   'Чаевые': 'Tip',
+  'Корзина': 'Trash',
+  'в корзине — без даты визита': 'in the basket — no visit date',
+  'без даты визита': 'unscheduled',
+  'Без даты визита': 'Unscheduled',
+  'Клиенты без заявки': 'Clients without a job',
   'Комментарий': 'Comment',
   'Заметки': 'Notes',
   'История': 'History',
@@ -790,6 +961,9 @@ const Map<String, String> kEnglishUi = {
   'По имени': 'By name',
   'По статусу': 'By status',
   'Сегодня нет заявок': 'No jobs today',
+  'Нет заявок на этот день': 'No jobs on this day',
+  'Предыдущий день': 'Previous day',
+  'Следующий день': 'Next day',
   'На эту неделю нет заявок': 'No jobs this week',
   'Выручка': 'Revenue',
   'Расходы': 'Expenses',
@@ -939,6 +1113,10 @@ const Map<String, String> kEnglishUi = {
   'След. визит': 'Next visit',
   'Не запланировано — нажмите «Добавить», чтобы назначить':
       'Not scheduled — tap Add to set a visit',
+  'Ожидание запчасти — дату возврата ставить не нужно. Добавьте визит, когда запчасть приедет.':
+      'Waiting for a part — no return date needed. Add a visit when the part arrives.',
+  'Дата следующего визита не нужна, пока нет запчасти. Когда она приедет — добавьте визит. Заявка в очереди запчастей (фургон).':
+      'No next visit date is needed until the part arrives. Then add a visit. The job is in the parts queue (van).',
   'Электронный адрес': 'Email',
   'Откуда узнали': 'How they found us',
   'Добавить владельца': 'Add owner',
@@ -947,14 +1125,16 @@ const Map<String, String> kEnglishUi = {
   'CSV-шаблон для импорта': 'CSV import template',
   'Шаблон готов': 'Template is ready',
   'Название, цвет, свои статусы': 'Name, color, custom statuses',
-  'Нажмите статус, чтобы сменить название и цвет. Жёлтый плюс добавляет новый.':
-      'Tap a status to change its name and color. The yellow plus adds a new one.',
+  'Нажмите статус, чтобы сменить название и цвет. Плюс в списке добавляет новый.':
+      'Tap a status to change its name and color. The plus in the list adds a new one.',
   'Добавлено': 'Added',
   'Укажите имя и телефон': 'Enter name and phone',
   'Экран и шрифт': 'Display & font',
   'Размер экрана': 'Screen size',
   'Увеличивает текст и элементы на всех экранах.':
       'Makes text and controls larger or smaller on every screen.',
+  'Увеличивает текст, нижнюю панель и элементы на всех экранах. Цвета шапки, меню и нижней полоски тоже меняются здесь.':
+      'Enlarges text, the bottom bar, and controls on every screen. Header, menu, and system bar colors also change here.',
   'Шрифт': 'Font',
   'По умолчанию': 'Default',
   'Мельче': 'Smaller',
@@ -977,7 +1157,15 @@ const Map<String, String> kEnglishUi = {
   'Размер элементов и шрифт': 'Element size and font',
   'Техника, бренды, статусы, источники': 'Appliances, brands, statuses, sources',
   'Рекомендация': 'Referral',
+  'Пишите по-русски — клиенту уйдёт на английском':
+      'Write in Russian — the client gets English',
+  'Отправлено на английском': 'Sent in English',
+  'Оригинал': 'Original',
+  'Перевод...': 'Translating...',
+  'Повтор': 'Callback',
+  'Повторный вызов': 'Repeat call',
   'Повторный клиент': 'Repeat client',
+  'Исходная заявка': 'Original job',
   'Листовка': 'Flyer',
   'Моноширинный': 'Monospace',
   'Изменить адрес': 'Edit address',
@@ -1015,6 +1203,10 @@ const Map<String, String> kEnglishUi = {
   'Отслеживание': 'Tracking',
   'Трек-номер': 'Tracking number',
   'Номер заказа Amazon': 'Amazon order number',
+  'Номер заказа': 'Order number',
+  'Другой': 'Other',
+  'Или оставьте сумму ремонта: на экране карты клиент сам добавит чаевые.':
+      'Or leave the repair total: the customer can add a tip on the card screen.',
   'Номер Amazon / трек — нажмите': 'Amazon / tracking — tap to add',
   'Курьер сегодня': 'Out for delivery',
   'Отправлено': 'Shipped',
@@ -1028,6 +1220,8 @@ const Map<String, String> kEnglishUi = {
   'Файл': 'File',
   'SMS при записи': 'Booking SMS',
   'Подтверждение даты и ответ 1 / 2': 'Confirms the date; client replies 1 / 2',
+  'После вашего подтверждения заявки. Клиент отвечает 1 / 0 / 5':
+      'After you confirm the job. The client replies 1 / 0 / 5',
   'Напоминание за сутки': 'Day-before reminder',
   'Авто-SMS накануне визита': 'Automatic SMS the day before the visit',
   'Авто-отзыв после работы': 'Auto review after the job',
@@ -1046,20 +1240,177 @@ const Map<String, String> kEnglishUi = {
   'Нужна подпись клиента': 'Client signature is required',
   'Эта техника раньше': 'This appliance before',
   'S/N': 'S/N',
-  'Серийный номер': 'Serial number',
-  'Модель': 'Model',
   'Прайсбук': 'Pricebook',
   'Good / Better / Best для смет': 'Good / Better / Best for quotes',
   'Три цены на типовую работу. В смете мастер выбирает Good / Better / Best.':
       'Three prices per typical job. On a quote the tech picks Good / Better / Best.',
   'Добавить работу': 'Add a job',
-  'Новая работа': 'New job',
-  'Из прайсбука': 'From pricebook',
+  'Типовая работа': 'Standard job',
+  'PDF сметы': 'Estimate PDF',
+  'PDF чека': 'Receipt PDF',
+  'Оплатить картой': 'Pay by card',
+  'Отправить ссылку на оплату': 'Send payment link',
+  'E-перевод': 'E-transfer',
+  'Спасибо, оплата прошла успешно': 'Thank you, payment successful',
+  'Оплата не прошла': 'Payment failed',
+  'Все SMS клиенту в одном месте, всегда English':
+      'All client SMS in one place, always English',
+  'Телефон или терминал Stripe': 'Phone or Stripe terminal',
+  'Все карточные платежи идут только через Stripe. Можно принять карту на телефоне или на терминале Stripe, который вы покупаете в Dashboard Stripe.':
+      'All card payments go through Stripe only. Take the card on the phone or on a Stripe terminal bought from the Stripe Dashboard.',
+  'Телефон · Stripe Tap to Pay': 'Phone · Stripe Tap to Pay',
+  'Клиент прикладывает карту к задней панели':
+      'Customer taps the card on the back of the phone',
+  'Терминал Stripe': 'Stripe terminal',
+  'WisePad 3 или другой ридер из Stripe Dashboard. Карта идёт в устройство, деньги — в Stripe.':
+      'WisePad 3 or another reader from the Stripe Dashboard. The card goes in the device, money goes to Stripe.',
+  'Stripe Reader M2. Карта идёт в ридер, деньги — в Stripe.':
+      'Stripe Reader M2. The card goes in the reader, money goes to Stripe.',
+  'BBPOS WisePad 3. Карта вставляется или прикладывается, деньги — в Stripe.':
+      'BBPOS WisePad 3. Insert or tap the card; money goes to Stripe.',
+  'Купите ридер в Stripe (Dashboard → Terminal). Включите Bluetooth и сам терминал, затем нажмите «Найти терминал».':
+      'Buy the reader in Stripe (Dashboard → Terminal). Turn on Bluetooth and the reader, then tap Find terminal.',
+  'Включите Bluetooth на телефоне и Reader M2, затем нажмите «Найти терминал».':
+      'Turn on Bluetooth on the phone and the Reader M2, then tap Find terminal.',
+  'Включите Bluetooth на телефоне и WisePad 3, затем нажмите «Найти терминал».':
+      'Turn on Bluetooth on the phone and the WisePad 3, then tap Find terminal.',
+  'Найти терминал': 'Find terminal',
+  'Ищу терминал…': 'Looking for the terminal…',
+  'Купить терминал в Stripe': 'Buy a terminal in Stripe',
+  'Терминал подключён': 'Terminal connected',
+  'Вставьте, приложите или проведите карту на терминале Stripe':
+      'Insert, tap, or swipe the card on the Stripe terminal',
+  'Ищу терминал Stripe по Bluetooth. Включите его.':
+      'Looking for the Stripe terminal over Bluetooth. Turn it on.',
+  'Ищу тестовый терминал Stripe...': 'Looking for the test Stripe terminal...',
+  'Терминал не найден. Включите его, поднесите ближе и купите ридер в Stripe Dashboard → Terminal.':
+      'Terminal not found. Turn it on, bring it closer, and buy a reader in Stripe Dashboard → Terminal.',
+  'Для терминала Stripe включите Bluetooth.':
+      'Turn on Bluetooth for the Stripe terminal.',
+  'Терминал Stripe сейчас подключается на Android.':
+      'The Stripe terminal currently pairs on Android.',
+  'На терминале': 'On the terminal',
+  'Ожидаю карту на терминале': 'Waiting for the card on the terminal',
+  'Обновляю прошивку терминала...': 'Updating the terminal firmware...',
+  'Все SMS клиенту, всегда English': 'All client SMS, always English',
+  'Логотип на инвойсе': 'Logo on invoice',
+  'QR-код внизу': 'QR code at the bottom',
+  'История платежей на PDF': 'Payment history on the PDF',
+  'Вид PDF, условия, превью инвойса': 'PDF look, terms, invoice preview',
   'Прайсбук пуст — добавьте работы в Каталоге':
       'Pricebook is empty — add jobs in Catalog',
   'Наценка на запчасти': 'Parts markup',
   'Берётся цена со склада': 'Uses the warehouse sell price',
-  'Техника': 'Equipment',
   'Серийник и модель появятся после заявок':
       'Serial and model will appear after jobs',
+  'Уменьшить': 'Zoom out',
+  'Приблизить': 'Zoom in',
+  'Каталог типичных работ с тремя ценами: Good / Better / Best. Это не запчасть со склада.':
+      'Catalog of typical jobs with three prices: Good / Better / Best. This is not a warehouse part.',
+  'Реквизиты компании и HST — в Настройки → Компания и Финансы. PDF клиенту всегда на английском.':
+      'Company details and HST are in Settings → Company and Finance. Client PDFs stay in English.',
+  'SMS счёта, сметы и ссылки на оплату':
+      'Invoice, estimate, and payment-link SMS',
+  'В SMS ссылку нельзя спрятать за кнопку — она идёт отдельной строкой Pay here.':
+      'SMS cannot hide a URL behind a button — it stays on its own Pay here line.',
+  'Запись разговора': 'Call recording',
+  'Прослушать запись': 'Play recording',
+  'Выжимка': 'Summary',
+  'Разговор на русском': 'Conversation in Russian',
+  'Разговор': 'Conversation',
+  'Пока нет выжимки': 'No summary yet',
+  'Пока нет расшифровки': 'No transcript yet',
+  'Перевожу...': 'Translating...',
+  'Перевожу разговор...': 'Translating the conversation...',
+  'Не удалось загрузить запись': 'Could not load the recording',
+  'Не удалось включить запись': 'Could not play the recording',
+  'После разговора появится запись': 'The recording will appear after the call',
+  'Зажмите карточку, чтобы поменять порядок остановок':
+      'Long-press a card to reorder stops',
+  'Звонок': 'Call',
+  'Заказ принят': 'Order accepted',
+  'Заказ не принят': 'Order not accepted',
+  'На рассмотрении': 'Under review',
+  'Цвета приложения': 'App colors',
+  'Готовые темы': 'Ready-made themes',
+  'Синий и жёлтый': 'Navy and yellow',
+  'Зелёный': 'Green',
+  'Бордо': 'Wine',
+  'Графит': 'Graphite',
+  'Бирюза': 'Teal',
+  'Ночь': 'Night',
+  'Основной цвет': 'Main color',
+  'Шапка, меню, кнопки': 'Header, menu, buttons',
+  'Жёлтые кнопки, выделения': 'Yellow buttons and highlights',
+  'Опасный': 'Danger',
+  'Отмена и ошибки': 'Cancel and errors',
+  'Рабочая карточка': 'Job card',
+  'Бумага карточки': 'Card paper',
+  'Старая книга': 'Old book',
+  'Слоновая кость': 'Ivory',
+  'Кремовая': 'Cream',
+  'Крафт': 'Kraft',
+  'Имя на карточке': 'Name on the card',
+  'Адрес на карточке': 'Address on the card',
+  'Обычный текст': 'Body text',
+  'Размер имени': 'Name size',
+  'Вид текста': 'Text style',
+  'Системный': 'System',
+  'Книжный': 'Book',
+  'Акцент': 'Accent',
+  'Поиск по любой информации в карточке...': 'Search any info on the client card...',
+  'Найти в карточке...': 'Find on the card...',
+  'Напоминание о визите': 'Visit reminder',
+  'Авто-SMS клиенту перед визитом': 'Auto SMS to the client before the visit',
+  'Выберите, когда отправлять': 'Choose when to send',
+  'За 2 дня': '2 days before',
+  'За сутки': '1 day before',
+  'Утром в день визита': 'Morning of the visit',
+  'За 2 часа': '2 hours before',
+  'Когда слать напоминание': 'When to send the reminder',
+  'Можно выбрать несколько раз. Клиенту уходит English SMS.':
+      'You can pick several times. The client always gets English SMS.',
+  'Время утреннего SMS': 'Morning SMS time',
+  'Утреннее SMS': 'Morning SMS',
+  'Утреннее уведомление': 'Morning notification',
+  'Вечернее уведомление': 'Evening notification',
+  'Расстояние, км': 'Distance, km',
+  'Спросить после этого отъезда от клиента':
+      'Ask after leaving the client by this distance',
+  'После': 'After',
+  'Утром': 'Morning',
+  'Вечером': 'Evening',
+  'вечером': 'evening',
+  'Клиент подтвердил ремонт': 'Client confirmed the repair',
+  'Ждём согласие клиента': 'Waiting for the client to agree',
+  'Клиенту уйдёт SMS со ссылкой. Он откроет её и подтвердит ремонт. PDF не отправляем.':
+      'The client gets an SMS with a link. They open it and confirm the repair. We do not send a PDF.',
+  'Включите Геолокацию в шторке телефона. Без неё Android не показывает Bluetooth-терминал.':
+      'Turn on Location in the Android shade. Without it Android will not show a Bluetooth terminal.',
+  'Ищу терминал. Bluetooth должен быть включён, сам ридер — тоже. Для WisePad 3 подержите кнопку питания, пока не замигает.':
+      'Looking for the terminal. Bluetooth and the reader must be on. For WisePad 3, hold the power button until it blinks.',
+  'По Bluetooth не нашёл. Ищу Wi‑Fi / Ethernet терминал в Stripe...':
+      'Nothing on Bluetooth. Looking for a Wi-Fi / Ethernet terminal in Stripe...',
+  'Терминал не найден. Включите его, Геолокацию и Bluetooth. WisePad 3 / M2 — держите рядом. S700 должен быть онлайн в Stripe Dashboard → Terminal.':
+      'Terminal not found. Turn it on, plus Location and Bluetooth. Keep WisePad 3 / M2 close. An S700 must be online in Stripe Dashboard → Terminal.',
+  'Включите Геолокацию и Bluetooth. На WisePad 3 подержите кнопку питания, пока не замигает индикатор, затем нажмите «Найти терминал».':
+      'Turn on Location and Bluetooth. On WisePad 3 hold power until the light blinks, then tap Find terminal.',
+  'Не сопрягайте WisePad 3 в настройках Android Bluetooth — из‑за этого приложение его не видит. Забудьте устройство там, если уже сопрягали.\n\nВключите Геолокацию (точную) и Bluetooth. На WisePad 3 подержите питание, пока не замигает, держите рядом и нажмите «Найти терминал». Если появится код — подтвердите на телефоне и на ридере.':
+      'Do not pair WisePad 3 in Android Bluetooth settings — then the app cannot see it. Forget it there if you already paired.\n\nTurn on precise Location and Bluetooth. Hold power on the WisePad until it blinks, keep it close, then tap Find terminal. If a code appears, confirm it on the phone and on the reader.',
+  'Ищу WisePad 3. Держите его рядом, индикатор должен мигать. Не сопрягайте его в настройках Android.':
+      'Looking for WisePad 3. Keep it close; the light should blink. Do not pair it in Android settings.',
+  'WisePad 3 не найден. 1) Забудьте его в Настройки Android → Bluetooth. 2) Не сопрягайте там — только через это приложение. 3) Геолокация точная + Nearby devices. 4) Подержите кнопку питания на ридере, пока не замигает, и держите рядом.':
+      'WisePad 3 not found. 1) Forget it in Android Settings → Bluetooth. 2) Do not pair it there — only through this app. 3) Precise Location + Nearby devices. 4) Hold power until it blinks and keep it close.',
+  'Нашёл': 'Found',
+  'Подключаю. Если появится 6‑значный код — подтвердите на телефоне и на WisePad.':
+      'Connecting. If a 6-digit code appears, confirm it on the phone and on the WisePad.',
+  'Разрешите «Рядом» / Nearby devices для этого приложения, иначе WisePad 3 не виден.':
+      'Allow Nearby devices for this app, otherwise WisePad 3 will not appear.',
+  'Включите Bluetooth в шторке телефона и нажмите «Найти терминал» ещё раз.':
+      'Turn on Bluetooth in the Android shade and tap Find terminal again.',
+  'Включите Геолокацию. Без неё WisePad 3 не находится.':
+      'Turn on Location. Without it WisePad 3 cannot be found.',
+  'Связь с ридером оборвалась. Забудьте WisePad в настройках Android Bluetooth и подключайте только через приложение.':
+      'The reader connection dropped. Forget WisePad in Android Bluetooth settings and pair only through the app.',
+  'Готовлю подключение...': 'Preparing the connection...',
 };

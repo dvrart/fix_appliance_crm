@@ -16,6 +16,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
   bool _loading = true;
   bool _ai = true;
   bool _warehouse = true;
+  bool _statistics = true;
   bool _reports = true;
   bool _invoices = true;
 
@@ -31,6 +32,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
     setState(() {
       _ai = SettingsService.menuFlag(data, 'menuShowAi');
       _warehouse = SettingsService.menuFlag(data, 'menuShowWarehouse');
+      _statistics = SettingsService.menuFlag(data, 'menuShowStatistics');
       _reports = SettingsService.menuFlag(data, 'menuShowReports');
       _invoices = SettingsService.menuFlag(data, 'menuShowInvoices') ||
           SettingsService.menuFlag(data, 'menuShowEstimates');
@@ -64,6 +66,16 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
                       setState(() => _warehouse = v);
                       SettingsService.updateConfig('menuShowWarehouse', v);
                     }),
+                    _flag(
+                      'Статистика'.tr,
+                      Icons.query_stats,
+                      const Color(0xFF1565C0),
+                      _statistics,
+                      (v) {
+                        setState(() => _statistics = v);
+                        SettingsService.updateConfig('menuShowStatistics', v);
+                      },
+                    ),
                     _flag(
                       'Отчеты'.tr,
                       Icons.bar_chart,
