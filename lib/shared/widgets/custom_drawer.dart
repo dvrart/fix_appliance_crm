@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_commands.dart';
 import '../../core/constants.dart';
 import '../../core/ui_scale.dart';
 import '../../core/l10n/app_locale.dart';
@@ -8,10 +9,12 @@ import '../../services/services.dart';
 import '../../features/ai/assistant/assistant_host.dart';
 import '../../features/warehouse/warehouse_screen.dart';
 import '../../features/jobs/basket_screen.dart';
+import '../../features/jobs/parts_queue_screen.dart';
 import '../../features/reports/reports_screen.dart';
 import '../../features/reports/statistics_screen.dart';
 import '../../features/expenses/expenses_screen.dart';
 import '../../features/finance/documents_list_screen.dart';
+import '../../features/search/global_search_overlay.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/settings/widgets/company_logo.dart';
 import '../unsaved_navigation_gate.dart';
@@ -34,6 +37,16 @@ class CustomDrawer extends StatelessWidget {
     if (!context.mounted) return;
     Navigator.pop(context);
     Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+  }
+
+  void _openSearch(BuildContext context) async {
+    if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
+    if (!context.mounted) return;
+    Navigator.pop(context);
+    final overlayContext = rootNavigatorKey.currentContext;
+    if (overlayContext != null && overlayContext.mounted) {
+      await GlobalSearchOverlay.open(overlayContext);
+    }
   }
 
   @override
@@ -148,7 +161,7 @@ class CustomDrawer extends StatelessWidget {
                       color: const Color(0xFF1565C0),
                       onTap: () => _open(context, const StatisticsScreen()),
                     ),
-                  if (SettingsService.menuFlag(config, 'menuShowReports')) ...[
+                  if (SettingsService.menuFlag(config, 'menuShowReports'))
                     _buildTile(
                       context,
                       title: context.tr('Отчеты', 'Reports'),
@@ -156,6 +169,7 @@ class CustomDrawer extends StatelessWidget {
                       color: Colors.green,
                       onTap: () => _open(context, const ReportsScreen()),
                     ),
+                  if (SettingsService.menuFlag(config, 'menuShowExpenses'))
                     _buildTile(
                       context,
                       title: context.tr('Расходы', 'Expenses'),
@@ -163,7 +177,6 @@ class CustomDrawer extends StatelessWidget {
                       color: Colors.deepOrange,
                       onTap: () => _open(context, const ExpensesScreen()),
                     ),
-                  ],
                   if (SettingsService.menuFlag(config, 'menuShowInvoices') ||
                       SettingsService.menuFlag(config, 'menuShowEstimates'))
                     _buildTile(
@@ -198,12 +211,42 @@ class CustomDrawer extends StatelessWidget {
                       top: false,
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: _buildSmallTrashTile(
-                            context,
-                            onTap: () => _open(context, const BasketScreen()),
-                          ),
+                        child: Row(
+                          children: [
+                            if (SettingsService.menuFlag(
+                              config,
+                              'menuShowTrash',
+                            ))
+                              _buildFooterTile(
+                                context,
+                                color: const Color(0xFFE53935),
+                                icon: Icons.delete_outline,
+                                title: context.tr('Корзина', 'Trash'),
+                                onTap: () =>
+                                    _open(context, const BasketScreen()),
+                              ),
+                            if (SettingsService.menuFlag(
+                              config,
+                              'menuShowTrash',
+                            ))
+                              const Spacer(),
+                            _buildFooterTile(
+                              context,
+                              color: const Color(0xFF6A1B9A),
+                              icon: Icons.directions_car,
+                              title: context.tr('Запчасти', 'Parts'),
+                              onTap: () =>
+                                  _open(context, const PartsQueueScreen()),
+                            ),
+                            const Spacer(),
+                            _buildFooterTile(
+                              context,
+                              color: AppColors.primary,
+                              icon: Icons.search,
+                              title: context.tr('Поиск', 'Search'),
+                              onTap: () => _openSearch(context),
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -294,12 +337,15 @@ class CustomDrawer extends StatelessWidget {
     );
   }
 
-  Widget _buildSmallTrashTile(
+  Widget _buildFooterTile(
     BuildContext context, {
+    required Color color,
+    required IconData icon,
+    required String title,
     required VoidCallback onTap,
   }) {
     return Material(
-      color: const Color(0xFFE53935),
+      color: color,
       borderRadius: BorderRadius.circular(14),
       elevation: 2,
       shadowColor: Colors.black26,
@@ -312,16 +358,18 @@ class CustomDrawer extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.delete_outline, color: Colors.white, size: 26),
+              Icon(icon, color: Colors.white, size: 26),
               const SizedBox(height: 4),
               Text(
-                context.tr('Корзина', 'Trash'),
+                title,
                 style: const TextStyle(
                   color: Colors.white,
                   fontWeight: FontWeight.w800,
                   fontSize: 10,
                 ),
                 textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ],
           ),

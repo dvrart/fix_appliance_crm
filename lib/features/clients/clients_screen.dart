@@ -258,7 +258,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                                   initialStreet: streetCtrl.text,
                                   initialCity: cityCtrl.text,
                                   initialPostal: postalCtrl.text,
-                                  onSaved: (street, city, postal) {
+                                  onSaved: (street, city, postal, unit) {
                                     setSheetState(() {
                                       streetCtrl.text = street;
                                       cityCtrl.text = city;
@@ -490,10 +490,23 @@ class _ClientsScreenState extends State<ClientsScreen> {
       builder: (context, _) {
         return Scaffold(
       backgroundColor: Colors.grey.shade100,
+      floatingActionButton: _selecting
+          ? null
+          : FloatingActionButton(
+              heroTag: 'clients-add',
+              backgroundColor: AppColors.accent,
+              foregroundColor: AppColors.primary,
+              elevation: 4,
+              onPressed: _showAddClientDialog,
+              child: const Icon(Icons.add, size: 34),
+            ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
+        toolbarHeight: 48,
         elevation: 0,
+        scrolledUnderElevation: 0,
         automaticallyImplyLeading: false,
         leading: _selecting
             ? IconButton(
@@ -621,14 +634,23 @@ class _ClientsScreenState extends State<ClientsScreen> {
             padding: const EdgeInsets.all(16.0),
             child: TextField(
               decoration: InputDecoration(
-                hintText: 'Поиск по имени, компании или телефону...'.tr,
+                hintText: 'Поиск по любой информации в карточке...'.tr,
+                hintMaxLines: 1,
                 prefixIcon: const Icon(Icons.search, color: Colors.grey),
                 filled: true,
                 fillColor: Colors.white,
                 contentPadding: const EdgeInsets.symmetric(vertical: 0),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: AppColors.primary, width: 1.4),
                 ),
               ),
               onChanged: (val) {
@@ -667,24 +689,15 @@ class _ClientsScreenState extends State<ClientsScreen> {
                   data['id'] = doc.id;
                   data['display_name'] = _extractClientName(data);
                   return data;
-                }).toList();
+                }).where((data) => data['deletedAt'] == null).toList();
 
                 if (_searchQuery.isNotEmpty) {
-                  final phoneDigits =
-                      ClientService.normalizePhone(_searchQuery);
                   clients = clients.where((data) {
-                    final name = data['display_name'].toString().toLowerCase();
-                    final company = (data['company'] ?? '')
-                        .toString()
-                        .toLowerCase();
-                    final phone = (data['phone'] ?? '').toString();
-                    final email = (data['email'] ?? '').toString().toLowerCase();
-                    final phoneHit = phoneDigits.length >= 3 &&
-                        ClientService.queryMatchesPhone(phone, _searchQuery);
-                    return name.contains(_searchQuery) ||
-                        phoneHit ||
-                        company.contains(_searchQuery) ||
-                        email.contains(_searchQuery);
+                    return ClientService.matchesMap(
+                      data,
+                      data['id'] as String,
+                      _searchQuery,
+                    );
                   }).toList();
                 }
 
@@ -734,13 +747,14 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 }
 
                 return Stack(
+                  clipBehavior: Clip.none,
                   children: [
                     ListView.builder(
                       controller: _scrollController,
                       padding: const EdgeInsets.only(
                         left: 16,
                         right: 32,
-                        bottom: 20,
+                        bottom: 88,
                       ),
                       itemCount: clients.length,
                       itemExtent: 80.0,
@@ -763,7 +777,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                                 color: _selecting &&
                                         _selectedIds.contains(data['id'])
                                     ? AppColors.primary
-                                    : Colors.grey.shade300,
+                                    : const Color(0xFFBBDEFB),
                                 width: _selecting &&
                                         _selectedIds.contains(data['id'])
                                     ? 2
