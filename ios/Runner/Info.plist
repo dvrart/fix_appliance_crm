@@ -3,7 +3,11 @@
 <plist version="1.0">
 <dict>
 <key>NSLocationWhenInUseUsageDescription</key>
-<string>Нам нужна геопозиция для расчета времени в пути к клиенту</string>
+	<string>Нам нужна геопозиция для расчета времени в пути к клиенту</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Микрофон нужен, чтобы смайлик в шапке слушал вас, пока он жёлтый</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Распознавание речи для ассистента в шапке приложения</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

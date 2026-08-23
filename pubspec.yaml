@@ -47,6 +47,8 @@ dependencies:
   table_calendar: ^3.2.0
   http: ^1.6.0
   geolocator: ^14.0.3
+  google_generative_ai: ^0.4.7
+  record: ^6.1.2
 
 dev_dependencies:
   flutter_test:
