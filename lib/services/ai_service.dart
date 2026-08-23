@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import '../core/api_keys.dart';
 
@@ -158,36 +157,6 @@ class AiService {
       }
     }
     throw last ?? Exception('empty');
-  }
-
-  /// Разобрать речь, пока микрофон остаётся включённым.
-  static Future<String> transcribeAudio(Uint8List wavBytes) async {
-    if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
-      return '';
-    }
-    Object? last;
-    for (final name in _models) {
-      try {
-        final model = GenerativeModel(model: name, apiKey: kGeminiApiKey);
-        final response = await model
-            .generateContent([
-              Content.multi([
-                TextPart(
-                  'Транскрибируй речь мастера сервиса техники. '
-                  'Русский или английский. Верни только текст, без кавычек.',
-                ),
-                DataPart('audio/wav', wavBytes),
-              ]),
-            ])
-            .timeout(const Duration(seconds: 25));
-        final out = (response.text ?? '').trim();
-        if (out.isNotEmpty) return out;
-      } catch (error) {
-        last = error;
-      }
-    }
-    if (last != null) throw last;
-    return '';
   }
 
   /// Извлечь данные из текста разговора

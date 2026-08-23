@@ -519,57 +519,6 @@ class SettingsService {
       );
     } catch (_) {}
   }
-
-  static Future<void> updateConfigMap(Map<String, dynamic> values) async {
-    await FirestoreService.configRef.set(values, SetOptions(merge: true));
-  }
-
-  static String readEmailIntakeTitle(Map<String, dynamic> config) {
-    return (config['emailIntakeTitle'] ?? '').toString();
-  }
-
-  static List<String> readWatchedEmailSenders(Map<String, dynamic> config) {
-    final raw = config['watchedEmailSenders'];
-    if (raw is! List) return const [];
-    return [
-      for (final item in raw)
-        if (item.toString().trim().contains('@')) item.toString().trim().toLowerCase(),
-    ];
-  }
-
-  static const List<String> reminderOffsetKeys = ['48h', '24h', 'morning', '2h'];
-
-  static List<String> readReminderOffsets(Map<String, dynamic> config) {
-    final raw = config['reminderOffsets'];
-    if (raw is List && raw.isNotEmpty) {
-      return [for (final item in raw) item.toString()];
-    }
-    return const ['24h'];
-  }
-
-  static int readMorningBriefingHour(Map<String, dynamic> config) {
-    final value = config['morningBriefingHour'];
-    return (value is num ? value.round() : 7).clamp(5, 11);
-  }
-
-  static int readEveningBriefingHour(Map<String, dynamic> config) {
-    final value = config['eveningBriefingHour'];
-    return (value is num ? value.round() : 19).clamp(16, 23);
-  }
-
-  static int readReminderMorningHour(Map<String, dynamic> config) {
-    final value = config['reminderMorningHour'];
-    return (value is num ? value.round() : 8).clamp(6, 11);
-  }
-
-  static int readOnTheWayMeters(Map<String, dynamic> config) {
-    final value = config['onTheWayMeters'];
-    return (value is num ? value.round() : 2000).clamp(200, 20000);
-  }
-
-  static String readOnTheWayText(Map<String, dynamic> config) {
-    return (config['onTheWayText'] ?? '').toString();
-  }
 }
 
 /// Критерии телефонного секретаря (Twilio), не ассистента «Фикс» в приложении.

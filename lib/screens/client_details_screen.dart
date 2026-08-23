@@ -3,9 +3,6 @@ import 'package:flutter/cupertino.dart'; // Добавлен импорт для
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:intl/intl.dart';
-import '../core/haptics.dart';
-import '../services/client_job_sync.dart';
-import '../shared/widgets/ai_head.dart';
 import 'job_details_screen.dart';
 
 class ClientDetailsScreen extends StatefulWidget {
@@ -95,28 +92,16 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
             ),
             ElevatedButton(
               onPressed: () async {
-                AppHaptics.button();
-                final name = nameController.text.trim();
-                final phone = phoneController.text.trim();
-                final address = addressController.text.trim();
                 await FirebaseFirestore.instance
                     .collection('companies')
                     .doc('fix_appliance_ca')
                     .collection('clients')
                     .doc(widget.clientId)
                     .update({
-                      'name': name,
-                      'fullName': name,
-                      'clientName': name,
-                      'phone': phone,
-                      'address': address,
+                      'name': nameController.text.trim(),
+                      'phone': phoneController.text.trim(),
+                      'address': addressController.text.trim(),
                     });
-                await ClientJobSync.apply(
-                  clientId: widget.clientId,
-                  name: name,
-                  phone: phone,
-                  address: address,
-                );
                 if (context.mounted) Navigator.pop(context);
               },
               style: ElevatedButton.styleFrom(
@@ -599,35 +584,16 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF14557F),
         foregroundColor: Colors.white,
-        toolbarHeight: 48,
-        titleSpacing: 4,
+        title: const Text(
+          'Карточка клиента',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
         elevation: 0,
-        scrolledUnderElevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            AppHaptics.button();
-            Navigator.pop(context);
-          },
-        ),
-        title: const Row(
-          children: [
-            AiHead(size: 28),
-            SizedBox(width: 8),
-            Text(
-              'Клиент',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-            ),
-          ],
-        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
             tooltip: 'Удалить клиента',
-            onPressed: () {
-              AppHaptics.button();
-              _deleteClient();
-            },
+            onPressed: _deleteClient,
           ),
         ],
       ),
@@ -653,38 +619,16 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
           final phone = clientData['phone'] ?? '';
           final address = clientData['address'] ?? 'Адрес не указан';
 
-          return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('companies')
-                .doc('fix_appliance_ca')
-                .collection('jobs')
-                .where('clientId', isEqualTo: widget.clientId)
-                .snapshots(),
-            builder: (context, jobsSnapshot) {
-              final jobs = jobsSnapshot.data?.docs ?? [];
-              double totalMoneyPaid = 0.0;
-              for (var doc in jobs) {
-                final jobMap = doc.data() as Map<String, dynamic>;
-                if (jobMap['documents'] != null) {
-                  for (var invoiceDoc in jobMap['documents']) {
-                    if (invoiceDoc['status'] != 'cancelled' &&
-                        invoiceDoc['payments'] != null) {
-                      for (var p in invoiceDoc['payments']) {
-                        totalMoneyPaid +=
-                            double.tryParse(p['amount'].toString()) ?? 0.0;
-                      }
-                    }
-                  }
-                }
-              }
-
-              return CustomScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                slivers: [
-              SliverToBoxAdapter(
-                child: Container(
+          return Column(
+            children: [
+              Container(
                 width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                padding: const EdgeInsets.only(
+                  bottom: 24,
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                ),
                 decoration: const BoxDecoration(
                   color: Color(0xFF14557F),
                   borderRadius: BorderRadius.only(
@@ -695,22 +639,22 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                 child: Column(
                   children: [
                     CircleAvatar(
-                      radius: 28,
+                      radius: 40,
                       backgroundColor: Colors.white,
                       child: Text(
                         name.isNotEmpty ? name[0].toUpperCase() : '?',
                         style: const TextStyle(
-                          fontSize: 22,
+                          fontSize: 32,
                           fontWeight: FontWeight.bold,
                           color: Color(0xFF14557F),
                         ),
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 12),
                     Text(
                       name,
                       style: const TextStyle(
-                        fontSize: 20,
+                        fontSize: 22,
                         fontWeight: FontWeight.bold,
                         color: Colors.white,
                       ),
@@ -765,12 +709,40 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                     ),
                   ],
                 ),
-                ),
               ),
-              SliverToBoxAdapter(
-                child: Column(
-                  children: [
-                    Padding(
+
+              Expanded(
+                child: StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('companies')
+                      .doc('fix_appliance_ca')
+                      .collection('jobs')
+                      .where('clientId', isEqualTo: widget.clientId)
+                      .snapshots(),
+                  builder: (context, jobsSnapshot) {
+                    if (jobsSnapshot.connectionState == ConnectionState.waiting)
+                      return const Center(child: CircularProgressIndicator());
+                    final jobs = jobsSnapshot.data?.docs ?? [];
+
+                    double totalMoneyPaid = 0.0;
+                    for (var doc in jobs) {
+                      final jobMap = doc.data() as Map<String, dynamic>;
+                      if (jobMap['documents'] != null) {
+                        for (var invoiceDoc in jobMap['documents']) {
+                          if (invoiceDoc['status'] != 'cancelled' &&
+                              invoiceDoc['payments'] != null) {
+                            for (var p in invoiceDoc['payments'])
+                              totalMoneyPaid +=
+                                  double.tryParse(p['amount'].toString()) ??
+                                  0.0;
+                          }
+                        }
+                      }
+                    }
+
+                    return Column(
+                      children: [
+                        Padding(
                           padding: const EdgeInsets.all(16.0),
                           child: Row(
                             children: [
@@ -871,25 +843,26 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                           ),
                         ),
                         const SizedBox(height: 8),
-                  ],
-                ),
-              ),
-              if (jobs.isEmpty)
-                const SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Center(
-                    child: Text(
-                      'У клиента еще нет заявок',
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  ),
-                )
-              else
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                  sliver: SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
+
+                        if (jobs.isEmpty)
+                          const Expanded(
+                            child: Center(
+                              child: Text(
+                                'У клиента еще нет заявок',
+                                style: TextStyle(color: Colors.grey),
+                              ),
+                            ),
+                          ),
+
+                        if (jobs.isNotEmpty)
+                          Expanded(
+                            child: ListView.builder(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              itemCount: jobs.length,
+                              itemBuilder: (context, index) {
                                 final jobDoc = jobs[index];
                                 final jobData =
                                     jobDoc.data() as Map<String, dynamic>;
@@ -1003,7 +976,6 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                                     ),
                                     trailing: const Icon(Icons.chevron_right),
                                     onTap: () {
-                                      AppHaptics.button();
                                       Navigator.push(
                                         context,
                                         MaterialPageRoute(
@@ -1019,16 +991,17 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                                   ),
                                 );
                               },
-                              childCount: jobs.length,
                             ),
                           ),
-                        ),
-                    ],
-                  );
-                },
-              );
-            },
-          ),
-        );
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 }

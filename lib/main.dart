@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'core/app_commands.dart';
 import 'firebase_options.dart';
 import 'screens/login_screen.dart';
 
@@ -20,7 +19,6 @@ class FixApplianceCRM extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      navigatorKey: rootNavigatorKey,
       title: 'FIX-Appliance CRM',
       debugShowCheckedModeBanner: false,
 

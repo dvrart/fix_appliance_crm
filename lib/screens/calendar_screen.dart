@@ -2,9 +2,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:syncfusion_flutter_calendar/calendar.dart';
-import '../core/app_commands.dart';
-import '../core/haptics.dart';
-import '../shared/widgets/ai_head.dart';
 import 'job_details_screen.dart';
 import 'create_job_screen.dart';
 
@@ -30,21 +27,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
     super.initState();
     _calendarController.view = CalendarView.week;
     _loadCalendarSettings();
-    AppCommands.calendarMode.addListener(_onCalendarCommand);
-  }
-
-  void _onCalendarCommand() {
-    final mode = AppCommands.calendarMode.value;
-    if (mode == null || !mounted) return;
-    AppCommands.calendarMode.value = null;
-    setState(() {
-      _calendarController.view = mode == 'day'
-          ? CalendarView.day
-          : mode == 'workWeek'
-              ? CalendarView.workWeek
-              : CalendarView.week;
-      _lastDropdownView = _calendarController.view ?? CalendarView.week;
-    });
   }
 
   Future<void> _loadCalendarSettings() async {
@@ -98,12 +80,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }
 
   @override
-  void dispose() {
-    AppCommands.calendarMode.removeListener(_onCalendarCommand);
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     if (_isLoadingSettings) {
       return const Center(
@@ -119,23 +95,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
       children: [
         // --- ВЕРХНЯЯ ПАНЕЛЬ С ВЫБОРОМ ВИДА ---
         Container(
-          height: 48,
-          padding: const EdgeInsets.fromLTRB(8, 0, 4, 0),
-          color: const Color(0xFF14557F),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          color: Colors.white,
           child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const AiHead(size: 30),
-              const SizedBox(width: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: Colors.grey.shade100,
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
                 ),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<CalendarView>(
                     value: currentDropdownView,
-                    isDense: true,
                     icon: const Icon(
                       Icons.keyboard_arrow_down,
                       color: Color(0xFF14557F),
@@ -143,7 +117,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
                       color: Color(0xFF14557F),
-                      fontSize: 14,
+                      fontSize: 15,
                     ),
                     items: const [
                       DropdownMenuItem(
@@ -160,7 +134,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       ),
                     ],
                     onChanged: (CalendarView? newValue) {
-                      AppHaptics.button();
                       if (newValue != null) {
                         setState(() {
                           _calendarController.view = newValue;
@@ -171,10 +144,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   ),
                 ),
               ),
-              const Spacer(),
               TextButton.icon(
                 style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
                   backgroundColor:
                       _calendarController.view == CalendarView.month
                       ? const Color(0xFFFCC520)
@@ -182,13 +153,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   foregroundColor:
                       _calendarController.view == CalendarView.month
                       ? Colors.black
-                      : Colors.white,
+                      : const Color(0xFF14557F),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
                   ),
                 ),
                 onPressed: () {
-                  AppHaptics.button();
                   setState(() {
                     if (_calendarController.view == CalendarView.month) {
                       _calendarController.view = _lastDropdownView;

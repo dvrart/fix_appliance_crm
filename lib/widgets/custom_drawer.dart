@@ -1,135 +1,144 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import '../screens/settings_screen.dart'; // Подключаем экран настроек
+import '../screens/warehouse_screen.dart'; // Подключаем экран склада
 
-import '../core/haptics.dart';
-import '../screens/reports_screen.dart';
-import '../screens/settings_screen.dart';
-import '../screens/warehouse_screen.dart';
 
 class CustomDrawer extends StatelessWidget {
   const CustomDrawer({super.key});
 
-  DocumentReference<Map<String, dynamic>> get _configRef =>
-      FirebaseFirestore.instance
-          .collection('companies')
-          .doc('fix_appliance_ca')
-          .collection('settings')
-          .doc('config');
-
-  bool _flag(Map<String, dynamic> data, String key) {
-    final value = data[key];
-    if (value is bool) return value;
-    return true;
-  }
-
-  void _open(BuildContext context, Widget page) {
-    AppHaptics.button();
-    Navigator.pop(context);
-    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
-  }
-
   @override
   Widget build(BuildContext context) {
     return Drawer(
-      child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: _configRef.snapshots(),
-        builder: (context, snapshot) {
-          final config = snapshot.data?.data() ?? <String, dynamic>{};
-          return Column(
-            children: [
-              const UserAccountsDrawerHeader(
-                decoration: BoxDecoration(color: Color(0xFF14557F)),
-                currentAccountPicture: CircleAvatar(
-                  backgroundColor: Color(0xFFFCC520),
-                  child: Icon(Icons.build, size: 40, color: Colors.black),
+      child: Column(
+        children: [
+          // --- ШАПКА МЕНЮ ---
+          UserAccountsDrawerHeader(
+            decoration: const BoxDecoration(color: Color(0xFF14557F)),
+            currentAccountPicture: const CircleAvatar(
+              backgroundColor: Color(0xFFFCC520),
+              child: Icon(Icons.build, size: 40, color: Colors.black),
+            ),
+            accountName: const Text(
+              'FIX-Appliance CRM',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+            ),
+            accountEmail: const Text('info@fix-appliance.ca'),
+          ),
+
+          // --- ОСНОВНОЙ СПИСОК ---
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.zero,
+              children: [
+                // 1. Склад запчастей
+                ListTile(
+                  leading: const Icon(
+                    Icons.warehouse,
+                    color: Color(0xFF14557F),
+                  ),
+                  title: const Text(
+                    'Склад запчастей',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) =>
+                            WarehouseScreen(), // <-- Убрали const здесь
+                      ),
+                    );
+                  },
                 ),
-                accountName: Text(
-                  'FIX-Appliance CRM',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                ),
-                accountEmail: Text('info@fix-appliance.ca'),
-              ),
-              Expanded(
-                child: ListView(
-                  padding: EdgeInsets.zero,
+                const Divider(),
+
+                // 2. Документы
+                ExpansionTile(
+                  leading: const Icon(Icons.folder, color: Colors.grey),
+                  title: const Text('Документы'),
                   children: [
-                    if (_flag(config, 'menuShowWarehouse'))
-                      ListTile(
-                        leading: const Icon(
-                          Icons.inventory_2_outlined,
-                          color: Colors.orange,
-                        ),
-                        title: const Text(
-                          'Склад',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        onTap: () => _open(context, const WarehouseScreen()),
-                      ),
-                    if (_flag(config, 'menuShowStatistics'))
-                      ListTile(
-                        leading: const Icon(
-                          Icons.query_stats,
-                          color: Color(0xFF1565C0),
-                        ),
-                        title: const Text(
-                          'Статистика',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        onTap: () => _open(context, const ReportsScreen()),
-                      ),
-                    if (_flag(config, 'menuShowReports'))
-                      ListTile(
-                        leading: const Icon(Icons.bar_chart, color: Colors.green),
-                        title: const Text(
-                          'Отчеты',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        onTap: () => _open(context, const ReportsScreen()),
-                      ),
-                    if (_flag(config, 'menuShowExpenses'))
-                      ListTile(
-                        leading: const Icon(
-                          Icons.receipt_long_outlined,
-                          color: Colors.deepOrange,
-                        ),
-                        title: const Text(
-                          'Расходы',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        onTap: () => _open(context, const ReportsScreen()),
-                      ),
-                    if (_flag(config, 'menuShowInvoices') ||
-                        _flag(config, 'menuShowEstimates'))
-                      ListTile(
-                        leading: const Icon(Icons.receipt_long, color: Colors.teal),
-                        title: const Text(
-                          'Счета',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        onTap: () => _open(context, const ReportsScreen()),
-                      ),
-                    const Divider(),
                     ListTile(
-                      leading: const Icon(Icons.settings_outlined),
-                      title: const Text(
-                        'Настройки',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      onTap: () => _open(context, const SettingsScreen()),
+                      contentPadding: const EdgeInsets.only(left: 54),
+                      leading: const Icon(Icons.receipt_long, size: 20),
+                      title: const Text('Инвойсы'),
+                      onTap: () {},
+                    ),
+                    ListTile(
+                      contentPadding: const EdgeInsets.only(left: 54),
+                      leading: const Icon(Icons.bar_chart, size: 20),
+                      title: const Text('Отчеты'),
+                      onTap: () {},
                     ),
                   ],
                 ),
-              ),
-              const Padding(
-                padding: EdgeInsets.all(16.0),
-                child: Text(
-                  'v1.0.0 (Beta)',
-                  style: TextStyle(color: Colors.grey),
+
+                // 3. ГЛАВНАЯ ПАПКА НАСТРОЕК
+                ExpansionTile(
+                  leading: const Icon(Icons.settings, color: Colors.grey),
+                  title: const Text('Настройки'),
+                  initiallyExpanded: true,
+                  children: [
+                    ListTile(
+                      contentPadding: const EdgeInsets.only(left: 54),
+                      leading: const Icon(Icons.person_outline, size: 20),
+                      title: const Text('Настройки аккаунта'),
+                      onTap: () {},
+                    ),
+                    ListTile(
+                      contentPadding: const EdgeInsets.only(left: 54),
+                      leading: const Icon(Icons.display_settings, size: 20),
+                      title: const Text('Настройки системы'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) =>
+                                SettingsScreen(), // <-- И убрали const здесь
+                          ),
+                        );
+                      },
+                    ),
+
+                    // ПАПКА "СВЯЗЬ" ВНУТРИ НАСТРОЕК
+                    ExpansionTile(
+                      tilePadding: const EdgeInsets.only(left: 54, right: 16),
+                      leading: const Icon(
+                        Icons.contact_phone_outlined,
+                        size: 20,
+                      ),
+                      title: const Text('Связь'),
+                      children: [
+                        ListTile(
+                          contentPadding: const EdgeInsets.only(left: 72),
+                          leading: const Icon(Icons.sms_outlined, size: 18),
+                          title: const Text('Сообщения (СМС)'),
+                          onTap: () {},
+                        ),
+                        ListTile(
+                          contentPadding: const EdgeInsets.only(left: 72),
+                          leading: const Icon(
+                            Icons.text_snippet_outlined,
+                            size: 18,
+                          ),
+                          title: const Text('Настройка шаблонов'),
+                          onTap: () {},
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-              ),
-            ],
-          );
-        },
+              ],
+            ),
+          ),
+
+          // --- ВЕРСИЯ ПРИЛОЖЕНИЯ ---
+          const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text('v1.0.0 (Beta)', style: TextStyle(color: Colors.grey)),
+          ),
+        ],
       ),
     );
   }
