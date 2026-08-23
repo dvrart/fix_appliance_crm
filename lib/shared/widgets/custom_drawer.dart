@@ -148,7 +148,7 @@ class CustomDrawer extends StatelessWidget {
                       color: const Color(0xFF1565C0),
                       onTap: () => _open(context, const StatisticsScreen()),
                     ),
-                  if (SettingsService.menuFlag(config, 'menuShowReports')) ...[
+                  if (SettingsService.menuFlag(config, 'menuShowReports'))
                     _buildTile(
                       context,
                       title: context.tr('Отчеты', 'Reports'),
@@ -156,6 +156,7 @@ class CustomDrawer extends StatelessWidget {
                       color: Colors.green,
                       onTap: () => _open(context, const ReportsScreen()),
                     ),
+                  if (SettingsService.menuFlag(config, 'menuShowExpenses'))
                     _buildTile(
                       context,
                       title: context.tr('Расходы', 'Expenses'),
@@ -163,7 +164,6 @@ class CustomDrawer extends StatelessWidget {
                       color: Colors.deepOrange,
                       onTap: () => _open(context, const ExpensesScreen()),
                     ),
-                  ],
                   if (SettingsService.menuFlag(config, 'menuShowInvoices') ||
                       SettingsService.menuFlag(config, 'menuShowEstimates'))
                     _buildTile(
@@ -194,6 +194,7 @@ class CustomDrawer extends StatelessWidget {
                         children: tiles,
                       ),
                     ),
+                    if (SettingsService.menuFlag(config, 'menuShowTrash'))
                     SafeArea(
                       top: false,
                       child: Padding(

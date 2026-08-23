@@ -81,6 +81,8 @@ class JobVisit {
   bool get isDone => outcome == done;
   bool get isScheduled => outcome == scheduled;
 
+  String get effectiveConfirmStatus => smsConfirmStatus;
+
   factory JobVisit.create({
     required DateTime startAt,
     int durationMinutes = 60,
@@ -338,6 +340,16 @@ class Job {
 
   /// Тип техники для отображения
   String get applianceType => primaryAppliance?.type ?? 'Техника';
+
+  String get intakeSource {
+    if (sourceCallId != null && sourceCallId!.isNotEmpty) return 'phone';
+    return '';
+  }
+
+  String displayStatusForVisit(JobVisit? visit) {
+    if (visit != null && visit.isDone) return JobStatuses.completed;
+    return status;
+  }
 
   /// Бренд техники для отображения
   String get applianceBrand => primaryAppliance?.brand ?? '';

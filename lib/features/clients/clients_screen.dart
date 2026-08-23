@@ -493,7 +493,9 @@ class _ClientsScreenState extends State<ClientsScreen> {
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
+        toolbarHeight: 48,
         elevation: 0,
+        scrolledUnderElevation: 0,
         automaticallyImplyLeading: false,
         leading: _selecting
             ? IconButton(

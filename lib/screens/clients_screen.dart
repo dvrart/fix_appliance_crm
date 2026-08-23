@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../core/haptics.dart';
+import '../shared/widgets/ai_head.dart';
 import 'client_details_screen.dart';
 
 class ClientsScreen extends StatefulWidget {
@@ -139,7 +141,15 @@ class _ClientsScreenState extends State<ClientsScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF14557F),
         foregroundColor: Colors.white,
+        toolbarHeight: 48,
+        titleSpacing: 4,
         elevation: 0,
+        scrolledUnderElevation: 0,
+        automaticallyImplyLeading: false,
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 8),
+          child: Center(child: AiHead(size: 30)),
+        ),
         title: DropdownButtonHideUnderline(
           child: DropdownButton<String>(
             value: _sortMethod,
@@ -168,7 +178,10 @@ class _ClientsScreenState extends State<ClientsScreen> {
           IconButton(
             icon: const Icon(Icons.add, color: Colors.white, size: 28),
             tooltip: 'Добавить клиента',
-            onPressed: _showAddClientDialog,
+            onPressed: () {
+              AppHaptics.button();
+              _showAddClientDialog();
+            },
           ),
           const SizedBox(width: 8),
         ],
@@ -176,7 +189,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.all(16.0),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             child: TextField(
               decoration: InputDecoration(
                 hintText: 'Поиск по имени, компании или телефону...',

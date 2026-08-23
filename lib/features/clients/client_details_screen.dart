@@ -366,7 +366,11 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
 
         return Scaffold(
           appBar: AppBar(
-            title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+            toolbarHeight: 48,
+            titleSpacing: 4,
+            elevation: 0,
+            scrolledUnderElevation: 0,
+            title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
             backgroundColor: AppColors.primary,
             foregroundColor: Colors.white,
             actions: [
@@ -395,7 +399,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                 // Шапка с контактами
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(24),
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                   decoration: const BoxDecoration(
                     color: AppColors.primary,
                     borderRadius: BorderRadius.only(
@@ -406,22 +410,22 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                   child: Column(
                     children: [
                       CircleAvatar(
-                        radius: 40,
+                        radius: 28,
                         backgroundColor: Colors.white,
                         child: Text(
                           name.isNotEmpty ? name[0].toUpperCase() : '?',
                           style: const TextStyle(
-                            fontSize: 32,
+                            fontSize: 22,
                             fontWeight: FontWeight.bold,
                             color: AppColors.primary,
                           ),
                         ),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 8),
                       Text(
                         name,
                         style: const TextStyle(
-                          fontSize: 24,
+                          fontSize: 20,
                           fontWeight: FontWeight.bold,
                           color: Colors.white,
                         ),

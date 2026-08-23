@@ -605,7 +605,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
       children: [
         // --- ВЕРХНЯЯ ПАНЕЛЬ С ВЫБОРОМ ВИДА ---
         Container(
-          padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
+          padding: const EdgeInsets.fromLTRB(8, 0, 4, 0),
           color: Colors.white,
           child: Row(
             children: [
@@ -1112,7 +1112,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
         if (!_showList)
           Positioned(
             right: 16,
-            bottom: 16,
+            bottom: 80,
             child: FloatingActionButton.small(
               heroTag: 'calendar_add_fab',
               backgroundColor: AppColors.accent,

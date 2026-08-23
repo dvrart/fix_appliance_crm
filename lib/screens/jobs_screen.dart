@@ -2,6 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../core/haptics.dart';
+import '../shared/widgets/ai_head.dart';
 import 'job_details_screen.dart';
 import 'create_job_screen.dart'; // Импортируем экран создания заявки
 
@@ -29,8 +31,27 @@ class _JobsScreenState extends State<JobsScreen> {
       body: Column(
         children: [
           Container(
-            height: 60,
-            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+            height: 48,
+            color: const Color(0xFF14557F),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: const Row(
+              children: [
+                AiHead(size: 30),
+                SizedBox(width: 8),
+                Text(
+                  'Заявки',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            height: 52,
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
             child: ListView(
               scrollDirection: Axis.horizontal,
               children:
@@ -56,6 +77,7 @@ class _JobsScreenState extends State<JobsScreen> {
                               : FontWeight.normal,
                         ),
                         onSelected: (bool selected) {
+                          AppHaptics.button();
                           setState(() {
                             _selectedFilter = status;
                           });

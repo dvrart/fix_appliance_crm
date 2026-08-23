@@ -1066,6 +1066,9 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
       appBar: AppBar(
         backgroundColor: const Color(0xFF14557F),
         foregroundColor: Colors.white,
+        toolbarHeight: 48,
+        elevation: 0,
+        scrolledUnderElevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),
