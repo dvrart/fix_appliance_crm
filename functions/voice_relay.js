@@ -8,6 +8,7 @@ const {
   base64ToInt16,
   parsePcmRate,
 } = require('./audio_codec');
+const voiceFacts = require('./voice_facts');
 
 let wss = null;
 let deps = null;
@@ -62,15 +63,95 @@ function geminiLiveUrl(apiKey) {
   );
 }
 
+function outsideAreaRule(profile, thenWhat) {
+  const area = String((profile && profile.serviceArea) || '').trim();
+  if (!area) {
+    return `- Do not refuse a caller based on town names from memory. Coverage comes from the owner's service-area map, and it is not set.`;
+  }
+  return `- Outside this service area (${area}): we don't travel there, then ${thenWhat}.`;
+}
+
+function compactKnown(session) {
+  const extracted = (session && session.extracted) || {};
+  const have = [];
+  if (extracted.client_name) have.push(`name ${extracted.client_name}`);
+  if (extracted.address) {
+    have.push(
+      `${extracted.has_job_site ? 'repair at' : 'address'} ${extracted.address}${
+        extracted.city ? `, ${extracted.city}` : ''
+      }`
+    );
+  }
+  if ((extracted.owner_address || session.knownAddress) && extracted.has_job_site) {
+    have.push(`owner home ${extracted.owner_address || session.knownAddress}`);
+  } else if (session.knownAddress && !extracted.address) {
+    have.push(`home on file ${session.knownAddress}`);
+  }
+  if (extracted.appliance_type || extracted.brand) {
+    have.push(
+      `appliance ${[extracted.appliance_type, extracted.brand].filter(Boolean).join(' ')}`
+    );
+  }
+  if (extracted.problem_description) have.push(`problem ${extracted.problem_description}`);
+  if (extracted.slot_ok === false) {
+    have.push(
+      `wanted ${[extracted.scheduled_date, extracted.scheduled_time].filter(Boolean).join(' ')} but that 2-hour window is TAKEN — offer ${extracted.slot_alts || 'another time the same day'}`
+    );
+  } else if (extracted.scheduled_date || extracted.scheduled_time) {
+    have.push(
+      `visit ${[extracted.scheduled_date, extracted.scheduled_time].filter(Boolean).join(' ')}`
+    );
+  }
+  if (extracted.wants_callback) have.push('live callback requested');
+  if (extracted.has_job_site) {
+    const who = [extracted.contact_on_site_name, extracted.contact_on_site_phone]
+      .filter(Boolean)
+      .join(' ');
+    if (who) have.push(`on-site ${who}`);
+  }
+  const need = [];
+  if (!extracted.problem_description) need.push('what broke');
+  if (!extracted.appliance_type || !extracted.brand) need.push('kind and brand');
+  if (!extracted.client_name) need.push('first name');
+  if (!extracted.wants_callback && !extracted.address) {
+    need.push(
+      session.knownAddress
+        ? 'whether the repair is at the home on file or another address'
+        : 'street and town of the repair'
+    );
+  }
+  if (
+    !extracted.wants_callback &&
+    (!extracted.scheduled_date ||
+      !extracted.scheduled_time ||
+      extracted.slot_ok === false)
+  ) {
+    need.push(
+      extracted.has_job_site
+        ? 'day AND clock time — they gave another repair address, do not hang up, book the visit'
+        : 'day and time'
+    );
+  }
+  return `Already have: ${have.join('; ') || 'nothing yet'}. Still need: ${
+    need.join(', ') || 'nothing — confirm, then ask if anything else'
+  }.`;
+}
+
 function liveSystemPrompt(profile, session) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today =
+    (deps && deps.torontoTodayYmd && deps.torontoTodayYmd()) ||
+    new Date().toISOString().slice(0, 10);
+  const hours = profile.workHours || '7 a.m. to 9 p.m.';
   return `You are a real receptionist on a live phone for ${profile.companyName}, appliance repair in Ontario.
 The technician didn't pick up. You answered. Sound like a warm woman in a small shop — never an IVR, never a chatbot.
 
 Caller phone (do not ask for it): ${session.fromNumber || 'unknown'}
-Today: ${today}
+Today (America/Toronto): ${today}
 Known client: ${session.clientName || 'new'}
 Known address: ${session.knownAddress || 'none'}
+Shop hours: ${hours} America/Toronto.
+Each visit is 2 hours (one job). Never confirm a taken window. If they want a busy time, offer another time the SAME day first.
+${session.calendarBrief || ''}
 
 Owner rules:
 ${profile.instructions}
@@ -80,17 +161,26 @@ TALK LIKE A PERSON:
 - Then STOP and listen. Do not fill silence with extra questions.
 - Contractions: what's, that's, I'll, you're.
 - If they already told you something, do not ask it again.
-- First react like a human ("oh, the fridge isn't cooling"), then one missing thing.
+- First react like a human ("oh, the fridge isn't cooling"), then one missing thing if you still need it.
 - Never say: got it, I understand, please provide, I have noted, certainly, how may I assist, I am an AI.
 - No lists. No "thank you for that information".
-- When you have full name, address, what broke, AND a day or time: wrap up — "I'll pass this to the tech and he'll call you back to confirm." Then call end_call with createJob true.
-- Angry caller: a person from the company will call within 30 minutes, then call end_call with createJob true.
-- Outside Brant/Norfolk service area: we don't travel there, then call end_call with createJob false.
-- Speak English unless they speak Russian.
 - After you greet them, wait for them to talk. Do not keep talking.
 - Do not greet until you are told the exact greeting.
+- Speak English only. Understand any language, including Russian, but always answer in English.
+- Never guess a street. Write names as normal names (Artem).
+- If they say the repair is at another address, take that street, keep their home, and keep talking — do not hang up in that moment.
+- HOURS: take orders every day, including Saturday, Sunday, and holidays. Regular visits Monday–Friday ${hours}. Same-day is OK if still in those hours. Saturday is by agreement — if they want Saturday and the 2-hour window is free, book it. Never say we don't take Saturday orders. Sunday and holidays: still take the order; if they want that day and the window is free, book it as agreed.
+- Each visit is 2 hours. If they want 2 p.m., you need 2–4 p.m. free. If that window is taken, do not book it — offer another time that day.
+- If they want 6 a.m. or a start after 7 p.m. (would end after 9 p.m.), do not book it. Say we don't work then. Offer a time inside ${hours} that ends by 9 p.m.
+- If they want a live person: say a technician will call back within 30 minutes. Do not grill for a visit time.
+- Price: do not mention money unless they asked. If they asked: a service call is $99. If they approve the repair after diagnosis, they do not pay the service call — only the repair.
+- Household appliances only. We do not repair laptops, computers, phones, TVs, or cars.
+- Another house: keep their home, take the repair address, who will be there, and that phone.
+- When you have a name, what broke, where to go, and a FREE 2-hour window — or they asked for a callback — confirm once: "I'll pass this to the tech." Then keep talking: ask if they have another appliance or anything else, and listen. If they add another repair, take it. Do not wrap up. Do not say bye. Do not hang up. The caller hangs up.
+- Angry caller: a person from the company will call within 30 minutes. Then keep talking. Do not hang up for them.
+${outsideAreaRule(profile, 'politely say we do not travel there')}
 
-When the conversation is finished, call the end_call tool.`;
+You cannot hang up. There is no end_call. After you confirm, stay on the line and keep the conversation going. If they go quiet, wait; you may ask one short follow-up, then listen.`;
 }
 
 function buildSetup(model, systemText, withTools, resumeHandle) {
@@ -99,6 +189,7 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
     generationConfig: {
       responseModalities: ['AUDIO'],
       speechConfig: {
+        languageCode: 'en-US',
         voiceConfig: {
           prebuiltVoiceConfig: { voiceName: 'Aoede' },
         },
@@ -120,67 +211,59 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
       },
     },
     sessionResumption: resumeHandle ? { handle: resumeHandle } : {},
+    // Audio is ~25 tokens/s. Old 8k trigger (~5 min) froze her mid-word.
+    // Compress only on long calls; keep a large recent window so the chat continues.
     contextWindowCompression: {
-      triggerTokens: 25000,
-      slidingWindow: { targetTokens: 12000 },
+      triggerTokens: 32000,
+      slidingWindow: { targetTokens: 18000 },
     },
   };
-  if (withTools) {
-    setup.tools = [
-      {
-        functionDeclarations: [
-          {
-            name: 'end_call',
-            description:
-              'Hang up after you have said goodbye. Use when you collected enough repair details, the caller is outside the service area, they want to stop, or you promised a callback.',
-            parameters: {
-              type: 'OBJECT',
-              properties: {
-                createJob: {
-                  type: 'BOOLEAN',
-                  description: 'True if a repair visit should be created from this call',
-                },
-                reason: { type: 'STRING' },
-              },
-              required: ['createJob'],
-            },
-          },
-        ],
-      },
-    ];
-  }
   return { setup };
 }
 
 async function streamSpokenReply(ws, session, userText) {
   const { generateVoiceTextStream, spokenText, getAiAnswerSettings } = deps;
-  const today = new Date().toISOString().slice(0, 10);
+  const today =
+    (deps.torontoTodayYmd && deps.torontoTodayYmd()) || new Date().toISOString().slice(0, 10);
   const profile = await getAiAnswerSettings();
   const extracted = session.extracted || {};
   const history = (session.history || []).slice(-12);
+  const flow = deps.voiceCallFlow || '';
   const prompt = `You are a real receptionist on a live phone for ${profile.companyName}, appliance repair in Ontario.
 The technician didn't pick up. You answered. Sound like a warm woman in a small shop — never an IVR, never a chatbot.
 
 Caller phone (do not ask for it): ${session.fromNumber || 'unknown'}
-Today: ${today}
+Today (America/Toronto): ${today}
 Known client: ${session.clientName || 'new'}
 Known address: ${session.knownAddress || 'none'}
+Shop hours: ${profile.workHours || '7 a.m. to 9 p.m.'}
+${session.calendarBrief || ''}
 
 Owner rules:
 ${profile.instructions}
 
+${flow}
+
 TALK LIKE A PERSON:
 - One short spoken turn. Usually one sentence. Never more than two.
-- Then STOP and listen. Do not fill silence with extra questions.
+- Then listen. Do not fill silence with extra questions.
 - Contractions: what's, that's, I'll, you're.
-- If they already told you something, do not ask it again.
+- If they already told you something, do not ask it again as if you forgot. Do read name and address back once.
 - First react like a human ("oh, the fridge isn't cooling"), then one missing thing.
+- After the greeting, the first missing thing is what broke and how it shows.
+- If Known client is not "new", remember them. After the problem, confirm name and address from CRM.
+- Next: appliance kind AND brand, in one question if both are unknown.
 - Never say: got it, I understand, please provide, I have noted, certainly, how may I assist, I am an AI.
 - No lists. No "thank you for that information".
-- When you have full name, address, what broke, AND a day or time: wrap up — "I'll pass this to the tech and he'll call you back to confirm." No price, no exact ETA.
-- Angry caller: a person from the company will call within 30 minutes, then stop.
-- Outside Brant/Norfolk service area: we don't travel there, then stop.
-- Speak English unless they speak Russian.
+- LIVE CALLBACK: if they want a person / the technician to call them, do not ask address or time. If type or brand is missing, ask once. Then say: "Okay, I'll pass your details along and a technician will call you back shortly." Then ask if anything else.
+- When you have first name, address, what broke, type/brand, AND a free 2-hour window: confirm once, then ask if they have another appliance or anything else. Keep talking. Do not say goodbye.
+- Each visit is 2 hours. If the calendar says that window is taken, do not confirm it — offer another time the same day.
+- If they say that's all / nothing else, stay on the line. Do not say bye. Wait for them to hang up.
+- Thanks, okay, yes, or confirming the time is NOT goodbye. Stay on the line and keep the conversation going.
+- LAPTOP / COMPUTER: do not hang up and do not go silent. Say we only repair home appliances, then ask if you can help with anything else.
+- Angry caller: a person from the company will call within 30 minutes, then ask if you can help with anything else.
+${outsideAreaRule(profile, 'stop')}
+- Speak English only. Understand Russian if they use it, but never answer in Russian or any other language.
 
 Facts so far: ${JSON.stringify(extracted)}
 Conversation: ${JSON.stringify(history)}
@@ -219,51 +302,179 @@ function tryParseExtracted(rawText) {
 
 async function extractFacts(session, userText, assistantText) {
   const { generateVoiceContent, mergeExtracted } = deps;
+  const today =
+    (deps.torontoTodayYmd && deps.torontoTodayYmd()) || new Date().toISOString().slice(0, 10);
   const prompt = `From this appliance-repair phone call, extract fields. Use null if unknown.
 appliance_type must be Russian: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
+brand: the make they named (Samsung, LG, Whirlpool, GE, Bosch…). Never invent a brand. Not the model number.
+Today is ${today} in America/Toronto.
+scheduled_date must be YYYY-MM-DD. "tomorrow" = the next calendar day after ${today}. Never leave the date empty if they named a day.
+scheduled_time must be HH:mm 24-hour. "11:00", "at 11", "eleven o'clock" → 11:00. Never leave time empty if they named a clock time.
+client_name: a normal short name as spoken (Artem). NEVER a phonetic spelling or letter-by-letter mash (not "R Tamiyzhpurush"). If the receptionist already used a first name, copy that spelling.
+address: the REPAIR address (where the technician drives). Street number + street name. null if mumbled.
+owner_address: the caller's home if it is different from the repair address.
+has_job_site=true if the repair is not at the caller's own home (tenant, rental, another house).
+If the spoken street is not the known home, has_job_site=true, address=repair place, owner_address=home.
+wants_callback=true if they asked to speak to a live person, the technician, the master, or to get a call back from a human. After that, do not treat missing time as incomplete.
+service_declined=true if we cannot take the job: outside the service area, not a household appliance (laptop/computer/phone), they cancelled, or we told them we don't do that work. Then createJob=false.
 Return STRICT JSON only:
-{"client_name":null,"address":null,"city":null,"postal_code":null,"appliance_type":null,"brand":null,"model":null,"problem_description":null,"scheduled_date":null,"scheduled_time":null,"notes":null,"done":false,"createJob":false}
+{"client_name":null,"address":null,"city":null,"postal_code":null,"owner_address":null,"appliance_type":null,"brand":null,"model":null,"problem_description":null,"scheduled_date":null,"scheduled_time":null,"wants_callback":false,"has_job_site":false,"contact_on_site_name":null,"contact_on_site_phone":null,"notes":null,"service_declined":false,"decline_reason":null,"done":false,"createJob":false}
 
-done=true if we should hang up (enough info, outside area, angry callback, wrong number).
-createJob=true if we should create a job (enough info OR angry with some details). Enough info = name + address + problem + day or time.
+done=true ONLY if the caller said goodbye/bye/that's all, or they declined "anything else". Never because they said thanks, okay, yes, or the visit is already booked. Never for a laptop, computer, or something we don't repair.
+createJob=true if we should create a repair job (enough info OR live callback OR angry with some details). NEVER if service_declined. Not for a laptop/computer unless they also have a household appliance.
+Enough info for a booked visit = first name + address + problem + type/brand + day and time.
+Live callback = createJob true even without address or time. Do not wait for model, serial, or where the appliance sits.
 
 Known: ${JSON.stringify(session.extracted || {})}
-Full conversation: ${JSON.stringify((session.history || []).slice(-16))}
+Full conversation: ${JSON.stringify((session.history || []).slice(-24))}
 Caller: ${userText}
 You said: ${assistantText}`;
 
   const result = await generateVoiceContent([{ text: prompt }]);
   const parsed = tryParseExtracted(result.response.text());
-  const extracted = mergeExtracted(session.extracted, parsed.extracted || parsed);
+  const extracted = mergeExtracted(
+    session.extracted,
+    parsed.extracted || parsed,
+    session.history
+  );
   if (session.fromNumber) extracted.client_phone = deps.normalizePhone(session.fromNumber);
+  const callback = extracted.wants_callback === true;
+  const declined = voiceFacts.isServiceDeclined(extracted);
+  const goodbye = voiceFacts.saidGoodbye(assistantText);
+  const lastUser = userText;
+  const allowed = voiceFacts.mayHangUp({
+    extracted,
+    lastUser,
+    lastAsst: assistantText,
+    hasEnough: deps.hasEnoughForJob,
+    turns: session.turns,
+    history: session.history,
+  });
   return {
     extracted,
-    done: parsed.done === true,
-    createJob: parsed.createJob === true,
+    done: allowed,
+    createJob: !declined && (parsed.createJob === true || callback),
+    serviceDeclined: declined,
   };
 }
 
 async function persistSession(session, extra) {
   const { callsRef } = deps;
   if (!session.callSid) return;
+  const reception = {
+    history: session.history,
+    extracted: session.extracted,
+    language: session.language || 'en',
+    turns: session.turns || 0,
+    engine: session.engine || 'relay',
+    liveFailed: false,
+  };
+  if (extra && extra.done) reception.done = true;
+  const declined =
+    voiceFacts.isServiceDeclined(session.extracted) ||
+    Boolean(extra && extra.serviceDeclined);
+  reception.createJob = Boolean(extra && extra.createJob) && !declined;
+  reception.serviceDeclined = declined;
   await callsRef.doc(session.callSid).set(
     {
       answeredBy: 'ai',
       extractedData: session.extracted || {},
       transcription: session.transcription,
-      aiReception: {
-        history: session.history,
-        extracted: session.extracted,
-        language: session.language || 'en',
-        turns: session.turns || 0,
-        engine: session.engine || 'relay',
-        done: Boolean(extra && extra.done),
-        createJob: Boolean(extra && extra.createJob),
-        liveFailed: false,
-      },
+      aiReception: reception,
+      serviceDeclined: declined,
     },
     { merge: true }
   );
+}
+
+function applyLocalExtract(session) {
+  if (!deps || !deps.mergeExtracted) return;
+  const extracted = deps.mergeExtracted(session.extracted || {}, {}, session.history);
+  if (session.fromNumber) extracted.client_phone = deps.normalizePhone(session.fromNumber);
+  const lastUser = lastHistoryText(session, 'user');
+  const lastAsst = lastHistoryText(session, 'assistant');
+  if (session.knownAddress && !extracted.owner_address) {
+    extracted.owner_address = session.knownAddress;
+  }
+  const confirmedHome =
+    session.knownAddress &&
+    /still right|address on file|home on file|at the address|is the appliance at/i.test(lastAsst) &&
+    /^(yes|yeah|yep|correct|that'?s right|still right|right|same|that one)\b/i.test(
+      String(lastUser || '').trim()
+    );
+  if (confirmedHome && !extracted.address) {
+    extracted.address = session.knownAddress;
+  }
+  if (
+    extracted.address &&
+    session.knownAddress &&
+    voiceFacts.addressesLookDifferent(extracted.address, session.knownAddress) &&
+    !voiceFacts.detectMoved(`${lastUser} ${lastAsst}`)
+  ) {
+    extracted.has_job_site = true;
+    extracted.owner_address = session.knownAddress;
+  }
+  session.extracted = extracted;
+  if (voiceFacts.isServiceDeclined(extracted)) {
+    session.createJob = false;
+  } else if (deps.hasEnoughForJob(extracted) || extracted.wants_callback === true) {
+    session.createJob = true;
+  }
+}
+
+function persistSessionSoon(session, extra) {
+  session.persistExtra = { ...(session.persistExtra || {}), ...(extra || {}) };
+  if (session.persistTimer) return;
+  session.persistTimer = setTimeout(() => {
+    session.persistTimer = null;
+    const pending = session.persistExtra || {};
+    session.persistExtra = {};
+    persistSession(session, pending).catch((error) => {
+      console.warn('voiceLive persist:', error.message);
+    });
+  }, 2500);
+}
+
+function scheduleBackgroundExtract(session) {
+  if (session.closed || session.extractTimer) return;
+  session.extractTimer = setTimeout(() => {
+    session.extractTimer = null;
+    runBackgroundExtract(session).catch((error) => {
+      console.warn('voiceLive extract:', error.message);
+    });
+  }, 8000);
+}
+
+async function runBackgroundExtract(session) {
+  if (session.closed || session.extracting) return;
+  session.extracting = true;
+  try {
+    const lastUser = lastHistoryText(session, 'user');
+    const lastAsst = lastHistoryText(session, 'assistant');
+    if (!lastUser && !lastAsst) return;
+    const facts = await extractFacts(session, lastUser, lastAsst);
+    if (session.closed) return;
+    session.extracted = facts.extracted;
+    session.createJob = session.createJob || facts.createJob || deps.hasEnoughForJob(session.extracted);
+    persistSessionSoon(session, {
+      done: Boolean(session.wantHangup),
+      createJob: session.createJob,
+    });
+  } finally {
+    session.extracting = false;
+  }
+}
+
+function clearSessionTimers(session) {
+  clearReplyWatchdog(session);
+  if (session.extractTimer) {
+    clearTimeout(session.extractTimer);
+    session.extractTimer = null;
+  }
+  if (session.persistTimer) {
+    clearTimeout(session.persistTimer);
+    session.persistTimer = null;
+  }
 }
 
 function closeGemini(session) {
@@ -301,8 +512,85 @@ function markLiveFailed(session, reason) {
     .catch(() => {});
 }
 
+function cancelHangup(session) {
+  if (session.hangupTimer) {
+    clearTimeout(session.hangupTimer);
+    session.hangupTimer = null;
+  }
+  session.wantHangup = false;
+}
+
+function lastHistoryText(session, role) {
+  const history = session.history || [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    const item = history[i];
+    if (item && item.role === role) return String(item.text || '');
+  }
+  return '';
+}
+
+function armReplyWatchdog(session) {
+  clearReplyWatchdog(session);
+  session.replyWatch = setTimeout(() => {
+    if (session.closed || session.wantHangup || !session.ready) return;
+    if (session.assistantPartial) return;
+    const lastUser = lastHistoryText(session, 'user');
+    if (!lastUser) return;
+    session.stallNudge = Number(session.stallNudge || 0) + 1;
+    console.warn(`voiceLive stall ${session.callSid} n=${session.stallNudge}`);
+    if (session.stallNudge > 1) return;
+    nudgeKeepTalking(session, lastUser);
+  }, 8000);
+}
+
+function clearReplyWatchdog(session) {
+  if (session.replyWatch) {
+    clearTimeout(session.replyWatch);
+    session.replyWatch = null;
+  }
+}
+
+function nudgeKeepTalking(session, lastUser) {
+  if (!session || !session.geminiWs || session.geminiWs.readyState !== 1) return;
+  const laptop = voiceFacts.looksOutOfScopeItem(lastUser)
+    ? ' They asked about a laptop or computer. Speak now: we only repair household appliances (fridge, washer, dryer, stove, dishwasher, microwave), not laptops. Then ask if you can help with anything else.'
+    : '';
+  sendJson(session.geminiWs, {
+    clientContent: {
+      turns: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: `The caller is still on the line. Speak now. Do not hang up. Do not stay silent.${laptop}`,
+            },
+          ],
+        },
+      ],
+      turnComplete: true,
+    },
+  });
+}
+
+function continueLivePrompt(session) {
+  const bits = (session.history || []).slice(-8).map((item) => {
+    const who = item.role === 'assistant' ? 'You' : 'Caller';
+    return `${who}: ${item.text}`;
+  });
+  return `The phone call is still connected after a brief audio glitch. Same caller, not a new call.
+${compactKnown(session)}
+Recent turns:
+${bits.join('\n') || '(still collecting details)'}
+If they say hello / are you there, they are checking the line — say a short "yes, I'm here" and continue the last unanswered question.
+Do not greet from scratch. Do not say goodbye. Do not call end_call. Keep collecting.`;
+}
+
 function scheduleHangup(session, ms) {
-  if (session.closed || session.hangupTimer) return;
+  if (session.closed) return;
+  if (session.hangupTimer) {
+    clearTimeout(session.hangupTimer);
+    session.hangupTimer = null;
+  }
   session.hangupTimer = setTimeout(() => {
     session.hangupTimer = null;
     if (session.closed) return;
@@ -351,7 +639,7 @@ function sendCallerAudio(session, payload) {
   if (!session.ready || !forwardMulawToGemini(session, payload)) {
     session.pendingAudio = session.pendingAudio || [];
     session.pendingAudio.push(payload);
-    if (session.pendingAudio.length > 100) session.pendingAudio.shift();
+    if (session.pendingAudio.length > 200) session.pendingAudio.shift();
   }
 }
 
@@ -364,9 +652,32 @@ function flushPendingAudio(session) {
 function setPartial(session, field, text, finished) {
   const value = String(text || '').trim();
   if (!value) return;
-  if (/[А-Яа-яЁё]/.test(value)) session.language = 'ru';
+  if (field === 'userPartial') {
+    const lastAsst = lastHistoryText(session, 'assistant');
+    if (isSameVoiceLine(lastAsst, value)) return;
+  }
+  session.language = 'en';
   session[field] = value;
   if (finished) flushPartial(session, field);
+}
+
+function isSameVoiceLine(a, b) {
+  const na = String(a || '')
+    .replace(/^(AI|Client|User):\s*/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const nb = String(b || '')
+    .replace(/^(AI|Client|User):\s*/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const [shorter, longer] = na.length <= nb.length ? [na, nb] : [nb, na];
+  return shorter.length >= 12 && longer.includes(shorter) && shorter.length / longer.length >= 0.78;
 }
 
 function flushPartial(session, field) {
@@ -376,13 +687,22 @@ function flushPartial(session, field) {
   const role = field === 'userPartial' ? 'user' : 'assistant';
   const history = session.history || [];
   const last = history[history.length - 1];
-  if (last && last.role === role && last.text === text) return;
-  session.history = [...history, { role, text }].slice(-24);
+  if (last && last.role === role && isSameVoiceLine(last.text, text)) return;
+  session.history = [...history, { role, text }].slice(-400);
   session.transcription = deps.appendTranscript(
     session.transcription,
     role === 'user' ? `Client: ${text}` : `AI: ${text}`
   );
-  if (role === 'user') session.turns = Number(session.turns || 0) + 1;
+  if (role === 'user') {
+    session.turns = Number(session.turns || 0) + 1;
+    armReplyWatchdog(session);
+    if (voiceFacts.isCheckInUtterance(text) || session.wantHangup) {
+      cancelHangup(session);
+    }
+  } else {
+    clearReplyWatchdog(session);
+    session.stallNudge = 0;
+  }
 }
 
 function flushPartials(session) {
@@ -391,9 +711,38 @@ function flushPartials(session) {
 }
 
 function greetLive(session) {
-  if (session.greeted || !session.ready || !session.geminiWs) return;
+  if (!session.ready || !session.geminiWs) return;
+  if (session.needsContinue) {
+    session.needsContinue = false;
+    session.greeted = true;
+    const turns = [];
+    if (!session.resumeHandle) {
+      for (const item of (session.history || []).slice(-8)) {
+        const text = String((item && item.text) || '').trim();
+        if (!text) continue;
+        turns.push({
+          role: item.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text }],
+        });
+      }
+    }
+    turns.push({
+      role: 'user',
+      parts: [{ text: continueLivePrompt(session) }],
+    });
+    sendJson(session.geminiWs, {
+      clientContent: {
+        turns,
+        turnComplete: true,
+      },
+    });
+    return;
+  }
+  if (session.greeted) return;
   session.greeted = true;
-  const greeting = String(session.greeting || "Hi, you've reached us. How can I help?").trim();
+  const greeting = String(
+    session.greeting || (deps && deps.defaultVoiceGreeting) || "Hi, you've reached FIX Appliance. How can I help?"
+  ).trim();
   sendJson(session.geminiWs, {
     clientContent: {
       turns: [
@@ -401,7 +750,85 @@ function greetLive(session) {
           role: 'user',
           parts: [
             {
-              text: `The call just connected. Greet the caller now with exactly this, then wait silently: ${greeting}`,
+              text: `The call just connected. Speak ONLY this greeting, then wait silently for the caller. No other words: ${greeting}`,
+            },
+          ],
+        },
+      ],
+      turnComplete: true,
+    },
+  });
+}
+
+function hangupAllowed(session, lastUser, lastAsst) {
+  return voiceFacts.mayHangUp({
+    lastUser,
+    lastAsst,
+    history: session.history,
+    extracted: session.extracted,
+  });
+}
+
+function nudgeStayOnLine(session) {
+  if (!session || !session.geminiWs || session.geminiWs.readyState !== 1) return;
+  session.prematureBye = Number(session.prematureBye || 0) + 1;
+  if (session.prematureBye > 2) return;
+  const ask =
+    'STOP. The caller is still on the line. Do not hang up. Do not say bye, goodbye, see you then, or have a good day. You already confirmed. Stay quiet and wait.';
+  sendJson(session.geminiWs, {
+    clientContent: {
+      turns: [
+        {
+          role: 'user',
+          parts: [{ text: ask }],
+        },
+      ],
+      turnComplete: true,
+    },
+  });
+}
+
+function askedForMissing(lastAsst, missing) {
+  if (!missing) return true;
+  if (/clock time|day AND/i.test(missing)) {
+    return voiceFacts.askedForVisitTime(lastAsst);
+  }
+  if (/street/i.test(missing)) {
+    return voiceFacts.askedForAddress(lastAsst);
+  }
+  return false;
+}
+
+function steerCollectAfterTurn(session, lastUser, lastAsst) {
+  if (!session || session.closed) return;
+  applyLocalExtract(session);
+  const missing = voiceFacts.missingVisitDetails(session.extracted);
+  if (missing) {
+    cancelHangup(session);
+  }
+  if (!missing || !session.geminiWs || session.geminiWs.readyState !== 1) return;
+  const justGaveOtherAddress =
+    voiceFacts.looksLikeStreetUtterance(lastUser)
+    || voiceFacts.detectJobSite(lastUser)
+    || Boolean(session.extracted && session.extracted.has_job_site);
+  const hungUpTooSoon =
+    voiceFacts.saidGoodbye(lastAsst) || voiceFacts.saidCallbackPromise(lastAsst);
+  if (askedForMissing(lastAsst, missing) && !hungUpTooSoon) return;
+  session.collectNudge = Number(session.collectNudge || 0) + 1;
+  if (session.collectNudge > 3) return;
+  const otherAddr =
+    justGaveOtherAddress && /clock time|day AND/i.test(missing)
+      ? ' They just gave a different repair address. Keep their home. Next ask what day and what time of day to come, then wait for the answer.'
+      : '';
+  sendJson(session.geminiWs, {
+    clientContent: {
+      turns: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text:
+                `STOP. Do not hang up. Do not say goodbye. Do not say a technician will call back.${otherAddr} You still need ${missing}. Ask for that now, then wait.`,
             },
           ],
         },
@@ -421,9 +848,17 @@ function handleLiveToolCall(session, message) {
     const id = pick(call, 'id') || '';
     const args = pick(call, 'args', 'arguments') || {};
     if (name === 'end_call') {
-      session.wantHangup = true;
-      if (args.createJob === true) session.createJob = true;
-      if (args.createJob === false) session.createJob = false;
+      console.warn(`voiceLive ignored hangup tool ${session.callSid}`);
+      cancelHangup(session);
+      session.wantHangup = false;
+      responses.push({
+        id,
+        name,
+        response: {
+          result: 'stay on the line. You cannot hang up. Wait for the caller.',
+        },
+      });
+      continue;
     }
     responses.push({
       id,
@@ -432,34 +867,45 @@ function handleLiveToolCall(session, message) {
     });
   }
   sendJson(session.geminiWs, { toolResponse: { functionResponses: responses } });
-  if (session.wantHangup) scheduleHangup(session, 1600);
+}
+
+async function checkLiveSlot(session) {
+  if (!deps || !deps.checkBookingSlot) return;
+  const extracted = session.extracted || {};
+  if (extracted.wants_callback) return;
+  if (!extracted.scheduled_date || !extracted.scheduled_time) return;
+  const start = voiceFacts.parseScheduledAtDate(extracted);
+  if (!start) return;
+  const key = `${extracted.scheduled_date}|${extracted.scheduled_time}`;
+  if (session.slotKey === key && extracted.slot_ok != null) return;
+  session.slotKey = key;
+  try {
+    const check = await deps.checkBookingSlot(start, {});
+    extracted.slot_ok = check.ok;
+    extracted.slot_alts = check.ok ? '' : check.altSpeech;
+    extracted.slot_blocked = check.ok ? '' : check.wantedLabel;
+  } catch (error) {
+    console.warn('voiceLive slot:', error.message);
+  }
 }
 
 async function handleLiveTurnComplete(session) {
   flushPartials(session);
-  if (session.extracting) return;
-  session.extracting = true;
-  try {
-    const lastUser = [...(session.history || [])].reverse().find((item) => item && item.role === 'user');
-    const lastAsst = [...(session.history || [])].reverse().find((item) => item && item.role === 'assistant');
-    if (!lastUser && !lastAsst) return;
-    const facts = await extractFacts(
-      session,
-      (lastUser && lastUser.text) || '',
-      (lastAsst && lastAsst.text) || ''
-    );
-    session.extracted = facts.extracted;
-    session.createJob =
-      session.createJob || facts.createJob || deps.hasEnoughForJob(session.extracted);
-    await persistSession(session, {
-      done: Boolean(session.wantHangup),
-      createJob: session.createJob,
-    });
-  } catch (error) {
-    console.warn('voiceLive extract:', error.message);
-  } finally {
-    session.extracting = false;
+  applyLocalExtract(session);
+  await checkLiveSlot(session);
+  const userText = lastHistoryText(session, 'user');
+  const asstText = lastHistoryText(session, 'assistant');
+  if (voiceFacts.looksOutOfScopeItem(userText) && !session.scopedNudge) {
+    session.scopedNudge = true;
+    if (!asstText || asstText.length < 12) {
+      nudgeKeepTalking(session, userText);
+    }
   }
+  persistSessionSoon(session, {
+    done: Boolean(session.wantHangup),
+    createJob: session.createJob,
+  });
+  scheduleBackgroundExtract(session);
 }
 
 function handleGeminiMessage(session, raw) {
@@ -485,7 +931,11 @@ function handleGeminiMessage(session, raw) {
     session.ready = true;
     session.liveStarted = true;
     session.resumeAttempts = 0;
-    flushPendingAudio(session);
+    if (session.needsContinue) {
+      flushPendingAudio(session);
+    } else {
+      session.pendingAudio = [];
+    }
     greetLive(session);
     return;
   }
@@ -499,16 +949,24 @@ function handleGeminiMessage(session, raw) {
   }
   const output = pick(content, 'outputTranscription', 'output_transcription');
   if (output && output.text) {
+    clearReplyWatchdog(session);
     setPartial(session, 'assistantPartial', output.text, output.finished === true);
   }
   const turn = pick(content, 'modelTurn', 'model_turn') || {};
   for (const part of turn.parts || []) {
     const inline = pick(part, 'inlineData', 'inline_data');
     if (!inline || !inline.data) continue;
+    clearReplyWatchdog(session);
     sendTwilioAudio(session, base64ToInt16(inline.data), parsePcmRate(inline.mimeType || inline.mime_type));
   }
   handleLiveToolCall(session, message);
   if (pick(content, 'turnComplete', 'turn_complete') === true) {
+    flushPartials(session);
+    const lastAsst = lastHistoryText(session, 'assistant');
+    if (voiceFacts.saidGoodbye(lastAsst)) {
+      console.warn(`voiceLive premature goodbye ${session.callSid} asst="${String(lastAsst).slice(0, 120)}"`);
+      cancelHangup(session);
+    }
     handleLiveTurnComplete(session).catch((error) => {
       console.warn('voiceLive turn:', error.message);
     });
@@ -587,14 +1045,16 @@ function resumeLive(session, reason) {
   const apiKey = deps && deps.geminiApiKey;
   if (!apiKey) return;
   session.resumeAttempts = Number(session.resumeAttempts || 0) + 1;
-  if (session.resumeAttempts > 12) {
+  if (session.resumeAttempts > 40) {
     console.warn(`voiceLive resume gave up ${session.callSid} after ${reason}`);
+    closeTwilio(session);
     return;
   }
   const model = session.geminiModel || uniqueModels()[0];
   session.ready = false;
   session.connecting = true;
   session.greeted = true;
+  session.needsContinue = true;
   const old = session.geminiWs;
   session.geminiWs = null;
   session.socketGen = (session.socketGen || 0) + 1;
@@ -603,7 +1063,12 @@ function resumeLive(session, reason) {
       old.close();
     } catch (_) {}
   }
-  session.setupPayload = buildSetup(model, session.systemText, true, session.resumeHandle);
+  session.setupPayload = buildSetup(
+    model,
+    `${session.systemText}\n\nThe live audio session restarted. Continue this same phone call. Do not greet again.`,
+    false,
+    session.resumeHandle
+  );
   console.log(
     `voiceLive resume ${session.callSid} ${reason} attempt=${session.resumeAttempts} handle=${Boolean(session.resumeHandle)}`
   );
@@ -622,7 +1087,7 @@ function startGeminiLive(session) {
   }
   const models = uniqueModels();
   let index = 0;
-  let tools = true;
+  let tools = false;
   session.retryGemini = () => {
     if (session.closed || session.ready || session.connecting || session.liveStarted) return;
     if (index >= models.length) {
@@ -630,9 +1095,15 @@ function startGeminiLive(session) {
         tools = false;
         index = 0;
       } else {
-        markLiveFailed(session, session.geminiError || 'live model failed').then(() =>
-          closeTwilio(session)
-        );
+        session.liveGiveUp = Number(session.liveGiveUp || 0) + 1;
+        markLiveFailed(session, session.geminiError || 'live model failed');
+        if (session.liveGiveUp > 8) return;
+        session.liveRetryTimer = setTimeout(() => {
+          if (session.closed || session.ready || session.liveStarted) return;
+          index = 0;
+          tools = false;
+          session.retryGemini();
+        }, 2500);
         return;
       }
     }
@@ -662,9 +1133,25 @@ async function hydrateCall(session, callSid, fromNumber) {
   session.transcription = data.transcription || '';
   session.language = reception.language || 'en';
   session.turns = Number(reception.turns || 0);
-  session.clientName = (known && (known.fullName || known.name)) || '';
-  session.knownAddress = (known && (known.address || '')) || '';
+  session.clientName = voiceFacts.usableClientName(
+    (known && (known.fullName || known.name)) || ''
+  );
+  session.knownAddress = voiceFacts.clientAddressFrom(known) || '';
+  if (voiceFacts.isPlaceholderClientName(session.extracted.client_name)) {
+    delete session.extracted.client_name;
+  }
+  if (session.clientName && !session.extracted.client_name) {
+    session.extracted.client_name = session.clientName;
+  }
   session.fromNumber = data.fromNumber || session.fromNumber;
+  if (deps.calendarBrief) {
+    try {
+      session.calendarBrief = await deps.calendarBrief();
+    } catch (error) {
+      console.warn('voiceLive calendar:', error.message);
+      session.calendarBrief = '';
+    }
+  }
   const lastGreeting = [...session.history].find((item) => item && item.role === 'assistant');
   if (lastGreeting && lastGreeting.text) session.greeting = lastGreeting.text;
   if (session.callSid) sessions.set(session.callSid, session);
@@ -694,6 +1181,7 @@ async function onLiveStart(session, message) {
 async function onLiveStop(session) {
   if (session.closed && session.finalized) return;
   session.closed = true;
+  clearSessionTimers(session);
   if (session.hangupTimer) {
     clearTimeout(session.hangupTimer);
     session.hangupTimer = null;
@@ -703,25 +1191,24 @@ async function onLiveStop(session) {
     session.twilioKeepalive = null;
   }
   flushPartials(session);
+  applyLocalExtract(session);
   closeGemini(session);
   if (session.liveFailed) return;
   try {
-    const lastUser = [...(session.history || [])].reverse().find((item) => item && item.role === 'user');
-    const lastAsst = [...(session.history || [])].reverse().find((item) => item && item.role === 'assistant');
+    const lastUser = lastHistoryText(session, 'user');
+    const lastAsst = lastHistoryText(session, 'assistant');
     if (lastUser || lastAsst) {
-      const facts = await extractFacts(
-        session,
-        (lastUser && lastUser.text) || '',
-        (lastAsst && lastAsst.text) || ''
-      );
+      const facts = await extractFacts(session, lastUser, lastAsst);
       session.extracted = facts.extracted;
-      session.createJob =
-        session.createJob || facts.createJob || deps.hasEnoughForJob(session.extracted);
+      session.createJob = voiceFacts.isServiceDeclined(session.extracted)
+        ? false
+        : session.createJob || facts.createJob || deps.hasEnoughForJob(session.extracted);
       session.wantHangup = session.wantHangup || facts.done;
     }
     await persistSession(session, {
       done: true,
       createJob: session.createJob || deps.hasEnoughForJob(session.extracted),
+      serviceDeclined: voiceFacts.isServiceDeclined(session.extracted),
     });
     session.finalized = true;
   } catch (error) {
@@ -745,8 +1232,16 @@ async function onRelayMessage(ws, session, message) {
     session.transcription = data.transcription || '';
     session.language = reception.language || 'en';
     session.turns = Number(reception.turns || 0);
-    session.clientName = (known && (known.fullName || known.name)) || '';
-    session.knownAddress = (known && (known.address || '')) || '';
+    session.clientName = voiceFacts.usableClientName(
+      (known && (known.fullName || known.name)) || ''
+    );
+    session.knownAddress = voiceFacts.clientAddressFrom(known) || '';
+    if (voiceFacts.isPlaceholderClientName(session.extracted.client_name)) {
+      delete session.extracted.client_name;
+    }
+    if (session.clientName && !session.extracted.client_name) {
+      session.extracted.client_name = session.clientName;
+    }
     session.fromNumber = data.fromNumber || session.fromNumber;
     session.engine = 'relay';
     sessions.set(session.callSid, session);
@@ -778,7 +1273,7 @@ async function onRelayMessage(ws, session, message) {
       ...(session.history || []),
       { role: 'user', text: userText },
       { role: 'assistant', text: say },
-    ].slice(-20);
+    ].slice(-400);
     session.transcription = appendTranscript(
       appendTranscript(session.transcription, `Client: ${userText}`),
       `AI: ${say}`
@@ -786,15 +1281,8 @@ async function onRelayMessage(ws, session, message) {
     const facts = await extractFacts(session, userText, say);
     if (gen !== session.gen) return;
     session.extracted = facts.extracted;
-    const done =
-      facts.done ||
-      session.turns >= 12 ||
-      (facts.createJob && hasEnoughForJob(session.extracted));
     const createJob = facts.createJob || hasEnoughForJob(session.extracted);
-    await persistSession(session, { done, createJob });
-    if (done) {
-      setTimeout(() => sendEnd(ws), 600);
-    }
+    await persistSession(session, { done: false, createJob });
   } catch (error) {
     console.error('voiceRelay prompt:', error.message);
     if (gen === session.gen) {
@@ -850,6 +1338,7 @@ function handleSocket(ws) {
   });
   ws.on('close', () => {
     session.closed = true;
+    clearSessionTimers(session);
     if (session.twilioKeepalive) {
       clearInterval(session.twilioKeepalive);
       session.twilioKeepalive = null;

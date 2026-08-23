@@ -103,7 +103,8 @@ async function findClientByPhone(phone) {
   try {
     const snapshot = await clientsRef.get();
     for (const doc of snapshot.docs) {
-      const data = doc.data();
+      const data = doc.data() || {};
+      if (data.deletedAt) continue;
       if (voiceFacts.phonesOfClient(data).has(normalized)) {
         return { id: doc.id, ...data };
       }
@@ -114,6 +115,23 @@ async function findClientByPhone(phone) {
   return null;
 }
 
+function emailsOfClient(client) {
+  const out = new Set();
+  const add = (value) => {
+    const email = String(value || '').trim().toLowerCase();
+    if (email.includes('@')) out.add(email);
+  };
+  if (!client || typeof client !== 'object') return out;
+  add(client.email);
+  for (const loc of Array.isArray(client.locations) ? client.locations : []) {
+    add(loc && loc.email);
+    for (const contact of Array.isArray(loc && loc.contacts) ? loc.contacts : []) {
+      add(contact && contact.email);
+    }
+  }
+  return out;
+}
+
 async function findClientByEmail(email) {
   const normalized = String(email || '').trim().toLowerCase();
   if (!normalized || !normalized.includes('@')) return null;
@@ -121,14 +139,8 @@ async function findClientByEmail(email) {
     const snapshot = await clientsRef.get();
     for (const doc of snapshot.docs) {
       const data = doc.data() || {};
-      const emails = [data.email];
-      for (const location of data.locations || []) {
-        emails.push(location.email);
-        for (const contact of location.contacts || []) {
-          emails.push(contact.email);
-        }
-      }
-      if (emails.some((value) => String(value || '').trim().toLowerCase() === normalized)) {
+      if (data.deletedAt) continue;
+      if (emailsOfClient(data).has(normalized)) {
         return { id: doc.id, ...data };
       }
     }
@@ -136,6 +148,12 @@ async function findClientByEmail(email) {
     console.error('findClientByEmail error:', error);
   }
   return null;
+}
+
+async function findExistingClient({ phone, email } = {}) {
+  const byPhone = await findClientByPhone(phone);
+  if (byPhone) return byPhone;
+  return findClientByEmail(email);
 }
 
 function buildFullAddress(extracted, existingClient) {
@@ -375,7 +393,7 @@ async function applyPersonNameToClient(clientId, name) {
  * После разбора звонка создаёт (или находит) клиента и черновик заявки.
  * Заявка помечается needsReview, чтобы мастер проверил её в приложении.
  */
-async function createDraftJobFromCall(callId, extracted, existingClient) {
+async function createDraftJobFromCall(callId, extracted, knownClient) {
   const callSnap = await callsRef.doc(callId).get();
   const callData = callSnap.exists ? callSnap.data() || {} : {};
 
@@ -401,6 +419,13 @@ async function createDraftJobFromCall(callId, extracted, existingClient) {
     normalizePhone(extracted.client_phone) ||
     normalizePhone(callData.direction === 'inbound' ? callData.fromNumber : callData.toNumber);
 
+  let existingClient = knownClient && knownClient.id ? knownClient : null;
+  if (!existingClient) {
+    existingClient = await findExistingClient({
+      phone,
+      email: extracted && extracted.client_email,
+    });
+  }
   let clientId = existingClient && existingClient.id;
   let extractedName = voiceFacts.usableClientName(
     (extracted && extracted.client_name) || ''
@@ -868,6 +893,43 @@ function outboundDestination(body) {
   return null;
 }
 
+const LIVE_CALL_STATUS = new Set(['queued', 'ringing', 'in-progress']);
+const ENDED_CALL_STATUS = new Set([
+  'completed',
+  'busy',
+  'failed',
+  'no-answer',
+  'canceled',
+  'cancelled',
+]);
+
+async function isTwilioCallEnded(callSid, bodyStatus) {
+  const fromBody = String(bodyStatus || '').toLowerCase();
+  if (LIVE_CALL_STATUS.has(fromBody)) return false;
+  if (client && callSid) {
+    try {
+      const call = await client.calls(callSid).fetch();
+      const status = String(call.status || '').toLowerCase();
+      if (LIVE_CALL_STATUS.has(status)) return false;
+      if (ENDED_CALL_STATUS.has(status)) return true;
+    } catch (error) {
+      console.warn('isTwilioCallEnded:', error.message);
+    }
+  }
+  return ENDED_CALL_STATUS.has(fromBody);
+}
+
+async function isTwilioCallStillLive(callSid) {
+  if (!client || !callSid) return false;
+  try {
+    const call = await client.calls(callSid).fetch();
+    return LIVE_CALL_STATUS.has(String(call.status || '').toLowerCase());
+  } catch (error) {
+    console.warn('isTwilioCallStillLive:', error.message);
+    return false;
+  }
+}
+
 async function resolveLoggedCallId(callSid) {
   if (!callSid) return callSid;
   const direct = await callsRef.doc(callSid).get();
@@ -967,27 +1029,64 @@ async function resolveCallRecordingSource(callId, data = {}) {
 
 async function cacheRecordingToStorage(callId, buffer) {
   if (!callId || !buffer || !buffer.length) return null;
+  const project =
+    process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || 'fix-appliance-crm';
+  const candidates = [];
   try {
-    const project =
-      process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || 'fix-appliance-crm';
-    const bucket = admin.storage().bucket(`${project}.firebasestorage.app`);
-    const path = `companies/${COMPANY_ID}/calls/${callId}.mp3`;
-    const token = crypto.randomUUID();
-    await bucket.file(path).save(buffer, {
-      resumable: false,
-      metadata: {
-        contentType: 'audio/mpeg',
-        metadata: { firebaseStorageDownloadTokens: token },
-      },
-    });
-    const encoded = encodeURIComponent(path);
-    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encoded}?alt=media&token=${token}`;
-    await callsRef.doc(callId).set({ storageUrl: url }, { merge: true });
-    return url;
-  } catch (error) {
-    console.warn('cacheRecordingToStorage:', error.message);
-    return null;
+    candidates.push(admin.storage().bucket());
+  } catch (_) {}
+  candidates.push(admin.storage().bucket(`${project}.firebasestorage.app`));
+  candidates.push(admin.storage().bucket(`${project}.appspot.com`));
+  const seen = new Set();
+  const path = `companies/${COMPANY_ID}/calls/${callId}.mp3`;
+  const token = crypto.randomUUID();
+  for (const bucket of candidates) {
+    const name = bucket && bucket.name;
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    try {
+      await bucket.file(path).save(buffer, {
+        resumable: false,
+        metadata: {
+          contentType: 'audio/mpeg',
+          cacheControl: 'public, max-age=604800',
+          metadata: { firebaseStorageDownloadTokens: token },
+        },
+      });
+      const encoded = encodeURIComponent(path);
+      const url = `https://firebasestorage.googleapis.com/v0/b/${name}/o/${encoded}?alt=media&token=${token}`;
+      const playableUrl = `${functionUrl({}, 'callRecordingAudio')}?callId=${encodeURIComponent(callId)}`;
+      await callsRef.doc(callId).set(
+        { storageUrl: url, playableUrl },
+        { merge: true }
+      );
+      return url;
+    } catch (error) {
+      console.warn(`cacheRecordingToStorage ${name}:`, error.message);
+    }
   }
+  return null;
+}
+
+function twilioAuthHeaders() {
+  const pairs = [];
+  if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
+    pairs.push([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]);
+  }
+  if (
+    REST_AUTH_USER &&
+    REST_AUTH_SECRET &&
+    (REST_AUTH_USER !== TWILIO_ACCOUNT_SID || REST_AUTH_SECRET !== TWILIO_AUTH_TOKEN)
+  ) {
+    pairs.push([REST_AUTH_USER, REST_AUTH_SECRET]);
+  }
+  if (!pairs.length && REST_AUTH_USER && REST_AUTH_SECRET) {
+    pairs.push([REST_AUTH_USER, REST_AUTH_SECRET]);
+  }
+  return pairs.map(
+    ([user, secret]) =>
+      'Basic ' + Buffer.from(`${user}:${secret}`).toString('base64')
+  );
 }
 
 async function downloadRecordingBuffer(recordingUrl) {
@@ -998,28 +1097,82 @@ async function downloadRecordingBuffer(recordingUrl) {
     urls.push(`${raw.replace(/\/$/, '')}.mp3`);
   }
   let lastError;
+  const auths = isTwilioMediaUrl(raw) ? twilioAuthHeaders() : [''];
+  if (!auths.length) auths.push('');
   for (const url of urls) {
-    const headers = {};
-    if (isTwilioMediaUrl(url) && REST_AUTH_USER && REST_AUTH_SECRET) {
-      headers.Authorization =
-        'Basic ' + Buffer.from(`${REST_AUTH_USER}:${REST_AUTH_SECRET}`).toString('base64');
-    }
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      const response = await fetch(url, { headers, redirect: 'follow' });
-      if (response.ok) {
-        const buffer = Buffer.from(await response.arrayBuffer());
-        const head = buffer.slice(0, 16).toString('utf8');
-        if (/^\s*</.test(head) || /Not Found|Unauthorized/i.test(head)) {
-          lastError = new Error(`Запись не аудио (${url})`);
-          break;
+    for (const authorization of auths) {
+      const headers = {};
+      if (authorization) headers.Authorization = authorization;
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        try {
+          const response = await fetch(url, { headers, redirect: 'follow' });
+          if (response.ok) {
+            const buffer = Buffer.from(await response.arrayBuffer());
+            const head = buffer.slice(0, 16).toString('utf8');
+            if (/^\s*</.test(head) || /Not Found|Unauthorized/i.test(head)) {
+              lastError = new Error(`Запись не аудио (${url})`);
+              break;
+            }
+            if (!buffer.length) {
+              lastError = new Error(`Пустая запись (${url})`);
+              break;
+            }
+            return buffer;
+          }
+          lastError = new Error(`Не удалось скачать запись (HTTP ${response.status})`);
+          if (response.status === 401 || response.status === 403) break;
+        } catch (error) {
+          lastError = error;
         }
-        return buffer;
+        await new Promise((resolve) => setTimeout(resolve, 1200 * attempt));
       }
-      lastError = new Error(`Не удалось скачать запись (HTTP ${response.status})`);
-      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
     }
   }
   throw lastError || new Error('Не удалось скачать запись');
+}
+
+async function ensureRecordingReady(callId, data = {}) {
+  const snap = Object.keys(data || {}).length
+    ? { data: () => data, exists: true }
+    : await callsRef.doc(callId).get();
+  const current = (snap.exists && snap.data()) || {};
+  if (current.storageUrl) {
+    try {
+      const probe = await fetch(current.storageUrl, {
+        headers: { Range: 'bytes=0-1' },
+      });
+      if (probe.ok || probe.status === 206) {
+        return { storageUrl: current.storageUrl, source: current.storageUrl, buffer: null };
+      }
+    } catch (_) {}
+    current.storageUrl = '';
+  }
+  let source = await resolveCallRecordingSource(callId, current);
+  if (!source) {
+    for (let i = 0; i < 8 && !source; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      source = await findTwilioRecordingMp3(callId);
+    }
+  }
+  if (!source) return { storageUrl: null, source: null, buffer: null };
+  if (!isCallRecordingProxyUrl(source)) {
+    await callsRef.doc(callId).set(
+      {
+        twilioRecordingUrl: source,
+        recordingUrl: current.recordingUrl || source,
+        playableUrl: `${functionUrl({}, 'callRecordingAudio')}?callId=${encodeURIComponent(callId)}`,
+      },
+      { merge: true }
+    );
+  }
+  try {
+    const buffer = await downloadRecordingBuffer(source);
+    const stored = await cacheRecordingToStorage(callId, buffer);
+    return { storageUrl: stored, source: stored || source, buffer };
+  } catch (error) {
+    console.warn('ensureRecordingReady:', error.message);
+    return { storageUrl: null, source, buffer: null };
+  }
 }
 
 function extractJsonObject(text) {
@@ -1071,8 +1224,9 @@ const STALE_VOICE_GREETINGS = [
   'Hi, FIX Appliance. How can I help? Чем могу помочь?',
 ];
 
-const OWNER_EXTRA_RULES_EN = `Sunday is closed. Do not book Sunday.
-Saturday: do not put a visit on the calendar. Say a technician will contact them and arrange a time if he can.
+const OWNER_EXTRA_RULES_EN = `We take repair requests every day, including Saturday, Sunday, and holidays.
+Regular visits: Monday–Friday 7 a.m. to 9 p.m. Saturday is by agreement — if they want Saturday and the 2-hour window is free, book it. Do not say we do not take Saturday orders.
+Sunday and holidays: still take the order. If they want that day and the window is free, book it as agreed. Never say we are closed those days.
 Price: do not mention $99 unless they asked. If they asked: a service call is $99. If they approve the repair after diagnosis, they do not pay the service call — only the repair.
 If the appliance is at another house: keep their home address, take the repair address, who will be there, and that person's phone.
 Near the end, if they can, they may text this number a photo or the text of the model-number sticker. Optional — do not stall the call.`;
@@ -1081,14 +1235,15 @@ const DEFAULT_VOICE_INSTRUCTIONS = `Tone: friendly and professional. Listen firs
 
 Short turns: one sentence, then wait. Do not fill silence with extra questions. If they already told you something, do not ask it again.
 
-Book visits Monday–Friday, 7 a.m. to 9 p.m. America/Toronto. Same-day is OK if it is still in those hours.
-Each visit is 2 hours — one job in that window. Never confirm a time if that 2-hour window is taken. Offer another time the same day first, then another weekday.
-Saturday: do not book. Say a technician will contact them and set a time if he can.
-Sunday: closed. Do not book Sunday.
-If they call at night or on Sunday: still answer. Only offer visits Monday–Friday 7 a.m. to 9 p.m.
-If they want 6 a.m. or after 9 p.m.: do not book it. Say we don't work then. Offer another weekday or a time in those hours.
+We take repair requests every day, including Saturday, Sunday, and holidays. Ignore any older habit that says those days are closed or that we do not take orders then.
+Regular visits: Monday–Friday, 7 a.m. to 9 p.m. America/Toronto. Same-day is OK if it is still in those hours.
+Saturday visits are by agreement: if they want Saturday and that 2-hour window is free, book it.
+Sunday and holiday visits: take the order; if they want that day and the window is free, book it as agreed.
+Each visit is 2 hours — one job in that window. Never confirm a time if that 2-hour window is taken. Offer another time the same day first, then another day.
+If they call at night or on the weekend: still answer and still take the request.
+If they want 6 a.m. or a start after 7 p.m. (the visit would end after 9 p.m.): do not book it. Say we don't work then. Offer a time that ends by 9 p.m.
 
-Collect naturally, without interrogating: first name, what broke, appliance kind and brand, repair address, and a day and time if booking a weekday visit.
+Collect naturally, without interrogating: first name, what broke, appliance kind and brand, repair address, and a day and time if booking a visit.
 If the appliance is at another house: take that address, who will be there, and that phone. Keep the client's home. Do not hang up.
 Do not grill for model or serial. At the end, optionally ask them to text this number a photo or the text of the model-number sticker. Do not stall the call for it.
 
@@ -1096,7 +1251,7 @@ If they want a live person: do not grill for a visit time. Say a technician will
 
 Household appliances only. We do not repair laptops, computers, phones, TVs, or cars.
 
-After you confirm, stay on the line. Do not say goodbye. Do not hang up. The caller hangs up.
+After you confirm the visit, keep talking. Ask if they have another appliance or anything else, then listen. If they add another repair, take it. Do not wrap up. Do not say goodbye. Do not hang up. The caller hangs up.
 
 Do not bring up price. If they asked: a service call is $99. If they approve the repair after diagnosis, they do not pay the service call — only the repair.
 
@@ -1149,6 +1304,23 @@ function withMappedServiceArea(instructions, serviceArea) {
   return `${base}\n\nService area (from Settings → Service area map): ${area}. If the caller is clearly outside this area, politely say we do not travel there, set done=true and createJob=false.`;
 }
 
+const HOURS_POLICY_VERSION = 2;
+
+function withWeekendOrderPolicy(extra) {
+  let text = String(extra || OWNER_EXTRA_RULES_EN);
+  text = text.replace(/Sunday is closed\. Do not book Sunday\.\s*/gi, '');
+  text = text.replace(/Saturday: do not put a visit[^\n]*\n?/gi, '');
+  text = text.replace(/Saturday: do not book[^\n]*\n?/gi, '');
+  if (!/Saturday is by agreement/i.test(text) && !/Saturday visits are by agreement/i.test(text)) {
+    text =
+      'We take repair requests every day, including Saturday, Sunday, and holidays.\n' +
+      'Regular visits: Monday–Friday 7 a.m. to 9 p.m. Saturday is by agreement — if they want Saturday and the 2-hour window is free, book it. Do not say we do not take Saturday orders.\n' +
+      'Sunday and holidays: still take the order. If they want that day and the window is free, book it as agreed. Never say we are closed those days.\n' +
+      text;
+  }
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 async function getAiAnswerSettings() {
   try {
     const [configSnap, voiceSnap, docsSnap] = await Promise.all([
@@ -1164,25 +1336,21 @@ async function getAiAnswerSettings() {
     const companyName = String(docs.companyName || '').trim() || 'Fix Appliance';
     const staleGreeting =
       voiceFacts.isStaleVoiceGreeting(greeting) || STALE_VOICE_GREETINGS.includes(greeting);
-    const nextGreeting = !greeting || staleGreeting ? DEFAULT_VOICE_GREETING : greeting;
     const serviceArea = describeServiceArea(config);
     const hours = describeWorkHours(config);
-    const extraSaved = String(voice.extraRules || '').trim();
-    const extra =
-      Number(voice.briefVersion) === 1
-        ? extraSaved || OWNER_EXTRA_RULES_EN
-        : OWNER_EXTRA_RULES_EN;
-    if (Number(voice.briefVersion) !== 1 || staleGreeting) {
+    const needHoursPolicy = Number(voice.hoursPolicyVersion) !== HOURS_POLICY_VERSION;
+    if (Number(voice.briefVersion) !== 1 || staleGreeting || needHoursPolicy) {
       db.collection('companies')
         .doc(COMPANY_ID)
         .collection('settings')
         .doc('ai_voice')
         .set(
           {
-            greeting: nextGreeting,
-            extraRules: Number(voice.briefVersion) === 1 ? extraSaved : OWNER_EXTRA_RULES_EN,
+            greeting: DEFAULT_VOICE_GREETING,
             briefVersion: 1,
-            rulesVersion: 10,
+            rulesVersion: 12,
+            hoursPolicyVersion: HOURS_POLICY_VERSION,
+            liveIgnoresAppRules: true,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           { merge: true }
@@ -1207,32 +1375,19 @@ async function getAiAnswerSettings() {
         )
         .catch((error) => console.warn('work hours migrate:', error.message));
     }
-    const learned = Array.isArray(voice.learnedRules) ? voice.learnedRules : [];
-    const learnedLines = learned
-      .map((item) => {
-        if (!item) return '';
-        if (typeof item === 'string') return item.trim();
-        return String(item.ruleEn || '').trim();
-      })
-      .filter(Boolean);
     let nextInstructions = withMappedServiceArea(DEFAULT_VOICE_INSTRUCTIONS, serviceArea);
-    if (extra) {
-      nextInstructions += `\n\nOwner extra rules:\n${extra}`;
-    }
     nextInstructions +=
-      `\n\nShop hours: Monday–Friday ${hours.label} America/Toronto. Saturday: do not book, technician will follow up. Sunday: closed. If they want a visit before ${voiceFacts.formatHour12(hours.startMinutes)} or after ${voiceFacts.formatHour12(hours.endMinutes)}, do not book it.`
+      `\n\nShop hours: we take orders every day, including Saturday, Sunday, and holidays. Regular visits Monday–Friday ${hours.label} America/Toronto. Saturday is by agreement if the 2-hour window is free. Sunday and holidays: still take the order; book that day if they want it and the window is free. Last start ${voiceFacts.formatHour12(hours.endMinutes - 120)} so the visit ends by ${voiceFacts.formatHour12(hours.endMinutes)}. If they want a visit before ${voiceFacts.formatHour12(hours.startMinutes)} or a start that would end after ${voiceFacts.formatHour12(hours.endMinutes)}, do not book it.`
       + '\n\nCalendar: each visit is 2 hours. Never confirm a taken window. If the time they want overlaps another job, offer another time the same day first.'
+      + '\n\nKeep talking after the booking is confirmed. Ask if they have another appliance or anything else, then wait. Do not wrap up the call.'
       + '\n\nSpoken language lock: Always speak English on the phone. Understand Russian or any other language, but never answer in it. JSON "language" is always "en".';
-    if (learnedLines.length) {
-      nextInstructions += `\n\nOwner-approved habits. Use them only if they fit what the caller already said. Never interrupt to grill.\n${learnedLines.map((line) => `- ${line}`).join('\n')}`;
-    }
     return {
       enabled: config.aiAnswerEnabled !== false,
       timeoutSeconds: Number.isFinite(timeout)
         ? Math.min(60, Math.max(0, Math.round(timeout)))
         : 20,
       companyName,
-      greeting: nextGreeting,
+      greeting: DEFAULT_VOICE_GREETING,
       serviceArea,
       workHours: hours.label,
       workStartMinutes: hours.startMinutes,
@@ -1873,7 +2028,7 @@ function scheduleCallRecording(callSid, req) {
       .recordings.create({
         recordingChannels: 'dual',
         recordingStatusCallback: recordingUrl(req),
-        recordingStatusCallbackEvent: ['in-progress', 'completed'],
+        recordingStatusCallbackEvent: ['completed'],
       })
       .then((rec) => {
         console.log(`scheduleCallRecording ${callSid} ${rec.sid}`);
@@ -1893,31 +2048,15 @@ async function recoverCallRecording(callSid) {
   const callId = await resolveLoggedCallId(callSid);
   const snap = await callsRef.doc(callId).get();
   const data = snap.exists ? snap.data() || {} : {};
-  if (data.storageUrl) return;
-  const source = await resolveCallRecordingSource(callId, data);
-  if (!source) {
-    const found = await findTwilioRecordingMp3(callId);
-    if (!found) {
-      console.log(`recoverCallRecording: still none for ${callId}`);
-      return;
-    }
-    await callsRef.doc(callId).set(
-      {
-        twilioRecordingUrl: found,
-        recordingUrl: found,
-        playableUrl: `${functionUrl({}, 'callRecordingAudio')}?callId=${encodeURIComponent(callId)}`,
-      },
-      { merge: true }
-    );
-    if (data.aiStatus !== 'done' && data.aiStatus !== 'processing') {
-      processRecordingWithAi(callId, found).catch((error) => {
-        console.warn('recoverCallRecording process:', error.message);
-      });
-    }
+  const ready = await ensureRecordingReady(callId, data);
+  if (!ready.source) {
+    console.log(`recoverCallRecording: still none for ${callId}`);
     return;
   }
-  if (!data.twilioRecordingUrl && !isCallRecordingProxyUrl(source)) {
-    await callsRef.doc(callId).set({ twilioRecordingUrl: source }, { merge: true });
+  if (data.aiStatus !== 'done' && data.aiStatus !== 'processing') {
+    processRecordingWithAi(callId, ready.source).catch((error) => {
+      console.warn('recoverCallRecording process:', error.message);
+    });
   }
 }
 
@@ -2119,9 +2258,10 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
     }
   } else if (createJob || hasConversationToBook(extracted, callData)) {
     try {
-      const matchedClient = await findClientByPhone(
-        (extracted && extracted.client_phone) || callData.fromNumber
-      );
+      const matchedClient = await findExistingClient({
+        phone: (extracted && extracted.client_phone) || callData.fromNumber,
+        email: extracted && extracted.client_email,
+      });
       extracted = extracted && typeof extracted === 'object' ? extracted : {};
       if (!extracted.client_phone && callData.fromNumber) {
         extracted.client_phone = normalizePhone(callData.fromNumber);
@@ -2162,7 +2302,9 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
   }
 
   await callsRef.doc(callSid).set(updates, { merge: true });
-  sendTwiml(res, twimlHangup(silent ? '' : say, language));
+  if (!options.skipTwiml) {
+    sendTwiml(res, twimlHangup(silent ? '' : say, language));
+  }
   const merged = { ...(callData || {}), ...updates };
   const jobId = updates.createdJobId || callData.createdJobId || null;
   if (jobId) {
@@ -2226,10 +2368,10 @@ HOW TO TALK — this is the most important part:
 - If they say the repair is at another address, take that street, keep their home, keep talking. Do not hang up in that moment.
 - LIVE CALLBACK: if they want a live person / the technician to call them, do not grill for address or time. Say: "Okay, I'll pass your details along and a technician will call you back shortly."
 - If they are angry: stop collecting. Say a person from the company will call within 30 minutes. Then wait. Do not hang up.
-- If they want a visit before shop hours or after shop hours (6 a.m., 10 p.m., etc.), do not book it. Say we don't work then and offer another day or a time inside shop hours. Then wait. done=false.
+- If they want a visit before shop hours or a start that would end after 9 p.m. (6 a.m., 8 p.m. start, 10 p.m., etc.), do not book it. Say we don't work then and offer a time that ends by 9 p.m. Saturday is by agreement. Sunday and holidays: still take the order. Then wait. done=false.
 - If we cannot take the job (outside the service area, laptop/computer/phone, they cancel, not a home appliance), say so in one short sentence, set createJob=false, extracted.service_declined=true, extracted.decline_reason to a short English reason. Do not create a repair job. Stay on the line. done=false.
-- When you have a name, what broke, where to go, and a day or time in shop hours — or they asked for a callback — confirm once ("I'll pass this to the tech"), createJob=true, then STOP. done=false. Do not say goodbye. Do not hang up.
-- done=false. The caller hangs up. If they go quiet after you confirmed, keep waiting.
+- When you have a name, what broke, where to go, and a day or time in shop hours — or they asked for a callback — confirm once ("I'll pass this to the tech"), createJob=true, then keep the conversation going. Ask if they have another appliance or anything else. done=false. Do not say goodbye. Do not hang up.
+- done=false. The caller hangs up. If they go quiet, wait; you may ask one short follow-up, then listen.
 - Never say bye / goodbye / see you then / have a good day.
 - Speak English only. Understand Russian or any other language, but never answer in it.
 - "language" in JSON is always "en".
@@ -2384,15 +2526,12 @@ exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res)
         { merge: true }
       );
       if (nextEmpty >= 4 || turns >= AI_VOICE_MAX_TURNS) {
-        await finishAiReception(
-          req,
+        sendTwiml(
           res,
-          callSid,
-          data,
-          voiceFacts.farewellFor(reception.extracted, 'en'),
-          'en',
-          reception.extracted,
-          hasEnoughForJob(reception.extracted)
+          twimlGatherSpeech(req, {
+            say: "I'm still here when you're ready.",
+            language: 'en',
+          })
         );
         return;
       }
@@ -2428,9 +2567,7 @@ exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res)
     const done = !checkIn && ((parsed.done === true && allowed) || forceDone);
     const createJob =
       parsed.createJob === true || (forceDone && hasEnoughForJob(extracted));
-    const hangupSay = done && !voiceFacts.saidGoodbye(say)
-      ? `${say} ${voiceFacts.farewellFor(extracted, nextLanguage)}`.trim()
-      : say;
+    const hangupSay = say;
     history.push({ role: 'assistant', text: hangupSay });
 
     const nextData = {
@@ -2452,25 +2589,13 @@ exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res)
         answeredBy: 'ai',
         extractedData: extracted,
         transcription: appendTranscript(nextData.transcription, `AI: ${hangupSay}`),
-        aiReception: nextData.aiReception,
+        aiReception: {
+          ...nextData.aiReception,
+          createJob: createJob || hasEnoughForJob(extracted),
+        },
       },
       { merge: true }
     );
-
-    if (done) {
-      const confirm = hangupSay || voiceFacts.farewellFor(extracted, nextLanguage);
-      await finishAiReception(
-        req,
-        res,
-        callSid,
-        nextData,
-        confirm,
-        nextLanguage,
-        extracted,
-        createJob || hasEnoughForJob(extracted)
-      );
-      return;
-    }
 
     sendTwiml(res, twimlGatherSpeech(req, { say, language: nextLanguage }));
   } catch (error) {
@@ -2511,6 +2636,13 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
       return;
     }
 
+    const callEnded = await isTwilioCallEnded(callSid, req.body.CallStatus);
+    if (!callEnded) {
+      console.log(`aiRelayComplete: call still live ${callSid}, no job yet`);
+      await startAiReception(req, res, callSid, { forceGather: true });
+      return;
+    }
+
     if (data.aiReception && data.aiReception.engine === 'gemini-live' && !data.aiReception.done) {
       for (let i = 0; i < 10; i++) {
         await new Promise((resolve) => setTimeout(resolve, 700));
@@ -2527,28 +2659,15 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
       ((data.aiReception && data.aiReception.createJob === true) ||
         hasEnoughForJob(extracted) ||
         hasConversationToBook(extracted, data));
-    const lastAsst = [...((data.aiReception && data.aiReception.history) || [])]
-      .reverse()
-      .find((item) => item && item.role === 'assistant');
-    const alreadyBye = voiceFacts.saidGoodbye(lastAsst && lastAsst.text);
     if (data.createdJobId) {
-      sendTwiml(
-        res,
-        twimlHangup(alreadyBye ? '' : voiceFacts.farewellFor(extracted, 'en'), 'en')
-      );
+      sendTwiml(res, new twilio.twiml.VoiceResponse());
       return;
     }
-    await finishAiReception(
-      req,
-      res,
-      callSid,
-      data,
-      alreadyBye ? '' : voiceFacts.farewellFor(extracted, 'en'),
-      'en',
-      extracted,
-      createJob,
-      { silent: alreadyBye }
-    );
+    await finishAiReception(req, res, callSid, data, '', 'en', extracted, createJob, {
+      silent: true,
+      skipTwiml: true,
+    });
+    sendTwiml(res, new twilio.twiml.VoiceResponse());
   } catch (error) {
     console.error('aiRelayComplete error:', error);
     sendTwiml(res, twimlHangup('', 'en'));
@@ -2609,6 +2728,18 @@ exports.recordingComplete = functions.https.onRequest(recordingRuntime, async (r
     }
 
     const callId = await resolveLoggedCallId(rawSid);
+    const recordingStatus = String(req.body.RecordingStatus || 'completed').toLowerCase();
+    if (recordingStatus && recordingStatus !== 'completed') {
+      console.log(`Recording ${recordingStatus} for ${callId}, wait until completed`);
+      if (recordingSid) {
+        await callsRef.doc(callId).set(
+          { recordingSid, recordingCallSid: rawSid },
+          { merge: true }
+        );
+      }
+      res.status(200).send('OK');
+      return;
+    }
     if (duration === 0) {
       console.log(`Recording complete ${callId}: duration 0, wait for a longer take`);
       res.status(200).send('OK');
@@ -2638,7 +2769,11 @@ exports.recordingComplete = functions.https.onRequest(recordingRuntime, async (r
     );
 
     res.status(200).send('OK');
-    await processRecordingWithAi(callId, mp3Url);
+    const ready = await ensureRecordingReady(callId, {
+      recordingUrl: mp3Url,
+      twilioRecordingUrl: mp3Url,
+    });
+    await processRecordingWithAi(callId, ready.source || mp3Url);
     return;
   } catch (error) {
     console.error('Error processing recording:', error);
@@ -2650,7 +2785,7 @@ exports.recordingComplete = functions.https.onRequest(recordingRuntime, async (r
 exports.callRecordingAudio = onRequestV2(
   {
     region: 'us-central1',
-    timeoutSeconds: 120,
+    timeoutSeconds: 300,
     memory: '1GiB',
     invoker: 'public',
     cors: true,
@@ -2666,31 +2801,30 @@ exports.callRecordingAudio = onRequestV2(
     try {
       const callId = await resolveLoggedCallId(requested);
       const snap = await callsRef.doc(callId).get();
-      if (!snap.exists) {
-        const sourceOnly = await findTwilioRecordingMp3(requested);
-        if (!sourceOnly) {
-          res.status(404).send('not found');
+      const data = snap.exists ? snap.data() || {} : {};
+      const ready = await ensureRecordingReady(callId, data);
+      if (ready.storageUrl) {
+        res.set('Cache-Control', 'private, max-age=86400');
+        res.redirect(302, ready.storageUrl);
+        return;
+      }
+      const buffer = ready.buffer;
+      if (!buffer || !buffer.length) {
+        if (!ready.source) {
+          res.status(404).send('no recording');
           return;
         }
-        const buffer = await downloadRecordingBuffer(sourceOnly);
+        const fetched = await downloadRecordingBuffer(ready.source);
         res.set('Content-Type', 'audio/mpeg');
-        res.set('Content-Length', String(buffer.length));
+        res.set('Content-Length', String(fetched.length));
         res.set('Accept-Ranges', 'bytes');
         res.set('Content-Disposition', 'inline; filename="call.mp3"');
-        res.status(200).send(buffer);
-        return;
-      }
-      const data = snap.data() || {};
-      const source = await resolveCallRecordingSource(callId, data);
-      if (!source) {
-        res.status(404).send('no recording');
-        return;
-      }
-      const buffer = await downloadRecordingBuffer(source);
-      if (!data.storageUrl) {
-        cacheRecordingToStorage(callId, buffer).catch((error) => {
+        res.set('Cache-Control', 'private, max-age=300');
+        res.status(200).send(fetched);
+        cacheRecordingToStorage(callId, fetched).catch((error) => {
           console.warn('callRecordingAudio cache:', error.message);
         });
+        return;
       }
       res.set('Content-Type', 'audio/mpeg');
       res.set('Content-Length', String(buffer.length));
@@ -2838,15 +2972,19 @@ function fallbackExtractFromSms(body) {
   if (/^(ok|okay|thanks|thank you|yes|no|hi|hello|спасибо|ок)\.?$/i.test(text)) {
     return { relevant: false };
   }
+  const guessed = guessAddressFromText(text);
   const modelMatch = text.match(/\b[A-Z0-9][A-Z0-9-]{4,}\b/i);
+  const looksOnlyAddress = Boolean(guessed && guessed.address) && text.length < 80;
   return {
-    relevant: true,
+    relevant: !looksOnlyAddress,
     appliance_type: null,
     brand: null,
-    model: (modelMatch ? modelMatch[0] : text).toUpperCase(),
+    model: looksOnlyAddress ? null : (modelMatch ? modelMatch[0] : text).toUpperCase(),
     serial_number: null,
     problem_description: null,
     notes: text,
+    address: guessed && guessed.address ? guessed.address : null,
+    postal_code: guessed && guessed.postal_code ? guessed.postal_code : null,
   };
 }
 
@@ -3091,9 +3229,10 @@ Return STRICT one JSON object without markdown:
       extracted.client_phone = callerNumber.replace(/\D/g, '').slice(-10);
     }
 
-    const matchedClient = await findClientByPhone(
-      extracted.client_phone || (await getCallFromNumber(callId))
-    );
+    const matchedClient = await findExistingClient({
+      phone: extracted.client_phone || (await getCallFromNumber(callId)),
+      email: extracted.client_email,
+    });
 
     const callSnap = await callsRef.doc(callId).get();
     const callData = callSnap.exists ? callSnap.data() || {} : {};
@@ -3135,6 +3274,18 @@ Return STRICT one JSON object without markdown:
 
     if (declined) {
       jobId = null;
+    }
+
+    if (!jobId && (await isTwilioCallStillLive(callId))) {
+      console.log(`processRecordingWithAiOnce: still on the line ${callId}, job after hangup`);
+      await callsRef.doc(callId).set(
+        {
+          extractedData: extracted,
+          aiStatus: 'none',
+        },
+        { merge: true }
+      );
+      return;
     }
 
     let created = { jobId: jobId || null, clientId: matchedClient ? matchedClient.id : null };
@@ -3261,10 +3412,11 @@ exports.processCallRecording = functions.https.onRequest(
     }
 
     const data = doc.data() || {};
-    let recordingUrl = await resolveCallRecordingSource(resolvedId, data);
+    const ready = await ensureRecordingReady(resolvedId, data);
+    let recordingUrl = ready.source || (await resolveCallRecordingSource(resolvedId, data));
     if (recordingUrl && recordingUrl !== data.recordingUrl) {
       await callsRef.doc(resolvedId).set(
-        { recordingUrl, twilioRecordingUrl: recordingUrl },
+        { recordingUrl, twilioRecordingUrl: isCallRecordingProxyUrl(recordingUrl) ? data.twilioRecordingUrl : recordingUrl },
         { merge: true }
       );
     }
@@ -3379,7 +3531,10 @@ async function recoverAiCallsMissingJobs(limit = 12) {
     }
 
     try {
-      const matchedClient = await findClientByPhone(extracted.client_phone || data.fromNumber);
+      const matchedClient = await findExistingClient({
+        phone: extracted.client_phone || data.fromNumber,
+        email: extracted.client_email,
+      });
       if (!extracted.client_phone && data.fromNumber) {
         extracted.client_phone = normalizePhone(data.fromNumber);
       }
@@ -3659,7 +3814,9 @@ exports.incomingSms = functions.https.onRequest(
           prev.twilioMedia.length &&
           !(prev.mediaUrls && prev.mediaUrls.length);
         if (missingPhoto) alreadyProcessed = false;
-        matchedClient = prev.clientId ? { id: prev.clientId, fullName: '' } : await findClientByPhone(from);
+        matchedClient = prev.clientId
+          ? { id: prev.clientId, fullName: '' }
+          : await findExistingClient({ phone: from });
         if (!twilioMedia.length && Array.isArray(prev.twilioMedia)) {
           twilioMedia = prev.twilioMedia.filter((item) => item && item.url);
         }
@@ -3679,7 +3836,7 @@ exports.incomingSms = functions.https.onRequest(
     );
 
     if (!docRef) {
-      matchedClient = await findClientByPhone(from);
+      matchedClient = await findExistingClient({ phone: from });
     }
   } catch (error) {
     console.error('incomingSms error:', error);
@@ -3856,6 +4013,7 @@ async function notifyMaster(title, body, data = {}) {
         clickAction: 'FLUTTER_NOTIFICATION_CLICK',
         priority: 'max',
         visibility: 'public',
+        sticky: false,
       },
     },
     apns: {
@@ -3951,7 +4109,7 @@ async function uploadSmsMedia(sid, index, buffer, mime) {
   }
 }
 
-async function findOpenJobForContact({ phone, clientId }) {
+async function findOpenJobForContact({ phone, clientId, email }) {
   const pickLatest = (items) => {
     items.sort((a, b) => {
       const millis = (v) =>
@@ -3969,6 +4127,23 @@ async function findOpenJobForContact({ phone, clientId }) {
     const snap = await jobsRef.where('clientId', '==', clientId).get();
     const items = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     const picked = pickLatest(items);
+    if (picked) return picked;
+  }
+
+  const needle = String(email || '').trim().toLowerCase();
+  if (needle.includes('@')) {
+    const snapshot = await jobsRef.get();
+    const byEmail = [];
+    for (const doc of snapshot.docs) {
+      const data = doc.data() || {};
+      const emails = [
+        data.clientEmail,
+        data.sourceEmailFrom,
+        data.jobSiteEmail,
+      ].map((value) => String(value || '').trim().toLowerCase());
+      if (emails.includes(needle)) byEmail.push({ id: doc.id, ...data });
+    }
+    const picked = pickLatest(byEmail);
     if (picked) return picked;
   }
 
@@ -3998,6 +4173,165 @@ function hasRepairData(extracted) {
       extracted.serial_number ||
       extracted.problem_description
   );
+}
+
+function extractedHasAddress(extracted) {
+  if (!extracted) return false;
+  const street = String(extracted.address || '').trim();
+  const city = String(extracted.city || '').trim();
+  const postal = String(extracted.postal_code || '').trim();
+  return street.length >= 4 || (Boolean(street) && Boolean(city)) || postal.length >= 5;
+}
+
+function clientHasStoredAddress(client) {
+  if (!client) return false;
+  if (String(client.address || '').trim().length >= 4) return true;
+  const locs = Array.isArray(client.locations) ? client.locations : [];
+  for (const loc of locs) {
+    const street = String((loc && loc.street) || '').trim();
+    const city = String((loc && loc.city) || '').trim();
+    const postal = String((loc && (loc.postalCode || loc.postal)) || '').trim();
+    if (street.length >= 4 || (street && city) || postal.length >= 5) return true;
+  }
+  return false;
+}
+
+function guessAddressFromText(body) {
+  const text = String(body || '').replace(/\s+/g, ' ').trim();
+  if (text.length < 6) return null;
+  const postalMatch = text.match(/\b([A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d)\b/);
+  const postal = postalMatch
+    ? postalMatch[1].toUpperCase().replace(/\s+/g, ' ')
+    : null;
+  const streetMatch = text.match(
+    /\b(\d{1,6}(?:-\d{1,4})?\s+(?:[A-Za-z][A-Za-z0-9.'\-]*\s+){0,5}(?:Street|St|Road|Rd|Ave|Avenue|Blvd|Boulevard|Drive|Dr|Way|Court|Ct|Cres|Crescent|Lane|Ln|Place|Pl|Circle|Cir|Trail|Parkway|Pkwy|Highway|Hwy|Terrace|Ter)\.?(?:\s+(?:North|South|East|West|N|S|E|W|NW|NE|SW|SE))?(?:\s+(?:Unit|Apt|Apartment|#)\s*[A-Za-z0-9-]+)?)\b/i
+  );
+  let street = streetMatch ? streetMatch[1].replace(/\s+/g, ' ').trim() : null;
+  let city = null;
+  if (street) {
+    const at = text.toLowerCase().indexOf(street.toLowerCase());
+    if (at >= 0) {
+      const after = text.slice(at + street.length);
+      const cityMatch = after.match(
+        /^\s*,\s*([A-Za-z][A-Za-z .'-]{1,28}?)(?=,|\s+[A-Z]{2}\b|\s+[A-Za-z]\d[A-Za-z]|$)/
+      );
+      if (cityMatch) city = cityMatch[1].trim();
+    }
+  }
+  if (!street && postal && postalMatch) {
+    const before = text.slice(0, postalMatch.index).trim();
+    const loose = before.match(/(\d{1,6}\s+[A-Za-z][A-Za-z0-9.'\-\s,]{3,60})$/);
+    if (loose) street = loose[1].replace(/[,\s]+$/, '').trim();
+  }
+  if (!street && !postal) return null;
+  return {
+    address: street || null,
+    city: city || null,
+    postal_code: postal,
+  };
+}
+
+async function applyInboundAddressToClient({ clientId, extracted, job }) {
+  if (!clientId || !extractedHasAddress(extracted)) {
+    return { mode: null, full: '' };
+  }
+  const snap = await clientsRef.doc(clientId).get();
+  if (!snap.exists) return { mode: null, full: '' };
+  const client = { id: snap.id, ...(snap.data() || {}) };
+  const street = String(extracted.address || '').trim();
+  const city = String(extracted.city || '').trim();
+  const postal = String(extracted.postal_code || '').trim();
+  const nextFull = buildFullAddress(extracted, null);
+  if (!nextFull) return { mode: null, full: '' };
+
+  const alreadyHas = clientHasStoredAddress(client);
+  const existingFull =
+    String(client.address || '').trim() || voiceFacts.clientAddressFrom(client) || '';
+  const different =
+    alreadyHas &&
+    existingFull &&
+    voiceFacts.addressesLookDifferent(existingFull, nextFull);
+
+  if (!alreadyHas) {
+    const locations = Array.isArray(client.locations)
+      ? client.locations.map((loc) => ({ ...(loc || {}) }))
+      : [];
+    if (!locations.length) {
+      locations.push({
+        id: 'primary',
+        street,
+        city,
+        postalCode: postal,
+        contacts: [
+          {
+            id: 'owner',
+            name: client.fullName || client.name || '',
+            phone: client.phone || '',
+            role: 'owner',
+            isPrimary: true,
+          },
+        ],
+      });
+    } else {
+      locations[0] = {
+        ...locations[0],
+        street: street || locations[0].street || '',
+        city: city || locations[0].city || '',
+        postalCode: postal || locations[0].postalCode || locations[0].postal || '',
+      };
+    }
+    await clientsRef.doc(clientId).set(
+      {
+        address: nextFull,
+        locations,
+        lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    if (job && job.id && !String(job.clientAddress || '').trim()) {
+      await jobsRef.doc(job.id).set(
+        {
+          clientAddress: nextFull,
+          clientId,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+    console.log(`SMS address saved as primary for client ${clientId}`);
+    return { mode: 'primary', full: nextFull };
+  }
+
+  if (!different) return { mode: null, full: nextFull };
+
+  await upsertClientJobSite(
+    clientId,
+    client,
+    { ...extracted, has_job_site: true },
+    client.fullName || client.name || '',
+    client.phone || ''
+  );
+  if (job && job.id) {
+    await jobsRef.doc(job.id).set(
+      {
+        hasJobSite: true,
+        jobSiteAddress: nextFull,
+        jobSiteName:
+          String(extracted.contact_on_site_name || '').trim() ||
+          job.jobSiteName ||
+          '',
+        jobSitePhone:
+          normalizePhone(extracted.contact_on_site_phone) ||
+          job.jobSitePhone ||
+          '',
+        clientId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+  console.log(`SMS address saved as job site for client ${clientId} job ${job && job.id}`);
+  return { mode: 'jobsite', full: nextFull };
 }
 
 function mergeAppliance(existing, extracted) {
@@ -4129,6 +4463,7 @@ async function processSmsWithAi({
   const messageSid = existingData.sid || '';
   const isIntake = Boolean(intake || existingData.emailIntake);
   const fromIsEmail = String(from || '').includes('@');
+  const fromPhone = fromIsEmail ? '' : from;
 
   const images = Array.isArray(preloadedImages) ? [...preloadedImages] : [];
   const storedUrls = [];
@@ -4187,6 +4522,9 @@ async function processSmsWithAi({
 Правила:
 - Не путай отправителя письма с мастером — это клиент или агрегатор заявок
 - Имя, телефон, адрес, город, индекс извлеки, если они есть
+- Если в письме есть улица, дом или индекс — обязательно заполни address / city / postal_code
+- Если ремонт не у клиента дома, а по другому адресу — has_job_site=true, address = куда ехать, contact_on_site_name / contact_on_site_phone = кто встретит
+- Если это письмо существующего клиента только с адресом — relevant может быть false, но адрес всё равно заполни
 - Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
 - Телефон форматируй как 10 цифр
 - Если письмо НЕ про ремонт бытовой техники — relevant: false
@@ -4208,19 +4546,56 @@ async function processSmsWithAi({
   "problem_description": null,
   "scheduled_date": null,
   "scheduled_time": null,
+  "contact_on_site_name": null,
+  "contact_on_site_phone": null,
+  "has_job_site": false,
+  "notes": null
+}
+
+Письмо: ${body || '(нет текста)'}
+Отправитель: ${from || ''}`
+    : fromIsEmail
+      ? `Ты — ассистент сервиса по ремонту бытовой техники в Канаде.
+Клиент ответил письмом по уже открытой заявке${images.length ? ' и прислал фото' : ''}.
+Нужно ДОПИСАТЬ в рабочую карточку всё, что он сообщил.
+
+Правила:
+- Адрес, модель, бренд, серийник, описание поломки — заполни, если есть
+- Если адрес ремонта НЕ дом клиента — has_job_site=true, address = куда ехать, contact_on_site_name / contact_on_site_phone = кто на месте
+- Если на фото шильдик — прочитай model, brand, serial_number
+- Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
+- Если это только «ок / спасибо / подтверждено» без новых данных — relevant: false и все поля null
+- Если есть хоть адрес, модель, бренд, серийник или описание — relevant: true
+
+Верни СТРОГО один JSON без markdown:
+{
+  "relevant": true,
+  "appliance_type": null,
+  "brand": null,
+  "model": null,
+  "serial_number": null,
+  "problem_description": null,
+  "address": null,
+  "city": null,
+  "postal_code": null,
+  "contact_on_site_name": null,
+  "contact_on_site_phone": null,
+  "has_job_site": false,
   "notes": null
 }
 
 Письмо: ${body || '(нет текста)'}
 Отправитель: ${from || ''}`
     : `Ты — ассистент сервиса по ремонту бытовой техники в Канаде.
-Клиент прислал SMS${images.length ? ' и фото (шильдик, модель, техника)' : ''}.
-Извлеки данные для заявки на ремонт.
+Клиент прислал SMS или письмо${images.length ? ' и фото (шильдик, модель, техника)' : ''}.
+Извлеки данные для заявки на ремонт и адрес, если он есть.
 
 Правила:
 - Если на фото шильдик/бирка — обязательно прочитай model, brand, serial_number
 - Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
-- Если это обычное сообщение без данных о технике (ок, спасибо, когда приедете) — все поля null, relevant: false
+- Если клиент прислал улицу, дом, город или индекс — заполни address / city / postal_code
+- Если это только адрес без техники — relevant: false, но адрес всё равно заполни
+- Если это обычное сообщение без данных о технике и без адреса (ок, спасибо, когда приедете) — все поля null, relevant: false
 - Телефон форматируй как 10 цифр
 
 Верни СТРОГО один JSON без markdown:
@@ -4231,6 +4606,12 @@ async function processSmsWithAi({
   "model": null,
   "serial_number": null,
   "problem_description": null,
+  "address": null,
+  "city": null,
+  "postal_code": null,
+  "contact_on_site_name": null,
+  "contact_on_site_phone": null,
+  "has_job_site": false,
   "notes": null
 }
 
@@ -4263,25 +4644,85 @@ async function processSmsWithAi({
   }
   const relevant = isIntake
     ? extracted.relevant !== false && hasIntakeLead(extracted)
-    : extracted.relevant !== false && hasRepairData(extracted);
+    : extracted.relevant !== false &&
+      (hasRepairData(extracted) ||
+        extractedHasAddress(extracted) ||
+        Boolean(extracted.contact_on_site_name) ||
+        Boolean(extracted.contact_on_site_phone));
+
+  if (!extractedHasAddress(extracted)) {
+    const guessed = guessAddressFromText(body);
+    if (guessed) {
+      extracted.address = extracted.address || guessed.address;
+      extracted.city = extracted.city || guessed.city;
+      extracted.postal_code = extracted.postal_code || guessed.postal_code;
+    }
+  }
+
+  let resolvedClientId = clientId || existingData.clientId || '';
+  if (!resolvedClientId && fromIsEmail) {
+    try {
+      const found = await findClientByEmail(from);
+      if (found && found.id) resolvedClientId = found.id;
+    } catch (error) {
+      console.warn('email address findClient:', error.message);
+    }
+  }
+  if (!resolvedClientId && extracted && extracted.client_email) {
+    try {
+      const found = await findClientByEmail(extracted.client_email);
+      if (found && found.id) resolvedClientId = found.id;
+    } catch (error) {
+      console.warn('extracted email findClient:', error.message);
+    }
+  }
+  if (!resolvedClientId) {
+    try {
+      const found = await findClientByPhone(
+        (extracted && extracted.client_phone) || (!fromIsEmail ? from : '')
+      );
+      if (found && found.id) resolvedClientId = found.id;
+    } catch (error) {
+      console.warn('SMS address findClient:', error.message);
+    }
+  }
+
+  const jobForAddress = await findOpenJobForContact({
+    phone: fromPhone || (extracted && extracted.client_phone) || '',
+    clientId: resolvedClientId,
+    email: fromIsEmail ? from : (extracted && extracted.client_email) || '',
+  });
+  let addressResult = { mode: null, full: '' };
+  if (extractedHasAddress(extracted) && resolvedClientId) {
+    try {
+      addressResult = await applyInboundAddressToClient({
+        clientId: resolvedClientId,
+        extracted,
+        job: jobForAddress,
+      });
+    } catch (error) {
+      console.warn('SMS address apply:', error.message);
+    }
+  }
 
   const updates = {
     extractedData: extracted,
-    aiStatus: relevant ? 'done' : 'none',
+    aiStatus: relevant ? 'done' : extractedHasAddress(extracted) ? 'address' : 'none',
   };
-
-  if (!relevant) {
-    await messageRef.set(updates, { merge: true });
-    return;
-  }
+  if (resolvedClientId) updates.clientId = resolvedClientId;
 
   if (isIntake) {
     updates.emailOfferPending = relevant;
+    updates.emailBellPending = relevant || Boolean(existingData.watchedSender);
     updates.aiStatus = relevant ? 'offer' : 'none';
     if (clientId) updates.clientId = clientId;
     await messageRef.set(updates, { merge: true });
     if (!relevant) {
       console.log(`Email intake AI skipped (not repair) ${messageId}`);
+      return;
+    }
+    if (existingData.emailNotified) {
+      console.log(`Email intake offer ready for ${messageId}`);
       return;
     }
     const who =
@@ -4305,18 +4746,33 @@ async function processSmsWithAi({
     return;
   }
 
-  const fromPhone = fromIsEmail ? '' : from;
-  let job = await findOpenJobForContact({ phone: fromPhone, clientId });
+  let job = jobForAddress;
+  if (!job) {
+    job = await findOpenJobForContact({
+      phone: fromPhone,
+      clientId: resolvedClientId || clientId,
+      email: fromIsEmail ? from : (extracted && extracted.client_email) || '',
+    });
+  }
   const appliance = mergeAppliance(job && (job.appliances || [])[0], extracted);
   const smsNote = [
     extracted.model ? `Модель: ${extracted.model}` : '',
     extracted.serial_number ? `Серийный номер: ${extracted.serial_number}` : '',
     extracted.brand ? `Бренд: ${extracted.brand}` : '',
+    extracted.problem_description ? extracted.problem_description : '',
   ]
     .filter(Boolean)
     .join('\n');
+  const siteName = String((extracted && extracted.contact_on_site_name) || '').trim();
+  const sitePhone = normalizePhone(extracted && extracted.contact_on_site_phone);
+  const hasCardBits =
+    hasRepairData(extracted) ||
+    extractedHasAddress(extracted) ||
+    Boolean(siteName) ||
+    Boolean(sitePhone) ||
+    storedUrls.length > 0;
 
-  if (job) {
+  if (job && hasCardBits) {
     const appliances = Array.isArray(job.appliances) && job.appliances.length
       ? [appliance, ...job.appliances.slice(1)]
       : [appliance];
@@ -4326,27 +4782,45 @@ async function processSmsWithAi({
       brand: appliance.brand,
       model: appliance.model,
       serialNumber: appliance.serialNumber,
-      description: mergeJobDescription(job.description, smsNote),
+      description: mergeJobDescription(
+        job.description,
+        [smsNote, extracted.notes].filter(Boolean).join('\n')
+      ),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
+    if (siteName) {
+      jobUpdates.hasJobSite = true;
+      jobUpdates.jobSiteName = siteName;
+    }
+    if (sitePhone) {
+      jobUpdates.hasJobSite = true;
+      jobUpdates.jobSitePhone = sitePhone;
+    }
     if (storedUrls.length) {
       const attachments = storedUrls.map((url) => ({
         url,
         type: 'image',
-        source: 'sms',
+        source: channel === 'email' ? 'email' : 'sms',
         createdAt: new Date().toISOString(),
       }));
       jobUpdates.attachments = admin.firestore.FieldValue.arrayUnion(...attachments);
     }
     await jobsRef.doc(job.id).update(jobUpdates);
     updates.jobId = job.id;
-  } else {
+  } else if (!job && relevant && channel !== 'email') {
     const created = await jobsRef.add({
-      clientId: clientId || '',
+      clientId: resolvedClientId || clientId || '',
       clientName: clientName || from || '',
       clientPhone: fromPhone || '',
-      clientAddress: '',
-      hasJobSite: false,
+      clientAddress:
+        addressResult.mode === 'jobsite'
+          ? ''
+          : addressResult.full ||
+            (extractedHasAddress(extracted) ? buildFullAddress(extracted, null) : ''),
+      hasJobSite: addressResult.mode === 'jobsite',
+      jobSiteAddress: addressResult.mode === 'jobsite' ? addressResult.full : '',
+      jobSiteName: siteName || '',
+      jobSitePhone: sitePhone || '',
       appliances: [appliance],
       applianceType: appliance.type,
       brand: appliance.brand,
@@ -4368,7 +4842,7 @@ async function processSmsWithAi({
   }
 
   await messageRef.set(updates, { merge: true });
-  console.log(`SMS AI done for ${messageId}, job ${updates.jobId}`);
+  console.log(`SMS AI done for ${messageId}, job ${updates.jobId || '-'}`);
 }
 
 // ============================================================================

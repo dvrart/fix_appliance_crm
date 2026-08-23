@@ -1,0 +1,132 @@
+---
+description: Shop CRM context and recent change history for the next agent
+alwaysApply: true
+---
+
+# Fix Appliance CRM — context for the next agent
+
+Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: Samsung `R5CW421KFXH`, package `com.example.fix_appliance_crm`. PowerShell: no `&&`; use `;`. Do not commit unless asked. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
+
+Typical install:
+
+```
+flutter build apk --release
+adb -s R5CW421KFXH install -r build\app\outputs\flutter-apk\app-release.apk
+adb -s R5CW421KFXH shell am start -n com.example.fix_appliance_crm/.MainActivity
+```
+
+## Two different AIs
+
+- **Phone secretary** (Twilio + Gemini Live): answers inbound calls if FIX does not pick up. Speaks English only. Files: `functions/voice_relay.js`, `functions/voice_facts.js`, `functions/index.js` (`aiVoiceRelay`, `aiVoiceTurn`, `getAiAnswerSettings`). Prompt/hangup changes are **server deploy**, no APK.
+- **In-app assistant** (Purish / wake word): `lib/features/ai/assistant/*`. Do not mix this with the phone secretary.
+
+Owner does **not** rewrite the phone secretary from the app. Coach chat was removed. Errors go to **Настройки → Ошибки секретаря** (`SecretaryLearnPage`); FIX copies the pack and sends it here so the agent can patch prompt/functions. Live prompt is **server-only**: `DEFAULT_VOICE_INSTRUCTIONS` + shop hours + calendar + service-area map. App greeting, collect checkboxes, `extraRules`, and `learnedRules` are **not** injected into Live.
+
+## Secretary behavior (current, Aug 21 2026)
+
+FIX liked the natural conversation (listen first, one short sentence, do not quiz). Problems that were over-corrected and then rolled back:
+
+- Do **not** inject fake user turns (`steerCollectAfterTurn`) after every reply — that made her not listen.
+- She must **not say bye / goodbye / see you** and must **not hang up**. The **caller** hangs up. `end_call` tool was removed from Gemini Live setup; hangup tools are ignored.
+- Shop hours: **7:00 a.m. – 9:00 p.m.** America/Toronto, last start **7:00 p.m.** so the visit ends by 9. If the caller wants 6 a.m. or a start after 7 p.m., do not book it; say we don’t work then and offer a time that ends by 9. **Take orders every day**, including Saturday, Sunday, and holidays. Regular visits Mon–Fri; **Saturday (and Sunday/holiday visits) by agreement** if the 2-hour window is free. Never say we don’t accept orders on weekends or holidays. Calendar defaults were updated to 7–21; old 9–19 config is migrated on the server.
+- After “I’ll pass this to the tech”, keep talking: ask if they have another appliance or anything else. Do not wrap up. The caller hangs up.
+- Do not hang up the instant they give another repair address; keep talking.
+- **Calendar:** each visit is **2 hours**, one job per window (`functions/schedule.js`). Secretary sees a live calendar brief. If 2:00 p.m. is taken, do **not** book it — offer another time the **same day** first. Server refuses busy slots on job create (`resolveJobSchedule`). SMS reschedule uses the same check (`visit_sms.js` `tryMoveVisit`).
+
+Spoken first name (e.g. Amelia) must go on the **client card** (`fullName`), not only the job. Do not leave `Клиент` / `Клиент +1…`. Helpers: `usableClientName` / `isPlaceholderClientName` in `functions/voice_facts.js`, `applyPersonNameToClient` in `functions/index.js`. Opening a job or client card also copies a real name from the job onto a placeholder client.
+
+Gemini Live: Twilio media stream `timeLimit` is 3600s (1 hour). Context compression starts at 32k tokens (keep 18k) so she does not freeze mid-word on a normal call. WebSocket still reconnects around 10 min (`goAway` + session resume). `aiVoiceRelay` is 2GiB; text-turn runtime is 512MiB.
+
+Deploy secretary + SMS calendar: `firebase deploy --only functions:aiVoiceRelay,functions:aiVoiceTurn,functions:incomingCall,functions:dialAction,functions:incomingSms,functions:recordingComplete,functions:processCallRecording,functions:aiRelayComplete`
+
+- Long Live calls: Twilio stream 1 hour; large Gemini context so a normal repair call does not compress mid-sentence.
+
+## Lock screen
+
+Do **not** set `android:showWhenLocked` / `turnScreenOn` on `MainActivity` in the manifest. Those flags are set in code **only** for `twilio_incoming_call`. `clearLockscreenFlags()` on pause/resume when there is no incoming Twilio call. Otherwise leaving the app forces another unlock.
+
+## Alphabet index
+
+`lib/shared/widgets/alphabet_index_bar.dart`: selected letter is larger and shifted into the list (away from the right-edge thumb). Parent `Stack` must use `clipBehavior: Clip.none`.
+
+## Bell / notifications
+
+App-bar bell: `lib/features/ai/assistant/review_bell_button.dart`. Tabs: Secretary / Calls / Jobs. Swipe left/right between tabs. Cards show date and time. Opening Secretary or Calls (seeing the tab) dismisses those items **only when the sheet is closed**, not when switching tabs. Jobs leave the bell only after confirm (`needsReview=false`) or delete. Phone tray notifications: FCM `notifyMaster` + `NotificationService`. Sound is chosen in Android app notification settings via **Настройки → Звук уведомлений**. Do not delete notification channels (that wipes the user's sound).
+
+## Save button
+
+Page **Save** is only the top-right app-bar control: a **green check logo** (`AppBarSaveButton`), not the word «Сохранить». Dim until there are changes, then a bright green circle with a white check. No bottom Save on settings/job/client pages. Dialogs may still have Save. Client card uses the same draft + leave-prompt as the job card.
+
+## Address
+
+`lib/widgets/smart_address_picker.dart` has a **Unit** field next to street. Persist via `ClientService.addressFields` / `Location.unit`.
+
+## Catalog settings
+
+Each catalog list (types, brands, statuses, sources) must **not** have a yellow plus in the app bar. Add items with the plus in the body.
+
+## Watched email senders
+
+**Настройки → Связь**: list of sender addresses (`watchedEmailSenders` on `settings/config`). Gmail ingest (`functions/email.js` `ingestParsed`) saves mail from those senders even if it is not a CRM reply. Every new inbox letter is scanned for appliance repair. If it looks like a repair request, the app **notifies** and offers to create a client card + visit (`emailOfferPending` on the message). It does **not** auto-create the job. Intake phrase still marks the letter as an offer. Deploy `functions:syncGmailInbox`.
+
+## Basket / trash
+
+Drawer **Корзина** is a 30-day recycle bin (`deletedAt` on jobs and clients). Restore or delete forever. Unscheduled jobs (no visit date) stay on the jobs list banner, not in trash. Left-menu bottom row: red **Корзина**, purple **Запчасти** (car icon → `PartsQueueScreen`), navy **Поиск** (`GlobalSearchOverlay`). All three are 72×72; Запчасти sits between basket and search, not in the 2-column grid.
+
+## Booking SMS / email
+
+`sendBookingIfNeeded` skips jobs with `needsReview === true`. The confirmation goes only after FIX taps **Проверено**. Email jobs (`source` / `sourceEmailId` / `sourceEmailFrom`) still get a **letter**. If a phone number exists, they **also get SMS** for the visit date and for date/time changes (`confirm_rescheduled`). Phone-only jobs get SMS. Hourly `sendVisitReminders` retries missed booking confirms and catch-up SMS for email jobs that never got a text. Deploy `onJobWritten`, `sendVisitReminders`.
+
+A follow-up email from a client with an open job is parsed by Gemini and written onto that job (address, model, serial, job-site contact). It does **not** create a second job. Deploy `syncGmailInbox`, `incomingSms`.
+
+## UI notes
+
+- Client card call / SMS / route: white circles, bright colored icons (`client_details_screen.dart`).
+- Job card trash in the app bar: red, same as the client card (`job_details_screen.dart`).
+
+## Recent file history (Aug 23 2026)
+
+- Dock side tabs (menu / bell) are **narrow** (`_handleWidth` 36): they only peek from the screen edge, still full height of the navy bar. Nested tab pages must keep status-bar insets removed (`padding` + `viewPadding` top/bottom 0 in `MainScreen`); do not wrap tab `Navigator`s with a second `MediaQuery.removePadding` from the outer context — that restored the status-bar gap under the シ-face (client card vs Связь).
+- Calendar yellow **plus** and Связь yellow **dialpad** are the same round FAB, same spot a little above the dock — not inside the navy menu. Hidden on Клиенты and when a child page is open. Clients tab yellow plus is the body FAB only — **no** plus in the clients app bar.
+- In-app assistant stays the small シ-face in the header. Tap or wake word (Purish) does **not** open a full-screen overlay: the face turns **yellow** while listening, mouth opens while speaking, same シ style. Tap again to stop. Tabs stay usable. Do not close the session when tools open a screen.
+- Assistant **sees the current app screen**: `RepaintBoundary` in `MaterialApp.builder` (`AssistantScreenSight`). While listening, JPEG/PNG frames go to Gemini Live (`sendVideo`) about every 2.8s; `look_at_screen` forces a fresh frame. Ask «что на экране» / «посмотри».
+- Client card: no AppBar; back on the left; **trash then pencil** stacked on the right (pencil a bit lower). Date chevrons must not use `IconButton` splash («чернила»).
+- Bell Jobs tab shows repair-email offers **and** other inbound CRM/watched letters (`emailOfferPending` / `emailBellPending` / unread inbound). Badge sits inward (`topLeft`) so the narrow right tab does not clip it. Deploy `syncGmailInbox` after email ingest/bell flag changes.
+- Drawer bottom row restored: **Корзина / Запчасти / Поиск**. Clients tab has a yellow plus FAB above the dock (`FloatingActionButtonLocation.centerFloat`) that adds a client.
+- Phone secretary Live prompt is **server-only** (no app greeting / collect flags / extraRules / learnedRules). After confirm she keeps talking. Context window 32k/18k so she does not freeze mid-word. Deploy `aiVoiceRelay`, `aiVoiceTurn`, `incomingCall`, `dialAction`.
+
+## Recent file history (Aug 22 2026)
+
+- Main chrome: **シ-face** (`AssistantFaceButton`) at top center. Tap or Purish turns it **yellow** and starts listen — no full-screen overlay. Mouth opens while speaking. Calendar header (Вид / Фильтр / Маршрут / Месяц) is the same **navy bar**; chips are yellow when selected, white when not. Bouncing `local_shipping` van top-right. Bottom dock: yellow menu/bell **full height** of the navy bar; Calendar / Связь / Клиенты grouped in the **center**.
+- Declined service calls (`service_declined` / `serviceDeclined`) stay in the bell and do **not** create a repair job.
+- Booking SMS waits for FIX to confirm the job. Email jobs get the same 1 / 0 / 5 confirmation as a letter **and SMS if a phone exists** (so a date change is not email-only).
+- Take repair orders every day including Sat/Sun/holidays. Regular visits Mon–Fri 7 a.m.–9 p.m.; Saturday by agreement. Secretary/SMS must not say we don’t book Saturdays.
+- Dishwasher icon: match `dish` / `посуд` before `washer` (`dishwasher` contains `wash`).
+- Basket is 30-day trash for deleted jobs/clients; unscheduled jobs have their own list.
+- Reports: two tabs — **Для T2** (UFile / TurboTax GIFI pack: 8000 sales, 8320 parts, GST34 101/103) and **Операции** (Jobber KPIs + Stripe). Default period is calendar **year**. Simple T2 method: type 8000 and 8320, leave inventory 8300/8500 blank. PDF/copy from the T2 screen. Not tax advice.
+- Bell job cards and FCM show whether the job came from a **phone call** or **email** (`source` / `sourceCallId` / `sourceEmailId`). Phone: «Заявка с телефона»; email: «Заявка с почты».
+- Photograph receipts in **Расходы**. One bottom button: take photo / add photo / add PDF. Receipt image sits in the upper right of the card. Gemini classifies fuel/insurance/tools into GIFI for the T2 PDF. HST on receipts → GST34 line 108. Large tools can be marked CCA.
+- Gmail job intake: **appliance + repair intent** only. Skip Pinterest/social/noreply and newsletters (`List-Unsubscribe`) unless it is a CRM reply. Repair letters **notify** and offer to create a client + visit; they do not auto-create a job. Bell Jobs tab shows the offer. Deploy `syncGmailInbox`.
+- Stripe balance on Отчеты via `getStripeBalance`.
+- Secretary pickup delay can be **0**: **Настройки → Секретарь → Сразу берёт трубку**, then Save. Master phone does not ring; `incomingCall` skips dial and starts AI. Timeout clamp is 0–60. Deploy `incomingCall`.
+- Dial pad: digit keys flash **yellow** on press; the handset flashes **green** when calling. Keys fire on finger-down; call screen fades in (~380ms). Voice JWT is refreshed on every outbound call.
+- Left menu **Статистика**: calls, jobs, clients, invoices, payments, visits, emails, SMS, expenses. Filters: day / week / month.
+- SMS address: if the client texts a street, save it on the client card; if a primary address already exists, add a **Job site** location and put it on the open job (`hasJobSite` / `jobSiteAddress`). Deploy `incomingSms`.
+- In-app copy toasts auto-hide after 5s. Shade notifications (evening «Завтра N заявок», visit-soon, FCM) stay until FIX swipes them. Do not cancel a fired shade notice when rescheduling the next briefing. Do not delete notification channels. Incoming VoIP stays until answered. Customize color in **Настройки → Вид уведомлений**.
+- Yellow plus is a round FAB **on the Calendar canvas** above the dock (hidden on Связь / Клиенты). Menu and bell fill the full height of the navy dock but stay **narrow** (peek from the edges); icons are centered. Calendar / Связь / Клиенты icons are larger.
+- Purysh wake: Android STT with system beep muted; PCM+Gemini fallback. Aliases include purge/purish/пурыш. Overlay stays silent until FIX speaks.
+- Job tracking dialog: do **not** use `DropdownButtonFormField` (overflow + `_dependents.isEmpty` crash on keyboard Enter). Supplier is a tap-to-expand list; Enter on track/order fields saves.
+- Unsaved-changes prompt is a **bottom sheet**: green check = save, yellow square = don’t save, red X = cancel/stay. No text on the buttons (`confirm_action_sheet.dart`).
+- Secretary creates the client card and job **only after the call ends** (`aiRelayComplete` / recording), not mid-conversation.
+- Client card: appliances as **tiles**; job history stays a **list**; **История связи** shows that client's calls, SMS, and email.
+
+## Recent file history (Aug 21 2026)
+
+- Phone secretary prompt restored to conversational style; then hangup-on-bye blocked; then `end_call` removed so she cannot disconnect.
+- Work hours 7am–9pm added to live prompt and `getAiAnswerSettings`.
+- Universal warehouse badge `assets/appliances/other.png` replaced with a collage of many appliances.
+- Secretary error analysis lives in **Настройки → Ошибки секретаря** (copy pack for the coding agent). Coach chat removed.
+- Mic click on Samsung: wake-word STT was starting/stopping the mic; now PCM-only listen (`wake_word_service.dart`).
+- Client name from secretary written to the client card; brighter client-card action icons; red delete on the job card.
+- Secretary/SMS booking checks the calendar: 2-hour windows, no overlap. Lock-screen flags only for incoming Twilio. Alphabet index letter is larger and offset into the list.
+- Address picker has Unit. Client card saves only via top-right Save (prompt on leave). Bell: swipe tabs, date/time on cards, Secretary/Calls dismiss on sheet close after viewing. Catalog lists have no app-bar plus. Связь can watch extra sender emails. Calendar job drag has haptics.
