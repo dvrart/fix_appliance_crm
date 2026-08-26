@@ -1,17 +1,15 @@
-# fix_appliance_crm
+# Fix Cloud
 
-A new Flutter project.
+Marketplace clone of the appliance-repair CRM. Each subscriber creates their own company. The original shop app (`fix_appliance_crm`) stays private.
 
-## Getting Started
+Do not point this project at Firebase `fix-appliance-crm`.
 
-This project is a starting point for a Flutter application.
+## First run (after a new Firebase project exists)
 
-A few resources to get you started if this is your first Flutter project:
+1. Enable Email/Password in Firebase Auth.
+2. `flutterfire configure` (Android package `com.fixappliance.cloud`).
+3. Put product keys in `lib/core/api_keys.dart` and `android/app/src/main/res/values/strings.xml` (`google_maps_key`).
+4. Deploy `firestore.rules`.
+5. Do not deploy functions until tenant routing is ready.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Trial: 14 days, then the paywall. Google Play Billing is not wired yet (debug unlock exists in debug builds).

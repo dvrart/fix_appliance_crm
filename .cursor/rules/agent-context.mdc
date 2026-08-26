@@ -1,0 +1,31 @@
+---
+description: Fix Cloud product context — marketplace clone, not the shop phone app
+alwaysApply: true
+---
+
+# Fix Cloud — marketplace product
+
+Flutter SaaS clone at `C:\Projects\fix_appliance_cloud`, branch **saas**.
+Do **not** mix with the shop CRM at `C:\Projects\fix_appliance_crm` (branch **FIX-APP**, phone package `com.example.fix_appliance_crm`).
+PowerShell: no `&&`; use `;`. Do not commit unless asked.
+Do **not** deploy this clone to Firebase project `fix-appliance-crm`.
+Do **not** paste shop Maps / Gemini / Twilio keys into this repo.
+
+## Product vs shop
+
+- Shop app stays sideloaded on FIX’s Samsung only.
+- This app: package `com.fixappliance.cloud`, display name **Fix Cloud**.
+- Each subscriber gets `companies/{theirId}/...` after email sign-up.
+- `kCompanyId` is a getter from `CompanySession`, not `fix_appliance_ca`.
+- Trial is 14 days (`AccountService`). Paywall is in place; Google Play Billing is next.
+- Phone secretary / Twilio / Gmail still need per-tenant routing before any cloud function deploy.
+
+## Auth gate
+
+`AuthGate`: login → create company → paywall if trial ended → CRM.
+Sign out: **Настройки → О приложении**.
+
+## Firebase
+
+Project **fix-appliance-cloud** (account `office@fix-appliance.ca`). Android app `com.fixappliance.cloud`.
+Email/Password is enabled. Google and Apple buttons are on the login screen (`signInWithProvider`). Enable those providers in Authentication. Debug SHA-1/256 are on the Android app.

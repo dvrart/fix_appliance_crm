@@ -1,12 +1,15 @@
-import 'dart:io';
 import 'dart:async';
-import 'package:flutter/material.dart';
+import 'dart:io';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/material.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:image_picker/image_picker.dart';
+
 import '../../core/l10n/app_locale.dart';
 import '../../services/warehouse_service.dart';
+import '../../shared/widgets/appliance_picture.dart';
 
 class WarehouseScreen extends StatefulWidget {
   const WarehouseScreen({super.key});
@@ -21,14 +24,14 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
   String _selectedCategory = 'Все';
   String _sortMethod = 'Сначала новые';
 
-  final List<Map<String, dynamic>> _categories = [
-    {'name': 'Все', 'icon': Icons.apps},
-    {'name': 'Холодильник', 'icon': Icons.kitchen},
-    {'name': 'Стиральная машина', 'icon': Icons.local_laundry_service},
-    {'name': 'Сушилка', 'icon': Icons.heat_pump},
-    {'name': 'Плита/Духовка', 'icon': Icons.countertops},
-    {'name': 'Посудомойка', 'icon': Icons.local_dining},
-    {'name': 'Универсальное', 'icon': Icons.build},
+  final List<Map<String, String>> _categories = [
+    {'name': 'Все', 'type': 'all'},
+    {'name': 'Холодильник', 'type': 'fridge'},
+    {'name': 'Стиральная машина', 'type': 'washer'},
+    {'name': 'Сушилка', 'type': 'dryer'},
+    {'name': 'Плита/Духовка', 'type': 'stove'},
+    {'name': 'Посудомойка', 'type': 'dishwasher'},
+    {'name': 'Универсальное', 'type': 'other'},
   ];
 
   @override
@@ -283,6 +286,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                           ? itemCategory
                           : 'Универсальное',
                       isDense: true,
+                      isExpanded: true,
                       decoration: InputDecoration(
                         labelText: 'Категория'.tr,
                         contentPadding: const EdgeInsets.symmetric(
@@ -298,9 +302,21 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                       ) {
                         return DropdownMenuItem<String>(
                           value: categoryData['name'],
-                          child: Text(
-                            trAny(categoryData['name']),
-                            style: const TextStyle(fontSize: 14),
+                          child: Row(
+                            children: [
+                              AppliancePicture(
+                                type: categoryData['type'] ?? 'other',
+                                size: 28,
+                              ),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  trAny(categoryData['name'] ?? ''),
+                                  style: const TextStyle(fontSize: 14),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
                           ),
                         );
                       }).toList(),
@@ -841,22 +857,28 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     if (confirm) await ref.delete();
   }
 
-  IconData _getCategoryIcon(String category) {
+  Widget _categoryPhoto(String category, {double size = 24, bool onDark = false}) {
+    return AppliancePicture(
+      type: _categoryType(category),
+      size: size,
+      onDark: onDark,
+    );
+  }
+
+  String _categoryType(String category) {
     switch (category) {
       case 'Холодильник':
-        return Icons.kitchen;
+        return 'fridge';
       case 'Стиральная машина':
-        return Icons.local_laundry_service;
+        return 'washer';
       case 'Сушилка':
-        return Icons.heat_pump;
+        return 'dryer';
       case 'Плита/Духовка':
-        return Icons.countertops;
+        return 'stove';
       case 'Посудомойка':
-        return Icons.local_dining;
-      case 'Универсальное':
-        return Icons.build;
+        return 'dishwasher';
       default:
-        return Icons.category;
+        return 'other';
     }
   }
 
@@ -924,11 +946,12 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       itemBuilder: (context, index) {
                         final catData = _categories[index];
-                        final String categoryName = catData['name'];
-                        final IconData categoryIcon = catData['icon'];
+                        final String categoryName = catData['name'] ?? 'Все';
                         final isSelected = _selectedCategory == categoryName;
 
-                        return GestureDetector(
+                        return Tooltip(
+                          message: trAny(categoryName),
+                          child: GestureDetector(
                           onTap: () =>
                               setState(() => _selectedCategory = categoryName),
                           child: Container(
@@ -945,15 +968,25 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                     : Colors.grey.shade300,
                               ),
                             ),
-                            child: Icon(
-                              categoryIcon,
-                              size: 24,
-                              color: isSelected
-                                  ? Colors.white
-                                  : Colors.grey.shade600,
-                            ),
+                            padding: const EdgeInsets.all(4),
+                            child: categoryName == 'Все'
+                                ? Icon(
+                                    Icons.apps,
+                                    size: 22,
+                                    color: isSelected
+                                        ? Colors.white
+                                        : const Color(0xFF14557F),
+                                  )
+                                : Image.asset(
+                                    AppliancePicture.assetOf(
+                                      catData['type'] ?? 'other',
+                                    ),
+                                    fit: BoxFit.contain,
+                                    filterQuality: FilterQuality.medium,
+                                  ),
                           ),
-                        );
+                        ),
+                      );
                       },
                     ),
                   ),
@@ -1129,11 +1162,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                       : null,
                                 ),
                                 child: imageUrl.isEmpty
-                                    ? Icon(
-                                        _getCategoryIcon(category),
-                                        color: const Color(0xFF14557F),
-                                        size: 24,
-                                      )
+                                    ? _categoryPhoto(category, size: 48)
                                     : null,
                               ),
 

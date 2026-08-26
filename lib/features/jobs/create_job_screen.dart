@@ -12,8 +12,11 @@ import '../../models/job.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/widgets/keyboard_safe.dart';
+import '../../shared/unsaved_navigation_gate.dart';
+import '../../shared/widgets/app_bar_save.dart';
 import '../../shared/widgets/email_field.dart';
 import '../../shared/widgets/phone_client_matches.dart';
+import '../../shared/widgets/unsaved_changes_dialog.dart';
 
 class ApplianceFormItem {
   final TextEditingController typeController = TextEditingController();
@@ -59,6 +62,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
   final _clientStreetCtrl = TextEditingController();
   final _clientCityCtrl = TextEditingController();
   final _clientPostalCtrl = TextEditingController();
+  final _clientUnitCtrl = TextEditingController();
 
   bool _hasDifferentJobSite = false;
   final _siteNameController = TextEditingController();
@@ -68,6 +72,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
   final _siteStreetCtrl = TextEditingController();
   final _siteCityCtrl = TextEditingController();
   final _sitePostalCtrl = TextEditingController();
+  final _siteUnitCtrl = TextEditingController();
 
   final List<ApplianceFormItem> _appliances = [ApplianceFormItem()];
 
@@ -80,10 +85,17 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
   String? _existingClientId;
   Timer? _debounce;
   final _scrollController = ScrollController();
+  bool _dirty = false;
+
+  void _markDirty() {
+    if (_dirty || !mounted) return;
+    setState(() => _dirty = true);
+  }
 
   @override
   void initState() {
     super.initState();
+    UnsavedNavigationGate.push(_allowLeave);
     _selectedDate = widget.preselectedDate ?? DateTime.now();
     _selectedTime = const TimeOfDay(hour: 9, minute: 0);
     _existingClientId = widget.existingClientId;
@@ -101,17 +113,45 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
     }
     final address = widget.initialAddress?.trim() ?? '';
     if (address.isNotEmpty) {
-      final parts = address.split(',');
-      if (parts.isNotEmpty) _clientStreetCtrl.text = parts[0].trim();
-      if (parts.length > 1) _clientCityCtrl.text = parts[1].trim();
-      if (parts.length > 2) {
-        _clientPostalCtrl.text = parts.sublist(2).join(',').trim();
-      }
+      final parts = splitAddress(address);
+      final peeled = peelUnit(parts[0]);
+      _clientStreetCtrl.text = peeled.street;
+      _clientUnitCtrl.text = peeled.unit;
+      _clientCityCtrl.text = parts[1];
+      _clientPostalCtrl.text = parts[2];
+    }
+    for (final controller in [
+      _nameController,
+      _phoneController,
+      _emailController,
+      _companyController,
+      _clientStreetCtrl,
+      _clientCityCtrl,
+      _clientPostalCtrl,
+      _clientUnitCtrl,
+      _siteNameController,
+      _sitePhoneController,
+      _siteEmailController,
+      _siteStreetCtrl,
+      _siteCityCtrl,
+      _sitePostalCtrl,
+      _siteUnitCtrl,
+      _packingCtrl,
+    ]) {
+      controller.addListener(_markDirty);
+    }
+    for (final app in _appliances) {
+      app.typeController.addListener(_markDirty);
+      app.brandController.addListener(_markDirty);
+      app.modelController.addListener(_markDirty);
+      app.serialController.addListener(_markDirty);
+      app.issueController.addListener(_markDirty);
     }
   }
 
   @override
   void dispose() {
+    UnsavedNavigationGate.pop(_allowLeave);
     _debounce?.cancel();
     for (var app in _appliances) {
       app.typeController.dispose();
@@ -123,12 +163,14 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
     _clientStreetCtrl.dispose();
     _clientCityCtrl.dispose();
     _clientPostalCtrl.dispose();
+    _clientUnitCtrl.dispose();
     _siteNameController.dispose();
     _sitePhoneController.dispose();
     _siteEmailController.dispose();
     _siteStreetCtrl.dispose();
     _siteCityCtrl.dispose();
     _sitePostalCtrl.dispose();
+    _siteUnitCtrl.dispose();
     _scrollController.dispose();
     _packingCtrl.dispose();
     _emailController.dispose();
@@ -136,9 +178,48 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
     super.dispose();
   }
 
-  void _addAppliance() => setState(() => _appliances.add(ApplianceFormItem()));
-  void _removeAppliance(int index) =>
-      setState(() => _appliances.removeAt(index));
+  void _addAppliance() {
+    final item = ApplianceFormItem();
+    item.typeController.addListener(_markDirty);
+    item.brandController.addListener(_markDirty);
+    item.modelController.addListener(_markDirty);
+    item.serialController.addListener(_markDirty);
+    item.issueController.addListener(_markDirty);
+    setState(() => _appliances.add(item));
+    _markDirty();
+  }
+
+  void _removeAppliance(int index) {
+    setState(() => _appliances.removeAt(index));
+    _markDirty();
+  }
+
+  Future<bool> _allowLeave() async {
+    if (!_dirty || _isSaving) return true;
+    if (!mounted) return true;
+    final action = await showUnsavedChangesDialog(context);
+    if (!mounted) return false;
+    if (action == UnsavedChangesAction.cancel) return false;
+    if (action == UnsavedChangesAction.save) {
+      return await _saveJob();
+    }
+    return true;
+  }
+
+  Future<void> _onBack() async {
+    if (!_dirty) {
+      if (mounted) Navigator.maybePop(context);
+      return;
+    }
+    final action = await showUnsavedChangesDialog(context);
+    if (!mounted) return;
+    if (action == UnsavedChangesAction.cancel) return;
+    if (action == UnsavedChangesAction.save) {
+      await _saveJob();
+      return;
+    }
+    Navigator.pop(context);
+  }
 
   void _onPhoneChanged(String value) {
     if (_existingClientId != null && widget.existingClientId == null) {
@@ -172,6 +253,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         _selectedTime ??= const TimeOfDay(hour: 9, minute: 0);
       });
     }
+    _markDirty();
   }
 
   void _showError(String message) {
@@ -185,10 +267,10 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
     );
   }
 
-  Future<void> _saveJob() async {
+  Future<bool> _saveJob() async {
     if (_nameController.text.trim().isEmpty || _phoneController.text.trim().isEmpty) {
       _showError('Добавьте владельца'.tr);
-      return;
+      return false;
     }
     if (!_formKey.currentState!.validate()) {
       _scrollController.animateTo(
@@ -197,24 +279,25 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         curve: Curves.easeOut,
       );
       _showError('Заполните обязательные поля'.tr);
-      return;
+      return false;
     }
     _selectedDate ??= DateTime.now();
     _selectedTime ??= const TimeOfDay(hour: 9, minute: 0);
 
     if (_clientStreetCtrl.text.trim().isEmpty && _clientCityCtrl.text.trim().isEmpty) {
       _showError('Укажите адрес клиента'.tr);
-      return;
+      return false;
     }
 
     setState(() => _isSaving = true);
 
     try {
-      String fullClientAddress = [
-        _clientStreetCtrl.text.trim(),
-        _clientCityCtrl.text.trim(),
-        _clientPostalCtrl.text.trim(),
-      ].where((part) => part.isNotEmpty).join(', ');
+      String fullClientAddress = joinAddress(
+        _clientStreetCtrl.text,
+        _clientCityCtrl.text,
+        _clientPostalCtrl.text,
+        _clientUnitCtrl.text,
+      );
 
       final clientId = await ClientService.createOrUpdate(
         existingId: _existingClientId,
@@ -223,6 +306,13 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         address: fullClientAddress,
         email: _emailController.text.trim().isEmpty ? null : _emailController.text.trim(),
         companyName: _companyController.text.trim().isEmpty ? null : _companyController.text.trim(),
+      );
+      await ClientService.updateAddress(
+        clientId,
+        street: _clientStreetCtrl.text.trim(),
+        city: _clientCityCtrl.text.trim(),
+        postal: _clientPostalCtrl.text.trim(),
+        unit: _clientUnitCtrl.text.trim(),
       );
 
       final jobDateTime = DateTime(
@@ -249,11 +339,12 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
       final targetCity = _hasDifferentJobSite && _siteCityCtrl.text.trim().isNotEmpty
           ? _siteCityCtrl.text.trim()
           : _clientCityCtrl.text.trim();
-      final fullJobSiteAddress = [
-        _siteStreetCtrl.text.trim(),
-        _siteCityCtrl.text.trim(),
-        _sitePostalCtrl.text.trim(),
-      ].where((part) => part.isNotEmpty).join(', ');
+      final fullJobSiteAddress = joinAddress(
+        _siteStreetCtrl.text,
+        _siteCityCtrl.text,
+        _sitePostalCtrl.text,
+        _siteUnitCtrl.text,
+      );
 
       final job = Job(
         id: '',
@@ -299,10 +390,14 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
             behavior: SnackBarBehavior.floating,
           ),
         );
+        _dirty = false;
         Navigator.pop(context, true);
+        return true;
       }
+      return false;
     } catch (e) {
       _showError('${'Не удалось создать заявку'.tr}: $e');
+      return false;
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -328,7 +423,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
             ),
             style: OutlinedButton.styleFrom(
               foregroundColor: AppColors.primary,
-              side: const BorderSide(color: AppColors.primary, width: 1.5),
+              side: BorderSide(color: AppColors.primary, width: 1.5),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
           ),
@@ -359,7 +454,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
             ),
             child: Row(
               children: [
-                const CircleAvatar(
+                CircleAvatar(
                   backgroundColor: AppColors.primary,
                   child: Icon(Icons.person, color: Colors.white),
                 ),
@@ -387,7 +482,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 IconButton(
                   tooltip: 'Изменить'.tr,
                   onPressed: _editOwner,
-                  icon: const Icon(Icons.edit, color: AppColors.primary),
+                  icon: Icon(Icons.edit, color: AppColors.primary),
                 ),
               ],
             ),
@@ -468,7 +563,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                       Expanded(
                         child: Text(
                           'Владелец'.tr,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
                             color: AppColors.primary,
@@ -481,40 +576,51 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                       ),
                     ],
                   ),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      child: Column(
+                  TextField(
+                    controller: _phoneController,
+                    keyboardType: TextInputType.phone,
+                    onChanged: searchPhone,
+                    decoration: InputDecoration(
+                      labelText: 'Номер телефона'.tr,
+                      prefixIcon: const Icon(Icons.phone),
+                      suffixIcon: searching
+                          ? const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            )
+                          : null,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  if (suggestions.isNotEmpty)
+                    Expanded(
+                      child: ListView(
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
                         children: [
-                          TextField(
-                            controller: _phoneController,
-                            keyboardType: TextInputType.phone,
-                            onChanged: searchPhone,
-                            decoration: InputDecoration(
-                              labelText: 'Номер телефона'.tr,
-                              prefixIcon: const Icon(Icons.phone),
-                              suffixIcon: searching
-                                  ? const Padding(
-                                      padding: EdgeInsets.all(12),
-                                      child: SizedBox(
-                                        width: 18,
-                                        height: 18,
-                                        child: CircularProgressIndicator(strokeWidth: 2),
-                                      ),
-                                    )
-                                  : null,
-                              border: const OutlineInputBorder(),
-                            ),
-                          ),
                           PhoneClientMatches(
                             clients: suggestions,
                             onSelect: applyClient,
                           ),
+                        ],
+                      ),
+                    )
+                  else
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: Column(
+                          children: [
                           const SizedBox(height: 12),
                           TextField(
                             controller: _nameController,
                             textCapitalization: TextCapitalization.words,
                             decoration: InputDecoration(
                               labelText: 'Имя'.tr,
+                              helperText: 'Имя на английском'.tr,
                               prefixIcon: const Icon(Icons.person),
                               border: const OutlineInputBorder(),
                             ),
@@ -527,10 +633,12 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                                 initialStreet: _clientStreetCtrl.text,
                                 initialCity: _clientCityCtrl.text,
                                 initialPostal: _clientPostalCtrl.text,
-                                onSaved: (street, city, postal) {
+                                initialUnit: _clientUnitCtrl.text,
+                                onSaved: (street, city, postal, unit) {
                                   _clientStreetCtrl.text = street;
                                   _clientCityCtrl.text = city;
                                   _clientPostalCtrl.text = postal;
+                                  _clientUnitCtrl.text = unit;
                                   setSheet(() {});
                                 },
                               );
@@ -553,7 +661,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                                           : '${_clientStreetCtrl.text}, ${_clientCityCtrl.text}',
                                     ),
                                   ),
-                                  const Icon(Icons.search, color: AppColors.primary),
+                                  Icon(Icons.search, color: AppColors.primary),
                                 ],
                               ),
                             ),
@@ -584,7 +692,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
-                      onPressed: () {
+                      onPressed: () async {
                         if (_phoneController.text.trim().isEmpty ||
                             _nameController.text.trim().isEmpty) {
                           ScaffoldMessenger.of(sheetContext).showSnackBar(
@@ -592,8 +700,17 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                           );
                           return;
                         }
-                        Navigator.pop(sheetContext);
-                        setState(() {});
+                        final found = await ClientService.findExisting(
+                          phone: _phoneController.text,
+                          email: _emailController.text,
+                        );
+                        if (found != null) {
+                          _existingClientId = found.id;
+                        } else if (widget.existingClientId == null) {
+                          _existingClientId = null;
+                        }
+                        if (sheetContext.mounted) Navigator.pop(sheetContext);
+                        if (mounted) setState(() {});
                       },
                       child: Text('OK'.tr),
                     ),
@@ -633,7 +750,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
             ),
             style: OutlinedButton.styleFrom(
               foregroundColor: AppColors.primary,
-              side: const BorderSide(color: AppColors.primary, width: 1.5),
+              side: BorderSide(color: AppColors.primary, width: 1.5),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
           ),
@@ -697,7 +814,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 IconButton(
                   tooltip: 'Изменить'.tr,
                   onPressed: _editJobSite,
-                  icon: const Icon(Icons.edit, color: AppColors.primary),
+                  icon: Icon(Icons.edit, color: AppColors.primary),
                 ),
                 IconButton(
                   tooltip: 'Удалить'.tr,
@@ -743,7 +860,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                       Expanded(
                         child: Text(
                           'Другое место работы'.tr,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
                             color: AppColors.primary,
@@ -787,10 +904,12 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                                 initialStreet: _siteStreetCtrl.text,
                                 initialCity: _siteCityCtrl.text,
                                 initialPostal: _sitePostalCtrl.text,
-                                onSaved: (street, city, postal) {
+                                initialUnit: _siteUnitCtrl.text,
+                                onSaved: (street, city, postal, unit) {
                                   _siteStreetCtrl.text = street;
                                   _siteCityCtrl.text = city;
                                   _sitePostalCtrl.text = postal;
+                                  _siteUnitCtrl.text = unit;
                                   setSheet(() {});
                                 },
                               );
@@ -813,7 +932,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                                           : '${_siteStreetCtrl.text}, ${_siteCityCtrl.text}',
                                     ),
                                   ),
-                                  const Icon(Icons.search, color: AppColors.primary),
+                                  Icon(Icons.search, color: AppColors.primary),
                                 ],
                               ),
                             ),
@@ -845,6 +964,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                         _hasDifferentJobSite = true;
                         Navigator.pop(sheetContext);
                         setState(() {});
+                        _markDirty();
                       },
                       child: Text('OK'.tr),
                     ),
@@ -933,7 +1053,12 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: !_dirty,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _onBack();
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: Text(
           'Новая заявка'.tr,
@@ -941,6 +1066,14 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         ),
         backgroundColor: const Color(0xFF14557F),
         foregroundColor: Colors.white,
+        actions: [
+          AppBarSaveButton(
+            dirty: _dirty,
+            saving: _isSaving,
+            label: 'Создать'.tr,
+            onPressed: _saveJob,
+          ),
+        ],
       ),
       body: Form(
         key: _formKey,
@@ -1125,7 +1258,10 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 DropdownMenuItem(value: 180, child: Text('3 часа'.tr)),
               ],
               onChanged: (value) {
-                if (value != null) setState(() => _durationMinutes = value);
+                if (value != null) {
+                  setState(() => _durationMinutes = value);
+                  _markDirty();
+                }
               },
             ),
             const SizedBox(height: 12),
@@ -1142,34 +1278,10 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
               ),
             ),
             const SizedBox(height: 40),
-
-            SizedBox(
-              height: 54,
-              child: ElevatedButton(
-                onPressed: _isSaving ? null : _saveJob,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFFCC520),
-                  foregroundColor: Colors.black,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                child: _isSaving
-                    ? const CircularProgressIndicator(color: Colors.black)
-                    : Text(
-                        'Создать заявку'.tr,
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-              ),
-            ),
-            const SizedBox(height: 40),
           ],
         ),
       ),
+    ),
     );
   }
 }

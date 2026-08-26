@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Название учётной записи звонков Twilio Voice, отображается в
+         системных настройках Android (Настройки -> Приложения -> Телефон ->
+         Учётные записи звонков). -->
+    <string name="google_maps_key" translatable="false">YOUR_GOOGLE_MAPS_API_KEY</string>
+    <string name="app_name" translatable="false">Fix Cloud</string>
+    <string name="phone_account_name" translatable="false">Fix Cloud</string>
+    <string name="phone_account_desc" translatable="false">Calls through Fix Cloud</string>
+    <string name="incoming_call_channel_name">Входящие звонки</string>
+    <string name="incoming_call_title">Входящий звонок</string>
+    <string name="incoming_call_answer">Ответить</string>
+    <string name="incoming_call_decline">Отклонить</string>
+</resources>

@@ -3,6 +3,7 @@ import '../core/constants.dart';
 import '../models/document_settings.dart';
 import '../models/job.dart';
 import 'firestore_service.dart';
+import 'maps_service.dart';
 import '../core/l10n/app_locale.dart';
 import 'status_service.dart';
 
@@ -30,15 +31,19 @@ class SettingsService {
   }
 
   static const String defaultOnWaySms =
-      'Здравствуйте, это мастер. Буду у вас через 30 минут.';
+      "Hi {name}! 🚗\nYour technician is on the way — about 30 minutes.";
   static const String defaultPartOrderedSms =
-      'Запчасть для вашей техники заказана. Ожидаем доставку 3-5 дней.';
+      'The part for your appliance is ordered. 🔧\nDelivery is usually 3–5 days.';
   static const String defaultJobDoneSms =
-      'Ремонт завершен! Спасибо, что выбрали нас. Пожалуйста, оставьте отзыв. {review}';
+      'Repair complete! ✅\nThank you for choosing us.\n⭐ Please leave a review:\n{review}';
   static const String defaultBookingConfirmSms =
-      'Здравствуйте, {name}! Визит {date} в {time}. Адрес: {address}. Ответьте 1 — подтверждаю, 2 — перенос.';
+      'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day';
   static const String defaultDayBeforeSms =
-      'Напоминание: завтра {date} в {time}. Ответьте 1 — подтверждаю, 2 — перенос.';
+      'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}\n\nReply 1 ✅ to confirm this visit, 0 ❌ to cancel, 5 🔁 to pick another day.';
+  static const String defaultCancelSaveSms =
+      'Sorry you need to cancel, {name}. 😔\nWe can keep the visit with 10% off, or even 25% off, or move it to another day.\n\nReply:\n• a new day and time (example: Friday 11:00)\n• 1 — keep {date} at {time} with 10% off\n• 2 — keep it with 25% off\n• 0 — cancel';
+  static const String defaultRescheduleAskSms =
+      'No problem, {name}. 🔁\nWhat day and time should the technician come?\nExample: Thursday at 14:00';
 
   static Map<String, String> defaultSmsTemplates() => {
         'on_way': defaultOnWaySms,
@@ -46,6 +51,8 @@ class SettingsService {
         'job_done': defaultJobDoneSms,
         'booking_confirm': defaultBookingConfirmSms,
         'day_before': defaultDayBeforeSms,
+        'cancel_save': defaultCancelSaveSms,
+        'reschedule_ask': defaultRescheduleAskSms,
       };
 
   /// Загрузить SMS-шаблоны
@@ -66,6 +73,164 @@ class SettingsService {
     return defaults;
   }
 
+  /// Клиентские SMS должны оставаться на английском даже при русском интерфейсе.
+  static Future<void> ensureEnglishClientCopy() async {
+    try {
+      const legacySms = {
+        'on_way': 'Здравствуйте, это мастер. Буду у вас через 30 минут.',
+        'part_ordered':
+            'Запчасть для вашей техники заказана. Ожидаем доставку 3-5 дней.',
+        'job_done':
+            'Ремонт завершен! Спасибо, что выбрали нас. Пожалуйста, оставьте отзыв. {review}',
+        'booking_confirm':
+            'Здравствуйте, {name}! Визит {date} в {time}. Адрес: {address}. Ответьте 1 — подтверждаю, 2 — перенос.',
+        'day_before':
+            'Напоминание: завтра {date} в {time}. Ответьте 1 — подтверждаю, 2 — перенос.',
+      };
+      const oldEnglishConfirm = {
+        'booking_confirm':
+            'Hi {name}! Visit {date} at {time}. Address: {address}. Reply 1 to confirm, 2 to reschedule.',
+        'day_before':
+            'Reminder: tomorrow {date} at {time}. Reply 1 to confirm, 2 to reschedule.',
+      };
+      const previousPlainEnglish = {
+        'on_way':
+            "Hi {name}, this is your technician. I'll be there in about 30 minutes.",
+        'part_ordered':
+            'The part for your appliance has been ordered. Delivery is usually 3-5 days.',
+        'job_done':
+            'Repair complete! Thank you for choosing us. Please leave a review: {review}',
+        'booking_confirm':
+            'Hi {name}! Visit {date} at {time}. Address: {address}. Reply 1 to confirm, 0 to cancel, 5 to reschedule.',
+        'day_before':
+            'Reminder: tomorrow {date} at {time}. Reply 1 to confirm, 0 to cancel, 5 to reschedule.',
+      };
+      final templates = await loadSmsTemplates();
+      final next = Map<String, String>.from(templates);
+      final defaults = defaultSmsTemplates();
+      var smsChanged = false;
+      for (final entry in legacySms.entries) {
+        if ((next[entry.key] ?? '').trim() == entry.value) {
+          next[entry.key] = defaults[entry.key]!;
+          smsChanged = true;
+        }
+      }
+      for (final entry in oldEnglishConfirm.entries) {
+        if ((next[entry.key] ?? '').trim() == entry.value) {
+          next[entry.key] = defaults[entry.key]!;
+          smsChanged = true;
+        }
+      }
+      for (final entry in previousPlainEnglish.entries) {
+        if ((next[entry.key] ?? '').trim() == entry.value) {
+          next[entry.key] = defaults[entry.key]!;
+          smsChanged = true;
+        }
+      }
+      const previousCancelSave = {
+        'cancel_save':
+            'Sorry you need to cancel, {name}. 😔\nWe can keep the visit with 10% off, or move it to another day.\n\nReply with a new day and time (example: Friday 11:00), 1 to keep {date} at {time} with the discount, or 0 again to cancel.',
+      };
+      for (final entry in previousCancelSave.entries) {
+        if ((next[entry.key] ?? '').trim() == entry.value) {
+          next[entry.key] = defaults[entry.key]!;
+          smsChanged = true;
+        }
+      }
+      if ((next['cancel_save'] ?? '').trim().isEmpty) {
+        next['cancel_save'] = defaults['cancel_save']!;
+        smsChanged = true;
+      }
+      if ((next['reschedule_ask'] ?? '').trim().isEmpty) {
+        next['reschedule_ask'] = defaults['reschedule_ask']!;
+        smsChanged = true;
+      }
+      for (final key in ['booking_confirm', 'day_before']) {
+        final raw = (next[key] ?? '').trim();
+        if (raw.isEmpty) continue;
+        final cleaned = raw
+            .replaceAll(RegExp(r'\n?🔧\s*\{appliance\}', caseSensitive: false), '')
+            .replaceAll(
+              RegExp(r'\n?This SMS is only for this address\.?', caseSensitive: false),
+              '',
+            )
+            .replaceAll('{appliance}', '')
+            .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+            .trim();
+        if (cleaned != raw) {
+          next[key] = cleaned;
+          smsChanged = true;
+        }
+      }
+      if (smsChanged) await saveSmsTemplates(next);
+
+      final docs = await loadDocumentSettings();
+      var invoiceSms = docs.invoiceSms;
+      var estimateSms = docs.estimateSms;
+      var receiptSms = docs.receiptSms;
+      var docsChanged = false;
+      if (invoiceSms.trim() ==
+              'Счёт на оплату {total}. К оплате: {due}.\n{items}' ||
+          invoiceSms.trim() ==
+              'Invoice {total}. Amount due: {due}.\n{items}') {
+        invoiceSms = DocumentSettings.defaults.invoiceSms;
+        docsChanged = true;
+      }
+      if (estimateSms.trim() ==
+              'Смета {total}. Действует {valid_days} дн.\n{items}' ||
+          estimateSms.trim() ==
+              'Estimate {total}. Valid for {valid_days} days.\n{items}' ||
+          !estimateSms.contains('{url}')) {
+        estimateSms = DocumentSettings.defaults.estimateSms;
+        docsChanged = true;
+      }
+      if (receiptSms.trim() == 'Чек об оплате {total}. Спасибо, {name}!' ||
+          receiptSms.trim() == 'Payment receipt {total}. Thank you, {name}!' ||
+          !receiptSms.contains('{url}')) {
+        receiptSms = DocumentSettings.defaults.receiptSms;
+        docsChanged = true;
+      }
+      if (docs.smsHeader.trim().toLowerCase() == 'fixappliance.ca') {
+        docsChanged = true;
+      }
+      if (docsChanged) {
+        await saveDocumentSettings(
+          docs.copyWith(
+            invoiceSms: invoiceSms,
+            estimateSms: estimateSms,
+            receiptSms: receiptSms,
+            smsHeader: docs.smsHeader.trim().toLowerCase() == 'fixappliance.ca'
+                ? 'fix-appliance.ca'
+                : docs.smsHeader,
+          ),
+        );
+      }
+
+      final config = await loadConfig();
+      final wake = (config['assistantWakeWord'] as String?)?.trim() ?? '';
+      final aliases = (config['assistantWakeAliases'] is String)
+          ? (config['assistantWakeAliases'] as String).trim()
+          : '';
+      final oldWake = wake.toLowerCase();
+      if (wake.isEmpty ||
+          oldWake == 'фикс' ||
+          oldWake == 'fix' ||
+          oldWake == 'purish') {
+        await updateConfig('assistantWakeWord', defaultAssistantWakeWord);
+      }
+      if (aliases.isEmpty || aliases.toLowerCase() == 'fix') {
+        await updateConfig(
+          'assistantWakeAliases',
+          defaultAssistantWakeAliases,
+        );
+      }
+      if (readAssistantEnabled(config) &&
+          config['assistantWakeEnabled'] == false) {
+        await updateConfig('assistantWakeEnabled', true);
+      }
+    } catch (_) {}
+  }
+
   /// Сохранить SMS-шаблоны
   static Future<void> saveSmsTemplates(Map<String, String> templates) async {
     await FirestoreService.smsTemplatesRef.set(
@@ -82,6 +247,73 @@ class SettingsService {
     return boolFlag(config, 'reminderSmsEnabled');
   }
 
+  static const reminderOffsetKeys = ['48h', '24h', 'morning', '2h'];
+
+  static List<String> readReminderOffsets(Map<String, dynamic> config) {
+    final raw = config['reminderOffsets'];
+    if (raw is List && raw.isNotEmpty) {
+      return raw
+          .map((item) => item.toString())
+          .where((item) => reminderOffsetKeys.contains(item))
+          .toList();
+    }
+    return const ['24h'];
+  }
+
+  static int readConfigInt(
+    Map<String, dynamic> config,
+    String key,
+    int fallback, {
+    int min = 0,
+    int max = 100000,
+  }) {
+    final value = config[key];
+    int parsed = fallback;
+    if (value is num) {
+      parsed = value.round();
+    } else if (value is String) {
+      parsed = int.tryParse(value.trim()) ?? fallback;
+    }
+    return parsed.clamp(min, max);
+  }
+
+  static int readMorningBriefingHour(Map<String, dynamic> config) {
+    return readConfigInt(config, 'morningBriefingHour', 7, min: 0, max: 23);
+  }
+
+  static int readEveningBriefingHour(Map<String, dynamic> config) {
+    return readConfigInt(config, 'eveningBriefingHour', 19, min: 0, max: 23);
+  }
+
+  static int readReminderMorningHour(Map<String, dynamic> config) {
+    return readConfigInt(config, 'reminderMorningHour', 8, min: 0, max: 23);
+  }
+
+  static int readOnTheWayMeters(Map<String, dynamic> config) {
+    return readConfigInt(config, 'onTheWayMeters', 2000, min: 200, max: 20000);
+  }
+
+  static String readOnTheWayText(Map<String, dynamic> config) {
+    return (config['onTheWayText'] ?? '').toString().trim();
+  }
+
+  static String readEmailIntakeTitle(Map<String, dynamic> config) {
+    return (config['emailIntakeTitle'] ?? '').toString().trim();
+  }
+
+  static List<String> readWatchedEmailSenders(Map<String, dynamic> config) {
+    final raw = config['watchedEmailSenders'];
+    if (raw is! List) return const [];
+    final seen = <String>{};
+    final result = <String>[];
+    for (final item in raw) {
+      final email = item.toString().trim().toLowerCase();
+      if (!email.contains('@') || !seen.add(email)) continue;
+      result.add(email);
+    }
+    return result;
+  }
+
   static bool readAutoReviewSmsEnabled(Map<String, dynamic> config) {
     return boolFlag(config, 'autoReviewSmsEnabled');
   }
@@ -94,6 +326,17 @@ class SettingsService {
     final value = config['partsMarkupPercent'];
     if (value is num) return value.toDouble().clamp(0, 300);
     return 0;
+  }
+
+  static const String cardReaderPhone = 'phone';
+  static const String cardReaderTerminal = 'terminal';
+
+  static String readCardReader(Map<String, dynamic> config) {
+    final value = (config['cardReader'] ?? cardReaderPhone).toString();
+    if (value == cardReaderTerminal || value == 'bluetooth') {
+      return cardReaderTerminal;
+    }
+    return cardReaderPhone;
   }
 
   static const String taxHst = 'hst';
@@ -136,14 +379,50 @@ class SettingsService {
     return config['firstDayOfWeek'] ?? 1;
   }
 
-  /// Начало рабочего дня: 09:00
-  static const int defaultWorkStartMinutes = 9 * 60;
+  /// Начало рабочего дня: 07:00
+  static const int defaultWorkStartMinutes = 7 * 60;
 
-  /// Конец рабочего дня: 19:00
-  static const int defaultWorkEndMinutes = 19 * 60;
+  /// Конец рабочего дня: 21:00
+  static const int defaultWorkEndMinutes = 21 * 60;
 
   static const int defaultJobDurationMinutes = 60;
   static const int defaultTravelBufferMinutes = 20;
+  static const String defaultCalendarView = 'week';
+  static const List<String> calendarViewIds = [
+    'day',
+    'workWeek',
+    'week',
+    'month',
+    'route',
+    'list',
+  ];
+
+  static String calendarViewLabel(String id) {
+    switch (id) {
+      case 'day':
+        return '1 день';
+      case 'workWeek':
+        return '5 дней';
+      case 'week':
+        return 'Неделя';
+      case 'month':
+        return 'Календарь';
+      case 'route':
+        return 'Маршрут';
+      case 'list':
+        return 'Список';
+      default:
+        return 'Неделя';
+    }
+  }
+
+  static String readDefaultCalendarView(Map<String, dynamic> config) {
+    final value = (config['defaultCalendarView'] ?? defaultCalendarView)
+        .toString()
+        .trim();
+    if (calendarViewIds.contains(value)) return value;
+    return defaultCalendarView;
+  }
 
   static int _readMinutes(Map<String, dynamic> config, String key, int fallback) {
     final value = config[key];
@@ -224,6 +503,20 @@ class SettingsService {
   static Future<void> saveDocumentSettings(DocumentSettings settings) async {
     await FirestoreService.documentSettingsRef.set(settings.toMap());
     _documentSettingsCache = settings;
+  }
+
+  static Future<String> takeNextDocumentNumber(String type) async {
+    final current = await loadDocumentSettings();
+    final isEstimate = type == 'Estimate';
+    final next = isEstimate ? current.nextEstimateNumber : current.nextInvoiceNumber;
+    final label = current.formattedNumber(next <= 0 ? 1 : next);
+    await saveDocumentSettings(
+      current.copyWith(
+        nextInvoiceNumber: isEstimate ? current.nextInvoiceNumber : next + 1,
+        nextEstimateNumber: isEstimate ? next + 1 : current.nextEstimateNumber,
+      ),
+    );
+    return label;
   }
 
   static Future<void> updateCompanyName(String name) async {
@@ -326,6 +619,7 @@ class SettingsService {
       filters.add((id: id, label: label ?? listFilterLabel(id)));
     }
 
+    add(listAllFilter);
     if (known.contains(JobStatuses.call) || defs.isEmpty) {
       add(JobStatuses.call);
     }
@@ -336,9 +630,9 @@ class SettingsService {
     }
     for (final def in defs) {
       if (def.id == JobStatuses.call) continue;
+      if (def.id == JobStatuses.inProgress) continue;
       add(def.id);
     }
-    add(listAllFilter);
     return filters;
   }
 
@@ -362,12 +656,26 @@ class SettingsService {
     return boolFlag(config, key);
   }
 
-  static const String defaultAssistantWakeWord = 'фикс';
-  static const String defaultAssistantWakeAliases = 'fix';
+  static const String defaultAssistantWakeWord = 'purysh';
+  static const String defaultAssistantWakeAliases =
+      'purish, purush, parish, puresh, pirish, puris, purge, porish, пюриш, пуриш, пурыш, пуруш, пюришь';
 
   static const int defaultAiAnswerTimeoutSeconds = 20;
-  static const int minAiAnswerTimeoutSeconds = 8;
+  static const int minAiAnswerTimeoutSeconds = 0;
   static const int maxAiAnswerTimeoutSeconds = 60;
+
+  static const String assistantLanguageRu = 'ru';
+  static const String assistantLanguageEn = 'en';
+
+  static String readAssistantLanguage(Map<String, dynamic> config) {
+    final value = (config['assistantLanguage'] as String?)?.trim().toLowerCase();
+    if (value == assistantLanguageEn || value == assistantLanguageRu) {
+      return value!;
+    }
+    return AppLocale.instance.isEn
+        ? assistantLanguageEn
+        : assistantLanguageRu;
+  }
 
   static bool readAssistantEnabled(Map<String, dynamic> config) {
     return boolFlag(config, 'assistantEnabled');
@@ -389,7 +697,7 @@ class SettingsService {
   }
 
   static bool readAssistantWakeEnabled(Map<String, dynamic> config) {
-    return boolFlag(config, 'assistantWakeEnabled');
+    return boolFlag(config, 'assistantWakeEnabled', defaultValue: true);
   }
 
   static String readAssistantWakeWord(Map<String, dynamic> config) {
@@ -438,25 +746,48 @@ class SettingsService {
     await gmailSettingsRef.set(data, SetOptions(merge: true));
   }
 
+  static const int aiVoiceRulesVersion = 11;
+
   static const String defaultAiVoiceGreeting =
-      "Hi, you've reached {company}. How can I help?";
+      "Hi, you've reached the shop. How can I help?";
+
+  static const String defaultAiVoiceExtraRules =
+      'Visits are Monday–Friday 7 a.m. to 9 p.m. Saturday and Sunday the technician does not visit. Still take the order for a weekday.\n'
+      'Public holidays: take the order; the technician must agree.\n'
+      'Price: do not mention \$99 unless they asked. If they asked: a service call is \$99. If they approve the repair after diagnosis, they do not pay the service call — only the repair.\n'
+      'If the appliance is at another house: keep their home address, take the repair address, who will be there, and that person\'s phone.\n'
+      'Near the end, if they can, they may text this number a photo or the text of the model-number sticker. Optional — do not stall the call.';
 
   static const String defaultAiVoiceInstructions =
-      'Тон: дружелюбный и профессиональный.\n'
+      'Тон: дружелюбный и профессиональный. Сначала слушать. Не устраивать опрос.\n'
       '\n'
-      'Обязательно узнать:\n'
-      '— полное имя;\n'
-      '— адрес (улица и город);\n'
-      '— удобный день и время, когда может приехать мастер;\n'
-      '— что сломалось и как проявляется поломка;\n'
-      '— где стоит техника, если это важно;\n'
-      '— может ли клиент прислать модель SMS-кой (фото шильдика) на этот же номер.\n'
+      'Короткие реплики: одно предложение, потом ждать. Не заполнять тишину лишними вопросами. Если клиент уже сказал — не спрашивать снова.\n'
       '\n'
-      'Не обещать цену и точное время приезда. Мастер перезвонит подтвердить.\n'
+      'Собрать по ходу разговора, не допытывая: что сломалось, вид техники и бренд, имя, куда ехать, день или время если записывают визит. Не допытывать модель, серийник и где стоит техника.\n'
       '\n'
-      'Зона: Brant (Brantford, Paris, Scotland), Norfolk (Tillsonburg, Delhi, Port Dover, Norwich) и резервация у Tillsonburg. Если адрес вне зоны — вежливо сказать, что туда не выезжаем, заявку не создавать.\n'
+      'Если сказали другой адрес ремонта — принять улицу, дом сохранить, продолжать говорить. Не класть трубку в этот момент.\n'
       '\n'
-      'Если клиент злой: спокойно сказать, что в течение 30 минут с ним свяжется сотрудник компании, разговор закончить. Заявку всё равно создать из того, что уже узнали.';
+      'Если хотят, чтобы перезвонил мастер: не допытывать время визита. Передать данные.\n'
+      '\n'
+      'Не обещать цену.\n'
+      '\n'
+      'Если клиент злой: спокойно сказать, что в течение 30 минут свяжется сотрудник, разговор закончить.\n'
+      '\n'
+      'Язык: говорить только по-английски. Клиента понимать на любом языке, в том числе русском, но отвечать всегда по-английски.';
+
+  static bool isStaleAiVoiceGreeting(String greeting) {
+    final g = greeting.trim();
+    if (g.isEmpty) return true;
+    return g.contains("you've reached {company}") ||
+        g.contains("technician's with a customer") ||
+        g.contains('I can take your details') ||
+        g.contains('How can I help you today') ||
+        g.contains('Чем могу помочь') ||
+        g == "Hi, you've reached FIX Appliance. How can I help?" ||
+        g == 'Hi, FIX ApplianceCA. How can I help you?' ||
+        g == 'Hi, FIX Appliance. How can I help you?' ||
+        g == 'Hi, FIX Appliance. How can I help?';
+  }
 
   static Future<Map<String, String>> loadAiVoiceSettings() async {
     final profile = await loadAiVoiceProfile();
@@ -483,7 +814,7 @@ class SettingsService {
     await FirestoreService.aiVoiceRef.set({
       'greeting': greeting.trim(),
       'instructions': instructions.trim(),
-      'rulesVersion': 3,
+      'rulesVersion': aiVoiceRulesVersion,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
@@ -501,21 +832,102 @@ class SettingsService {
     }, SetOptions(merge: true));
   }
 
+  static Future<void> setAiVoiceExtraRules(String extraRules) async {
+    final profile = await loadAiVoiceProfile();
+    await saveAiVoiceProfile(
+      AiVoiceProfile(
+        enabled: profile.enabled,
+        timeoutSeconds: profile.timeoutSeconds,
+        greeting: profile.greeting,
+        collectName: profile.collectName,
+        collectAddress: profile.collectAddress,
+        collectWhen: profile.collectWhen,
+        collectAppliance: profile.collectAppliance,
+        collectLocation: profile.collectLocation,
+        collectPhoto: profile.collectPhoto,
+        noPrice: profile.noPrice,
+        serviceArea: profile.serviceArea,
+        angryCallbackMinutes: profile.angryCallbackMinutes,
+        extraRules: extraRules,
+        instructions: profile.instructions,
+        learnedRules: profile.learnedRules,
+        learningEnabled: profile.learningEnabled,
+      ),
+    );
+  }
+
+  static Future<void> updateConfigMap(Map<String, dynamic> values) async {
+    if (values.isEmpty) return;
+    await FirestoreService.configRef.set(values, SetOptions(merge: true));
+  }
+
+  /// Текстовое описание зоны с карты «Зона обслуживания».
+  static String describeServiceArea(Map<String, dynamic> config) {
+    return (config['serviceAreaLabel'] ?? '').toString().trim();
+  }
+
+  static Future<void> syncSecretaryServiceArea() async {
+    final profile = await loadAiVoiceProfile();
+    await FirestoreService.aiVoiceRef.set({
+      ...profile.toFirestore(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  /// Если район уже нарисован, а подпись для секретаря ещё не сохранена — собрать её с карты.
+  static Future<void> ensureServiceAreaLabel() async {
+    try {
+      final config = await loadConfig();
+      if (describeServiceArea(config).isNotEmpty) return;
+      final label = await MapsService.describeServiceAreaFromConfig(config);
+      if (label.isEmpty) return;
+      await updateConfig('serviceAreaLabel', label);
+      await syncSecretaryServiceArea();
+    } catch (_) {}
+  }
+
   /// Пишет правила диспетчера в Firestore, если их ещё нет или это старая версия.
   static Future<void> ensureAiVoiceSettings() async {
     try {
       final doc = await FirestoreService.aiVoiceRef.get();
       final data = (doc.data() as Map<String, dynamic>?) ?? <String, dynamic>{};
-      if (data['rulesVersion'] == 3) return;
       final greeting = (data['greeting'] ?? '').toString().trim();
-      final instructions = (data['instructions'] ?? '').toString().trim();
-      final staleGreeting = greeting.isEmpty ||
-          greeting.contains("technician's with a customer") ||
-          greeting.contains('I can take your details');
-      await saveAiVoiceSettings(
-        greeting: staleGreeting ? defaultAiVoiceGreeting : greeting,
-        instructions:
-            instructions.isEmpty ? defaultAiVoiceInstructions : instructions,
+      final staleGreeting = isStaleAiVoiceGreeting(greeting);
+      final needBrief = data['briefVersion'] != 1;
+      final needHoursPolicy = data['hoursPolicyVersion'] != 2;
+      if (data['rulesVersion'] == aiVoiceRulesVersion &&
+          !staleGreeting &&
+          !needBrief &&
+          !needHoursPolicy) {
+        return;
+      }
+      final profile = await loadAiVoiceProfile();
+      final extra = needBrief ||
+              needHoursPolicy ||
+              profile.extraRules.trim().isEmpty ||
+              profile.extraRules.contains('Sunday is closed') ||
+              profile.extraRules.contains('Saturday: do not')
+          ? defaultAiVoiceExtraRules
+          : profile.extraRules;
+      await saveAiVoiceProfile(
+        AiVoiceProfile(
+          enabled: profile.enabled,
+          timeoutSeconds: profile.timeoutSeconds,
+          greeting: staleGreeting ? defaultAiVoiceGreeting : profile.greeting,
+          collectName: profile.collectName,
+          collectAddress: profile.collectAddress,
+          collectWhen: profile.collectWhen,
+          collectAppliance: profile.collectAppliance,
+          collectLocation: profile.collectLocation,
+          collectPhoto: profile.collectPhoto,
+          noPrice: profile.noPrice,
+          serviceArea: profile.serviceArea,
+          angryCallbackMinutes: profile.angryCallbackMinutes,
+          extraRules: extra,
+          instructions: profile.instructions,
+          learnedRules: profile.learnedRules,
+          learningEnabled: profile.learningEnabled,
+        ),
       );
     } catch (_) {}
   }
@@ -538,6 +950,8 @@ class AiVoiceProfile {
     required this.angryCallbackMinutes,
     required this.extraRules,
     required this.instructions,
+    this.learnedRules = const [],
+    this.learningEnabled = true,
   });
 
   final bool enabled;
@@ -554,9 +968,8 @@ class AiVoiceProfile {
   final int angryCallbackMinutes;
   final String extraRules;
   final String instructions;
-
-  static const String defaultServiceArea =
-      'Brant (Brantford, Paris, Scotland), Norfolk (Tillsonburg, Delhi, Port Dover, Norwich) и резервация у Tillsonburg';
+  final List<String> learnedRules;
+  final bool learningEnabled;
 
   static const int defaultAngryCallbackMinutes = 30;
 
@@ -574,7 +987,6 @@ class AiVoiceProfile {
                 instructions != SettingsService.defaultAiVoiceInstructions
             ? instructions
             : '');
-    final area = (voice['serviceArea'] ?? '').toString().trim();
     final angry = voice['angryCallbackMinutes'];
     return AiVoiceProfile(
       enabled: SettingsService.readAiAnswerEnabled(config),
@@ -586,10 +998,10 @@ class AiVoiceProfile {
       collectAddress: _flag(voice, 'collectAddress'),
       collectWhen: _flag(voice, 'collectWhen'),
       collectAppliance: _flag(voice, 'collectAppliance'),
-      collectLocation: _flag(voice, 'collectLocation'),
-      collectPhoto: _flag(voice, 'collectPhoto'),
+      collectLocation: _flag(voice, 'collectLocation', false),
+      collectPhoto: _flag(voice, 'collectPhoto', false),
       noPrice: _flag(voice, 'noPrice'),
-      serviceArea: area.isEmpty ? defaultServiceArea : area,
+      serviceArea: SettingsService.describeServiceArea(config),
       angryCallbackMinutes: (angry is num
               ? angry.round()
               : defaultAngryCallbackMinutes)
@@ -598,39 +1010,71 @@ class AiVoiceProfile {
       instructions: instructions.isEmpty
           ? SettingsService.defaultAiVoiceInstructions
           : instructions,
+      learnedRules: _learnedLines(voice['learnedRules']),
+      learningEnabled: voice['learningEnabled'] != false,
     );
   }
 
-  static bool _flag(Map<String, dynamic> data, String key) {
-    final value = data[key];
-    if (value is bool) return value;
-    return true;
+  static List<String> _learnedLines(dynamic raw) {
+    if (raw is! List) return const [];
+    final lines = <String>[];
+    for (final item in raw) {
+      if (item is String && item.trim().isNotEmpty) {
+        lines.add(item.trim());
+      } else if (item is Map) {
+        final rule = (item['ruleEn'] ?? item['titleRu'] ?? '').toString().trim();
+        if (rule.isNotEmpty) lines.add(rule);
+      }
+    }
+    return lines;
   }
 
-  String composeInstructions() {
+  static bool _flag(Map<String, dynamic> data, String key, [bool fallback = true]) {
+    final value = data[key];
+    if (value is bool) return value;
+    return fallback;
+  }
+
+  String composeInstructions({bool includeLearned = false}) {
     final asks = <String>[];
-    if (collectName) asks.add('— полное имя;');
+    if (collectAppliance) {
+      asks.add(
+        '— сначала: что сломалось и как проявляется; затем вид техники и бренд. Не допытывать модель и серийник;',
+      );
+    }
+    if (collectName) {
+      asks.add(
+        '— достаточно имени. Писать обычным именем (Artem), не фонетической транскрипцией;',
+      );
+    }
     if (collectAddress) asks.add('— адрес (улица и город);');
     if (collectWhen) {
-      asks.add('— удобный день и время, когда может приехать мастер;');
-    }
-    if (collectAppliance) {
-      asks.add('— что сломалось и как проявляется поломка;');
+      asks.add(
+        '— и день, и точное время визита (например tomorrow 11:00). Записать оба;',
+      );
     }
     if (collectLocation) {
-      asks.add('— где стоит техника, если это важно;');
+      asks.add(
+        '— где стоит техника — только если важно, не давить;',
+      );
     }
     if (collectPhoto) {
       asks.add(
-        '— может ли клиент прислать модель SMS-кой (фото шильдика) на этот же номер.',
+        '— в конце, если клиент может: пусть пришлёт на этот же номер текст или фото шильдика с Model Number. Это необязательно, звонок из-за этого не затягивать.',
       );
     }
 
     final buf = StringBuffer()
-      ..writeln('Тон: дружелюбный и профессиональный.')
+      ..writeln(
+        'Тон: дружелюбный и профессиональный. Сначала слушать. Не устраивать опрос.',
+      )
+      ..writeln()
+      ..writeln(
+        'Короткие реплики: одно предложение, потом ждать. Не заполнять тишину лишними вопросами. Если клиент уже сказал — не спрашивать снова.',
+      )
       ..writeln();
     if (asks.isNotEmpty) {
-      buf.writeln('Обязательно узнать:');
+      buf.writeln('Собрать, не допытывая:');
       for (final line in asks) {
         buf.writeln(line);
       }
@@ -645,18 +1089,40 @@ class AiVoiceProfile {
     final area = serviceArea.trim();
     if (area.isNotEmpty) {
       buf.writeln(
-        'Зона: $area. Если адрес вне зоны — вежливо сказать, что туда не выезжаем, заявку не создавать.',
+        'Зона обслуживания (карта в настройках): $area. Если адрес вне этой зоны — вежливо сказать, что туда не выезжаем, заявку не создавать.',
+      );
+      buf.writeln();
+    } else {
+      buf.writeln(
+        'Зона на карте не отмечена. Не отказывать по городам из памяти и не выдумывать список городов.',
       );
       buf.writeln();
     }
     buf.writeln(
+      'Если клиент хочет поговорить с живым человеком или чтобы перезвонил мастер: не спрашивать адрес и время. Если ещё нет вида техники или бренда — спросить это одним вопросом. Затем сказать по-английски: "Okay, I\'ll pass your details along and a technician will call you back shortly." Заявку создать и разговор закончить.',
+    );
+    buf.writeln();
+    buf.writeln(
       'Если клиент злой: спокойно сказать, что в течение $angryCallbackMinutes минут с ним свяжется сотрудник компании, разговор закончить. Заявку всё равно создать из того, что уже узнали.',
+    );
+    buf.writeln();
+    buf.writeln(
+      'Язык: говорить только по-английски. Клиента понимать на любом языке, в том числе русском, но отвечать всегда по-английски. Не переходить на русский и не спрашивать, на каком языке удобнее.',
     );
     final extra = extraRules.trim();
     if (extra.isNotEmpty) {
       buf
         ..writeln()
         ..writeln(extra);
+    }
+    if (includeLearned && learnedRules.isNotEmpty) {
+      buf.writeln();
+      buf.writeln(
+        'Только то, что мастер уже подтвердил (не выдумывать новое; если спор с правилами выше — правила выше важнее):',
+      );
+      for (final line in learnedRules) {
+        buf.writeln('— $line');
+      }
     }
     return buf.toString().trim();
   }
@@ -667,8 +1133,8 @@ class AiVoiceProfile {
         : greeting.trim();
     return {
       'greeting': greetingText,
-      'instructions': composeInstructions(),
-      'rulesVersion': 3,
+      'instructions': '',
+      'rulesVersion': SettingsService.aiVoiceRulesVersion,
       'criteriaVersion': 1,
       'collectName': collectName,
       'collectAddress': collectAddress,
@@ -680,6 +1146,9 @@ class AiVoiceProfile {
       'serviceArea': serviceArea.trim(),
       'angryCallbackMinutes': angryCallbackMinutes.clamp(5, 120),
       'extraRules': extraRules.trim(),
+      'learningEnabled': learningEnabled,
+      'briefVersion': 1,
+      'hoursPolicyVersion': 2,
     };
   }
 }

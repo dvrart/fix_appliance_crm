@@ -34,7 +34,6 @@ class CatalogService {
 
   static const List<String> defaultLeadSources = [
     'Google',
-    'Facebook',
     'Рекомендация',
     'Повторный клиент',
     'Листовка',
@@ -63,6 +62,13 @@ class CatalogService {
       }
       if (data == null || data['leadSources'] == null) {
         updates['leadSources'] = defaultLeadSources;
+      } else {
+        final sources = List<String>.from(data['leadSources'] as List);
+        if (sources.any((s) => s.toLowerCase() == 'facebook')) {
+          updates['leadSources'] = sources
+              .where((s) => s.toLowerCase() != 'facebook')
+              .toList();
+        }
       }
       if (updates.isNotEmpty) {
         await _ref.set(updates, SetOptions(merge: true));
@@ -104,6 +110,7 @@ class CatalogService {
       final result = list != null
           ? List<String>.from(list)
           : List<String>.from(defaultLeadSources);
+      result.removeWhere((s) => s.toLowerCase() == 'facebook');
       return result;
     });
   }
@@ -111,6 +118,7 @@ class CatalogService {
   static Future<void> addLeadSource(String source) async {
     final trimmed = source.trim();
     if (trimmed.isEmpty) return;
+    if (trimmed.toLowerCase() == 'facebook') return;
     await _ensureSeeded();
     await _ref.set({
       'leadSources': FieldValue.arrayUnion([trimmed]),

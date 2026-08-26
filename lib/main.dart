@@ -1,65 +1,96 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:intl/date_symbol_data_local.dart';
+import 'core/constants.dart';
+import 'core/l10n/app_locale.dart';
+import 'core/notification_look.dart';
+import 'core/ui_scale.dart';
 import 'firebase_options.dart';
-import 'screens/login_screen.dart';
+import 'app.dart';
+import 'services/notification_service.dart';
+import 'shared/widgets/animated_app_logo.dart';
 
-void main() async {
-  // Обязательная строка перед запуском Firebase
-  WidgetsFlutterBinding.ensureInitialized();
-
-  // Инициализация базы данных
+/// Обработчик фоновых push-уведомлений FCM. Должен быть top-level функцией
+/// (не методом класса), Twilio Voice сам обрабатывает свои push-уведомления
+/// о звонках через собственный сервис на Android — этот обработчик нужен
+/// как точка входа для остальных фоновых уведомлений.
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-
-  runApp(const FixApplianceCRM());
 }
 
-class FixApplianceCRM extends StatelessWidget {
-  const FixApplianceCRM({super.key});
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations(const [
+    DeviceOrientation.portraitUp,
+  ]);
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  unawaited(NotificationService.initialize());
+  runApp(const AppBootstrap());
+}
+
+class AppBootstrap extends StatefulWidget {
+  const AppBootstrap({super.key});
+
+  @override
+  State<AppBootstrap> createState() => _AppBootstrapState();
+}
+
+class _AppBootstrapState extends State<AppBootstrap> {
+  Widget? _readyApp;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      await FirebaseMessaging.instance.requestPermission(alert: true, badge: true, sound: true);
+      await AppLocale.instance.load();
+      await AppUiSettings.instance.load();
+      await NotificationLook.instance.load();
+      await initializeDateFormatting('ru', null);
+      await initializeDateFormatting('en', null);
+      if (!mounted) return;
+      setState(() => _readyApp = const FixApplianceCrmApp());
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    if (_readyApp != null) return _readyApp!;
     return MaterialApp(
-      title: 'FIX-Appliance CRM',
       debugShowCheckedModeBanner: false,
-
-      // Настройка Светлой темы (по умолчанию)
-      theme: ThemeData(
-        brightness: Brightness.light,
-        primaryColor: const Color(0xFF14557F), // Основной синий
-        scaffoldBackgroundColor: const Color(0xFFF5F7FA), // Светло-серый фон
-        // ДЕЛАЕМ ОТСТУПЫ КОМПАКТНЕЕ
-        visualDensity: VisualDensity.compact,
-
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF14557F),
-          foregroundColor: Color(
-            0xFFFCC520,
-          ), // Желтый акцент для текста и иконок
-          elevation: 0,
-        ),
-        floatingActionButtonTheme: const FloatingActionButtonThemeData(
-          backgroundColor: Color(0xFFFCC520), // Желтые кнопки
-          foregroundColor: Colors.black, // Черная иконка на желтом
-        ),
-        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-          selectedItemColor: Color(0xFFFCC520),
-          unselectedItemColor: Colors.grey,
-          backgroundColor: Colors.white,
+      home: Scaffold(
+        backgroundColor: AppColors.primary,
+        body: Center(
+          child: _error == null
+              ? const AnimatedAppLogo(size: 196)
+              : Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    _error!.contains('not linked to Firebase') ||
+                            _error!.contains('not configured')
+                        ? 'Fix Cloud ещё не привязан к своему Firebase.\n'
+                            'Создайте НОВЫЙ проект (не fix-appliance-crm) и выполните flutterfire configure.'
+                        : _error!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ),
         ),
       ),
-
-      // --- ВОТ ТОТ САМЫЙ BUILDER, КОТОРЫЙ МЕНЯЕТ МАСШТАБ ТЕКСТА ---
-      builder: (context, child) {
-        return MediaQuery(
-          data: MediaQuery.of(context).copyWith(
-            textScaler: const TextScaler.linear(0.9), // Уменьшаем на 10%
-          ),
-          child: child!,
-        );
-      },
-
-      // -------------------------------------------------------------
-      home: const LoginScreen(),
-    ); // Это закрывает MaterialApp
-  } // Это закрывает Widget build
-} // Это закрывает класс FixApplianceCRM
+    );
+  }
+}

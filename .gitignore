@@ -43,3 +43,14 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Firebase Functions secrets (Twilio/Gemini keys) — никогда не коммитим
+functions/.env
+functions/.env.*
+functions/node_modules/
+functions/service-account.json
+
+# Local junk
+.zip
+**/.zip
+

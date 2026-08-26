@@ -1,11 +1,7 @@
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:path/path.dart' as path;
 import 'package:intl/intl.dart';
-import 'package:signature/signature.dart';
 import '../../../../core/constants.dart';
 import '../../../../core/utils/app_time_picker.dart';
 import '../../../../models/job.dart';
@@ -15,10 +11,15 @@ import '../../../calls/call_screen.dart';
 import '../../../messages/conversation_screen.dart';
 import '../job_details_controller.dart';
 import '../job_details_screen.dart';
-import '../widgets/full_screen_gallery.dart';
+import '../editors/job_tile_editors.dart';
+import '../editors/call_recording_page.dart';
+import '../editors/source_email_page.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
+import '../../../../shared/widgets/visit_confirm_badge.dart';
+import '../../../../shared/widgets/appliance_picture.dart';
 import '../../../../widgets/smart_address_picker.dart';
+import '../../../../shared/widgets/email_field.dart';
 
 class DetailsTab extends StatefulWidget {
   final JobDetailsController controller;
@@ -32,6 +33,7 @@ class DetailsTab extends StatefulWidget {
 class _DetailsTabState extends State<DetailsTab> {
   JobDetailsController get ctrl => widget.controller;
   List<Job> _relatedJobs = const [];
+  Job? _originalJob;
 
   @override
   void initState() {
@@ -53,9 +55,9 @@ class _DetailsTabState extends State<DetailsTab> {
   Future<JobChatContact?> _pickContact(String title) async {
     final contacts = ctrl.chatContacts;
     if (contacts.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Нет телефона'.tr)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Нет телефона'.tr)));
       return null;
     }
     if (contacts.length == 1) return contacts.first;
@@ -73,7 +75,10 @@ class _DetailsTabState extends State<DetailsTab> {
                 padding: const EdgeInsets.all(16),
                 child: Text(
                   title,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
                 ),
               ),
               for (final contact in contacts)
@@ -101,6 +106,7 @@ class _DetailsTabState extends State<DetailsTab> {
       context,
       phoneNumber: contact.phone,
       contactName: contact.displayName,
+      jobId: ctrl.jobId,
     );
   }
 
@@ -112,13 +118,27 @@ class _DetailsTabState extends State<DetailsTab> {
       MaterialPageRoute(
         builder: (context) => ConversationScreen(
           phoneNumber: contact.phone,
+          email: contact.email.contains('@') ? contact.email : null,
           contactName: contact.displayName,
+          clientId: ctrl.clientId,
+          jobId: ctrl.jobId,
+          recipients: [
+            for (final item in ctrl.chatContacts)
+              ConversationPeer(
+                id: item.id,
+                label: item.label,
+                name: item.displayName,
+                phone: item.phone,
+                email: item.email,
+              ),
+          ],
         ),
       ),
     );
   }
 
   void _showStatusMenu() {
+    final hostContext = context;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -126,11 +146,14 @@ class _DetailsTabState extends State<DetailsTab> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) {
+      builder: (sheetContext) {
         return StreamBuilder<List<String>>(
           stream: StatusService.streamAll(),
           builder: (context, snapshot) {
-            final statuses = snapshot.data ?? JobStatuses.all;
+            final statuses = StatusService.idsForStatusMenu(
+              snapshot.data ?? JobStatuses.all,
+              current: ctrl.currentStatus,
+            );
             final maxHeight = MediaQuery.of(context).size.height * 0.7;
             return SafeArea(
               child: ConstrainedBox(
@@ -139,10 +162,29 @@ class _DetailsTabState extends State<DetailsTab> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Text(
-                        'Выберите статус'.tr,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Выберите статус'.tr,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                              color: Color(0xFF1A1A1A),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            '«Перенос» ставится сам, когда после запчасти вы назначаете новый визит.'
+                                .tr,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF3D3D3D),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                     Flexible(
@@ -154,18 +196,39 @@ class _DetailsTabState extends State<DetailsTab> {
                           final isSelected = ctrl.currentStatus == status;
                           return ListTile(
                             leading: Icon(
-                              isSelected ? Icons.check_circle : Icons.circle_outlined,
+                              isSelected
+                                  ? Icons.check_circle
+                                  : Icons.circle_outlined,
                               color: StatusService.colorOf(status),
                             ),
-                            title: Text(trAny(StatusService.labelOf(status))),
+                            title: Text(
+                              trAny(StatusService.labelOf(status)),
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF1A1A1A),
+                              ),
+                            ),
                             selected: isSelected,
                             onTap: () async {
-                              Navigator.pop(context);
-                              if (status == JobStatuses.completed &&
-                                  ctrl.currentStatus != JobStatuses.completed) {
+                              Navigator.pop(sheetContext);
+                              if (_shouldCompleteJob(status)) {
                                 await _completeJobFlow();
                               } else {
                                 await ctrl.updateStatus(status);
+                                if (status == JobStatuses.waitingPart &&
+                                    hostContext.mounted) {
+                                  ScaffoldMessenger.of(
+                                    hostContext,
+                                  ).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Дата следующего визита не нужна, пока нет запчасти. Когда она приедет — добавьте визит. Заявка в очереди запчастей (фургон).'
+                                            .tr,
+                                      ),
+                                    ),
+                                  );
+                                }
                               }
                             },
                           );
@@ -227,9 +290,15 @@ class _DetailsTabState extends State<DetailsTab> {
   Future<void> _editVisit([JobVisit? existing]) async {
     final now = DateTime.now();
     final last = ctrl.visits.isNotEmpty ? ctrl.visits.last.startAt : now;
-    var startAt = existing?.startAt ??
-        DateTime(last.year, last.month, last.day, last.hour, last.minute)
-            .add(existing == null ? const Duration(days: 7) : Duration.zero);
+    var startAt =
+        existing?.startAt ??
+        DateTime(
+          last.year,
+          last.month,
+          last.day,
+          last.hour,
+          last.minute,
+        ).add(existing == null ? const Duration(days: 7) : Duration.zero);
     if (existing == null && startAt.isBefore(now)) {
       startAt = now.add(const Duration(days: 1));
     }
@@ -305,38 +374,81 @@ class _DetailsTabState extends State<DetailsTab> {
                       const SizedBox(height: 12),
                       ListTile(
                         contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.calendar_month, color: AppColors.primary),
-                        title: Text(DateFormat('d MMMM yyyy', AppLocale.instance.dateLocale).format(startAt)),
-                        trailing: const Icon(Icons.edit, size: 18, color: Colors.grey),
+                        leading: Icon(
+                          Icons.calendar_month,
+                          color: AppColors.primary,
+                        ),
+                        title: Text(
+                          DateFormat(
+                            'd MMMM yyyy',
+                            AppLocale.instance.dateLocale,
+                          ).format(startAt),
+                        ),
+                        trailing: const Icon(
+                          Icons.edit,
+                          size: 18,
+                          color: Colors.grey,
+                        ),
                         onTap: pickDate,
                       ),
                       ListTile(
                         contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.schedule, color: AppColors.primary),
+                        leading: Icon(Icons.schedule, color: AppColors.primary),
                         title: Text(DateFormat('HH:mm').format(startAt)),
-                        trailing: const Icon(Icons.edit, size: 18, color: Colors.grey),
+                        trailing: const Icon(
+                          Icons.edit,
+                          size: 18,
+                          color: Colors.grey,
+                        ),
                         onTap: pickTime,
                       ),
                       Row(
                         children: [
-                          const Icon(Icons.timer_outlined, color: AppColors.primary),
+                          Icon(Icons.timer_outlined, color: AppColors.primary),
                           const SizedBox(width: 12),
                           Expanded(child: Text('Длительность визита'.tr)),
                           DropdownButton<int>(
-                            value: const [30, 45, 60, 90, 120, 180].contains(duration)
+                            value:
+                                const [
+                                  30,
+                                  45,
+                                  60,
+                                  90,
+                                  120,
+                                  180,
+                                ].contains(duration)
                                 ? duration
                                 : 60,
                             underline: const SizedBox.shrink(),
                             items: [
-                              DropdownMenuItem(value: 30, child: Text('30 мин'.tr)),
-                              DropdownMenuItem(value: 45, child: Text('45 мин'.tr)),
-                              DropdownMenuItem(value: 60, child: Text('1 час'.tr)),
-                              DropdownMenuItem(value: 90, child: Text('1.5 часа'.tr)),
-                              DropdownMenuItem(value: 120, child: Text('2 часа'.tr)),
-                              DropdownMenuItem(value: 180, child: Text('3 часа'.tr)),
+                              DropdownMenuItem(
+                                value: 30,
+                                child: Text('30 мин'.tr),
+                              ),
+                              DropdownMenuItem(
+                                value: 45,
+                                child: Text('45 мин'.tr),
+                              ),
+                              DropdownMenuItem(
+                                value: 60,
+                                child: Text('1 час'.tr),
+                              ),
+                              DropdownMenuItem(
+                                value: 90,
+                                child: Text('1.5 часа'.tr),
+                              ),
+                              DropdownMenuItem(
+                                value: 120,
+                                child: Text('2 часа'.tr),
+                              ),
+                              DropdownMenuItem(
+                                value: 180,
+                                child: Text('3 часа'.tr),
+                              ),
                             ],
                             onChanged: (value) {
-                              if (value != null) setSheet(() => duration = value);
+                              if (value != null)
+                                setSheet(() => duration = value);
                             },
                           ),
                         ],
@@ -354,18 +466,60 @@ class _DetailsTabState extends State<DetailsTab> {
                       const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
+                        runSpacing: 8,
                         children: [
                           for (final preset in presets)
-                            ChoiceChip(
-                              label: Text(trAny(preset)),
-                              selected: note.trim() == preset,
-                              onSelected: (_) {
-                                noteCtrl.text = preset;
-                                setSheet(() => note = preset);
+                            Builder(
+                              builder: (context) {
+                                final selected = note.trim() == preset;
+                                return ChoiceChip(
+                                  label: Text(
+                                    trAny(preset),
+                                    style: const TextStyle(
+                                      color: Color(0xFF1A1A1A),
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  selected: selected,
+                                  showCheckmark: false,
+                                  selectedColor: AppColors.accent,
+                                  backgroundColor: const Color(0xFFE8EEF3),
+                                  side: BorderSide(
+                                    color: selected
+                                        ? const Color(0xFFC9A015)
+                                        : AppColors.primary,
+                                    width: 1.4,
+                                  ),
+                                  onSelected: (_) {
+                                    noteCtrl.text = preset;
+                                    setSheet(() => note = preset);
+                                  },
+                                );
                               },
                             ),
                         ],
                       ),
+                      if (JobStatuses.shouldWriteRescheduled(
+                        ctrl.currentStatus,
+                        mark: existing == null
+                            ? JobStatuses.shouldMarkRescheduledOnNewVisit(
+                                currentStatus: ctrl.currentStatus,
+                                alreadyHasVisits: ctrl.visits.isNotEmpty,
+                              )
+                            : !JobVisit.isSameDay(existing.startAt, startAt),
+                      ))
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: Text(
+                            'После сохранения статус станет «Перенос».'.tr,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: Color(0xFF3D3D3D),
+                            ),
+                          ),
+                        ),
                       if (existing != null) ...[
                         const SizedBox(height: 8),
                         SwitchListTile(
@@ -374,7 +528,9 @@ class _DetailsTabState extends State<DetailsTab> {
                           value: outcome == JobVisit.done,
                           onChanged: (value) {
                             setSheet(() {
-                              outcome = value ? JobVisit.done : JobVisit.scheduled;
+                              outcome = value
+                                  ? JobVisit.done
+                                  : JobVisit.scheduled;
                             });
                           },
                         ),
@@ -434,137 +590,326 @@ class _DetailsTabState extends State<DetailsTab> {
     }
   }
 
-  Widget _buildDurationAndPacking() {
+  Widget _buildJobTiles() {
+    final packingItems = packingItemsFromNotes(ctrl.packingNotes);
+    final packing = packingItems.isEmpty
+        ? ''
+        : packingItems.length == 1
+        ? packingItems.first
+        : '${packingItems.length}';
+    final description = ctrl.currentDescription.trim();
+    final emptyDescription =
+        description.isEmpty || description == 'Нет описания';
+    final tracking = ctrl.trackingNumber.isEmpty
+        ? ''
+        : [
+            ctrl.trackingNumber,
+            if (ctrl.trackingStatus.isNotEmpty)
+              _trackingLabel(ctrl.trackingStatus),
+          ].join(' · ');
+    final appliance = _applianceSummary();
+    final photoItems = ctrl.attachments.where((item) {
+      final kind = (item['kind'] ?? '').toString();
+      return kind != 'call' && kind != 'signature';
+    }).toList();
+    final photoCount = photoItems.length;
+    final photoThumb = photoCount == 0 ? null : photoItems.first;
+    final callItems = ctrl.callItems;
+    final lastCall = callItems.isEmpty ? null : callItems.last;
+    final callSummary = lastCall == null
+        ? ''
+        : (lastCall['summary'] ?? lastCall['transcription'] ?? '').toString();
+    final fromEmail = Job.intakeSourceOf(ctrl.jobData) == 'email';
+    final emailSubject = (ctrl.jobData['sourceEmailSubject'] ?? '')
+        .toString()
+        .trim();
+    final emailPreview = (ctrl.jobData['sourceEmailPreview'] ?? '')
+        .toString()
+        .trim();
+    final emailFrom = (ctrl.jobData['sourceEmailFrom'] ?? '').toString().trim();
+
     return Column(
       children: [
-        Container(
+        Row(
+          children: [
+            Expanded(
+              child: _detailTile(
+                icon: Icons.timer_outlined,
+                title: 'Длительность'.tr,
+                value: _visitDurationLabel(ctrl.durationMinutes),
+                onTap: _pickVisitDuration,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _detailTile(
+                icon: Icons.inventory_2_outlined,
+                title: 'С собой'.tr,
+                value: packing.isEmpty ? '—' : packing,
+                muted: packing.isEmpty,
+                onTap: () => openPackingEditor(context, ctrl),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _detailTile(
+                icon: Icons.local_shipping_outlined,
+                title: 'Отслеживание'.tr,
+                value: tracking.isEmpty ? '—' : tracking,
+                muted: tracking.isEmpty,
+                onTap: _editTracking,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _detailTile(
+          icon: Icons.notes,
+          title: 'Описание'.tr,
+          value: emptyDescription ? '—' : description,
+          muted: emptyDescription,
+          onTap: () => openDescriptionEditor(context, ctrl),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _detailTile(
+                icon: Icons.kitchen,
+                graphic: AppliancePicture(type: appliance.type, size: 56),
+                title: 'Техника'.tr,
+                value: appliance.label,
+                onTap: () => openApplianceEditor(context, ctrl),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _detailTile(
+                icon: Icons.photo_camera_outlined,
+                title: 'Фото'.tr,
+                value: ctrl.isUploadingImage
+                    ? 'Загрузка...'.tr
+                    : (photoCount == 0 ? '—' : '$photoCount'),
+                muted: photoCount == 0 && !ctrl.isUploadingImage,
+                thumbnail: photoThumb,
+                onTap: () => openPhotosEditor(context, ctrl),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (fromEmail)
+          _detailTile(
+            icon: Icons.email_outlined,
+            graphic: Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: const Color(0xFF2E7D32).withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.email_outlined,
+                color: Color(0xFF2E7D32),
+                size: 22,
+              ),
+            ),
+            title: context.tr('Письмо', 'Email'),
+            value: emailSubject.isNotEmpty
+                ? emailSubject
+                : (emailFrom.isNotEmpty
+                      ? emailFrom
+                      : (emailPreview.isNotEmpty
+                            ? emailPreview
+                            : context.tr('Открыть письмо', 'Open the email'))),
+            onTap: () => openSourceEmailSheet(
+              context,
+              jobData: ctrl.jobData,
+              jobId: ctrl.jobId,
+              clientId: ctrl.clientId,
+              clientName: (ctrl.jobData['clientName'] ?? '').toString(),
+              clientEmail: ctrl.clientEmail,
+            ),
+          )
+        else
+          _detailTile(
+            icon: Icons.mic,
+            graphic: Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: AppColors.accent,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.mic, color: Colors.black, size: 22),
+            ),
+            title: callItems.length > 1
+                ? '${'Звонок'.tr} (${callItems.length})'
+                : 'Звонок'.tr,
+            value: lastCall == null
+                ? 'После разговора появится запись'.tr
+                : (callSummary.trim().isEmpty
+                      ? 'Запись'.tr
+                      : callSummary.trim()),
+            muted: lastCall == null,
+            onTap: lastCall == null
+                ? null
+                : () => openCallRecordingSheet(
+                    context,
+                    lastCall,
+                    jobId: ctrl.jobId,
+                  ),
+          ),
+      ],
+    );
+  }
+
+  Widget _detailTile({
+    required IconData icon,
+    required String title,
+    required String value,
+    VoidCallback? onTap,
+    bool muted = false,
+    Map<String, dynamic>? thumbnail,
+    Widget? graphic,
+  }) {
+    final thumb = _tileImage(thumbnail);
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(16),
+          height: 118,
+          padding: const EdgeInsets.fromLTRB(8, 12, 8, 10),
           decoration: BoxDecoration(
-            color: Colors.white,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: Colors.grey.shade200),
           ),
-          child: Row(
+          child: Column(
             children: [
-              const Icon(Icons.timer_outlined, color: AppColors.primary),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'Длительность нового визита'.tr,
-                  style: TextStyle(fontWeight: FontWeight.w600),
+              if (graphic != null)
+                graphic
+              else if (thumb != null)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SizedBox(
+                    height: 36,
+                    width: 36,
+                    child: Image(image: thumb, fit: BoxFit.cover),
+                  ),
+                )
+              else
+                Icon(icon, color: AppColors.primary, size: 26),
+              const SizedBox(height: 8),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  height: 1.15,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey.shade600,
                 ),
               ),
-              DropdownButton<int>(
-                value: const [30, 45, 60, 90, 120, 180].contains(ctrl.durationMinutes)
-                    ? ctrl.durationMinutes
-                    : 60,
-                underline: const SizedBox.shrink(),
-                items: [
-                  DropdownMenuItem(value: 30, child: Text('30 мин'.tr)),
-                  DropdownMenuItem(value: 45, child: Text('45 мин'.tr)),
-                  DropdownMenuItem(value: 60, child: Text('1 час'.tr)),
-                  DropdownMenuItem(value: 90, child: Text('1.5 часа'.tr)),
-                  DropdownMenuItem(value: 120, child: Text('2 часа'.tr)),
-                  DropdownMenuItem(value: 180, child: Text('3 часа'.tr)),
-                ],
-                onChanged: (value) {
-                  if (value != null) ctrl.updateDurationMinutes(value);
-                },
+              const SizedBox(height: 4),
+              Expanded(
+                child: Text(
+                  value,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.2,
+                    fontWeight: FontWeight.w600,
+                    color: muted ? Colors.grey : Colors.black87,
+                  ),
+                ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 12),
-        GestureDetector(
-          onTap: _editPackingNotes,
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade200),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.inventory_2_outlined, color: AppColors.primary),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Что взять с собой'.tr,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        ctrl.packingNotes.trim().isEmpty
-                            ? 'Нажмите, чтобы добавить'.tr
-                            : ctrl.packingNotes,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
-                ),
-                const Icon(Icons.edit, color: Colors.grey, size: 18),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        GestureDetector(
-          onTap: _editTracking,
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade200),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.local_shipping_outlined, color: AppColors.primary),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Отслеживание'.tr,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        ctrl.trackingNumber.isEmpty
-                            ? 'Номер Amazon / трек — нажмите'.tr
-                            : [
-                                ctrl.trackingNumber,
-                                if (ctrl.trackingStatus.isNotEmpty)
-                                  _trackingLabel(ctrl.trackingStatus),
-                              ].join(' · '),
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
-                ),
-                const Icon(Icons.edit, color: Colors.grey, size: 18),
-              ],
-            ),
-          ),
-        ),
-      ],
+      ),
     );
+  }
+
+  ImageProvider? _tileImage(Map<String, dynamic>? attachment) {
+    if (attachment == null) return null;
+    final local = (attachment['localPath'] ?? '').toString();
+    final url = (attachment['url'] ?? '').toString();
+    if (local.isNotEmpty && url.isEmpty) return FileImage(File(local));
+    if (url.isNotEmpty) return NetworkImage(url);
+    return null;
+  }
+
+  ({IconData icon, String label, String type}) _applianceSummary() {
+    final appliances = ctrl.jobData['appliances'];
+    Map<String, dynamic>? primary;
+    if (appliances is List &&
+        appliances.isNotEmpty &&
+        appliances.first is Map) {
+      primary = Map<String, dynamic>.from(appliances.first as Map);
+    }
+    final type =
+        (ctrl.jobData['applianceType'] ?? primary?['type'] ?? 'Техника')
+            .toString();
+    final brand = (ctrl.jobData['brand'] ?? primary?['brand'] ?? '').toString();
+    final model = (ctrl.jobData['model'] ?? primary?['model'] ?? '').toString();
+    final label = [
+      trAny(type),
+      if (brand.isNotEmpty) brand,
+      if (model.isNotEmpty) model,
+    ].join(' · ');
+    return (icon: ApplianceCategories.getIcon(type), label: label, type: type);
+  }
+
+  Future<void> _pickVisitDuration() async {
+    const options = [30, 45, 60, 90, 120, 180];
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      useRootNavigator: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Длительность нового визита'.tr,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ),
+              for (final minutes in options)
+                ListTile(
+                  leading: Icon(
+                    ctrl.durationMinutes == minutes
+                        ? Icons.check_circle
+                        : Icons.circle_outlined,
+                    color: AppColors.primary,
+                  ),
+                  title: Text(_visitDurationLabel(minutes)),
+                  selected: ctrl.durationMinutes == minutes,
+                  onTap: () => Navigator.pop(context, minutes),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+    if (picked != null) await ctrl.updateDurationMinutes(picked);
   }
 
   String _trackingLabel(String status) {
@@ -581,110 +926,240 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 
   Future<void> _editTracking() async {
-    final numberCtrl = TextEditingController(text: ctrl.trackingNumber);
-    final amazonCtrl = TextEditingController(text: ctrl.amazonOrderId);
-    final saved = await showDialog<bool>(
+    final stored = (ctrl.jobData['trackingCarrier'] ?? '').toString().trim();
+    final result = await showDialog<_TrackingEditResult>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Отслеживание'.tr),
-        scrollable: true,
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: numberCtrl,
-              decoration: InputDecoration(
-                labelText: 'Трек-номер'.tr,
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: amazonCtrl,
-              decoration: InputDecoration(
-                labelText: 'Номер заказа Amazon'.tr,
-                hintText: '123-1234567-1234567',
-                border: const OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text('Сохранить'.tr),
-          ),
-        ],
+      builder: (context) => _TrackingEditDialog(
+        trackingNumber: ctrl.trackingNumber,
+        amazonOrderId: ctrl.amazonOrderId,
+        carrier: stored.isNotEmpty
+            ? stored
+            : (ctrl.amazonOrderId.isNotEmpty ? 'amazon' : 'other'),
       ),
     );
-    if (saved == true) {
-      await ctrl.updateTracking(
-        number: numberCtrl.text,
-        amazonId: amazonCtrl.text,
-      );
-    }
-    numberCtrl.dispose();
-    amazonCtrl.dispose();
-  }
-
-  Future<void> _editPackingNotes() async {
-    final controller = TextEditingController(text: ctrl.packingNotes);
-    final saved = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Что взять с собой'.tr),
-        scrollable: true,
-        content: TextField(
-          controller: controller,
-          maxLines: 4,
-          decoration: InputDecoration(
-            hintText: 'Фильтр, плата, ключи…'.tr,
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: Text('Сохранить'.tr),
-          ),
-        ],
-      ),
+    if (result == null || !mounted) return;
+    await ctrl.updateTracking(
+      number: result.number,
+      amazonId: result.amazonId,
+      carrier: result.carrier,
     );
-    if (saved != null) await ctrl.updatePackingNotes(saved);
   }
 
-  void _editWorkAddress() {
-    final raw = ctrl.hasJobSite
-        ? ctrl.jobSiteAddress
-        : (ctrl.jobData['clientAddress'] ?? '').toString();
+  void _editClientAddress() {
+    final raw = (ctrl.jobData['clientAddress'] ?? '').toString();
     final parts = splitAddress(raw);
     showSmartAddressPicker(
       context: context,
       initialStreet: parts[0],
       initialCity: parts[1],
       initialPostal: parts[2],
-      onSaved: (street, city, postal) {
-        ctrl.updateWorkAddress(street: street, city: city, postal: postal);
+      onSaved: (street, city, postal, unit) {
+        ctrl.updateClientAddress(
+          street: street,
+          city: city,
+          postal: postal,
+          unit: unit,
+        );
       },
     );
+  }
+
+  Future<void> _editJobSite() async {
+    final nameCtrl = TextEditingController(text: ctrl.jobSiteName);
+    final phoneCtrl = TextEditingController(text: ctrl.jobSitePhone);
+    final emailCtrl = TextEditingController(text: ctrl.jobSiteEmail);
+    final parts = splitAddress(ctrl.jobSiteAddress);
+    final streetCtrl = TextEditingController(text: parts[0]);
+    final cityCtrl = TextEditingController(text: parts[1]);
+    final postalCtrl = TextEditingController(text: parts[2]);
+    var unit = '';
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useRootNavigator: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return KeyboardAvoidingSheet(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: StatefulBuilder(
+            builder: (context, setSheet) {
+              return Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Где работа'.tr,
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: [
+                          TextField(
+                            controller: nameCtrl,
+                            textCapitalization: TextCapitalization.words,
+                            decoration: InputDecoration(
+                              labelText: 'Имя на месте'.tr,
+                              prefixIcon: const Icon(Icons.person_outline),
+                              border: const OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: phoneCtrl,
+                            keyboardType: TextInputType.phone,
+                            decoration: InputDecoration(
+                              labelText: 'Телефон на месте'.tr,
+                              prefixIcon: const Icon(Icons.phone_android),
+                              border: const OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          GestureDetector(
+                            onTap: () {
+                              showSmartAddressPicker(
+                                context: context,
+                                initialStreet: streetCtrl.text,
+                                initialCity: cityCtrl.text,
+                                initialPostal: postalCtrl.text,
+                                initialUnit: unit,
+                                onSaved: (street, city, postal, nextUnit) {
+                                  streetCtrl.text = street;
+                                  cityCtrl.text = city;
+                                  postalCtrl.text = postal;
+                                  unit = nextUnit;
+                                  setSheet(() {});
+                                },
+                              );
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 14,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade50,
+                                border: Border.all(color: Colors.grey.shade300),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(
+                                    Icons.location_on,
+                                    color: Colors.grey,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      cityCtrl.text.isEmpty &&
+                                              streetCtrl.text.isEmpty
+                                          ? 'Адрес работы (куда ехать)...'.tr
+                                          : [
+                                                  streetCtrl.text,
+                                                  if (unit.trim().isNotEmpty)
+                                                    unit.trim(),
+                                                  cityCtrl.text,
+                                                  postalCtrl.text,
+                                                ]
+                                                .where((p) => p.isNotEmpty)
+                                                .join(', '),
+                                    ),
+                                  ),
+                                  Icon(Icons.search, color: AppColors.primary),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          EmailAutocompleteField(
+                            controller: emailCtrl,
+                            decoration: InputDecoration(
+                              labelText: 'Электронный адрес'.tr,
+                              prefixIcon: const Icon(Icons.email_outlined),
+                              border: const OutlineInputBorder(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        final address = [
+                          streetCtrl.text.trim(),
+                          if (unit.trim().isNotEmpty) unit.trim(),
+                          cityCtrl.text.trim(),
+                          postalCtrl.text.trim(),
+                        ].where((p) => p.isNotEmpty).join(', ');
+                        if (nameCtrl.text.trim().isEmpty ||
+                            phoneCtrl.text.trim().isEmpty ||
+                            address.isEmpty) {
+                          ScaffoldMessenger.of(sheetContext).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Укажите имя, телефон и адрес работы'.tr,
+                              ),
+                            ),
+                          );
+                          return;
+                        }
+                        ctrl.updateJobSite(
+                          name: nameCtrl.text,
+                          phone: phoneCtrl.text,
+                          address: address,
+                          email: emailCtrl.text,
+                        );
+                        Navigator.pop(sheetContext);
+                      },
+                      child: Text('OK'.tr),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+    nameCtrl.dispose();
+    phoneCtrl.dispose();
+    emailCtrl.dispose();
+    streetCtrl.dispose();
+    cityCtrl.dispose();
+    postalCtrl.dispose();
   }
 
   Map<String, String> _applianceFields() {
     final appliances = ctrl.jobData['appliances'];
     Map<String, dynamic>? primary;
-    if (appliances is List && appliances.isNotEmpty && appliances.first is Map) {
+    if (appliances is List &&
+        appliances.isNotEmpty &&
+        appliances.first is Map) {
       primary = Map<String, dynamic>.from(appliances.first as Map);
     }
     return {
-      'type': (ctrl.jobData['applianceType'] ?? primary?['type'] ?? '').toString(),
+      'type': (ctrl.jobData['applianceType'] ?? primary?['type'] ?? '')
+          .toString(),
       'brand': (ctrl.jobData['brand'] ?? primary?['brand'] ?? '').toString(),
       'model': (ctrl.jobData['model'] ?? primary?['model'] ?? '').toString(),
       'serial': (ctrl.jobData['serialNumber'] ?? primary?['serialNumber'] ?? '')
@@ -701,23 +1176,103 @@ class _DetailsTabState extends State<DetailsTab> {
       model: fields['model'] ?? '',
       brand: fields['brand'] ?? '',
     );
+    Job? original;
+    final originId = (ctrl.jobData['repeatOfJobId'] ?? '').toString().trim();
+    if (originId.isNotEmpty) {
+      original = await JobService.getById(originId);
+    }
     if (!mounted) return;
-    setState(() => _relatedJobs = jobs);
+    setState(() {
+      _relatedJobs = jobs;
+      _originalJob = original;
+    });
+  }
+
+  Future<void> _createRepeatCall() async {
+    final original = await JobService.getById(ctrl.jobId);
+    if (original == null) return;
+    final jobId = await JobService.createRepeatFrom(original);
+    final created = await JobService.getById(jobId);
+    if (!mounted || created == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => JobDetailsScreen(
+          jobId: created.id,
+          clientId: created.clientId,
+          jobData: created.toMap(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRepeatCallButton() {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        onPressed: _createRepeatCall,
+        icon: const Icon(Icons.replay),
+        label: Text('Повторный вызов'.tr),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: const Color(0xFF8E24AA),
+          side: const BorderSide(color: Color(0xFF8E24AA)),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOriginalJobLink() {
+    final job = _originalJob!;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.history, color: Color(0xFF8E24AA)),
+      title: Text('Исходная заявка'.tr),
+      subtitle: Text(
+        [
+          trAny(job.status),
+          DateFormat(
+            'd MMM yyyy',
+            AppLocale.instance.dateLocale,
+          ).format(job.scheduledAt ?? job.createdAt),
+        ].join(' · '),
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => JobDetailsScreen(
+              jobId: job.id,
+              clientId: job.clientId,
+              jobData: job.toMap(),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  bool _shouldCompleteJob(String status) {
+    if (JobStatuses.isCompletedStatus(ctrl.currentStatus)) return false;
+    if (JobStatuses.isInstallStatus(status)) return false;
+    final label = StatusService.labelOf(status);
+    if (JobStatuses.isInstallStatus(label) && status != JobStatuses.completed) {
+      return false;
+    }
+    return JobStatuses.isCompletedStatus(status) ||
+        JobStatuses.isCompletedStatus(label);
   }
 
   Future<void> _completeJobFlow() async {
     final config = await SettingsService.loadConfig();
     if (!mounted) return;
-    final askSignature = SettingsService.boolFlag(config, 'useSignature');
     var sendReview = SettingsService.readAutoReviewSmsEnabled(config);
-    var sendInvoice = ctrl.documents.any(Job.isInvoice);
-    final signatureCtrl = askSignature
-        ? SignatureController(penStrokeWidth: 2.2, penColor: Colors.black)
-        : null;
 
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
+      useRootNavigator: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -733,53 +1288,26 @@ class _DetailsTabState extends State<DetailsTab> {
                   children: [
                     Text(
                       'Работа завершена'.tr,
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                        color: Color(0xFF1A1A1A),
+                      ),
                     ),
                     const SizedBox(height: 8),
                     CheckboxListTile(
                       value: sendReview,
                       contentPadding: EdgeInsets.zero,
-                      title: Text('Отправить SMS с просьбой об отзыве'.tr),
+                      title: Text(
+                        'Отправить SMS с просьбой об отзыве'.tr,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1A1A1A),
+                        ),
+                      ),
                       onChanged: (value) =>
                           setSheet(() => sendReview = value ?? false),
                     ),
-                    CheckboxListTile(
-                      value: sendInvoice,
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('Отправить счёт'.tr),
-                      subtitle: ctrl.documents.any(Job.isInvoice)
-                          ? null
-                          : Text('Сначала создайте Invoice на вкладке Финансы'.tr),
-                      onChanged: ctrl.documents.any(Job.isInvoice)
-                          ? (value) => setSheet(() => sendInvoice = value ?? false)
-                          : null,
-                    ),
-                    if (askSignature) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        'Подпись клиента'.tr,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 8),
-                      Container(
-                        height: 160,
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade300),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Signature(
-                          controller: signatureCtrl!,
-                          backgroundColor: Colors.grey.shade50,
-                        ),
-                      ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton(
-                          onPressed: () => setSheet(() => signatureCtrl.clear()),
-                          child: Text('Очистить подпись'.tr),
-                        ),
-                      ),
-                    ],
                     const SizedBox(height: 8),
                     ElevatedButton(
                       onPressed: () => Navigator.pop(context, true),
@@ -793,35 +1321,7 @@ class _DetailsTabState extends State<DetailsTab> {
         );
       },
     );
-    final bytes = askSignature ? await signatureCtrl?.toPngBytes() : null;
-    signatureCtrl?.dispose();
     if (confirmed != true || !mounted) return;
-
-    if (askSignature && (bytes == null || bytes.isEmpty)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Нужна подпись клиента'.tr)),
-      );
-      return;
-    }
-
-    if (bytes != null && bytes.isNotEmpty) {
-      try {
-        final fileName = 'signature_${DateTime.now().millisecondsSinceEpoch}.png';
-        final storageRef = FirebaseStorage.instance
-            .ref()
-            .child('jobs/${ctrl.jobId}/attachments/$fileName');
-        await storageRef.putData(bytes, SettableMetadata(contentType: 'image/png'));
-        final url = await storageRef.getDownloadURL();
-        final attachment = {
-          'url': url,
-          'name': fileName,
-          'kind': 'signature',
-          'uploadedAt': DateTime.now().toIso8601String(),
-        };
-        ctrl.addAttachment(attachment);
-        await JobService.addAttachment(ctrl.jobId, attachment);
-      } catch (_) {}
-    }
 
     await ctrl.updateStatus(
       JobStatuses.completed,
@@ -829,38 +1329,114 @@ class _DetailsTabState extends State<DetailsTab> {
           ? null
           : {'reviewSmsSentAt': FieldValue.serverTimestamp()},
     );
-    if (!mounted) return;
+  }
 
-    if (sendInvoice && mounted) {
-      final index = ctrl.documents.lastIndexWhere(Job.isInvoice);
-      if (index >= 0) {
-        final doc = ctrl.documents[index];
-        final items = doc['items'] as List? ?? [];
-        final subtotal = ctrl.calcSubtotal(items);
-        final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
-        final total = ctrl.calcTotal(subtotal, tax);
-        final paid = ctrl.calcPaid(doc['payments'] ?? []);
-        await DocumentTemplateService.showSendSheet(
-          context: context,
-          data: DocumentSendData(
-            kind: 'invoice',
-            jobId: ctrl.jobId,
-            clientId: ctrl.clientId,
-            clientName: (ctrl.jobData['clientName'] ?? ctrl.contactName).toString(),
-            clientPhone: (ctrl.jobData['clientPhone'] ?? ctrl.contactPhone).toString(),
-            clientAddress: (ctrl.jobData['clientAddress'] ?? ctrl.workAddress).toString(),
-            documentNumber: index + 1,
-            items: items,
-            subtotal: subtotal,
-            tax: tax,
-            taxRate: (doc['taxRate'] as num?)?.toDouble() ?? 0,
-            total: total,
-            paid: paid,
-            due: ctrl.calcDue(total, paid),
+  Widget _buildStatusChip() {
+    final color = ctrl.getStatusColor();
+    return GestureDetector(
+      onTap: _showStatusMenu,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              'Статус'.tr,
+              style: const TextStyle(
+                fontSize: 11,
+                color: Colors.grey,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    trAny(StatusService.labelOf(ctrl.currentStatus)),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: color,
+                      fontSize: 15,
+                    ),
+                  ),
+                ),
+                Icon(Icons.arrow_drop_down, color: color),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildClientIconButton() {
+    return Tooltip(
+      message: 'Карточка клиента'.tr,
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: _openClientCard,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade300),
+            ),
+            child: Icon(Icons.person, color: AppColors.primary, size: 26),
           ),
-        );
-      }
-    }
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPriorityFlag() {
+    final color = ctrl.getPriorityColor();
+    return Tooltip(
+      message: 'Приоритет'.tr,
+      child: Material(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: _showPriorityMenu,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: color.withValues(alpha: 0.3)),
+            ),
+            child: Icon(Icons.flag, color: color, size: 26),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openClientCard() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ClientDetailsScreen(
+          clientId: ctrl.clientId,
+          clientData: {
+            'name': ctrl.jobData['clientName'] ?? '',
+            'phone': ctrl.jobData['clientPhone'] ?? '',
+            'address': ctrl.jobData['clientAddress'] ?? '',
+          },
+        ),
+      ),
+    );
   }
 
   Widget _buildVisitsCard() {
@@ -906,7 +1482,21 @@ class _DetailsTabState extends State<DetailsTab> {
               ),
             ],
           ),
-          if (visits.isEmpty)
+          if (ctrl.currentStatus == JobStatuses.waitingPart &&
+              !visits.any((visit) => visit.isScheduled))
+            Padding(
+              padding: const EdgeInsets.fromLTRB(2, 0, 8, 12),
+              child: Text(
+                'Ожидание запчасти — дату возврата ставить не нужно. Добавьте визит, когда запчасть приедет.'
+                    .tr,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Colors.orange.shade800,
+                ),
+              ),
+            )
+          else if (visits.isEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(2, 0, 8, 12),
               child: Text(
@@ -917,9 +1507,8 @@ class _DetailsTabState extends State<DetailsTab> {
                   color: Colors.orange.shade800,
                 ),
               ),
-            )
-          else
-            for (final visit in visits) _buildVisitTile(visit),
+            ),
+          for (final visit in visits) _buildVisitTile(visit),
         ],
       ),
     );
@@ -945,8 +1534,10 @@ class _DetailsTabState extends State<DetailsTab> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    DateFormat('d MMMM yyyy, HH:mm', AppLocale.instance.dateLocale)
-                        .format(visit.startAt),
+                    DateFormat(
+                      'd MMMM yyyy',
+                      AppLocale.instance.dateLocale,
+                    ).format(visit.startAt),
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 15,
@@ -955,22 +1546,28 @@ class _DetailsTabState extends State<DetailsTab> {
                     ),
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    [
-                      done ? 'Выполнен'.tr : 'Запланирован'.tr,
-                      _visitDurationLabel(visit.durationMinutes),
-                      if (visit.smsConfirmStatus == JobVisit.confirmConfirmed)
-                        'Клиент подтвердил'.tr,
-                      if (visit.smsConfirmStatus == JobVisit.confirmReschedule)
-                        'Просит перенос'.tr,
-                      if (visit.smsConfirmStatus == JobVisit.confirmPending)
-                        'Ждём SMS'.tr,
-                      if (visit.note.trim().isNotEmpty) visit.note.trim(),
-                    ].join(' · '),
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey.shade700,
-                    ),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        [
+                          DateFormat('HH:mm').format(visit.startAt),
+                          _visitDurationLabel(visit.durationMinutes),
+                          if (visit.note.trim().isNotEmpty) visit.note.trim(),
+                        ].join(' · '),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade700,
+                        ),
+                      ),
+                      VisitConfirmBadge(
+                        status: VisitConfirmBadge.visualOf(visit),
+                        compact: true,
+                        iconOnly: true,
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -1001,153 +1598,6 @@ class _DetailsTabState extends State<DetailsTab> {
     }
   }
 
-  void _editDescription() {
-    final textController = TextEditingController(text: ctrl.currentDescription);
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('Описание проблемы'.tr),
-          scrollable: true,
-          content: TextField(
-            controller: textController,
-            maxLines: 5,
-            decoration: InputDecoration(
-              hintText: 'Опишите проблему...'.tr,
-              border: OutlineInputBorder(),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Отмена'.tr),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                ctrl.updateDescription(textController.text.trim());
-                Navigator.pop(context);
-              },
-              child: Text('Сохранить'.tr),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _pickAndUploadImage(ImageSource source) async {
-    final picker = ImagePicker();
-    final pickedFile = await picker.pickImage(
-      source: source,
-      maxWidth: 1200,
-      imageQuality: 85,
-    );
-
-    if (pickedFile == null) return;
-
-    ctrl.setUploadingImage(true);
-    final fileName =
-        '${DateTime.now().millisecondsSinceEpoch}_${path.basename(pickedFile.path)}';
-
-    try {
-      final file = File(pickedFile.path);
-      final storageRef = FirebaseStorage.instance
-          .ref()
-          .child('jobs/${ctrl.jobId}/attachments/$fileName');
-
-      await storageRef.putFile(file);
-      final downloadUrl = await storageRef.getDownloadURL();
-
-      final attachment = {
-        'url': downloadUrl,
-        'name': fileName,
-        'uploadedAt': DateTime.now().toIso8601String(),
-      };
-
-      ctrl.addAttachment(attachment);
-      await JobService.addAttachment(ctrl.jobId, attachment);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Фото загружено'.tr),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      final attachment = {
-        'url': '',
-        'localPath': pickedFile.path,
-        'name': fileName,
-        'pendingUpload': true,
-        'uploadedAt': DateTime.now().toIso8601String(),
-      };
-      ctrl.addAttachment(attachment);
-      await OfflineQueueService.enqueuePhoto(
-        jobId: ctrl.jobId,
-        localPath: pickedFile.path,
-        fileName: fileName,
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Нет сети — фото сохранится и загрузится позже'.tr),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
-    } finally {
-      ctrl.setUploadingImage(false);
-    }
-  }
-
-  void _showAddPhotoMenu() {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.camera_alt, color: AppColors.primary),
-                title: Text('Сделать фото'.tr),
-                onTap: () {
-                  Navigator.pop(context);
-                  _pickAndUploadImage(ImageSource.camera);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.photo_library, color: AppColors.primary),
-                title: Text('Выбрать из галереи'.tr),
-                onTap: () {
-                  Navigator.pop(context);
-                  _pickAndUploadImage(ImageSource.gallery);
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  void _openGallery(int initialIndex) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => FullScreenGallery(
-          images: ctrl.attachments,
-          initialIndex: initialIndex,
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
@@ -1169,7 +1619,13 @@ class _DetailsTabState extends State<DetailsTab> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'ИИ создал эту заявку после звонка. Проверьте данные и подтвердите.'.tr,
+                    Job.intakeSourceOf(ctrl.jobData) == 'email'
+                        ? context.tr(
+                            'ИИ создал эту заявку из письма. Проверьте данные и подтвердите.',
+                            'AI created this job from an email. Check the details and confirm.',
+                          )
+                        : 'ИИ создал эту заявку после звонка. Проверьте данные и подтвердите.'
+                              .tr,
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 10),
@@ -1189,162 +1645,55 @@ class _DetailsTabState extends State<DetailsTab> {
               ),
             ),
           ],
-          // Статус и клиент
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Статус
-              Expanded(
-                flex: 5,
-                child: GestureDetector(
-                  onTap: _showStatusMenu,
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: ctrl.getStatusColor().withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: ctrl.getStatusColor().withOpacity(0.3)),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              const gap = 6.0;
+              final usable = (constraints.maxWidth - gap * 2).clamp(
+                0.0,
+                double.infinity,
+              );
+              return IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(width: usable * 0.60, child: _buildStatusChip()),
+                    const SizedBox(width: gap),
+                    SizedBox(
+                      width: usable * 0.30,
+                      child: _buildClientIconButton(),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Статус'.tr,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                trAny(StatusService.labelOf(ctrl.currentStatus)),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: ctrl.getStatusColor(),
-                                  fontSize: 16,
-                                ),
-                              ),
-                            ),
-                            Icon(Icons.arrow_drop_down, color: ctrl.getStatusColor()),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
+                    const SizedBox(width: gap),
+                    SizedBox(width: usable * 0.10, child: _buildPriorityFlag()),
+                  ],
                 ),
-              ),
-              const SizedBox(width: 12),
-              // Клиент
-              Expanded(
-                flex: 4,
-                child: GestureDetector(
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => ClientDetailsScreen(
-                          clientId: ctrl.clientId,
-                          clientData: {
-                            'name': ctrl.jobData['clientName'] ?? '',
-                            'phone': ctrl.jobData['clientPhone'] ?? '',
-                            'address': ctrl.jobData['clientAddress'] ?? '',
-                          },
-                        ),
-                      ),
-                    );
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade300),
-                    ),
-                    child: Row(
-                      children: [
-                        CircleAvatar(
-                          radius: 16,
-                          backgroundColor: Colors.blue.shade50,
-                          child: const Icon(Icons.person, size: 18, color: AppColors.primary),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            ctrl.jobData['clientName'] ?? 'Клиент'.tr,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 2,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ],
+              );
+            },
           ),
-          const SizedBox(height: 16),
-
-          // Приоритет
-          GestureDetector(
-            onTap: _showPriorityMenu,
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: ctrl.getPriorityColor().withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: ctrl.getPriorityColor().withOpacity(0.3)),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.flag, color: ctrl.getPriorityColor()),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      trAny(ctrl.currentPriority),
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: ctrl.getPriorityColor(),
-                      ),
-                    ),
-                  ),
-                  Icon(Icons.arrow_drop_down, color: ctrl.getPriorityColor()),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Контакт и навигация
-          _buildContactCard(),
-          const SizedBox(height: 16),
-
-          // История визитов
+          const SizedBox(height: 12),
           _buildVisitsCard(),
           const SizedBox(height: 12),
-          _buildDurationAndPacking(),
-          const SizedBox(height: 16),
-
-          // Описание
-          _buildDescriptionCard(),
-          const SizedBox(height: 16),
-
-          // Техника
-          _buildApplianceCard(),
-          const SizedBox(height: 16),
-
-          // Фото
-          _buildPhotosSection(),
+          _buildContactCard(),
+          const SizedBox(height: 12),
+          _buildJobTiles(),
+          const SizedBox(height: 12),
+          _buildRepeatCallButton(),
+          if (_originalJob != null) ...[
+            const SizedBox(height: 8),
+            _buildOriginalJobLink(),
+          ],
+          if (_relatedJobs.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            _buildRelatedJobs(),
+          ],
         ],
       ),
     );
   }
 
   Widget _buildContactCard() {
+    final clientName = (ctrl.jobData['clientName'] ?? 'Клиент'.tr).toString();
+    final clientPhone = (ctrl.jobData['clientPhone'] ?? '').toString();
+    final clientAddress = (ctrl.jobData['clientAddress'] ?? '').toString();
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1355,54 +1704,54 @@ class _DetailsTabState extends State<DetailsTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(
-                ctrl.hasJobSite ? Icons.location_city : Icons.home,
-                color: AppColors.primary,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  ctrl.hasJobSite ? 'Место работы (Job Site)'.tr : 'Адрес клиента'.tr,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.primary,
+          _addressBlock(
+            icon: Icons.person,
+            title: 'Клиент'.tr,
+            name: clientName,
+            phone: clientPhone,
+            address: clientAddress.isEmpty
+                ? 'Адрес не указан'.tr
+                : clientAddress,
+            onEdit: _editClientAddress,
+          ),
+          const SizedBox(height: 14),
+          if (ctrl.hasJobSite)
+            _addressBlock(
+              icon: Icons.home_work_outlined,
+              title: 'Где работа'.tr,
+              name: ctrl.jobSiteName.isEmpty
+                  ? 'Контакт на адресе'.tr
+                  : ctrl.jobSiteName,
+              phone: ctrl.jobSitePhone,
+              address: ctrl.jobSiteAddress.isEmpty
+                  ? 'Адрес не указан'.tr
+                  : ctrl.jobSiteAddress,
+              onEdit: _editJobSite,
+              onClear: () => ctrl.clearJobSite(),
+            )
+          else
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: OutlinedButton.icon(
+                onPressed: _editJobSite,
+                icon: const Icon(Icons.add_home_work_outlined),
+                label: Text(
+                  'Другой адрес работы'.tr,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.primary,
+                  side: BorderSide(color: AppColors.primary, width: 1.4),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
                   ),
                 ),
               ),
-              IconButton(
-                tooltip: 'Изменить адрес'.tr,
-                icon: Icon(Icons.edit, color: Colors.grey.shade600, size: 20),
-                onPressed: _editWorkAddress,
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            ctrl.contactName,
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-          ),
-          const SizedBox(height: 4),
-          GestureDetector(
-            onTap: _editWorkAddress,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Text(
-                    ctrl.workAddress,
-                    style: TextStyle(color: Colors.grey.shade700),
-                  ),
-                ),
-                Icon(Icons.chevron_right, color: Colors.grey.shade400),
-              ],
             ),
-          ),
           const SizedBox(height: 12),
           Row(
             children: [
-              // Время в пути / GO
               Expanded(
                 child: ElevatedButton.icon(
                   onPressed: () => MapsService.openNavigator(ctrl.workAddress),
@@ -1424,7 +1773,6 @@ class _DetailsTabState extends State<DetailsTab> {
                 ),
               ),
               const SizedBox(width: 8),
-              // Позвонить (через Twilio, прямо в приложении)
               IconButton(
                 onPressed: _callSelected,
                 icon: const Icon(Icons.phone),
@@ -1449,226 +1797,275 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  Widget _buildDescriptionCard() {
-    return GestureDetector(
-      onTap: _editDescription,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.grey.shade200),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _addressBlock({
+    required IconData icon,
+    required String title,
+    required String name,
+    required String phone,
+    required String address,
+    required VoidCallback onEdit,
+    VoidCallback? onClear,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
           children: [
-            Row(
-              children: [
-                const Icon(Icons.description, color: AppColors.primary, size: 20),
-                const SizedBox(width: 8),
-                Text(
-                  'Описание проблемы'.tr,
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.primary,
+            Icon(icon, color: AppColors.primary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primary,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Изменить'.tr,
+              icon: Icon(Icons.edit, color: Colors.grey.shade600, size: 20),
+              onPressed: onEdit,
+            ),
+            if (onClear != null)
+              IconButton(
+                tooltip: 'Убрать'.tr,
+                icon: const Icon(
+                  Icons.close,
+                  color: Colors.redAccent,
+                  size: 20,
+                ),
+                onPressed: onClear,
+              ),
+          ],
+        ),
+        Text(
+          name,
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        if (phone.trim().isNotEmpty) ...[
+          const SizedBox(height: 2),
+          Text(phone.trim(), style: TextStyle(color: Colors.grey.shade800)),
+        ],
+        const SizedBox(height: 4),
+        GestureDetector(
+          onTap: onEdit,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  address,
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+              ),
+              Icon(Icons.chevron_right, color: Colors.grey.shade400),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRelatedJobs() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Эта техника раньше'.tr,
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+        ),
+        const SizedBox(height: 6),
+        for (final job in _relatedJobs.take(5))
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: Text(trAny(job.status)),
+            subtitle: Text(
+              job.scheduledAt != null
+                  ? DateFormat(
+                      'd MMM yyyy',
+                      AppLocale.instance.dateLocale,
+                    ).format(job.scheduledAt!)
+                  : DateFormat(
+                      'd MMM yyyy',
+                      AppLocale.instance.dateLocale,
+                    ).format(job.createdAt),
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => JobDetailsScreen(
+                    jobId: job.id,
+                    clientId: job.clientId,
+                    jobData: job.toMap(),
                   ),
                 ),
-                const Spacer(),
-                Icon(Icons.edit, color: Colors.grey.shade400, size: 18),
-              ],
+              );
+            },
+          ),
+      ],
+    );
+  }
+}
+
+class _TrackingEditResult {
+  final String number;
+  final String amazonId;
+  final String carrier;
+
+  const _TrackingEditResult({
+    required this.number,
+    required this.amazonId,
+    required this.carrier,
+  });
+}
+
+const _kTrackingSuppliers = <String, String>{
+  'amazon': 'Amazon',
+  'reliable_parts': 'Reliable Parts',
+  'partselect': 'PartSelect',
+  'encompass': 'Encompass / RepairClinic',
+  'marcone': 'Marcone',
+  'ebay': 'eBay',
+  'carrier': 'UPS / FedEx / Purolator / Canada Post',
+  'other': 'Другой',
+};
+
+class _TrackingEditDialog extends StatefulWidget {
+  final String trackingNumber;
+  final String amazonOrderId;
+  final String carrier;
+
+  const _TrackingEditDialog({
+    required this.trackingNumber,
+    required this.amazonOrderId,
+    required this.carrier,
+  });
+
+  @override
+  State<_TrackingEditDialog> createState() => _TrackingEditDialogState();
+}
+
+class _TrackingEditDialogState extends State<_TrackingEditDialog> {
+  late final TextEditingController _numberCtrl;
+  late final TextEditingController _amazonCtrl;
+  late String _carrier;
+  bool _pickingSupplier = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _numberCtrl = TextEditingController(text: widget.trackingNumber);
+    _amazonCtrl = TextEditingController(text: widget.amazonOrderId);
+    _carrier = _kTrackingSuppliers.containsKey(widget.carrier)
+        ? widget.carrier
+        : 'other';
+  }
+
+  @override
+  void dispose() {
+    _numberCtrl.dispose();
+    _amazonCtrl.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    FocusScope.of(context).unfocus();
+    Navigator.pop(
+      context,
+      _TrackingEditResult(
+        number: _numberCtrl.text,
+        amazonId: _amazonCtrl.text,
+        carrier: _carrier,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final label = (_kTrackingSuppliers[_carrier] ?? 'Другой').tr;
+    return AlertDialog(
+      title: Text('Отслеживание'.tr),
+      scrollable: true,
+      content: SizedBox(
+        width: (MediaQuery.sizeOf(context).width - 72).clamp(240.0, 320.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              onTap: () => setState(() => _pickingSupplier = !_pickingSupplier),
+              borderRadius: BorderRadius.circular(8),
+              child: InputDecorator(
+                decoration: InputDecoration(
+                  labelText: 'Поставщик'.tr,
+                  border: const OutlineInputBorder(),
+                  suffixIcon: Icon(
+                    _pickingSupplier ? Icons.expand_less : Icons.expand_more,
+                  ),
+                ),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              ctrl.currentDescription.isEmpty
-                  ? 'Нажмите, чтобы добавить описание...'.tr
-                  : ctrl.currentDescription,
-              style: TextStyle(
-                color: ctrl.currentDescription.isEmpty
-                    ? Colors.grey
-                    : Colors.black87,
+            if (_pickingSupplier) ...[
+              const SizedBox(height: 8),
+              for (final entry in _kTrackingSuppliers.entries)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  selected: entry.key == _carrier,
+                  title: Text(
+                    entry.value.tr,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: entry.key == _carrier
+                      ? const Icon(Icons.check, size: 18)
+                      : null,
+                  onTap: () {
+                    setState(() {
+                      _carrier = entry.key;
+                      _pickingSupplier = false;
+                    });
+                  },
+                ),
+            ],
+            const SizedBox(height: 12),
+            TextField(
+              controller: _numberCtrl,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _save(),
+              decoration: InputDecoration(
+                labelText: 'Трек-номер'.tr,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _amazonCtrl,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _save(),
+              decoration: InputDecoration(
+                labelText: 'Номер заказа'.tr,
+                hintText: '123-1234567-1234567',
+                border: const OutlineInputBorder(),
               ),
             ),
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildApplianceCard() {
-    final appliances = ctrl.jobData['appliances'];
-    Map<String, dynamic>? primary;
-    if (appliances is List && appliances.isNotEmpty && appliances.first is Map) {
-      primary = Map<String, dynamic>.from(appliances.first as Map);
-    }
-    final applianceType =
-        ctrl.jobData['applianceType'] ?? primary?['type'] ?? 'Техника'.tr;
-    final brand = (ctrl.jobData['brand'] ?? primary?['brand'] ?? '').toString();
-    final model = (ctrl.jobData['model'] ?? primary?['model'] ?? '').toString();
-    final serial =
-        (ctrl.jobData['serialNumber'] ?? primary?['serialNumber'] ?? '').toString();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey.shade200),
-          ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.accent.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(
-                  ApplianceCategories.getIcon(applianceType),
-                  color: AppColors.primary,
-                  size: 32,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      trAny(applianceType),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                    if (brand.isNotEmpty || model.isNotEmpty)
-                      Text(
-                        [brand, model].where((s) => s.isNotEmpty).join(' • '),
-                        style: TextStyle(color: Colors.grey.shade600),
-                      ),
-                    if (serial.isNotEmpty)
-                      Text(
-                        '${'S/N'.tr} $serial',
-                        style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                      ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Отмена'.tr),
         ),
-        if (_relatedJobs.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          Text(
-            'Эта техника раньше'.tr,
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-          ),
-          const SizedBox(height: 6),
-          for (final job in _relatedJobs.take(5))
-            ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              title: Text(trAny(job.status)),
-              subtitle: Text(
-                job.scheduledAt != null
-                    ? DateFormat('d MMM yyyy', AppLocale.instance.dateLocale)
-                        .format(job.scheduledAt!)
-                    : DateFormat('d MMM yyyy', AppLocale.instance.dateLocale)
-                        .format(job.createdAt),
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => JobDetailsScreen(
-                      jobId: job.id,
-                      clientId: job.clientId,
-                      jobData: job.toMap(),
-                    ),
-                  ),
-                );
-              },
-            ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildPhotosSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              'Фото'.tr,
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-            TextButton.icon(
-              onPressed: ctrl.isUploadingImage ? null : _showAddPhotoMenu,
-              icon: ctrl.isUploadingImage
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.add_a_photo),
-              label: Text(ctrl.isUploadingImage ? 'Загрузка...'.tr : 'Добавить'.tr),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        if (ctrl.attachments.isEmpty)
-          Container(
-            height: 100,
-            width: double.infinity,
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade300, style: BorderStyle.solid),
-            ),
-            child: Center(
-              child: Text(
-                'Нет фотографий'.tr,
-                style: TextStyle(color: Colors.grey),
-              ),
-            ),
-          )
-        else
-          SizedBox(
-            height: 100,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: ctrl.attachments.length,
-              itemBuilder: (context, index) {
-                final attachment = ctrl.attachments[index];
-                return GestureDetector(
-                  onTap: () => _openGallery(index),
-                  child: Container(
-                    width: 100,
-                    margin: const EdgeInsets.only(right: 8),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      image: DecorationImage(
-                        image: (attachment['localPath'] != null &&
-                                (attachment['url'] == null ||
-                                    attachment['url'].toString().isEmpty))
-                            ? FileImage(File(attachment['localPath']))
-                            : NetworkImage(attachment['url'] ?? '')
-                                as ImageProvider,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
+        TextButton(onPressed: _save, child: Text('Сохранить'.tr)),
       ],
     );
   }

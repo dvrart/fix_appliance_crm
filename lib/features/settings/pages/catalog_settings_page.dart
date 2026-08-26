@@ -66,16 +66,6 @@ class CatalogSettingsPage extends StatelessWidget {
                 ),
               ),
               SettingsRow(
-                title: 'Прайсбук'.tr,
-                subtitle: 'Good / Better / Best для смет'.tr,
-                icon: Icons.sell_outlined,
-                iconColor: Colors.green,
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const _PricebookPage()),
-                ),
-              ),
-              SettingsRow(
                 title: 'Откуда узнали'.tr,
                 subtitle: 'Источники для карточки клиента'.tr,
                 icon: Icons.campaign_outlined,
@@ -193,13 +183,6 @@ class _CatalogListPageState extends State<_CatalogListPage> {
   Widget build(BuildContext context) {
     return SettingsPageScaffold(
       title: widget.title,
-      actions: [
-        IconButton(
-          tooltip: 'Добавить'.tr,
-          onPressed: _saving ? null : () => _add(),
-          icon: const Icon(Icons.add_circle, color: Color(0xFFFCC520), size: 32),
-        ),
-      ],
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -234,7 +217,7 @@ class _CatalogListPageState extends State<_CatalogListPage> {
                     return Center(child: Text('${snapshot.error}'));
                   }
                   if (!snapshot.hasData) {
-                    return const Center(
+                    return Center(
                       child: CircularProgressIndicator(color: AppColors.accent),
                     );
                   }
@@ -333,19 +316,12 @@ class _StatusListPageState extends State<_StatusListPage> {
   Widget build(BuildContext context) {
     return SettingsPageScaffold(
       title: 'Статусы заявок'.tr,
-      actions: [
-        IconButton(
-          tooltip: 'Добавить'.tr,
-          onPressed: _saving ? null : _add,
-          icon: const Icon(Icons.add_circle, color: Color(0xFFFCC520), size: 32),
-        ),
-      ],
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
             Text(
-              'Нажмите статус, чтобы сменить название и цвет. Жёлтый плюс добавляет новый.'.tr,
+              'Нажмите статус, чтобы сменить название и цвет. Плюс в списке добавляет новый.'.tr,
               style: const TextStyle(color: Colors.black54),
             ),
             const SizedBox(height: 12),
@@ -381,7 +357,7 @@ class _StatusListPageState extends State<_StatusListPage> {
                     return Center(child: Text('${snapshot.error}'));
                   }
                   if (!snapshot.hasData) {
-                    return const Center(
+                    return Center(
                       child: CircularProgressIndicator(color: AppColors.accent),
                     );
                   }
@@ -393,7 +369,13 @@ class _StatusListPageState extends State<_StatusListPage> {
                           for (var i = 0; i < items.length; i++)
                             SettingsRow(
                               title: trAny(items[i].label),
-                              subtitle: items[i].builtin ? 'Базовый'.tr : 'Свой'.tr,
+                              subtitle: items[i].id == JobStatuses.rescheduled
+                                  ? 'Сам, после нового визита'.tr
+                                  : items[i].id == JobStatuses.inProgress
+                                      ? 'Больше не используется'.tr
+                                      : items[i].builtin
+                                          ? 'Базовый'.tr
+                                          : 'Свой'.tr,
                               icon: Icons.circle,
                               iconColor: items[i].color,
                               showDivider: i < items.length - 1,
@@ -512,136 +494,4 @@ class _StatusEditorDialogState extends State<_StatusEditorDialog> {
       ],
     );
   }
-}
-
-class _PricebookPage extends StatelessWidget {
-  const _PricebookPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return SettingsPageScaffold(
-      title: 'Прайсбук'.tr,
-      body: StreamBuilder<List<PricebookItem>>(
-        stream: CatalogService.streamPricebook(),
-        builder: (context, snapshot) {
-          final items = snapshot.data ?? const <PricebookItem>[];
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
-            children: [
-              Text(
-                'Три цены на типовую работу. В смете мастер выбирает Good / Better / Best.'.tr,
-                style: const TextStyle(color: Colors.black54),
-              ),
-              const SizedBox(height: 16),
-              for (final item in items)
-                Card(
-                  child: ListTile(
-                    title: Text(item.name),
-                    subtitle: Text(
-                      [
-                        if (item.applianceType.isNotEmpty) trAny(item.applianceType),
-                        'G \$${item.good.toStringAsFixed(0)}',
-                        'B \$${item.better.toStringAsFixed(0)}',
-                        'B \$${item.best.toStringAsFixed(0)}',
-                      ].join(' · '),
-                    ),
-                    onTap: () => _editPricebookItem(context, item),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      onPressed: () => CatalogService.removePricebookItem(item.id),
-                    ),
-                  ),
-                ),
-              const SizedBox(height: 12),
-              ElevatedButton.icon(
-                onPressed: () => _editPricebookItem(context, null),
-                icon: const Icon(Icons.add),
-                label: Text('Добавить работу'.tr),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-Future<void> _editPricebookItem(BuildContext context, PricebookItem? existing) async {
-  final nameCtrl = TextEditingController(text: existing?.name ?? '');
-  final typeCtrl = TextEditingController(text: existing?.applianceType ?? '');
-  final goodCtrl = TextEditingController(
-    text: existing == null ? '' : existing.good.toStringAsFixed(0),
-  );
-  final betterCtrl = TextEditingController(
-    text: existing == null ? '' : existing.better.toStringAsFixed(0),
-  );
-  final bestCtrl = TextEditingController(
-    text: existing == null ? '' : existing.best.toStringAsFixed(0),
-  );
-  final notesCtrl = TextEditingController(text: existing?.notes ?? '');
-  final saved = await showDialog<bool>(
-    context: context,
-    builder: (context) {
-      return AlertDialog(
-        title: Text(existing == null ? 'Новая работа'.tr : 'Прайсбук'.tr),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                decoration: InputDecoration(labelText: 'Название'.tr),
-              ),
-              TextField(
-                controller: typeCtrl,
-                decoration: InputDecoration(labelText: 'Тип техники'.tr),
-              ),
-              TextField(
-                controller: goodCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Good \$'),
-              ),
-              TextField(
-                controller: betterCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Better \$'),
-              ),
-              TextField(
-                controller: bestCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Best \$'),
-              ),
-              TextField(
-                controller: notesCtrl,
-                decoration: InputDecoration(labelText: 'Заметка'.tr),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text('Сохранить'.tr),
-          ),
-        ],
-      );
-    },
-  );
-  if (saved != true) return;
-  final name = nameCtrl.text.trim();
-  if (name.isEmpty) return;
-  final item = PricebookItem(
-    id: existing?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
-    name: name,
-    applianceType: typeCtrl.text.trim(),
-    good: double.tryParse(goodCtrl.text) ?? 0,
-    better: double.tryParse(betterCtrl.text) ?? 0,
-    best: double.tryParse(bestCtrl.text) ?? 0,
-    notes: notesCtrl.text.trim(),
-  );
-  await CatalogService.upsertPricebookItem(item);
 }

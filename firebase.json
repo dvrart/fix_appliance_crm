@@ -1,1 +1,60 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"fix-appliance-crm","appId":"1:772324431093:android:afff73faed16a00f2fe1bc","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"fix-appliance-crm","configurations":{"android":"1:772324431093:android:afff73faed16a00f2fe1bc","ios":"1:772324431093:ios:c906214ef15ddd782fe1bc","macos":"1:772324431093:ios:c906214ef15ddd782fe1bc","web":"1:772324431093:web:5fc387809e29e86d2fe1bc","windows":"1:772324431093:web:249e7ec3fc1462e02fe1bc"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "fix-appliance-cloud",
+          "appId": "1:749580607356:android:cec5dde745dfaccf9b4ef9",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "fix-appliance-cloud",
+          "configurations": {
+            "android": "1:749580607356:android:cec5dde745dfaccf9b4ef9"
+          }
+        }
+      }
+    }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ],
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "hosting": {
+    "site": "fix-cloud-pending",
+    "public": "hosting/public",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      { "source": "/p", "function": "p" },
+      { "source": "/p/**", "function": "p" },
+      { "source": "/e", "function": "p" },
+      { "source": "/e/**", "function": "p" },
+      { "source": "/i", "function": "p" },
+      { "source": "/i/**", "function": "p" },
+      { "source": "/pay", "function": "p" },
+      { "source": "/pay/**", "function": "p" },
+      { "source": "/estimate", "function": "p" },
+      { "source": "/estimate/**", "function": "p" },
+      { "source": "/invoice", "function": "p" },
+      { "source": "/invoice/**", "function": "p" },
+      { "source": "/**", "function": "p" }
+    ]
+  }
+}

@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../core/app_commands.dart';
 import 'firestore_service.dart';
 import '../models/warehouse_item.dart';
 
@@ -115,6 +116,7 @@ class WarehouseService {
 
   /// Удалить товар
   static Future<void> delete(String id) async {
+    AppCommands.reactAngry();
     await _ref.doc(id).delete();
   }
 

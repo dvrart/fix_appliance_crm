@@ -16,10 +16,8 @@ class FinanceSettingsPage extends StatefulWidget {
 
 class _FinanceSettingsPageState extends State<FinanceSettingsPage> {
   bool _loading = true;
-  bool _useSignature = true;
   String _defaultTax = SettingsService.taxHst;
   String _hstNumber = '';
-  double _markup = 0;
 
   @override
   void initState() {
@@ -32,10 +30,8 @@ class _FinanceSettingsPageState extends State<FinanceSettingsPage> {
     final docs = await SettingsService.loadDocumentSettings();
     if (!mounted) return;
     setState(() {
-      _useSignature = data['useSignature'] ?? true;
       _defaultTax = SettingsService.readDefaultTax(data);
       _hstNumber = docs.hstNumber;
-      _markup = SettingsService.readPartsMarkupPercent(data);
       _loading = false;
     });
   }
@@ -108,7 +104,7 @@ class _FinanceSettingsPageState extends State<FinanceSettingsPage> {
     return SettingsPageScaffold(
       title: context.tr('Финансы', 'Finance'),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.accent))
+          ? Center(child: CircularProgressIndicator(color: AppColors.accent))
           : ListView(
               padding: const EdgeInsets.only(top: 20, bottom: 40),
               children: [
@@ -117,8 +113,8 @@ class _FinanceSettingsPageState extends State<FinanceSettingsPage> {
                     SettingsRow(
                       title: context.tr('Счета и сметы', 'Invoices & estimates'),
                       subtitle: context.tr(
-                        'Шаблоны SMS. PDF всегда на английском',
-                        'SMS templates. PDFs are always in English',
+                        'Вид PDF, условия, превью инвойса',
+                        'PDF look, terms, invoice preview',
                       ),
                       icon: Icons.description,
                       iconColor: AppColors.primary,
@@ -132,23 +128,6 @@ class _FinanceSettingsPageState extends State<FinanceSettingsPage> {
                       },
                     ),
                     SettingsRow(
-                      title: context.tr('Электронная подпись', 'E-signature'),
-                      subtitle: context.tr(
-                        'Спрашивать подпись в конце работы',
-                        'Ask for a signature at the end of the job',
-                      ),
-                      icon: Icons.draw,
-                      iconColor: Colors.orange,
-                      trailing: Switch(
-                        activeThumbColor: AppColors.accent,
-                        value: _useSignature,
-                        onChanged: (val) {
-                          setState(() => _useSignature = val);
-                          SettingsService.updateConfig('useSignature', val);
-                        },
-                      ),
-                    ),
-                    SettingsRow(
                       title: context.tr('Налог по умолчанию', 'Default tax'),
                       subtitle: context.tr(
                         '${_taxLabel(_defaultTax)} — в счёте можно выбрать другой',
@@ -157,62 +136,6 @@ class _FinanceSettingsPageState extends State<FinanceSettingsPage> {
                       icon: Icons.receipt_long,
                       iconColor: Colors.green,
                       onTap: _pickDefaultTax,
-                    ),
-                    SettingsRow(
-                      title: context.tr('Наценка на запчасти', 'Parts markup'),
-                      subtitle: context.tr(
-                        _markup <= 0
-                            ? 'Берётся цена со склада'
-                            : '${_markup.toStringAsFixed(0)}% к закупочной',
-                        _markup <= 0
-                            ? 'Uses the warehouse sell price'
-                            : '${_markup.toStringAsFixed(0)}% on cost',
-                      ),
-                      icon: Icons.percent,
-                      iconColor: Colors.teal,
-                      onTap: () async {
-                        final ctrl = TextEditingController(
-                          text: _markup <= 0 ? '' : _markup.toStringAsFixed(0),
-                        );
-                        final saved = await showDialog<double>(
-                          context: context,
-                          builder: (context) {
-                            return AlertDialog(
-                              title: Text(
-                                context.tr('Наценка на запчасти', 'Parts markup'),
-                              ),
-                              content: TextField(
-                                controller: ctrl,
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(
-                                  suffixText: '%',
-                                  hintText: '0',
-                                ),
-                              ),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(context),
-                                  child: Text('Отмена'.tr),
-                                ),
-                                ElevatedButton(
-                                  onPressed: () => Navigator.pop(
-                                    context,
-                                    double.tryParse(ctrl.text.trim()) ?? 0,
-                                  ),
-                                  child: Text('Сохранить'.tr),
-                                ),
-                              ],
-                            );
-                          },
-                        );
-                        if (saved == null || !mounted) return;
-                        final next = saved.clamp(0, 300).toDouble();
-                        setState(() => _markup = next);
-                        await SettingsService.updateConfig(
-                          'partsMarkupPercent',
-                          next,
-                        );
-                      },
                     ),
                     SettingsRow(
                       title: context.tr('HST / GST номер', 'HST / GST number'),

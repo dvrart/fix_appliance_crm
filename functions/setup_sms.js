@@ -24,7 +24,8 @@ const ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const AUTH_USER = process.env.TWILIO_API_KEY_SID || process.env.TWILIO_ACCOUNT_SID;
 const AUTH_SECRET = process.env.TWILIO_API_KEY_SECRET || process.env.TWILIO_AUTH_TOKEN;
 const PHONE = process.env.TWILIO_PHONE_NUMBER;
-const WEBHOOK = 'https://us-central1-fix-appliance-crm.cloudfunctions.net/incomingSms';
+const { functionsBaseUrl } = require('./tenant');
+const WEBHOOK = `${functionsBaseUrl()}/incomingSms`;
 
 if (!ACCOUNT_SID || !AUTH_USER || !AUTH_SECRET) {
   console.error('Нет Twilio credentials в functions/.env');

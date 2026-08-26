@@ -1,0 +1,73 @@
+group 'com.twilio.twilio_voice'
+version '1.0'
+
+buildscript {
+    ext {
+        kotlinVersion           = "2.1.0"
+        agpVersion              = "8.9.1"
+        twilioVoiceVersion      = "6.10.0"
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath "com.android.tools.build:gradle:${agpVersion}"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${kotlinVersion}"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+android {
+    namespace 'com.twilio.twilio_voice'
+    compileSdk 36
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    defaultConfig {
+        minSdkVersion 26
+        consumerProguardFiles 'proguard-rules.pro'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+    implementation(platform("org.jetbrains.kotlin:kotlin-bom:${kotlinVersion}"))
+    implementation(platform("com.google.firebase:firebase-bom:33.10.0"))
+    implementation("com.twilio:voice-android:${twilioVoiceVersion}")
+    implementation("com.google.firebase:firebase-messaging-ktx:24.1.0")
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.lifecycle:lifecycle-process:2.8.7'
+    implementation 'androidx.core:core-ktx:1.15.0'
+    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+    runtimeOnly("androidx.lifecycle:lifecycle-extensions:2.2.0")
+    runtimeOnly("androidx.constraintlayout:constraintlayout:2.2.1")
+}
+

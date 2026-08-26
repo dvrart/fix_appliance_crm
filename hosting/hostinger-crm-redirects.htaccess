@@ -1,0 +1,8 @@
+# CRM short links — paste ABOVE "# BEGIN WordPress" in public_html/.htaccess
+# Hostinger File Manager → public_html → .htaccess
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^pay/([A-Za-z0-9]+)/?$ https://pay.fix-appliance.ca/$1 [R=302,L,NC]
+RewriteRule ^estimate/([A-Za-z0-9]+)/?$ https://doc.fix-appliance.ca/e/$1 [R=302,L,NC]
+RewriteRule ^invoice/([A-Za-z0-9]+)/?$ https://doc.fix-appliance.ca/i/$1 [R=302,L,NC]
+</IfModule>

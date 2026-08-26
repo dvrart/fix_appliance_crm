@@ -1,36 +1,26 @@
 {
   "project_info": {
-    "project_number": "772324431093",
-    "project_id": "fix-appliance-crm",
-    "storage_bucket": "fix-appliance-crm.firebasestorage.app"
+    "project_number": "749580607356",
+    "project_id": "fix-appliance-cloud",
+    "storage_bucket": "fix-appliance-cloud.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:772324431093:android:afff73faed16a00f2fe1bc",
+        "mobilesdk_app_id": "1:749580607356:android:cec5dde745dfaccf9b4ef9",
         "android_client_info": {
-          "package_name": "com.example.fix_appliance_crm"
+          "package_name": "com.fixappliance.cloud"
         }
       },
-      "oauth_client": [
-        {
-          "client_id": "772324431093-at2i1m30ok6djitq6pdhvb2hdvd9h05a.apps.googleusercontent.com",
-          "client_type": 3
-        }
-      ],
+      "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyDE4nxOyA1Qwp58yDzyzInXRxq3jIB1zvA"
+          "current_key": "AIzaSyAhqv-LEqgSYhLbWBWojelpZ_Brti5_YiE"
         }
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": [
-            {
-              "client_id": "772324431093-at2i1m30ok6djitq6pdhvb2hdvd9h05a.apps.googleusercontent.com",
-              "client_type": 3
-            }
-          ]
+          "other_platform_oauth_client": []
         }
       }
     }

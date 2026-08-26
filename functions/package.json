@@ -1,5 +1,5 @@
 {
-  "name": "fix-appliance-crm-functions",
+  "name": "fix-appliance-cloud-functions",
   "description": "Firebase Functions for Fix Appliance CRM",
   "scripts": {
     "serve": "firebase emulators:start --only functions",
