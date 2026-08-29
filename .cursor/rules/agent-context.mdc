@@ -7,7 +7,7 @@ alwaysApply: true
 
 Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: Samsung `R5CW421KFXH`, package `com.example.fix_appliance_crm`. PowerShell: no `&&`; use `;`. Do not commit unless asked. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
 
-Typical install:
+Typical install (always do this after app UI/code changes — do not wait for FIX to say «поставь»):
 
 ```
 flutter build apk --release
@@ -18,18 +18,20 @@ adb -s R5CW421KFXH shell am start -n com.example.fix_appliance_crm/.MainActivity
 ## Two different AIs
 
 - **Phone secretary** (Twilio + Gemini Live): answers inbound calls if FIX does not pick up. Speaks English only. Files: `functions/voice_relay.js`, `functions/voice_facts.js`, `functions/index.js` (`aiVoiceRelay`, `aiVoiceTurn`, `getAiAnswerSettings`). Prompt/hangup changes are **server deploy**, no APK.
-- **In-app assistant** (Purish / wake word): `lib/features/ai/assistant/*`. Do not mix this with the phone secretary.
+- **In-app assistant** (FIX-Appliance / wake word): `lib/features/ai/assistant/*`. Do not mix this with the phone secretary.
 
 Owner does **not** rewrite the phone secretary from the app. Coach chat was removed. Errors go to **Настройки → Ошибки секретаря** (`SecretaryLearnPage`); FIX copies the pack and sends it here so the agent can patch prompt/functions. Live prompt is **server-only**: `DEFAULT_VOICE_INSTRUCTIONS` + shop hours + calendar + service-area map. App greeting, collect checkboxes, `extraRules`, and `learnedRules` are **not** injected into Live.
 
-## Secretary behavior (current, Aug 21 2026)
+## Secretary behavior (current, Aug 23 2026)
 
-FIX liked the natural conversation (listen first, one short sentence, do not quiz). Problems that were over-corrected and then rolled back:
+Company on the phone: **FixApplianceCA**. Polite, easy, a little erudite. Answers a side question in one sentence, then returns to the repair. Must not freeze or go silent.
 
 - Do **not** inject fake user turns (`steerCollectAfterTurn`) after every reply — that made her not listen.
-- She must **not say bye / goodbye / see you** and must **not hang up**. The **caller** hangs up. `end_call` tool was removed from Gemini Live setup; hangup tools are ignored.
-- Shop hours: **7:00 a.m. – 9:00 p.m.** America/Toronto, last start **7:00 p.m.** so the visit ends by 9. If the caller wants 6 a.m. or a start after 7 p.m., do not book it; say we don’t work then and offer a time that ends by 9. **Take orders every day**, including Saturday, Sunday, and holidays. Regular visits Mon–Fri; **Saturday (and Sunday/holiday visits) by agreement** if the 2-hour window is free. Never say we don’t accept orders on weekends or holidays. Calendar defaults were updated to 7–21; old 9–19 config is migrated on the server.
-- After “I’ll pass this to the tech”, keep talking: ask if they have another appliance or anything else. Do not wrap up. The caller hangs up.
+- After confirm: model-sticker photo, then “anything else?”, then **Have a good day**. Do **not hang up**. Wait until the caller says goodbye. `end_call` is ignored.
+- Visits **Monday–Friday 7:00 a.m. – 9:00 p.m.** Toronto, last start **7:00 p.m.** Saturday and Sunday: **no visit** — still take the order, offer a weekday. Public holidays: take the order; the technician must agree. Secretary answers **24/7**.
+- We repair washers, dryers, dishwashers, gas ovens, electric ovens, **electric** cooktops, fridges, freezers, microwaves. Not gas cooktops, TVs, laptops, phones.
+- Old client: use their name; ask if the repair is at the address on file. New site → job site + who will be there + phone. Ask who is home only if it is not the owner’s house.
+- After “I’ll pass this to the tech”, ask photo, then anything else, then Have a good day. The caller hangs up.
 - Do not hang up the instant they give another repair address; keep talking.
 - **Calendar:** each visit is **2 hours**, one job per window (`functions/schedule.js`). Secretary sees a live calendar brief. If 2:00 p.m. is taken, do **not** book it — offer another time the **same day** first. Server refuses busy slots on job create (`resolveJobSchedule`). SMS reschedule uses the same check (`visit_sms.js` `tryMoveVisit`).
 
@@ -51,7 +53,7 @@ Do **not** set `android:showWhenLocked` / `turnScreenOn` on `MainActivity` in th
 
 ## Bell / notifications
 
-App-bar bell: `lib/features/ai/assistant/review_bell_button.dart`. Tabs: Secretary / Calls / Jobs. Swipe left/right between tabs. Cards show date and time. Opening Secretary or Calls (seeing the tab) dismisses those items **only when the sheet is closed**, not when switching tabs. Jobs leave the bell only after confirm (`needsReview=false`) or delete. Phone tray notifications: FCM `notifyMaster` + `NotificationService`. Sound is chosen in Android app notification settings via **Настройки → Звук уведомлений**. Do not delete notification channels (that wipes the user's sound).
+App-bar bell: `lib/features/ai/assistant/review_bell_button.dart`. Tabs: Secretary / Calls / Jobs. Swipe left/right between tabs. Cards show date and time. Opening Secretary or Calls (seeing the tab) dismisses those items **only when the sheet is closed**, not when switching tabs. Jobs leave the bell only after confirm (`needsReview=false`) or delete. Phone tray: FCM `notifyMaster` is **data-only** (Twilio FCM service draws the shade — a system notification payload gets swallowed). `InboxPushMirror` also shows a heads-up for a new bell item, including when the app is just opened (last 6 hours, IDs stored so old cards do not re-fire). Shade stays until swipe; `number: 1` so Samsung can badge the icon. Watched / website / repair letters notify on ingest. Do not auto-dismiss inbox alerts. Sound is chosen in Android app notification settings via **Настройки → Звук уведомлений**. Do not delete notification channels (that wipes the user's sound).
 
 ## Save button
 
@@ -71,7 +73,7 @@ Each catalog list (types, brands, statuses, sources) must **not** have a yellow 
 
 ## Basket / trash
 
-Drawer **Корзина** is a 30-day recycle bin (`deletedAt` on jobs and clients). Restore or delete forever. Unscheduled jobs (no visit date) stay on the jobs list banner, not in trash. Left-menu bottom row: red **Корзина**, purple **Запчасти** (car icon → `PartsQueueScreen`), navy **Поиск** (`GlobalSearchOverlay`). All three are 72×72; Запчасти sits between basket and search, not in the 2-column grid.
+Drawer **Корзина** is a 30-day recycle bin (`deletedAt` on jobs and clients). Restore or delete forever. Unscheduled jobs (no visit date) stay on the jobs list banner, not in trash. Deleting an **unconfirmed automatic** job (`needsReview`, phone/SMS/email) also trashes the auto-created contact if they have no other live jobs. Restoring that job restores the contact. Do **not** trash a client FIX added by hand, or one with other open/completed jobs. Left-menu bottom row: red **Корзина**, purple **Запчасти** (car icon → `PartsQueueScreen`), navy **Поиск** (`GlobalSearchOverlay`). All three are 72×72; Запчасти sits between basket and search, not in the 2-column grid.
 
 ## Booking SMS / email
 
@@ -84,8 +86,201 @@ A follow-up email from a client with an open job is parsed by Gemini and written
 - Client card call / SMS / route: white circles, bright colored icons (`client_details_screen.dart`).
 - Job card trash in the app bar: red, same as the client card (`job_details_screen.dart`).
 
+## Settings layout (Aug 28 2026)
+
+Six sections in `settings_hub_screen.dart`, grouped by «про что это», not by technology:
+
+- **Компания** — Реквизиты (incl. HST/GST number), **Прайс**, Зона, Каталог.
+- **Расписание** — **Рабочие дни** (subtitle shows days · hours), Календарь.
+- **Клиенту** — Шаблоны (`MessageTemplatesPage`, now two taps), Когда слать, Счета.
+
+Each setting lives in exactly **one** place. Do not re-add: a separate «Часы» tile
+(hours are inside `WorkDaysSettingsPage`), «Шаблоны» inside «Когда слать», or «Зона»
+inside «Секретарь». The secretary page footer tells FIX where hours / area / prices live.
+- **Подключения** — Телефон, Секретарь, Почта, Платежи.
+- **Приложение** — Уведомления, Ассистент, Вид (language lives here), Меню.
+- **Данные** — Копия, Импорт, Замок, О приложении.
+
+`FinanceSettingsPage` is deleted; its contents moved to Прайс / Счета / Реквизиты.
+
+**Прайс** (`pricing_settings_page.dart`, `settings/config`): `serviceCallFee`, `hourlyRate`,
+`minimumCharge`, `partsMarkupPercent`, `defaultTax`. Nothing is hardcoded any more — the
+$99 that used to sit in `functions/index.js` and `voice_facts.js` now comes from settings via
+`describePricing`. The invoice builder shows **Вызов** / **Час** chips from the price list and
+warns under the subtotal when it is below the minimum charge.
+
+**Рабочие дни** (`work_days_settings_page.dart`): `workDays` (1 = Mon … 7 = Sun),
+`workStartMinutes`, `workEndMinutes`, `holidayDates`, `vacationRanges`. The calendar greys the
+whole day for a non-working day (`SettingsService.isVisitDay`). `functions/schedule.js` uses
+`isClosedYmd` instead of the old weekend check, so the secretary and SMS reschedule refuse
+those days and offer the next working one. `calendarBrief` and `smsBusyReply` read the labels
+from config — do not put «Monday–Friday» back in the text.
+
+**Замок** (`AppLockService` + `AppLockGate`): 4-digit PIN hashed in SharedPreferences (never in
+Firestore) plus fingerprint. `MainActivity` must stay `FlutterFragmentActivity` for `local_auth`.
+`canUseBiometrics` must check `getAvailableBiometrics()`, not just `canCheckBiometrics` — the
+latter is only about hardware and returns true with no finger enrolled. The lock screen asks for
+the finger by itself on open; the yellow fingerprint key repeats it. The settings page re-checks
+on resume so adding a finger in Android settings turns the switch on without a restart.
+
+**Копия** has two halves. **В облаке** is the real one: `functions/backup.js` +
+`weeklyCloudBackup` (every Sunday 03:30 Toronto) dumps clients, jobs, settings, statuses,
+catalogs, warehouse, expenses and calendar events to Storage
+`companies/{id}/backups/fix-backup-YYYY-MM-DD.json`, keeps 12 weeks, and writes a row in
+Firestore `backups/{ymd}` that the page streams. Runs on the server, so the phone may be off.
+«В облако сейчас» calls `runCloudBackupNow` (plain `onRequest`, like the other endpoints — this
+repo does not use `onCall`). **На телефоне** is the old local JSON in the app private documents
+folder (`/data/user/0/com.example.fix_appliance_crm/app_flutter/backups`), last 5, on startup
+when due; that folder dies with the app, so the page still tells FIX to share the file to email.
+Deploy `weeklyCloudBackup`, `runCloudBackupNow`.
+
+## Offline / weak signal
+
+Firestore persistence is set explicitly in `main.dart` with `CACHE_SIZE_UNLIMITED`, so the whole
+base opens in a basement. The key rule: **never `await` a Firestore write to completion in a UI
+path**. Offline the SDK writes to the local cache immediately but the `Future` does not resolve
+until the server acks, so a plain `await` spins the save button forever. Use `settleWrite(...)`
+from `lib/services/network_status_service.dart` — it waits ~3s, then lets the write finish in the
+background. Already applied to `JobService` (create/update/status/priority/description/delete/
+restore), `ClientService`, `ClientJobSync`, `SettingsService`, and the new-client sheet. `create`
+uses `_ref.doc()` + `set()` instead of `add()`, because `add()` waits for the server to hand back
+an id.
+
+`NetworkStatusService` decides online/offline from Firestore's own `metadata.isFromCache`
+(`snapshots(includeMetadataChanges: true)` on `settings/config`) — no `connectivity_plus`, and
+Wi-Fi without internet is caught too. It counts jobs with `hasPendingWrites` and flushes
+`OfflineQueueService` when the connection returns. `OfflineChip` sits at the left of the navy
+header next to the シ-face: grey «Нет сети», yellow «Отправлю: N» while writes are queued.
+
+Startup must never hang: the Firestore-dependent part of `main.dart` `_init` is wrapped in
+`_online(...)` with a 6s timeout. Storage photo upload in `job_details_controller` has 25s/15s
+timeouts and falls back to `OfflineQueueService`, and the job card then shows «Нет сети — фото
+сохранится и загрузится позже». Stripe HTTP has a 45s timeout.
+
+## Ошибки приложения
+
+`ErrorLogService` (`lib/services/error_log_service.dart`) is installed in `main()` before
+`runApp`. It hooks `FlutterError.onError` and `PlatformDispatcher.instance.onError`, stashes each
+entry in SharedPreferences first (so it survives a crash), then mirrors it into Firestore
+`companies/{id}/app_errors`. Identical messages are written at most **once a minute** — without
+that a repainting error floods the collection.
+
+Native crashes (an OOM kill, for example) never reach Dart, so the service keeps a
+`session_open` flag: set on start and on resume, cleared in `AppLockGate` on pause. A flag still
+set at the next launch becomes a «crash» row naming the last screen. Call
+`ErrorLogService.markScreen('Склад')` in `initState` of any screen worth naming.
+
+FIX sees them in **Настройки → Данные → Ошибки** (`ErrorLogPage`) with «Копировать всё». The
+agent reads them directly: `GET https://us-central1-fix-appliance-crm.cloudfunctions.net/appErrors?limit=40`
+(plain text; `&format=json` for JSON). `weeklyCloudBackup` drops rows older than 14 days via
+`pruneAppErrors`. Deploy `appErrors`, `weeklyCloudBackup`.
+
+## Склад
+
+The warehouse dialog used to be the worst offline screen in the app; do not undo these:
+
+- **Save must not `await` a raw Firestore write.** `add()` and `update()` never resolve offline,
+  so the item appeared in the list but the dialog never closed. Use `settleWrite(...)` and
+  `ref.doc().set(...)`, never `ref.add(...)`. Same in `WarehouseService`.
+- **ML Kit killed the app.** `pickImage` ran at `imageQuality: 100` full resolution — a Samsung
+  frame is tens of megabytes as a bitmap, and `TextRecognizer` was not closed on a throw. Keep
+  `maxWidth/maxHeight: 1600`, a 25s timeout on `processImage`, and `close()` in a `finally`.
+- **The Save button looked dead** because `isAiThinking` stayed true while the duplicate lookup
+  ran. Clear the flag *before* `checkDuplicate`, and never let a Firestore read gate the button.
+  An empty name now says «Впишите название детали» instead of silently returning.
+- Photo upload has 25s/15s timeouts and says «Фото не загрузилось — нет связи»; part-number
+  lookups go through `_lookupPartNumber` (6s timeout, null on failure).
+- Text controllers and the debounce `Timer` are disposed in `whenComplete` on the dialog.
+
+Low stock: `lowStockAlertEnabled` appends a «Заканчивается» block to the morning briefing
+(`MorningBriefingService`), and the briefing fires even on a day with no jobs if stock is low.
+
+Job list quick filters: **Настройки → Каталог → Фильтры**, up to three; «Все» and «Вызов» are
+always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
+
+## Recent file history (Aug 28 2026)
+
+- Calendar top bar: the round view button is **yellow** (`AppColors.accent` icon on a 20% accent
+  fill), not white. The visit-links toggle next to it is a filled square — **green `#008F3B`**
+  when lines are on, **grey `#9AA3B0`** when off, white icon either way.
+- Calendar settings: removed **Выходные дни**. Week vs 5 days stays in **Вид**. Travel buffer still blocks overlapping visits and shifts route times. Wake word default is **FIX-Appliance**. After a full invoice payment, ask to send the Google-review SMS (do not auto-send). Signature saves under `jobs/{id}/attachments`. Battery row opens this app’s battery page (not the all-apps list). Samsung skips the Allow dialog and uses APP_BATTERY_SETTINGS / Device Care. Calendar double-tap: job or a simple event (text/time/photo) in `calendar_events`. Import buttons for Jobber, Workiz, Housecall Pro, ServiceTitan, FieldEdge, Service Fusion. Default visit length is **2 hours** (`kDefaultVisitMinutes`). New job form reads calendar **work start** and **visit duration**; changing the form does not rewrite settings. WordPress form emails use a **веб-сайт** inbox, not the From contact. Deploy `storage`, `stripeWebhook`, `completeTerminalPayment`, `stripePaymentComplete`, `syncGmailInbox`.
+
+## Recent file history (Aug 25 2026)
+
+- Job **Описание**: details tile is the original white card. Opening it has two swipe tabs — **Решение проблемы** (green) and **Описание проблемы** (red), same tints as before, original white text field. Field `solution` on the job. After leaving a client (~2 km) ask to change that job’s status, then the existing SMS «я в пути» for the next client.
+- Phone shade: FCM is **data-only** on Android (`functions/notify.js`) so the Twilio FCM service can always draw the tray. White `ic_stat_notify` icon. Deploy functions that call `notifyMaster` (SMS, calls, jobs, Gmail, visit confirm, estimate). Samsung: first launch may ask to ignore battery optimization.
+- Job **ДЕТАЛИ**: status 50% | client 50%. Next row: **Где работа** | **Запись разговора** (source chip Телефон/Почта/SMS/Сайт + call date/time). Unconfirmed auto job: green **Подтвердить** and red **Отменить** (trash). Several calls open a list. Visit date row: clock + date | yellow **Добавить** | confirm button with text. Call green `#008F3B`. Calendar double-tap passes slot time into create job. Manual visit confirm / reschedule sends SMS ack. Deploy `onJobWritten`.
+- Bell **Звонки ↔ Заявки**: haptic as soon as the swipe crosses the midpoint, not after the tab animation ends.
+- Status **Перенос**: one repair = one job card. First date on an empty job does **not** change status. A second visit, or moving a visit to another day (card, calendar drag, «Добавить»), writes `status: Перенос` — on the job-card green check draft, immediately from calendar/route. Not for Готово / Отмена / Установка. After **Ожидание запчасти**, a new visit (or day move) writes **Установка**; older visits still show as **Перенос** on the calendar via `displayStatusForVisit`. Status id **Повтор** shows as **Перенесено** (new job after a closed repair, `createRepeatFrom`). **Установка** color is indigo (`#3F51B5`), not pink-red. Route map markers and stop chips use the visit status color, not a numbered palette.
+- Job **Описание**: details tile is the original white card. Opening it has two swipe tabs — **Решение проблемы** (green) and **Описание проблемы** (red).
+- Right bell shade: do **not** `setState` the main screen when the end drawer opens (that stuttered the slide). Bell handle lives in the dock stack like the menu handle.
+- Drawer **Активные**: tap opens all non-closed jobs. One-shot `completeLegacyJobsIfNeeded` marks jobs whose last visit is **before 17 Aug 2026** as **Завершено** (`settings/config.completedJobsBefore`).
+- SMS: long unique URLs only (Stripe Checkout, `estimateConfirm`, Storage). Short `fix-appliance.ca/pay|estimate|invoice/<8-char>` is for copy in the app — carriers drop those (Twilio 30007). If 30007 still fires, `smsStatusCallback` resends once with `cloudfunctions.net/p/<code>`. Deploy `p,shortenLink,createStripePayment,sendSms,smsStatusCallback`.
+
+## Recent file history (Aug 24 2026)
+
+- Page transitions: fade+slide ~380ms. Dock tab fade keeps the outgoing tab on screen until the fade ends (otherwise it plays once and then jumps). Haptic is immediate `selectionClick` on press (dock, yellow plus, job, client, chat, call). `AppHapticScope` plus a 90ms gap so there is no double buzz.
+- Calendar **Вид по умолчанию** in **Настройки → Календарь**: day / 5 days / week / month / route / list. Back from clients/jobs returns to that view. Job card Back from Финансы/Чат first goes to **ДЕТАЛИ**. Invoice delete: green check confirms, yellow square cancels. Builder: **Добавить позицию** above **Сумма**; green check at the bottom right. Client card from the all-clients map: delete/edit sit below the status bar.
+
+- Invoices in the left menu: green **Оплачен**, red **Неоплачен**, amber **Депозит** (Stripe deposit or partial payment). Colored strip + chip.
+- Job **Финансы**: creating an invoice/estimate is dirty. Close / Back / menu shows the chest sheet (green save, yellow stay, red discard). Deleting a saved invoice/estimate asks the same sheet (green keep, red trash). Tabs cannot swipe away from the builder.
+- Short links for copy: `https://fix-appliance.ca/pay/<8-char>`, estimate `/estimate/<8-char>`, invoice `/invoice/<8-char>`. Hostinger redirects those to `pay.fix-appliance.ca` / `doc.fix-appliance.ca`. Pay / estimate SMS itself uses the long Stripe / `estimateConfirm` URL so carriers do not drop them (30007). Shop site is **fix-appliance.ca**. Do **not** use `fixappliance.ca`. Deploy `functions:p,functions:shortenLink,functions:createStripePayment,functions:sendSms,functions:smsStatusCallback`.
+- Client card: two tabs under the contact info — left **История заявок**, right **История звонков**. Swipe or tap. Yellow FAB «Новый ремонт» stays.
+- Unconfirmed auto job (phone/SMS/email, not **Проверено**) deleted → auto-created contact goes to **Корзина** too if they have no other live jobs. Restore job restores the contact. Hand-added clients and clients with other jobs stay. `ClientService.trashOrphanAutoClient`.
+- Phone jobs: reuse an **open job for the same number + same/empty appliance**. Do not mint a second fridge card from a second call/recording/app recover. Same `sourceCallId` extras are cancelled. `collapseAllCloneJobs` on recover. Deploy `aiRelayComplete`, `processCallRecording`, `retryStuckCallAi`.
+- Phone shade: FCM for SMS, calls, visit reminders, new jobs, and AI job updates. Live call shows **Разговор** (native FGS `*_active_call_v2` + Flutter ongoing). Tap returns to `CallScreen` (`resumeExisting`); action **Положить трубку**. Back on the call screen does **not** hang up.
+- Car Bluetooth: `TVConnection` prefers `ROUTE_BLUETOOTH` unless speaker is on; `TwilioService.preferCarAudio()`.
+- Face: light haptic when mood changes or `reactHappy` / `reactAngry`.
+- No swipe-to-delete in chats. Long-press + checkbox only.
+- In-call: mic **green**, **red** when muted. Audio button is always green: **Трубка** (`phone_in_talk`) when earpiece, **Динамик** (`volume_up`) when speaker. Tapping sets speaker on/off explicitly — do not query `isOnSpeaker` (that stuck ON). Turning speaker off must not call `preferCarAudio`. Native `preferEarpiece` stops car BT from stealing the earpiece. Outbound wait plays US-style ringback (440+480 Hz) until connected; `twimlDialPstn` uses `answerOnBridge: false` so the PSTN ringback is heard. Deploy `outgoingCall`. Dial / in-call digits sit **lower** and in a **narrow grouped** pad, not stretched across the screen.
+- No **email** booking confirm / visit email. SMS still goes if a phone exists. Deploy `onJobWritten`, `sendVisitReminders`.
+- Job description from AI = model + problem only (`jobDescriptionFromExtract`). Never paste the SMS/email thread. Addresses stay English (`EXTRACT_CARD_RULES`).
+- Job status waits for the top-right green check (`persistNow` off, including complete).
+- Conversation app-bar person icon opens the client card. Client card has **История звонков** (audio + transcript), no **Техника**.
+- Invoice signature is an on-site acknowledgment on the **PDF** and the invoice viewer. **Без подписи** skips. Not required for Stripe SMS. Pay SMS uses the Stripe Checkout URL; estimate SMS uses `estimateConfirm`. Short `pay.` / `doc.` / shop paths stay for copy in the app. Deploy `createStripePayment`.
+- Name fields: helper **Имя на английском**. Client-card edits sync onto that client's jobs (`ClientJobSync` + job listens to client).
+- Bell handle: swipe **left** on the yellow dock tab opens. Title **Уведомления** is at the **top**. **Звонки / Заявки** stay under it. Bottom is a full-width strip the **same grey as the panel** (`#F4F6F8`); swipe **right** (or tap) closes. No label on that strip.
+- Gmail: do **not** scan all mail. Only `watchedEmailSenders` create jobs (`needsReview`). WordPress site forms go to a separate **веб-сайт** inbox, not Dale Davis / the From mailbox. CRM replies still go to chat. Deploy `syncGmailInbox`, `incomingSms`.
+- Связь must show real calls/SMS, not a blank navy page. Do **not** `orderBy('startTime')` / `orderBy('createdAt')` for the hub lists (mixed types / missing fields empty the stream). Map each doc in try/catch; sort in memory. Hidden dock tabs use `Offstage` so they do not cover Связь. Light grey canvas behind the lists.
+- App exit always needs the «Хотите выйти?» sheet. Only the red button closes the app. System Back must not finish the Activity (`MainActivity.onBackPressed` + `enableOnBackInvokedCallback=false`). Tap the dimmer to stay.
+- Unsaved leave is the same everywhere: **green circle check = save**, **yellow rounded square with a white inner square = stay**, **red circle X = discard**. Back / menu / tabs cannot leave a dirty form without that sheet. Helper: `DirtyLeaveScope` + `showUnsavedChangesDialog`. Client edit, address picker, new client, new job, job card, settings with Save, expenses, email job preview.
+- Clients + SMS + calls multi-select: do **not** `setState` the list (that jumped to the top). `ValueNotifier`, cached Firestore stream, kept `ScrollController`, overlay checkbox. List stays where you scrolled.
+- 5-day calendar: **no confirm check** — only the appliance logo.
+- Client card: no «Новая работа» plus next to **История заявок** (yellow FAB «Новый ремонт» stays). Job history and call history are two tabs (jobs left, calls right).
+- New job Back after edits uses the chest sheet: green save / yellow stay / red discard.
+- Back first **clears multi-select** (calls / SMS / clients) and closes the compose plus. Compose has **no dark overlay**.
+- Calendar **Вид** (list / route / week / 5 days / day / month) always opens **today**, not a leftover date.
+- Bell **Звонки ↔ Заявки** swipe has haptic again.
+- Email `@` suggestions sit **above** the field (Gmail / Yahoo / Hotmail / Outlook / iCloud) so the keyboard does not cover them. The @ icon inserts `@`.
+- New client: large **green check** and **red X** at the bottom. Back after typing: save / continue / delete. No yellow «СОЗДАТЬ КЛИЕНТА» bar.
+- Calendar **Вид** keeps both **Неделя** and **5 дней** (do not auto-collapse week into workWeek). Week/5-day appointments show a **larger** appliance with a thin 1px frame around the picture, not a padded box.
+- Calendar **list** tiles: no colored status **frame** around the card — only the status **tab**. Appliance column is wider.
+- Client card: call / SMS / route are **white circles + bright icons**. Address has **no pencil** — edit only via the top-right pencil. Red trash is on the **left** (next to back); pencil stays on the right.
+
 ## Recent file history (Aug 23 2026)
 
+- Compose SMS/email buttons must sit in a **real hit box** (`AnimatedPositioned` in `ComposeSpeedDial`, 220×180). Dimmer stops above the plus so it does not swallow taps. Plus still shoots envelope + SMS.
+- Calls / SMS multi-select: do **not** `setState` the `StreamBuilder` (that blinked and jumped the list). Use `ValueNotifier` + overlay `SelectionActionBar` + a kept `ScrollController`. Cache Firestore streams in `initState`.
+- Face reactions: delete → soft fade to **angry red**, then back. Green confirm (app-bar save / unsaved green check) → **cheerful green シ**, then morphs into a **green check**, then back (`AppCommands.reactHappy`).
+- **Лайфхак** lives in **Отчеты** next to Copy / Share (app bar + T2 footer), not on the face bar.
+- Calendar **Маршрут**: swipe left/right (or the date bar) to change days. PageView, one map for the current day.
+- Связь tab: swipe left/right switches **Звонки ↔ SMS**. Do **not** swipe-delete a call — long-press + checkbox. Drawer has no Связь tile.
+- Call screen hangs up with a **soft fade** only (`opaque: false`). Do **not** toggle immersive / system UI on open or close — that cracked the screen.
+- Связь yellow **plus** FAB: tap shoots **envelope** and **SMS** out of the plus (scale from the plus), then the email or phone field.
+- Dial pad keys are **stadium pills** (not circles), same translucent navy fill, **no ABC letters**, font 22. Each digit fades **yellow slowly (~780ms)** on its own — 5 then 2 then 8 can all glow at once. Handset is **#25D366** when the number can be called (white icon); slightly deeper green when pressed. Call screen **fades** in 420ms — no bubble / glow. No paste icon: tap the number to paste. Call left, erase right.
+- Long-press select on calls / SMS shows a **checkbox**. No ink splash on tap (`SelectCheckbox`, GestureDetector / NoSplash ListTile).
+- Exit sheet: «Хотите выйти?» + red leave button. Tap the dimmed screen (or drag down) **cancels**; only the red button exits.
+- **Лайфхак** (what a repair corp can theoretically write off — not tax advice) is in **Отчеты** next to Copy / Share. T2 numbers stay in drawer **Отчеты**. Calendar and Связь tops are a taller navy bar: calendar view icon is **white** (not yellow); Связь is call / SMS icons only, larger, no labels. Day **route** is back in the calendar view picker. Swipe left/right on route to change days.
+- Back always returns to the week calendar. The app exits only from the red leave button. Calendar header is only the view chip: filter and route are gone; month is inside **Вид**.
+- Calls and SMS: swipe or multi-select (long-press) to delete. Deleted calls set `deletedAt` + `jobCreateBlocked` + `aiSkip`; AI must not process them. Deleted SMS same (`aiSkip`). Restore from **Корзина**. Deploy `processCallRecording`, `retryStuckCallAi`, `aiRelayComplete`, `incomingSms`.
+- Old cancelled/deleted phone jobs were coming back as new «Заявка с телефона» because app `recoverMissingCallJobs` and server `recoverAiCallsMissingJobs` recreated them. Now `jobCreateBlocked` on the call after cancel/trash/delete-forever. Ghost `createdJobId` blocks, does not mint a new job. Recover only creates for calls under 48 hours with no prior job. FCM «Заявка с телефона» only if the call is under 4 hours. Copies next to an already cancelled job for the same call are auto-cancelled. Deploy `retryStuckCallAi`, `processCallRecording`, `aiRelayComplete`, `incomingSms`, `onJobWritten`. Do **not** reopen aggressive recover of the last 30 calls.
+- Call transcript: sequential Gemini (full dialog first, then extract). Speakers **ИИ/Клиент** or **Моё/Клиент**. Do not rush or trim the dialog.
+- Bell: **Звонки / Заявки** only — no Secretary tab. Tab swipe has **no haptic**. Tap on a call notification opens `CallReviewPage` and dismisses the shade.
+- Phone secretary settings: pickup on/off + immediate answer + **Ошибки секретаря**. Setup/test chat removed. Do not put owner training back in the app. Live prompt is server-only. `ownerBrief` may still exist in Firestore from old chat; it is no longer edited in the UI.
+- Reschedule SMS: “Yes of course” only — no 2-hour window and no free-times list.
+- Inbound SMS is written to Firestore **before** confirm handling so the chat does not wait. Conversation UI keeps the last thread while the stream reloads.
+- Chat owner/tenant switch: SMS thread is **phone-scoped**. In-chat «Кому» dropdown must remount the stream (`ConversationPeer` + `_selectPeer`). Do **not** pass both phones as `extraPhones` (that merged the two threads). Job Chat tab and SMS icon pass `recipients`.
+- Shop clock: bare “2” / “at 2” / “two” is **14:00**, not 02:00 (`preferShopVisitTime`). 02:00 was refused as outside 7–21, so the visit was not written. Confirm SMS code **2** is not reschedule (only **5**). Tenant inbound SMS falls back to the open job’s `jobSitePhone`.
 - Dock side tabs (menu / bell) are **narrow** (`_handleWidth` 36): they only peek from the screen edge, still full height of the navy bar. Nested tab pages must keep status-bar insets removed (`padding` + `viewPadding` top/bottom 0 in `MainScreen`); do not wrap tab `Navigator`s with a second `MediaQuery.removePadding` from the outer context — that restored the status-bar gap under the シ-face (client card vs Связь).
 - Calendar yellow **plus** and Связь yellow **dialpad** are the same round FAB, same spot a little above the dock — not inside the navy menu. Hidden on Клиенты and when a child page is open. Clients tab yellow plus is the body FAB only — **no** plus in the clients app bar.
 - In-app assistant stays the small シ-face in the header. Tap or wake word (Purish) does **not** open a full-screen overlay: the face turns **yellow** while listening, mouth opens while speaking, same シ style. Tap again to stop. Tabs stay usable. Do not close the session when tools open a screen.
@@ -93,14 +288,14 @@ A follow-up email from a client with an open job is parsed by Gemini and written
 - Client card: no AppBar; back on the left; **trash then pencil** stacked on the right (pencil a bit lower). Date chevrons must not use `IconButton` splash («чернила»).
 - Bell Jobs tab shows repair-email offers **and** other inbound CRM/watched letters (`emailOfferPending` / `emailBellPending` / unread inbound). Badge sits inward (`topLeft`) so the narrow right tab does not clip it. Deploy `syncGmailInbox` after email ingest/bell flag changes.
 - Drawer bottom row restored: **Корзина / Запчасти / Поиск**. Clients tab has a yellow plus FAB above the dock (`FloatingActionButtonLocation.centerFloat`) that adds a client.
-- Phone secretary Live prompt is **server-only** (no app greeting / collect flags / extraRules / learnedRules). After confirm she keeps talking. Context window 32k/18k so she does not freeze mid-word. Deploy `aiVoiceRelay`, `aiVoiceTurn`, `incomingCall`, `dialAction`.
+- Phone secretary Live prompt is **server-only** (no app greeting / collect flags / extraRules / learnedRules). After confirm: sticker photo, anything else, then “Have a good day” — no hangup. Visits Mon–Fri only. Greeting FixApplianceCA. Deploy `aiVoiceRelay`, `aiVoiceTurn`, `incomingCall`, `dialAction`, `incomingSms`.
 
 ## Recent file history (Aug 22 2026)
 
-- Main chrome: **シ-face** (`AssistantFaceButton`) at top center. Tap or Purish turns it **yellow** and starts listen — no full-screen overlay. Mouth opens while speaking. Calendar header (Вид / Фильтр / Маршрут / Месяц) is the same **navy bar**; chips are yellow when selected, white when not. Bouncing `local_shipping` van top-right. Bottom dock: yellow menu/bell **full height** of the navy bar; Calendar / Связь / Клиенты grouped in the **center**.
+- Main chrome: **シ-face** (`AssistantFaceButton`) at top center. Tap or Purish turns it **yellow** and starts listen — no full-screen overlay. Mouth opens while speaking. Calendar header is the view chip only (day / 5 days / week / month / list). Bouncing `local_shipping` van top-right. Bottom dock: yellow menu/bell **full height** of the navy bar; Calendar / Связь / Клиенты grouped in the **center**.
 - Declined service calls (`service_declined` / `serviceDeclined`) stay in the bell and do **not** create a repair job.
-- Booking SMS waits for FIX to confirm the job. Email jobs get the same 1 / 0 / 5 confirmation as a letter **and SMS if a phone exists** (so a date change is not email-only).
-- Take repair orders every day including Sat/Sun/holidays. Regular visits Mon–Fri 7 a.m.–9 p.m.; Saturday by agreement. Secretary/SMS must not say we don’t book Saturdays.
+- Booking SMS waits for FIX to confirm the job. Email jobs get the same 1 / 0 / 5 confirmation as a letter **and SMS if a phone exists** (so a date change is not email-only). Review SMS after **Готово/Завершено** runs from `onJobWritten` even though the job is closed; hourly `sendVisitReminders` also catch-ups recent completes missing `reviewSmsSentAt`. Deploy `onJobWritten`, `sendVisitReminders`.
+- Take repair orders 24/7. Technician visits Mon–Fri 7 a.m.–9 p.m. Saturday and Sunday: no visit; offer a weekday. Holidays by agreement with the technician.
 - Dishwasher icon: match `dish` / `посуд` before `washer` (`dishwasher` contains `wash`).
 - Basket is 30-day trash for deleted jobs/clients; unscheduled jobs have their own list.
 - Reports: two tabs — **Для T2** (UFile / TurboTax GIFI pack: 8000 sales, 8320 parts, GST34 101/103) and **Операции** (Jobber KPIs + Stripe). Default period is calendar **year**. Simple T2 method: type 8000 and 8320, leave inventory 8300/8500 blank. PDF/copy from the T2 screen. Not tax advice.
@@ -116,7 +311,7 @@ A follow-up email from a client with an open job is parsed by Gemini and written
 - Yellow plus is a round FAB **on the Calendar canvas** above the dock (hidden on Связь / Клиенты). Menu and bell fill the full height of the navy dock but stay **narrow** (peek from the edges); icons are centered. Calendar / Связь / Клиенты icons are larger.
 - Purysh wake: Android STT with system beep muted; PCM+Gemini fallback. Aliases include purge/purish/пурыш. Overlay stays silent until FIX speaks.
 - Job tracking dialog: do **not** use `DropdownButtonFormField` (overflow + `_dependents.isEmpty` crash on keyboard Enter). Supplier is a tap-to-expand list; Enter on track/order fields saves.
-- Unsaved-changes prompt is a **bottom sheet**: green check = save, yellow square = don’t save, red X = cancel/stay. No text on the buttons (`confirm_action_sheet.dart`).
+- Unsaved-changes prompt is a **bottom sheet**: green check = save, yellow square = stay, red X = close without saving. Short labels under the buttons (`confirm_action_sheet.dart`). Cannot leave a dirty form without this sheet.
 - Secretary creates the client card and job **only after the call ends** (`aiRelayComplete` / recording), not mid-conversation.
 - Client card: appliances as **tiles**; job history stays a **list**; **История связи** shows that client's calls, SMS, and email.
 

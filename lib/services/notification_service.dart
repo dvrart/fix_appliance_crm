@@ -1,10 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../core/api_keys.dart';
 import '../core/l10n/app_locale.dart';
+import 'inbox_push_mirror.dart';
 import 'local_notification_service.dart';
 import 'notification_router.dart';
 
@@ -19,6 +23,27 @@ class NotificationService {
     return raw.length <= 50 ? raw : raw.substring(0, 50);
   }
 
+  static String tagFor(Map<String, String> data) {
+    final existing = (data['tag'] ?? '').trim();
+    if (existing.isNotEmpty) return existing;
+    final type = (data['type'] ?? 'sms').trim();
+    final from = (data['from'] ?? '').trim();
+    final to = (data['to'] ?? '').trim();
+    final callSid = (data['callSid'] ?? data['callId'] ?? '').trim();
+    final messageId = (data['messageId'] ?? '').trim();
+    final jobId = (data['jobId'] ?? '').trim();
+    final key = from.isNotEmpty
+        ? from
+        : (to.isNotEmpty
+            ? to
+            : (callSid.isNotEmpty
+                ? callSid
+                : (messageId.isNotEmpty
+                    ? messageId
+                    : (jobId.isNotEmpty ? jobId : 'inbox'))));
+    return inboxTag(type: type.isEmpty ? 'sms' : type, from: key);
+  }
+
   static Future<void> initialize() async {
     if (_initialized) return;
     _initialized = true;
@@ -26,6 +51,18 @@ class NotificationService {
     try {
       await LocalNotificationService.initialize();
       await LocalNotificationService.ensureInboxChannels();
+      unawaited(InboxPushMirror.start());
+      _deviceChannel.setMethodCallHandler((call) async {
+        if (call.method == 'notificationTap') {
+          final raw = call.arguments;
+          if (raw is Map) {
+            await NotificationRouter.open({
+              for (final entry in raw.entries)
+                '${entry.key}': '${entry.value ?? ''}',
+            });
+          }
+        }
+      });
       await FirebaseMessaging.instance.requestPermission(
         alert: true,
         badge: true,
@@ -46,6 +83,7 @@ class NotificationService {
       if (initial != null) {
         await NotificationRouter.open(initial.data);
       }
+      await _askUnrestrictedBatteryOnce();
       debugPrint('NotificationService: FCM-токен зарегистрирован');
     } catch (e) {
       debugPrint('NotificationService: ошибка инициализации: $e');
@@ -58,6 +96,111 @@ class NotificationService {
     } catch (e) {
       debugPrint('NotificationService: openSoundSettings: $e');
     }
+  }
+
+  static Future<bool?> openBatterySettings() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return true;
+    try {
+      return await _deviceChannel
+          .invokeMethod<bool>('requestIgnoreBatteryOptimizations');
+    } catch (e) {
+      debugPrint('NotificationService: openBatterySettings: $e');
+      return null;
+    }
+  }
+
+  static Future<bool> areNotificationsEnabled() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return true;
+    try {
+      final enabled =
+          await _deviceChannel.invokeMethod<bool>('areNotificationsEnabled');
+      return enabled ?? true;
+    } catch (e) {
+      debugPrint('NotificationService: areNotificationsEnabled: $e');
+      return true;
+    }
+  }
+
+  /// Один раз подсказать включить уведомления, если система их блокирует.
+  static Future<void> promptIfDisabled(BuildContext context) async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('asked_enable_notifications') == true) return;
+    final enabled = await areNotificationsEnabled();
+    if (enabled || !context.mounted) return;
+    await prefs.setBool('asked_enable_notifications', true);
+    if (!context.mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Icon(Icons.notifications_off_outlined, size: 48, color: Color(0xFF14557F)),
+                const SizedBox(height: 12),
+                Text(
+                  'Включите уведомления'.tr,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF14557F),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Без разрешения вы не увидите SMS, звонки и новые заявки, когда приложение закрыто.'
+                      .tr,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey.shade700,
+                    height: 1.35,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: () async {
+                      Navigator.pop(sheetContext);
+                      await openSoundSettings();
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF14557F),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text('Открыть настройки'.tr),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: () => Navigator.pop(sheetContext),
+                  child: Text('Позже'.tr),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   static Future<void> dismissConversation({
@@ -92,39 +235,69 @@ class NotificationService {
   }
 
   static Future<void> _onForegroundMessage(RemoteMessage message) async {
-    final type = (message.data['type'] ?? '').toString();
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    await showRemoteMessage(message);
+  }
+
+  static Future<void> showRemoteMessage(RemoteMessage message) async {
+    final data = <String, String>{
+      for (final entry in message.data.entries)
+        entry.key: '${entry.value ?? ''}',
+    };
+    final title = (message.notification?.title ?? data['title'] ?? '').toString();
+    final body = (message.notification?.body ?? data['body'] ?? '').toString();
+    if (title.trim().isNotEmpty) data['title'] = title;
+    if (body.trim().isNotEmpty) data['body'] = body;
+    await showRemoteData(data);
+  }
+
+  static Future<void> showRemoteData(Map<String, String> data) async {
+    final type = (data['type'] ?? '').toString();
+    final title = (data['title'] ?? '').toString();
+    final body = (data['body'] ?? '').toString();
+    if (title.trim().isEmpty && body.trim().isEmpty) return;
+    final tag = tagFor(data);
+    unawaited(InboxPushMirror.markShown(tag));
+    final from = (data['from'] ?? '').toString();
+    final messageId = (data['messageId'] ?? '').toString();
+    final callId = (data['callSid'] ?? data['callId'] ?? '').toString();
+    final jobId = (data['jobId'] ?? '').toString();
+    if (type == 'email' || type == 'email_offer') {
+      if (messageId.isNotEmpty) {
+        unawaited(InboxPushMirror.markShown('email:$messageId'));
+      }
+    } else if (type == 'sms' && messageId.isNotEmpty) {
+      unawaited(InboxPushMirror.markShown('sms:$messageId'));
+    } else if (type == 'call' && callId.isNotEmpty) {
+      unawaited(InboxPushMirror.markShown('call:$callId'));
+    } else if (type == 'job' && jobId.isNotEmpty) {
+      unawaited(InboxPushMirror.markShown('job:$jobId'));
+    }
+    if (from.isNotEmpty) {
+      unawaited(InboxPushMirror.markShown(inboxTag(type: type, from: from)));
+    }
+
     if (type == 'secretary_lesson') {
-      if (defaultTargetPlatform != TargetPlatform.android) return;
-      final lessonTitle = message.notification?.title ?? 'Разбор звонка секретаря'.tr;
-      final body = message.notification?.body ?? '';
-      if (lessonTitle.trim().isEmpty && body.trim().isEmpty) return;
       await LocalNotificationService.showSecretaryLearn(
-        title: lessonTitle,
+        title: title.isEmpty ? 'Разбор звонка секретаря' : title,
         body: body,
-        tag: (message.data['tag'] ?? '').toString(),
+        tag: tag,
       );
       return;
     }
-    final title = message.notification?.title ?? '';
-    final body = message.notification?.body ?? '';
-    if (title.trim().isEmpty && body.trim().isEmpty) return;
-    if (defaultTargetPlatform != TargetPlatform.android) return;
 
     final isConfirm = type == 'visit_confirm' ||
         type == 'estimate_confirm' ||
         title == 'Заявка подтверждена' ||
         title == 'Заявка не подтверждена' ||
-        title == 'Клиент подтвердил ремонт' ||
-        title == 'Заявка подтверждена'.tr ||
-        title == 'Заявка не подтверждена'.tr ||
-        title == 'Клиент подтвердил ремонт'.tr;
+        title == 'Клиент подтвердил ремонт';
     if (isConfirm) {
       await LocalNotificationService.showVisitConfirm(
-        title: title.isEmpty ? 'Заявка подтверждена'.tr : title,
+        title: title.isEmpty ? 'Заявка подтверждена' : title,
         body: body,
-        tag: (message.data['tag'] ?? '').toString(),
-        jobId: (message.data['jobId'] ?? '').toString(),
-        from: (message.data['from'] ?? '').toString(),
+        tag: tag,
+        jobId: (data['jobId'] ?? '').toString(),
+        from: (data['from'] ?? '').toString(),
       );
       return;
     }
@@ -132,21 +305,21 @@ class NotificationService {
     final isEmail = type == 'email' ||
         type == 'email_offer' ||
         type == 'shipment' ||
-        (type == 'job' && (message.data['source'] ?? '') == 'email');
+        (type == 'job' && (data['source'] ?? '') == 'email');
     final isCall = type == 'call' ||
-        (type == 'job' && (message.data['source'] ?? '') != 'email');
+        (type == 'job' && (data['source'] ?? '') != 'email');
     await LocalNotificationService.showInboxAlert(
       title: title.isEmpty
           ? (isEmail
               ? (type == 'email_offer'
-              ? 'Письмо о ремонте'.tr
-              : (type == 'job' ? 'Заявка с почты'.tr : 'Новое письмо'.tr))
+                  ? 'Письмо о ремонте'
+                  : (type == 'job' ? 'Заявка с почты' : 'Новое письмо'))
               : isCall
-                  ? (type == 'job' ? 'Заявка с телефона'.tr : 'ИИ взял звонок'.tr)
-                  : 'Новое SMS'.tr)
+                  ? (type == 'job' ? 'Заявка с телефона' : 'ИИ взял звонок')
+                  : 'Новое SMS')
           : title,
       body: body,
-      tag: (message.data['tag'] ?? '').toString(),
+      tag: tag,
       channelId: isEmail
           ? LocalNotificationService.emailChannelId
           : isCall
@@ -160,14 +333,27 @@ class NotificationService {
               : 'Incoming SMS and photos from clients',
       data: {
         'type': type,
-        'jobId': (message.data['jobId'] ?? '').toString(),
-        'callSid': (message.data['callSid'] ?? '').toString(),
-        'calledAt': (message.data['calledAt'] ?? '').toString(),
-        'from': (message.data['from'] ?? '').toString(),
-        'source': (message.data['source'] ?? '').toString(),
-        'messageId': (message.data['messageId'] ?? '').toString(),
+        'jobId': (data['jobId'] ?? '').toString(),
+        'callSid': (data['callSid'] ?? data['callId'] ?? '').toString(),
+        'calledAt': (data['calledAt'] ?? '').toString(),
+        'from': (data['from'] ?? '').toString(),
+        'source': (data['source'] ?? '').toString(),
+        'messageId': (data['messageId'] ?? '').toString(),
+        'tag': tag,
       },
     );
+  }
+
+  static Future<void> _askUnrestrictedBatteryOnce() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('asked_ignore_battery') == true) return;
+    await prefs.setBool('asked_ignore_battery', true);
+    try {
+      await _deviceChannel.invokeMethod('requestIgnoreBatteryOptimizations');
+    } catch (e) {
+      debugPrint('NotificationService: battery: $e');
+    }
   }
 
   static Future<void> _saveToken(String? token) async {

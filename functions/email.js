@@ -71,6 +71,31 @@ function normalizeMessageId(value) {
     .toLowerCase();
 }
 
+function emailFingerprint(fromEmail, subject, date) {
+  const from = String(fromEmail || '')
+    .trim()
+    .toLowerCase();
+  const subj = String(subject || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  const when = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+  const minute = when.toISOString().slice(0, 16);
+  return crypto
+    .createHash('sha1')
+    .update(`${from}|${subj}|${minute}`)
+    .digest('hex');
+}
+
+function isAlreadyExists(error) {
+  const code = error && error.code;
+  return (
+    code === 6 ||
+    code === 'already-exists' ||
+    /already exists/i.test(String((error && error.message) || ''))
+  );
+}
+
 function collectHeaderIds(parsed) {
   const ids = [];
   const push = (value) => {
@@ -108,7 +133,14 @@ async function readWatchedEmailSenders() {
     const seen = new Set();
     const result = [];
     for (const item of raw) {
-      const email = String(item || '').trim().toLowerCase();
+      let email = '';
+      if (item && typeof item === 'object') {
+        email = String(item.email || item.address || '')
+          .trim()
+          .toLowerCase();
+      } else {
+        email = String(item || '').trim().toLowerCase();
+      }
       if (!email.includes('@') || seen.has(email)) continue;
       seen.add(email);
       result.push(email);
@@ -260,6 +292,81 @@ function extractAddress(value) {
     return String(value[0].address || value[0] || '').trim().toLowerCase();
   }
   return '';
+}
+
+function extractName(value) {
+  if (!value) return '';
+  if (typeof value === 'string') {
+    const match = value.match(/^"?([^"<]+)"?\s*</);
+    return match ? match[1].trim() : '';
+  }
+  if (value.value) {
+    const first = Array.isArray(value.value) ? value.value[0] : value.value;
+    return String((first && first.name) || '').trim();
+  }
+  return '';
+}
+
+function headerValue(parsed, name) {
+  const headers = parsed && parsed.headers;
+  if (!headers) return '';
+  try {
+    if (typeof headers.get === 'function') {
+      const value = headers.get(name);
+      if (value == null) return '';
+      if (Array.isArray(value)) return value.map(String).join(' ');
+      return String(value);
+    }
+  } catch (_) {}
+  return String(headers[name] || '');
+}
+
+function isWebsiteFormMail({ parsed, fromEmail, fromName, subject, body }) {
+  const from = String(fromEmail || '')
+    .trim()
+    .toLowerCase();
+  const name = String(fromName || extractName(parsed && parsed.from) || '').toLowerCase();
+  const subj = String(subject || '').toLowerCase();
+  const text = String(body || '').toLowerCase();
+  const mailer = [
+    headerValue(parsed, 'x-mailer'),
+    headerValue(parsed, 'x-originating-script'),
+    headerValue(parsed, 'x-wpforms'),
+    headerValue(parsed, 'x-wpcf7'),
+  ].join(' ');
+  if (
+    /wordpress|wpforms|wpcf7|contact form 7|gravity.?form|fluent.?form|ninja.?form|elementor|forminator/i.test(
+      mailer
+    )
+  ) {
+    return true;
+  }
+  if (/^(wordpress|wpadmin|wpforms|wp|webmaster)@/.test(from)) return true;
+  if (from.includes('wordpress')) return true;
+  if (/\bwordpress\b|\bwpforms\b|\bwpcf7\b/.test(name)) return true;
+  if (
+    /this e-?mail was sent from (a )?contact form|sent from (your )?(contact form on|wordpress)|powered by (wpforms|contact form 7|elementor)/i.test(
+      text
+    )
+  ) {
+    return true;
+  }
+  if (/contact form on .{2,160} \(https?:\/\//i.test(text)) return true;
+  if (
+    /\[wordpress\]|new (contact )?form (entry|submission)|website (inquiry|request|form)|форма с сайта|заявка с сайта/.test(
+      subj
+    )
+  ) {
+    return true;
+  }
+  if (
+    /fix-appliance\.ca/.test(text) &&
+    (/\*name\b|\byour name\b|\bfull name\b/.test(text) &&
+      /\*email\b|\be-?mail address\b/.test(text))
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function wrapAngleId(value) {
@@ -600,6 +707,204 @@ module.exports = function createEmailModule({
     return true;
   }
 
+  async function findExistingInboundEmail({ messageId, fingerprint, gmailUid }) {
+    const col = refs().messagesRef;
+    const checks = [];
+    if (messageId) {
+      checks.push(col.where('emailMessageId', '==', messageId).limit(1).get());
+    }
+    if (fingerprint) {
+      checks.push(col.where('emailFingerprint', '==', fingerprint).limit(1).get());
+    }
+    const uid = Number(gmailUid || 0);
+    if (uid > 0) {
+      checks.push(col.where('gmailUid', '==', uid).limit(1).get());
+    }
+    for (const snap of await Promise.all(checks)) {
+      if (snap && !snap.empty) return snap.docs[0];
+    }
+    return null;
+  }
+
+  async function hideDuplicateEmailBells() {
+    const snap = await refs().messagesRef.where('channel', '==', 'email').get();
+    const groups = new Map();
+    for (const doc of snap.docs) {
+      const data = doc.data() || {};
+      if (data.direction !== 'inbound') continue;
+      if (data.emailOfferDismissed || data.aiSkip) continue;
+      const from = String(data.fromEmail || data.from || '')
+        .trim()
+        .toLowerCase();
+      const subject = String(data.subject || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+      const created =
+        data.createdAt && typeof data.createdAt.toDate === 'function'
+          ? data.createdAt.toDate()
+          : new Date(0);
+      const minute = created.toISOString().slice(0, 16);
+      const key =
+        String(data.emailFingerprint || '').trim() ||
+        String(data.emailMessageId || '').trim() ||
+        `${from}|${subject}|${minute}`;
+      if (!key || key === '||') continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({
+        id: doc.id,
+        ref: doc.ref,
+        created,
+        data,
+      });
+    }
+    let hidden = 0;
+    for (const items of groups.values()) {
+      if (items.length < 2) continue;
+      items.sort((a, b) => a.created - b.created);
+      const keep = items[0];
+      for (const extra of items.slice(1)) {
+        await extra.ref.set(
+          {
+            emailOfferPending: false,
+            emailBellPending: false,
+            emailOfferDismissed: true,
+            read: true,
+            aiSkip: true,
+            aiStatus: 'duplicate',
+            duplicateOf: keep.id,
+          },
+          { merge: true }
+        );
+        hidden += 1;
+      }
+    }
+    if (hidden) console.log(`syncGmailInbox: hid ${hidden} duplicate email notices`);
+    return hidden;
+  }
+
+  async function collapseDuplicateEmailJobs() {
+    const snap = await refs().jobsRef.get();
+    const groups = new Map();
+    for (const doc of snap.docs) {
+      const data = doc.data() || {};
+      if (data.deletedAt) continue;
+      const status = String(data.status || '');
+      if (status === 'Отменено' || status === 'Завершено') continue;
+      const fromEmail = String(data.sourceEmailFrom || '')
+        .trim()
+        .toLowerCase();
+      const isEmail =
+        String(data.source || '').toLowerCase() === 'email' ||
+        Boolean(data.sourceEmailId) ||
+        fromEmail.includes('@');
+      if (!isEmail) continue;
+      const created =
+        data.createdAt && typeof data.createdAt.toDate === 'function'
+          ? data.createdAt.toDate()
+          : new Date(0);
+      const minute = created.toISOString().slice(0, 16);
+      const desc = String(data.description || data.clientName || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .slice(0, 80);
+      const key =
+        String(data.emailFingerprint || '').trim() ||
+        `${fromEmail}|${minute}|${desc}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({
+        id: doc.id,
+        ref: doc.ref,
+        created,
+        data,
+        fill:
+          String(data.description || '').length +
+          String(data.clientPhone || '').length +
+          (Array.isArray(data.attachments) ? data.attachments.length * 20 : 0),
+      });
+    }
+    let closed = 0;
+    for (const items of groups.values()) {
+      if (items.length < 2) continue;
+      items.sort((a, b) => b.fill - a.fill || a.created - b.created);
+      const keep = items[0];
+      for (const extra of items.slice(1)) {
+        await extra.ref.set(
+          {
+            status: 'Отменено',
+            needsReview: false,
+            cloneOfJobId: keep.id,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+        closed += 1;
+      }
+    }
+    if (closed) console.log(`syncGmailInbox: closed ${closed} duplicate email jobs`);
+    return closed;
+  }
+
+  async function acquireInboxLock() {
+    const ref = refs().gmailRef;
+    const now = Date.now();
+    try {
+      return await refs().db.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        const data = snap.exists ? snap.data() || {} : {};
+        const until = Number(data.syncLockUntil || 0);
+        if (until > now + 2000) return false;
+        tx.set(ref, { syncLockUntil: now + 130000 }, { merge: true });
+        return true;
+      });
+    } catch (error) {
+      console.warn('syncGmailInbox lock:', error.message);
+      return false;
+    }
+  }
+
+  async function releaseInboxLock() {
+    await refs()
+      .gmailRef.set({ syncLockUntil: 0 }, { merge: true })
+      .catch(() => {});
+  }
+
+  async function reclassifyWebsiteMails() {
+    const snap = await refs().messagesRef.where('channel', '==', 'email').get();
+    let patched = 0;
+    let batch = refs().db.batch();
+    let inBatch = 0;
+    const commit = async () => {
+      if (!inBatch) return;
+      await batch.commit();
+      batch = refs().db.batch();
+      inBatch = 0;
+    };
+    for (const doc of snap.docs) {
+      const data = doc.data() || {};
+      if (data.direction === 'outbound') continue;
+      if (data.websiteForm === true && !data.clientId) continue;
+      const fromEmail = extractAddress(data.fromEmail || data.from);
+      const website = isWebsiteFormMail({
+        fromEmail,
+        fromName: data.fromName,
+        subject: data.subject,
+        body: data.body,
+      });
+      if (!website) continue;
+      batch.update(doc.ref, {
+        websiteForm: true,
+        clientId: admin.firestore.FieldValue.delete(),
+      });
+      patched += 1;
+      inBatch += 1;
+      if (inBatch >= 400) await commit();
+    }
+    await commit();
+    if (patched) console.log(`syncGmailInbox: detached ${patched} website form emails`);
+  }
+
   async function ingestParsed(parsed, ourUser, uid, gate) {
     const fromEmail = extractAddress(parsed.from);
     const toEmail = extractAddress(parsed.to) || ourUser.toLowerCase();
@@ -613,9 +918,9 @@ module.exports = function createEmailModule({
     const replyIds = collectHeaderIds(parsed);
     const replyClientId = replyIds.map((id) => gate.messageIds.get(id)).find(Boolean) || null;
     const isCrmReply = gate.sentTo.has(fromEmail) || replyIds.some((id) => gate.messageIds.has(id));
-    const intakeTitle = await readEmailIntakeTitle();
     const subject = String(parsed.subject || '').trim();
-    const isIntake = subjectMatchesIntake(subject, intakeTitle);
+    const fromName = extractName(parsed.from);
+    const replyToEmail = extractAddress(parsed.replyTo);
     const watched = await readWatchedEmailSenders();
     const isWatched = watched.includes(fromEmail);
     const textPreview = String(parsed.text || '')
@@ -625,26 +930,52 @@ module.exports = function createEmailModule({
       ? String(parsed.html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000)
       : '';
     const looksRepair = looksLikeApplianceRepair(subject, `${textPreview} ${htmlPreview}`);
-    const maybeRepair = mightBeApplianceRepair(subject, `${textPreview} ${htmlPreview}`);
-    if (
-      !isCrmReply &&
-      isBulkPromoMail(fromEmail, subject, `${textPreview} ${htmlPreview}`, parsed)
-    ) {
-      console.log(`syncGmailInbox skip promo ${fromEmail} uid=${uid || '-'}`);
+    const isWebsite = isWebsiteFormMail({
+      parsed,
+      fromEmail,
+      fromName,
+      subject,
+      body: `${textPreview} ${htmlPreview}`,
+    });
+    if (!isCrmReply && !isWatched && !isWebsite) {
+      console.log(`syncGmailInbox skip non-watched ${fromEmail} uid=${uid || '-'}`);
       return false;
     }
-    if (!isCrmReply && !isIntake && !isWatched && !maybeRepair) {
-      console.log(`syncGmailInbox skip non-CRM ${fromEmail} uid=${uid || '-'}`);
-      return false;
-    }
-    const treatIntake = isIntake || (!isCrmReply && maybeRepair);
 
+    const created = parsed.date instanceof Date ? parsed.date : new Date();
     const messageId = normalizeMessageId(parsed.messageId || `uid-${uid}`);
-    const existing = await refs().messagesRef.where('emailMessageId', '==', messageId).limit(1).get();
-    if (!existing.empty) return false;
+    const fingerprint = emailFingerprint(fromEmail, subject, created);
+    const existing = await findExistingInboundEmail({
+      messageId,
+      fingerprint,
+      gmailUid: uid,
+    });
+    if (existing) {
+      console.log(
+        `syncGmailInbox skip duplicate ${fromEmail} uid=${uid || '-'} id=${existing.id}`
+      );
+      return false;
+    }
 
-    const matched = await findClientByEmail(fromEmail);
-    const clientId = (matched && matched.id) || replyClientId || gate.sentTo.get(fromEmail) || null;
+    const matched = isWatched || isWebsite ? null : await findClientByEmail(fromEmail);
+    const clientId = isWebsite
+      ? null
+      : (matched && matched.id) || replyClientId || gate.sentTo.get(fromEmail) || null;
+    let hasOpenJob = false;
+    if (clientId && !isWatched && !isWebsite) {
+      try {
+        const jobsSnap = await refs().jobsRef.where('clientId', '==', clientId).get();
+        hasOpenJob = jobsSnap.docs.some((doc) => {
+          const data = doc.data() || {};
+          if (data.deletedAt) return false;
+          const status = String(data.status || '');
+          return status !== 'Завершено' && status !== 'Отменено';
+        });
+      } catch (error) {
+        console.warn('email open job lookup:', error.message);
+      }
+    }
+    const treatIntake = isWatched || isWebsite;
     const text = String(parsed.text || '')
       .trim()
       .slice(0, 8000);
@@ -652,7 +983,6 @@ module.exports = function createEmailModule({
       ? String(parsed.html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 8000)
       : '';
     const body = text || htmlFallback || '(пустое письмо)';
-    const created = parsed.date instanceof Date ? parsed.date : new Date();
 
     const preloadedImages = [];
     for (const att of parsed.attachments || []) {
@@ -682,8 +1012,8 @@ module.exports = function createEmailModule({
       console.warn('email visit confirm:', error.message);
     }
 
-    const runAi = !confirmHandled && (isCrmReply || treatIntake);
-    const added = await refs().messagesRef.add({
+    const runAi = !confirmHandled && (isCrmReply || treatIntake || hasOpenJob);
+    const payload = {
       sid: messageId,
       from: fromEmail,
       to: toEmail,
@@ -698,18 +1028,40 @@ module.exports = function createEmailModule({
       createdAt: admin.firestore.Timestamp.fromDate(created),
       read: confirmHandled,
       emailMessageId: messageId,
+      emailFingerprint: fingerprint,
       gmailUid: uid || null,
       crmThread: true,
       emailIntake: treatIntake && !confirmHandled,
+      emailOfferPending: false,
+      emailBellPending: !confirmHandled,
       watchedSender: isWatched,
-      applianceRepair: looksRepair || maybeRepair,
+      websiteForm: isWebsite,
+      fromName: fromName || '',
+      replyToEmail: replyToEmail || '',
+      applianceRepair: looksRepair,
       inReplyTo: replyIds[0] || null,
       aiStatus: confirmHandled
         ? 'skipped_confirm'
         : runAi && (body.trim() || preloadedImages.length)
           ? 'processing'
           : 'none',
-    });
+    };
+    const docId = treatIntake ? `em_${fingerprint.slice(0, 32)}` : null;
+    let added;
+    try {
+      if (docId) {
+        added = refs().messagesRef.doc(docId);
+        await added.create(payload);
+      } else {
+        added = await refs().messagesRef.add(payload);
+      }
+    } catch (error) {
+      if (isAlreadyExists(error)) {
+        console.log(`syncGmailInbox skip race ${fromEmail} ${fingerprint.slice(0, 8)}`);
+        return false;
+      }
+      throw error;
+    }
 
     if (typeof processInboundAi === 'function' && runAi && (body.trim() || preloadedImages.length)) {
       processInboundAi({
@@ -722,6 +1074,8 @@ module.exports = function createEmailModule({
         preloadedImages,
         channel: 'email',
         intake: treatIntake,
+        websiteForm: isWebsite,
+        emailFingerprint: fingerprint,
       }).catch((error) => console.warn('email inbound AI:', error.message));
     }
 
@@ -736,16 +1090,23 @@ module.exports = function createEmailModule({
     }
 
     const isFresh = Date.now() - created.getTime() < 24 * 60 * 60 * 1000;
-    if (isFresh && notifyMaster && isCrmReply && !treatIntake) {
-      const who = matched
-        ? (matched.fullName || matched.name || fromEmail)
-        : fromEmail;
-      await notifyMaster(`Письмо от ${who}`, subject || body.slice(0, 80), {
-        type: 'email',
+    if (isFresh && notifyMaster && !confirmHandled) {
+      const who = isWebsite
+        ? 'веб-сайт'
+        : matched
+          ? (matched.fullName || matched.name || fromEmail)
+          : (fromName || fromEmail);
+      const title = treatIntake
+        ? (looksRepair ? 'Письмо о ремонте' : `Письмо от ${who}`)
+        : `Письмо от ${who}`;
+      await notifyMaster(title, subject || body.slice(0, 80), {
+        type: looksRepair || treatIntake ? 'email_offer' : 'email',
+        source: 'email',
         from: fromEmail,
         to: toEmail,
         messageId: added.id,
       });
+      await added.update({ emailNotified: true }).catch(() => {});
     }
     return true;
   }
@@ -779,63 +1140,76 @@ module.exports = function createEmailModule({
       return;
     }
 
-    await cleanupLegacyInbox();
-
-    const stateSnap = await refs().gmailRef.get();
-    const state = stateSnap.exists ? stateSnap.data() || {} : {};
-    const lastUid = Number(state.lastUid || 0);
-    const client = new ImapFlow({
-      host: 'imap.gmail.com',
-      port: 993,
-      secure: true,
-      auth,
-      logger: false,
-    });
-
-    await client.connect();
-    const lock = await client.getMailboxLock('INBOX');
-    let maxUid = lastUid;
-    try {
-      const uidNext = Number(client.mailbox.uidNext || 1);
-      if (lastUid <= 0) {
-        const skipTo = Math.max(0, uidNext - 1);
-        await refs().gmailRef.set(
-          { lastUid: skipTo, inboxMode: 'crm-replies' },
-          { merge: true }
-        );
-        console.log(`syncGmailInbox: skip mailbox history, lastUid=${skipTo}`);
-        return;
-      }
-      if (lastUid >= uidNext - 1) {
-        if (state.inboxMode !== 'crm-replies') {
-          await refs().gmailRef.set({ inboxMode: 'crm-replies' }, { merge: true });
-        }
-        return;
-      }
-      const gate = await loadCrmEmailGate();
-      const fromUid = lastUid + 1;
-      for await (const msg of client.fetch(
-        { uid: `${fromUid}:*` },
-        { uid: true, source: true, envelope: true }
-      )) {
-        maxUid = Math.max(maxUid, Number(msg.uid || 0));
-        try {
-          const parsed = await simpleParser(msg.source);
-          await ingestParsed(parsed, auth.user, msg.uid, gate);
-        } catch (error) {
-          console.error(`syncGmailInbox uid ${msg.uid}:`, error.message);
-        }
-      }
-    } finally {
-      lock.release();
-      await client.logout().catch(() => {});
+    const gotLock = await acquireInboxLock();
+    if (!gotLock) {
+      console.log('syncGmailInbox: already running, skip');
+      return;
     }
 
-    if (maxUid > lastUid) {
-      await refs().gmailRef.set(
-        { lastUid: maxUid, inboxMode: 'crm-replies' },
-        { merge: true }
-      );
+    try {
+      await cleanupLegacyInbox();
+      await reclassifyWebsiteMails();
+      await hideDuplicateEmailBells();
+      await collapseDuplicateEmailJobs();
+
+      const stateSnap = await refs().gmailRef.get();
+      const state = stateSnap.exists ? stateSnap.data() || {} : {};
+      const lastUid = Number(state.lastUid || 0);
+      const client = new ImapFlow({
+        host: 'imap.gmail.com',
+        port: 993,
+        secure: true,
+        auth,
+        logger: false,
+      });
+
+      await client.connect();
+      const lock = await client.getMailboxLock('INBOX');
+      let maxUid = lastUid;
+      try {
+        const uidNext = Number(client.mailbox.uidNext || 1);
+        if (lastUid <= 0) {
+          const skipTo = Math.max(0, uidNext - 1);
+          await refs().gmailRef.set(
+            { lastUid: skipTo, inboxMode: 'crm-replies' },
+            { merge: true }
+          );
+          console.log(`syncGmailInbox: skip mailbox history, lastUid=${skipTo}`);
+          return;
+        }
+        if (lastUid >= uidNext - 1) {
+          if (state.inboxMode !== 'crm-replies') {
+            await refs().gmailRef.set({ inboxMode: 'crm-replies' }, { merge: true });
+          }
+          return;
+        }
+        const gate = await loadCrmEmailGate();
+        const fromUid = lastUid + 1;
+        for await (const msg of client.fetch(
+          { uid: `${fromUid}:*` },
+          { uid: true, source: true, envelope: true }
+        )) {
+          maxUid = Math.max(maxUid, Number(msg.uid || 0));
+          try {
+            const parsed = await simpleParser(msg.source);
+            await ingestParsed(parsed, auth.user, msg.uid, gate);
+          } catch (error) {
+            console.error(`syncGmailInbox uid ${msg.uid}:`, error.message);
+          }
+        }
+      } finally {
+        lock.release();
+        await client.logout().catch(() => {});
+      }
+
+      if (maxUid > lastUid) {
+        await refs().gmailRef.set(
+          { lastUid: maxUid, inboxMode: 'crm-replies' },
+          { merge: true }
+        );
+      }
+    } finally {
+      await releaseInboxLock();
     }
   }
 
