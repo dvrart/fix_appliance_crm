@@ -3,11 +3,20 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../core/app_commands.dart';
 import '../core/api_keys.dart';
 import '../core/sms_text.dart';
 import '../models/client.dart';
 import 'firestore_service.dart';
 import 'notification_service.dart';
+
+DateTime? _asDate(dynamic value) {
+  if (value == null) return null;
+  if (value is Timestamp) return value.toDate();
+  if (value is DateTime) return value;
+  if (value is String) return DateTime.tryParse(value);
+  return null;
+}
 
 /// Одно SMS-сообщение (входящее или исходящее).
 class SmsMessage {
@@ -33,8 +42,17 @@ class SmsMessage {
   final String? emailMessageId;
   final bool crmThread;
   final bool emailOfferPending;
+  final bool emailBellPending;
+  final bool emailOfferDismissed;
+  final bool watchedSender;
+  final bool websiteForm;
+  final String fromName;
+  final String replyToEmail;
+  final bool emailIntake;
+  final bool applianceRepair;
   /// Русский текст для мастера. Клиенту уходит [body] на английском.
   final String bodyRu;
+  final DateTime? deletedAt;
 
   SmsMessage({
     required this.id,
@@ -59,8 +77,29 @@ class SmsMessage {
     this.emailMessageId,
     this.crmThread = false,
     this.emailOfferPending = false,
+    this.emailBellPending = false,
+    this.emailOfferDismissed = false,
+    this.watchedSender = false,
+    this.websiteForm = false,
+    this.fromName = '',
+    this.replyToEmail = '',
+    this.emailIntake = false,
+    this.applianceRepair = false,
     this.bodyRu = '',
+    this.deletedAt,
   });
+
+  bool get isDeleted => deletedAt != null;
+
+  static const trashKeepDays = 30;
+
+  int get trashDaysLeft {
+    final deleted = deletedAt;
+    if (deleted == null) return 0;
+    final days =
+        deleted.add(const Duration(days: trashKeepDays)).difference(DateTime.now()).inDays;
+    return days < 0 ? 0 : days;
+  }
 
   bool get isOutbound => direction == 'outbound';
 
@@ -82,6 +121,55 @@ class SmsMessage {
     return email.contains('@') ? email : '';
   }
 
+  bool get isWebsiteFormMail {
+    if (!isEmail || isOutbound) return false;
+    if (websiteForm) return true;
+    return looksLikeWebsiteForm(
+      fromEmail: counterpartEmail,
+      fromName: fromName,
+      subject: subject,
+      body: body,
+    );
+  }
+
+  static bool looksLikeWebsiteForm({
+    required String fromEmail,
+    String fromName = '',
+    String subject = '',
+    String body = '',
+  }) {
+    final from = fromEmail.trim().toLowerCase();
+    final name = fromName.trim().toLowerCase();
+    final subj = subject.toLowerCase();
+    final text = body.toLowerCase();
+    if (RegExp(r'^(wordpress|wpadmin|wpforms|wp|webmaster)@').hasMatch(from)) {
+      return true;
+    }
+    if (from.contains('wordpress')) return true;
+    if (RegExp(r'\bwordpress\b|\bwpforms\b|\bwpcf7\b').hasMatch(name)) {
+      return true;
+    }
+    if (RegExp(
+      r'this e-?mail was sent from (a )?contact form|sent from (your )?(contact form on|wordpress)|powered by (wpforms|contact form 7|elementor)',
+    ).hasMatch(text)) {
+      return true;
+    }
+    if (RegExp(r'contact form on .{2,160} \(https?:\/\/').hasMatch(text)) {
+      return true;
+    }
+    if (RegExp(
+      r'\[wordpress\]|new (contact )?form (entry|submission)|website (inquiry|request|form)|форма с сайта|заявка с сайта',
+    ).hasMatch(subj)) {
+      return true;
+    }
+    if (text.contains('fix-appliance.ca') &&
+        RegExp(r'\*name\b|\byour name\b|\bfull name\b').hasMatch(text) &&
+        RegExp(r'\*email\b|\be-?mail address\b').hasMatch(text)) {
+      return true;
+    }
+    return false;
+  }
+
   factory SmsMessage.fromMap(Map<String, dynamic> map, String docId) {
     final from = (map['from'] ?? '').toString();
     final to = (map['to'] ?? '').toString();
@@ -90,21 +178,21 @@ class SmsMessage {
     final looksEmail = from.contains('@') || to.contains('@') || fromEmail.contains('@') || toEmail.contains('@');
     return SmsMessage(
       id: docId,
-      sid: map['sid'] ?? '',
+      sid: (map['sid'] ?? '').toString(),
       from: from,
       to: to,
-      body: map['body'] ?? '',
-      direction: map['direction'] ?? 'outbound',
-      status: map['status'] ?? 'sent',
-      clientId: map['clientId'],
-      createdAt: map['createdAt'] != null ? (map['createdAt'] as Timestamp).toDate() : null,
+      body: (map['body'] ?? '').toString(),
+      direction: (map['direction'] ?? 'outbound').toString(),
+      status: (map['status'] ?? 'sent').toString(),
+      clientId: map['clientId']?.toString(),
+      createdAt: _asDate(map['createdAt']),
       read: map['read'] == true,
-      mediaUrls: map['mediaUrls'] != null
-          ? List<String>.from(map['mediaUrls'])
+      mediaUrls: map['mediaUrls'] is List
+          ? [for (final item in map['mediaUrls'] as List) item.toString()]
           : const [],
-      aiStatus: map['aiStatus'] ?? 'none',
-      extractedData: map['extractedData'] != null
-          ? Map<String, dynamic>.from(map['extractedData'])
+      aiStatus: (map['aiStatus'] ?? 'none').toString(),
+      extractedData: map['extractedData'] is Map
+          ? Map<String, dynamic>.from(map['extractedData'] as Map)
           : null,
       jobId: map['jobId']?.toString(),
       hasPendingMedia: map['twilioMedia'] is List && (map['twilioMedia'] as List).isNotEmpty,
@@ -115,7 +203,20 @@ class SmsMessage {
       emailMessageId: map['emailMessageId']?.toString(),
       crmThread: map['crmThread'] == true,
       emailOfferPending: map['emailOfferPending'] == true,
+      emailBellPending: map['emailBellPending'] == true,
+      emailOfferDismissed: map['emailOfferDismissed'] == true,
+      watchedSender: map['watchedSender'] == true,
+      websiteForm: map['websiteForm'] == true,
+      fromName: (map['fromName'] ?? '').toString(),
+      replyToEmail: (map['replyToEmail'] ?? '').toString(),
+      emailIntake: map['emailIntake'] == true,
+      applianceRepair: map['applianceRepair'] == true,
       bodyRu: (map['bodyRu'] ?? '').toString(),
+      deletedAt: map['deletedAt'] is Timestamp
+          ? (map['deletedAt'] as Timestamp).toDate()
+          : (map['deletedAt'] is DateTime
+              ? map['deletedAt'] as DateTime
+              : DateTime.tryParse((map['deletedAt'] ?? '').toString())),
     );
   }
 
@@ -137,6 +238,8 @@ class SmsConversation {
   final int unreadCount;
   final bool hasSms;
   final bool hasEmail;
+  final bool isWebsite;
+  final List<String> messageIds;
 
   SmsConversation({
     required this.phoneNumber,
@@ -146,7 +249,18 @@ class SmsConversation {
     required this.unreadCount,
     this.hasSms = true,
     this.hasEmail = false,
+    this.isWebsite = false,
+    this.messageIds = const [],
   });
+
+  String get selectKey {
+    if (isWebsite) return 'website';
+    final client = (clientId ?? '').trim();
+    if (client.isNotEmpty) return 'c:$client';
+    final phone = SmsService.normalizePhone(phoneNumber);
+    if (phone.length >= 10) return 'p:$phone';
+    return 'e:${SmsService.normalizeEmail(email ?? '')}';
+  }
 }
 
 /// Сервис двусторонней SMS-переписки через Twilio.
@@ -167,7 +281,8 @@ class SmsService {
   }
 
   static Stream<List<SmsMessage>> streamEmailOffers() {
-    return _ref.where('emailOfferPending', isEqualTo: true).snapshots().map((snapshot) {
+    return _ref.where('channel', isEqualTo: 'email').snapshots().map((snapshot) {
+      final now = DateTime.now();
       final items = snapshot.docs
           .map(
             (doc) => SmsMessage.fromMap(
@@ -175,13 +290,71 @@ class SmsService {
               doc.id,
             ),
           )
-          .where((message) => message.jobId == null || message.jobId!.isEmpty)
+          .where((message) {
+            if (message.direction != 'inbound') return false;
+            if (message.emailOfferDismissed) return false;
+            final jobId = (message.jobId ?? '').trim();
+            if (jobId.isNotEmpty && !message.emailOfferPending) return false;
+            if (message.emailOfferPending || message.emailBellPending) {
+              return true;
+            }
+            if (message.read) return false;
+            final when = message.createdAt;
+            if (when != null && now.difference(when).inDays > 21) return false;
+            return message.crmThread ||
+                message.watchedSender ||
+                message.emailIntake ||
+                message.applianceRepair;
+          })
           .toList();
       items.sort(
         (a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)),
       );
-      return items;
+      return _collapseDuplicateEmailOffers(items);
     });
+  }
+
+  static String _emailOfferDedupeKey(SmsMessage message) {
+    final from = message.counterpartEmail;
+    final subject =
+        message.subject.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final when = message.createdAt?.toUtc();
+    final minute = when == null
+        ? ''
+        : '${when.year.toString().padLeft(4, '0')}'
+            '${when.month.toString().padLeft(2, '0')}'
+            '${when.day.toString().padLeft(2, '0')}'
+            '${when.hour.toString().padLeft(2, '0')}'
+            '${when.minute.toString().padLeft(2, '0')}';
+    return '$from|$subject|$minute';
+  }
+
+  static List<SmsMessage> _collapseDuplicateEmailOffers(List<SmsMessage> items) {
+    if (items.length < 2) return items;
+    final seen = <String>{};
+    final out = <SmsMessage>[];
+    for (final message in items) {
+      final key = _emailOfferDedupeKey(message);
+      if (key == '||') {
+        out.add(message);
+        continue;
+      }
+      if (!seen.add(key)) continue;
+      out.add(message);
+    }
+    return out;
+  }
+
+  static Future<void> markEmailSeen(String messageId) async {
+    final id = messageId.trim();
+    if (id.isEmpty) return;
+    await _ref.doc(id).set(
+      {
+        'emailBellPending': false,
+        'read': true,
+      },
+      SetOptions(merge: true),
+    );
   }
 
   static Future<void> dismissEmailOffer(String messageId) async {
@@ -190,7 +363,9 @@ class SmsService {
     await _ref.doc(id).set(
       {
         'emailOfferPending': false,
+        'emailBellPending': false,
         'emailOfferDismissed': true,
+        'read': true,
         'aiStatus': 'dismissed',
       },
       SetOptions(merge: true),
@@ -207,6 +382,7 @@ class SmsService {
     await _ref.doc(id).set(
       {
         'emailOfferPending': false,
+        'emailBellPending': false,
         'jobId': jobId,
         'clientId': clientId,
         'aiStatus': 'done',
@@ -223,11 +399,14 @@ class SmsService {
     String? clientId,
     List<String> mediaUrls = const [],
     String? bodyRu,
+    String? fallbackBody,
   }) async {
     try {
       final urls = mediaUrls.where((url) => url.startsWith('http')).toList();
       if (body.trim().isEmpty && urls.isEmpty) return false;
-      final response = await http.post(
+      final fallback = (fallbackBody ?? '').trim();
+      final response = await http
+          .post(
         Uri.parse('$kFirebaseFunctionsUrl/sendSms'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
@@ -236,8 +415,10 @@ class SmsService {
           'clientId': clientId,
           if (urls.isNotEmpty) 'mediaUrls': urls,
           if (bodyRu != null && bodyRu.trim().isNotEmpty) 'bodyRu': bodyRu.trim(),
+          if (fallback.isNotEmpty) 'fallbackBody': SmsText.formatSentences(fallback),
         }),
-      );
+      )
+          .timeout(const Duration(seconds: 40));
       if (response.statusCode == 200) {
         if (bodyRu != null && bodyRu.trim().isNotEmpty) {
           try {
@@ -282,12 +463,82 @@ class SmsService {
 
   /// Стрим всех сообщений (для группировки в переписки).
   static Stream<List<SmsMessage>> streamAll() {
+    return _ref.snapshots().map((snapshot) {
+      final messages = <SmsMessage>[];
+      for (final doc in snapshot.docs) {
+        try {
+          final data = doc.data();
+          if (data is! Map) continue;
+          final message = SmsMessage.fromMap(
+            Map<String, dynamic>.from(data),
+            doc.id,
+          );
+          if (message.visibleInCrm && !message.isDeleted) {
+            messages.add(message);
+          }
+        } catch (error) {
+          debugPrint('SMS ${doc.id}: $error');
+        }
+      }
+      messages.sort(
+        (a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)),
+      );
+      return messages;
+    });
+  }
+
+  static Stream<List<SmsMessage>> streamTrashed() {
     return _ref.orderBy('createdAt', descending: true).limit(1200).snapshots().map(
           (snapshot) => snapshot.docs
               .map((doc) => SmsMessage.fromMap(doc.data() as Map<String, dynamic>, doc.id))
-              .where((message) => message.visibleInCrm)
+              .where((message) => message.isDeleted)
               .toList(),
         );
+  }
+
+  static Future<void> delete(String id) async {
+    if (id.trim().isEmpty) return;
+    AppCommands.reactAngry();
+    await _ref.doc(id).set(
+      {
+        'deletedAt': FieldValue.serverTimestamp(),
+        'aiSkip': true,
+        'aiStatus': 'skipped',
+      },
+      SetOptions(merge: true),
+    );
+  }
+
+  static Future<void> deleteMany(Iterable<String> ids) async {
+    for (final id in ids) {
+      await delete(id);
+    }
+  }
+
+  static Future<void> restore(String id) async {
+    if (id.trim().isEmpty) return;
+    await _ref.doc(id).set(
+      {'deletedAt': FieldValue.delete()},
+      SetOptions(merge: true),
+    );
+  }
+
+  static Future<void> deleteForever(String id) async {
+    if (id.trim().isEmpty) return;
+    await _ref.doc(id).delete();
+  }
+
+  static Future<void> purgeExpiredTrash() async {
+    final cutoff = DateTime.now().subtract(const Duration(days: SmsMessage.trashKeepDays));
+    final snapshot = await _ref.limit(1200).get();
+    for (final doc in snapshot.docs) {
+      try {
+        final message = SmsMessage.fromMap(doc.data() as Map<String, dynamic>, doc.id);
+        if (message.deletedAt != null && message.deletedAt!.isBefore(cutoff)) {
+          await deleteForever(message.id);
+        }
+      } catch (_) {}
+    }
   }
 
   static String normalizeEmail(String value) => value.trim().toLowerCase();
@@ -300,6 +551,7 @@ class SmsService {
     String? jobId,
     List<String> extraPhones = const [],
     bool emailsOnly = false,
+    bool websiteInbox = false,
   }) {
     final normalized = normalizePhone(phoneNumber);
     final extra = {
@@ -309,14 +561,11 @@ class SmsService {
     final emailKey = normalizeEmail(email ?? '');
     return streamAll().map((messages) {
       final filtered = messages.where((m) {
+        if (websiteInbox) {
+          return m.isEmail && m.isWebsiteFormMail;
+        }
+        if (m.isWebsiteFormMail) return false;
         if (emailsOnly != m.isEmail) return false;
-        final jobKey = (jobId ?? '').trim();
-        if (jobKey.isNotEmpty && (m.jobId ?? '').toString() == jobKey) {
-          return true;
-        }
-        if (clientId != null && clientId.isNotEmpty && m.clientId == clientId) {
-          return true;
-        }
         if (!emailsOnly) {
           final from = normalizePhone(m.from);
           final to = normalizePhone(m.to);
@@ -327,8 +576,9 @@ class SmsService {
           if (extra.contains(from) || extra.contains(to)) {
             return true;
           }
+          return false;
         }
-        if (emailsOnly && emailKey.contains('@')) {
+        if (emailKey.contains('@')) {
           final fromE = normalizeEmail(m.fromEmail.isNotEmpty ? m.fromEmail : m.from);
           final toE = normalizeEmail(m.toEmail.isNotEmpty ? m.toEmail : m.to);
           if (fromE == emailKey || toE == emailKey) return true;
@@ -364,6 +614,15 @@ class SmsService {
     final keys = <String, ({String phone, String email, String? clientId})>{};
 
     for (final m in messages) {
+      if (m.isWebsiteFormMail) {
+        grouped.putIfAbsent('website', () => []).add(m);
+        keys['website'] = (
+          phone: '',
+          email: '',
+          clientId: null,
+        );
+        continue;
+      }
       Client? client = m.clientId != null ? byId[m.clientId] : null;
       final counterpart = m.isOutbound ? m.to : m.from;
       final phone = normalizePhone(counterpart);
@@ -379,7 +638,7 @@ class SmsService {
       } else if (email.contains('@')) {
         key = 'e:$email';
       } else {
-        continue;
+        key = 'm:${m.id}';
       }
 
       grouped.putIfAbsent(key, () => []).add(m);
@@ -402,11 +661,13 @@ class SmsService {
       return SmsConversation(
         phoneNumber: meta.phone,
         email: meta.email.contains('@') ? meta.email : null,
-        clientId: meta.clientId,
+        clientId: entry.key == 'website' ? null : meta.clientId,
         lastMessage: last,
         unreadCount: msgs.where((m) => !m.isOutbound && !m.read).length,
         hasSms: msgs.any((m) => !m.isEmail),
         hasEmail: msgs.any((m) => m.isEmail),
+        isWebsite: entry.key == 'website',
+        messageIds: [for (final message in msgs) message.id],
       );
     }).toList();
 

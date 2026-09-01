@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -28,10 +29,13 @@ import 'shared/widgets/animated_app_logo.dart';
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   try {
+    // На Android шторку рисует VoiceFirebaseMessagingService (три картинки).
+    // Если ещё и Dart покажет обычный текст, он затрёт кастомный вид.
+    if (Platform.isAndroid) return;
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
     await NotificationService.showRemoteMessage(message);
   } catch (e) {
-    // Не роняем фон: шторку ещё рисует VoiceFirebaseMessagingService.
+    // Не роняем фон: шторку ещё рисует нативный FCM-сервис.
   }
 }
 

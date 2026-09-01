@@ -199,12 +199,18 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
       var en = _transcriptEn;
       var summary = _summary;
       if (needRu) {
-        ru = await MessageTranslateService.toRussian(
-          ru.isNotEmpty ? ru : en,
+        ru = keepFullerTranscript(
+          ru,
+          await MessageTranslateService.toRussianDialog(
+            ru.isNotEmpty ? ru : en,
+          ),
         );
       }
       if (needEn) {
-        en = await MessageTranslateService.toEnglish(_transcriptRu);
+        en = keepFullerTranscript(
+          en,
+          await MessageTranslateService.toEnglish(_transcriptRu),
+        );
       }
       if (needSummary) {
         summary = await MessageTranslateService.toRussian(_summary);
@@ -243,7 +249,10 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
     if (lang == 'ru' && _transcriptRu.isEmpty && _transcriptEn.isNotEmpty) {
       setState(() => _translating = true);
       try {
-        final ru = await MessageTranslateService.toRussian(_transcriptEn);
+        final ru = keepFullerTranscript(
+          _transcriptRu,
+          await MessageTranslateService.toRussianDialog(_transcriptEn),
+        );
         if (!mounted) return;
         setState(() {
           _transcriptRu = ru;

@@ -56,6 +56,19 @@ function uniqueModels() {
   return [...new Set(LIVE_MODELS.map((name) => String(name || '').trim()).filter(Boolean))];
 }
 
+/// 2.5 Live думает по умолчанию (секунды тишины). 3.1 — через thinkingLevel.
+function thinkingConfigFor(model) {
+  const name = String(model || '').toLowerCase();
+  // 3.1 Live already defaults to minimal thinking. Sending thinkingLevel
+  // can fail setup on some revisions and leave the caller in silence.
+  if (/gemini-3|3\.\d/.test(name)) return null;
+  return { thinkingBudget: 0 };
+}
+
+function isGemini25Live(model) {
+  return /2\.5|native-audio/.test(String(model || '').toLowerCase());
+}
+
 function geminiLiveUrl(apiKey) {
   return (
     'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta' +
@@ -110,16 +123,9 @@ function compactKnown(session) {
     if (who) have.push(`on-site ${who}`);
   }
   const need = [];
+  if (!extracted.client_name) need.push('first name');
   if (!extracted.problem_description) need.push('what broke');
   if (!extracted.appliance_type || !extracted.brand) need.push('kind and brand');
-  if (!extracted.client_name) need.push('first name');
-  if (!extracted.wants_callback && !extracted.address) {
-    need.push(
-      session.knownAddress
-        ? 'whether the repair is at the home on file or another address'
-        : 'street and town of the repair'
-    );
-  }
   if (
     !extracted.wants_callback &&
     (!extracted.scheduled_date ||
@@ -132,6 +138,13 @@ function compactKnown(session) {
         : 'day and time'
     );
   }
+  if (!extracted.wants_callback && !extracted.address) {
+    need.push(
+      session.knownAddress
+        ? 'whether the repair is at the home on file or another address'
+        : 'street and town of the repair'
+    );
+  }
   return `Already have: ${have.join('; ') || 'nothing yet'}. Still need: ${
     need.join(', ') || 'nothing — confirm, then ask if anything else'
   }.`;
@@ -142,52 +155,35 @@ function liveSystemPrompt(profile, session) {
     (deps && deps.torontoTodayYmd && deps.torontoTodayYmd()) ||
     new Date().toISOString().slice(0, 10);
   const hours = profile.workHours || '7 a.m. to 9 p.m.';
-  return `You are a real receptionist on a live phone for ${profile.companyName}, appliance repair in Ontario.
-The technician didn't pick up. You answered. Sound like a warm woman in a small shop — never an IVR, never a chatbot.
+  const visitDays = profile.workDaysLabel || 'Monday–Friday';
+  const closedDays = profile.closedDaysLabel || '';
+  const area = String((profile && profile.serviceArea) || '').trim();
+  return `You are a real woman answering the shop phone for FixApplianceCA. Not a script. Not a form.
 
-Caller phone (do not ask for it): ${session.fromNumber || 'unknown'}
-Today (America/Toronto): ${today}
+Hello already played. Do not greet again. Wait. When they speak, first words are ordinary — a real reaction, then one easy follow-up. If they say the dryer is broken: "Oh no — what's it doing?" not their name, not the address.
+
+Caller phone (do not ask): ${session.fromNumber || 'unknown'}
+Today (Toronto): ${today}
 Known client: ${session.clientName || 'new'}
 Known address: ${session.knownAddress || 'none'}
-Shop hours: ${hours} America/Toronto.
-Each visit is 2 hours (one job). Never confirm a taken window. If they want a busy time, offer another time the SAME day first.
+Visits: ${visitDays}, ${hours} Toronto. ${closedDays}
 ${session.calendarBrief || ''}
+${profile.priceLine || ''}
+${area ? `Service area: ${area}. Clearly outside: we do not travel there.` : 'Service area map is not set — do not refuse from memory.'}
+${profile.awayLine || ''}
 
-Owner rules:
 ${profile.instructions}
 
-TALK LIKE A PERSON:
-- Short spoken turns. Usually one sentence. Never more than two.
-- Then STOP and listen. Do not fill silence with extra questions.
-- Contractions: what's, that's, I'll, you're.
-- If they already told you something, do not ask it again.
-- First react like a human ("oh, the fridge isn't cooling"), then one missing thing if you still need it.
-- Never say: got it, I understand, please provide, I have noted, certainly, how may I assist, I am an AI.
-- No lists. No "thank you for that information".
-- After you greet them, wait for them to talk. Do not keep talking.
-- Do not greet until you are told the exact greeting.
-- Speak English only. Understand any language, including Russian, but always answer in English.
-- Never guess a street. Write names as normal names (Artem).
-- If they say the repair is at another address, take that street, keep their home, and keep talking — do not hang up in that moment.
-- HOURS: take orders every day, including Saturday, Sunday, and holidays. Regular visits Monday–Friday ${hours}. Same-day is OK if still in those hours. Saturday is by agreement — if they want Saturday and the 2-hour window is free, book it. Never say we don't take Saturday orders. Sunday and holidays: still take the order; if they want that day and the window is free, book it as agreed.
-- Each visit is 2 hours. If they want 2 p.m., you need 2–4 p.m. free. If that window is taken, do not book it — offer another time that day.
-- If they want 6 a.m. or a start after 7 p.m. (would end after 9 p.m.), do not book it. Say we don't work then. Offer a time inside ${hours} that ends by 9 p.m.
-- If they want a live person: say a technician will call back within 30 minutes. Do not grill for a visit time.
-- Price: do not mention money unless they asked. If they asked: a service call is $99. If they approve the repair after diagnosis, they do not pay the service call — only the repair.
-- Household appliances only. We do not repair laptops, computers, phones, TVs, or cars.
-- Another house: keep their home, take the repair address, who will be there, and that phone.
-- When you have a name, what broke, where to go, and a FREE 2-hour window — or they asked for a callback — confirm once: "I'll pass this to the tech." Then keep talking: ask if they have another appliance or anything else, and listen. If they add another repair, take it. Do not wrap up. Do not say bye. Do not hang up. The caller hangs up.
-- Angry caller: a person from the company will call within 30 minutes. Then keep talking. Do not hang up for them.
-${outsideAreaRule(profile, 'politely say we do not travel there')}
-
-You cannot hang up. There is no end_call. After you confirm, stay on the line and keep the conversation going. If they go quiet, wait; you may ask one short follow-up, then listen.`;
+You cannot hang up. After "Have a good day," wait. They hang up.`;
 }
 
 function buildSetup(model, systemText, withTools, resumeHandle) {
+  const thinkingConfig = thinkingConfigFor(model);
   const setup = {
     model: model.startsWith('models/') ? model : `models/${model}`,
     generationConfig: {
       responseModalities: ['AUDIO'],
+      ...(thinkingConfig ? { thinkingConfig } : {}),
       speechConfig: {
         languageCode: 'en-US',
         voiceConfig: {
@@ -207,17 +203,20 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
         startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
         endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
         prefixPaddingMs: 200,
-        silenceDurationMs: 900,
+        silenceDurationMs: 550,
       },
     },
     sessionResumption: resumeHandle ? { handle: resumeHandle } : {},
     // Audio is ~25 tokens/s. Old 8k trigger (~5 min) froze her mid-word.
     // Compress only on long calls; keep a large recent window so the chat continues.
     contextWindowCompression: {
-      triggerTokens: 32000,
-      slidingWindow: { targetTokens: 18000 },
+      triggerTokens: 64000,
+      slidingWindow: { targetTokens: 32000 },
     },
   };
+  if (isGemini25Live(model)) {
+    setup.enableAffectiveDialog = true;
+  }
   return { setup };
 }
 
@@ -229,41 +228,20 @@ async function streamSpokenReply(ws, session, userText) {
   const extracted = session.extracted || {};
   const history = (session.history || []).slice(-12);
   const flow = deps.voiceCallFlow || '';
-  const prompt = `You are a real receptionist on a live phone for ${profile.companyName}, appliance repair in Ontario.
-The technician didn't pick up. You answered. Sound like a warm woman in a small shop — never an IVR, never a chatbot.
+  const prompt = `You are a real woman on the shop phone for ${profile.companyName}. Not a form.
 
-Caller phone (do not ask for it): ${session.fromNumber || 'unknown'}
-Today (America/Toronto): ${today}
+Caller: ${session.fromNumber || 'unknown'}
+Today (Toronto): ${today}
 Known client: ${session.clientName || 'new'}
 Known address: ${session.knownAddress || 'none'}
-Shop hours: ${profile.workHours || '7 a.m. to 9 p.m.'}
+Visits: ${profile.workDaysLabel || 'Monday–Friday'}, ${profile.workHours || '7 a.m. to 9 p.m.'}
 ${session.calendarBrief || ''}
 
-Owner rules:
 ${profile.instructions}
 
 ${flow}
 
-TALK LIKE A PERSON:
-- One short spoken turn. Usually one sentence. Never more than two.
-- Then listen. Do not fill silence with extra questions.
-- Contractions: what's, that's, I'll, you're.
-- If they already told you something, do not ask it again as if you forgot. Do read name and address back once.
-- First react like a human ("oh, the fridge isn't cooling"), then one missing thing.
-- After the greeting, the first missing thing is what broke and how it shows.
-- If Known client is not "new", remember them. After the problem, confirm name and address from CRM.
-- Next: appliance kind AND brand, in one question if both are unknown.
-- Never say: got it, I understand, please provide, I have noted, certainly, how may I assist, I am an AI.
-- No lists. No "thank you for that information".
-- LIVE CALLBACK: if they want a person / the technician to call them, do not ask address or time. If type or brand is missing, ask once. Then say: "Okay, I'll pass your details along and a technician will call you back shortly." Then ask if anything else.
-- When you have first name, address, what broke, type/brand, AND a free 2-hour window: confirm once, then ask if they have another appliance or anything else. Keep talking. Do not say goodbye.
-- Each visit is 2 hours. If the calendar says that window is taken, do not confirm it — offer another time the same day.
-- If they say that's all / nothing else, stay on the line. Do not say bye. Wait for them to hang up.
-- Thanks, okay, yes, or confirming the time is NOT goodbye. Stay on the line and keep the conversation going.
-- LAPTOP / COMPUTER: do not hang up and do not go silent. Say we only repair home appliances, then ask if you can help with anything else.
-- Angry caller: a person from the company will call within 30 minutes, then ask if you can help with anything else.
-${outsideAreaRule(profile, 'stop')}
-- Speak English only. Understand Russian if they use it, but never answer in Russian or any other language.
+First words are ordinary: react like a person, then one easy follow-up. Do not greet again.
 
 Facts so far: ${JSON.stringify(extracted)}
 Conversation: ${JSON.stringify(history)}
@@ -305,12 +283,13 @@ async function extractFacts(session, userText, assistantText) {
   const today =
     (deps.torontoTodayYmd && deps.torontoTodayYmd()) || new Date().toISOString().slice(0, 10);
   const prompt = `From this appliance-repair phone call, extract fields. Use null if unknown.
+${voiceFacts.EXTRACT_CARD_RULES}
 appliance_type must be Russian: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
 brand: the make they named (Samsung, LG, Whirlpool, GE, Bosch…). Never invent a brand. Not the model number.
 Today is ${today} in America/Toronto.
 scheduled_date must be YYYY-MM-DD. "tomorrow" = the next calendar day after ${today}. Never leave the date empty if they named a day.
-scheduled_time must be HH:mm 24-hour. "11:00", "at 11", "eleven o'clock" → 11:00. Never leave time empty if they named a clock time.
-client_name: a normal short name as spoken (Artem). NEVER a phonetic spelling or letter-by-letter mash (not "R Tamiyzhpurush"). If the receptionist already used a first name, copy that spelling.
+scheduled_time must be HH:mm 24-hour. "11:00", "at 11", "eleven o'clock" → 11:00. "2", "at 2", "two", "around two" on a repair call → 14:00 unless they said morning or a.m. Never leave time empty if they named a clock time.
+client_name: a normal short given name as spoken (Artem, Amelia). NEVER a phonetic mash. NEVER a mood or filler: good, fine, okay, thanks, well, sure. "I'm good" / "sounds good" is not a name. If they already said a real first name, keep that spelling.
 address: the REPAIR address (where the technician drives). Street number + street name. null if mumbled.
 owner_address: the caller's home if it is different from the repair address.
 has_job_site=true if the repair is not at the caller's own home (tenant, rental, another house).
@@ -361,8 +340,45 @@ You said: ${assistantText}`;
 async function persistSession(session, extra) {
   const { callsRef } = deps;
   if (!session.callSid) return;
+  const greeting = String(session.greeting || '').trim();
+  if (greeting) {
+    const history = session.history || [];
+    const already = history.some(
+      (item) => item && item.role === 'assistant' && isSameVoiceLine(item.text, greeting)
+    );
+    if (!already) {
+      session.history = [{ role: 'assistant', text: greeting }, ...history];
+    }
+    const trans = String(session.transcription || '').trim();
+    const first = (trans.split('\n')[0] || '').replace(
+      /^(ИИ|AI|Assistant|Секретарь|Me|Моё)\s*:\s*/i,
+      ''
+    );
+    if (!trans || !isSameVoiceLine(first, greeting)) {
+      session.transcription = [`AI: ${greeting}`, trans].filter(Boolean).join('\n');
+    }
+  }
+  let existingHistory = [];
+  let existingTranscription = '';
+  try {
+    const snap = await callsRef.doc(session.callSid).get();
+    const data = snap.exists ? snap.data() || {} : {};
+    existingHistory = (data.aiReception && data.aiReception.history) || [];
+    existingTranscription = data.transcription || '';
+  } catch (_) {}
+  const history =
+    (session.history || []).length >= existingHistory.length
+      ? session.history || []
+      : existingHistory;
+  session.history = history;
+  const transcription = deps.pickLongestTranscript
+    ? deps.pickLongestTranscript(session.transcription, existingTranscription)
+    : String(session.transcription || '').length >= String(existingTranscription || '').length
+      ? session.transcription
+      : existingTranscription;
+  session.transcription = transcription;
   const reception = {
-    history: session.history,
+    history,
     extracted: session.extracted,
     language: session.language || 'en',
     turns: session.turns || 0,
@@ -379,7 +395,7 @@ async function persistSession(session, extra) {
     {
       answeredBy: 'ai',
       extractedData: session.extracted || {},
-      transcription: session.transcription,
+      transcription,
       aiReception: reception,
       serviceDeclined: declined,
     },
@@ -540,7 +556,7 @@ function armReplyWatchdog(session) {
     console.warn(`voiceLive stall ${session.callSid} n=${session.stallNudge}`);
     if (session.stallNudge > 1) return;
     nudgeKeepTalking(session, lastUser);
-  }, 8000);
+  }, 3500);
 }
 
 function clearReplyWatchdog(session) {
@@ -552,9 +568,16 @@ function clearReplyWatchdog(session) {
 
 function nudgeKeepTalking(session, lastUser) {
   if (!session || !session.geminiWs || session.geminiWs.readyState !== 1) return;
-  const laptop = voiceFacts.looksOutOfScopeItem(lastUser)
-    ? ' They asked about a laptop or computer. Speak now: we only repair household appliances (fridge, washer, dryer, stove, dishwasher, microwave), not laptops. Then ask if you can help with anything else.'
-    : '';
+  applyLocalExtract(session);
+  const enough = deps && deps.hasEnoughForJob && deps.hasEnoughForJob(session.extracted);
+  let extra = ' Speak now, like a person. One short sentence.';
+  if (voiceFacts.looksOutOfScopeItem(lastUser)) {
+    extra = ' We only repair household appliances. Say that kindly, then ask if anything else.';
+  } else if (voiceFacts.declinedMoreHelp(lastUser) || voiceFacts.callerAskedToStop(lastUser)) {
+    extra = ' They are done. Say only: Have a good day.';
+  } else if (enough) {
+    extra = ' You have enough. Pass it to the tech if you have not, then ask if anything else.';
+  }
   sendJson(session.geminiWs, {
     clientContent: {
       turns: [
@@ -562,7 +585,7 @@ function nudgeKeepTalking(session, lastUser) {
           role: 'user',
           parts: [
             {
-              text: `The caller is still on the line. Speak now. Do not hang up. Do not stay silent.${laptop}`,
+              text: `The caller is still on the line.${extra} Do not stay silent. Do not hang up.`,
             },
           ],
         },
@@ -649,6 +672,25 @@ function flushPendingAudio(session) {
   for (const payload of queued) forwardMulawToGemini(session, payload);
 }
 
+function joinVoiceText(prev, next) {
+  const a = String(prev || '').trim();
+  const b = String(next || '').trim();
+  if (!b) return a;
+  if (!a) return b;
+  if (b.startsWith(a) || (a.length >= 8 && b.includes(a))) return b;
+  if (a.startsWith(b) || (b.length >= 8 && a.includes(b))) return a;
+  let overlap = 0;
+  const max = Math.min(a.length, b.length, 40);
+  for (let i = max; i >= 4; i--) {
+    if (a.slice(-i) === b.slice(0, i)) {
+      overlap = i;
+      break;
+    }
+  }
+  if (overlap) return `${a}${b.slice(overlap)}`;
+  return `${a} ${b}`.replace(/\s+/g, ' ');
+}
+
 function setPartial(session, field, text, finished) {
   const value = String(text || '').trim();
   if (!value) return;
@@ -657,7 +699,7 @@ function setPartial(session, field, text, finished) {
     if (isSameVoiceLine(lastAsst, value)) return;
   }
   session.language = 'en';
-  session[field] = value;
+  session[field] = joinVoiceText(session[field], value);
   if (finished) flushPartial(session, field);
 }
 
@@ -740,8 +782,11 @@ function greetLive(session) {
   }
   if (session.greeted) return;
   session.greeted = true;
+  if (session.greetingSpoken) return;
   const greeting = String(
-    session.greeting || (deps && deps.defaultVoiceGreeting) || "Hi, you've reached FIX Appliance. How can I help?"
+    session.greeting ||
+      (deps && deps.defaultVoiceGreeting) ||
+      'Hello, this is FIX Appliance CA. How can I help you?'
   ).trim();
   sendJson(session.geminiWs, {
     clientContent: {
@@ -919,7 +964,39 @@ function handleGeminiMessage(session, raw) {
     const text = String((message.error && message.error.message) || message.error);
     session.geminiError = text;
     console.warn(`voiceLive gemini error ${session.callSid}: ${text}`);
-    if (!session.ready) closeGemini(session);
+    if (!session.ready) {
+      const gen =
+        session.setupPayload &&
+        session.setupPayload.setup &&
+        session.setupPayload.setup.generationConfig;
+      const setupObj = session.setupPayload && session.setupPayload.setup;
+      let stripped = false;
+      if (gen && gen.thinkingConfig) {
+        delete gen.thinkingConfig;
+        stripped = true;
+      }
+      if (setupObj && setupObj.enableAffectiveDialog) {
+        delete setupObj.enableAffectiveDialog;
+        stripped = true;
+      }
+      if (stripped) {
+        session.connecting = false;
+        const model = session.geminiModel;
+        const old = session.geminiWs;
+        session.geminiWs = null;
+        try {
+          if (old) old.close();
+        } catch (_) {}
+        console.warn(`voiceLive retry ${session.callSid} without extra live flags`);
+        attachGeminiSocket(
+          session,
+          new WebSocket(geminiLiveUrl(deps.geminiApiKey), { perMessageDeflate: false }),
+          model
+        );
+        return;
+      }
+      closeGemini(session);
+    }
     return;
   }
   const resumeUpdate = pick(message, 'sessionResumptionUpdate', 'session_resumption_update');
@@ -941,6 +1018,7 @@ function handleGeminiMessage(session, raw) {
   }
   const content = pick(message, 'serverContent', 'server_content') || {};
   if (pick(content, 'interrupted') === true) {
+    flushPartial(session, 'assistantPartial');
     sendTwilioClear(session);
   }
   const input = pick(content, 'inputTranscription', 'input_transcription');
@@ -1124,7 +1202,15 @@ async function hydrateCall(session, callSid, fromNumber) {
   const { callsRef, findClientByPhone } = deps;
   session.callSid = callSid || session.callSid;
   session.fromNumber = fromNumber || session.fromNumber;
-  const snap = session.callSid ? await callsRef.doc(session.callSid).get() : null;
+  const [snap, calendarBrief] = await Promise.all([
+    session.callSid ? callsRef.doc(session.callSid).get() : Promise.resolve(null),
+    deps.calendarBrief
+      ? deps.calendarBrief().catch((error) => {
+          console.warn('voiceLive calendar:', error.message);
+          return '';
+        })
+      : Promise.resolve(''),
+  ]);
   const data = snap && snap.exists ? snap.data() || {} : {};
   const reception = data.aiReception || {};
   const known = await findClientByPhone(data.fromNumber || session.fromNumber);
@@ -1144,14 +1230,7 @@ async function hydrateCall(session, callSid, fromNumber) {
     session.extracted.client_name = session.clientName;
   }
   session.fromNumber = data.fromNumber || session.fromNumber;
-  if (deps.calendarBrief) {
-    try {
-      session.calendarBrief = await deps.calendarBrief();
-    } catch (error) {
-      console.warn('voiceLive calendar:', error.message);
-      session.calendarBrief = '';
-    }
-  }
+  session.calendarBrief = calendarBrief || '';
   const lastGreeting = [...session.history].find((item) => item && item.role === 'assistant');
   if (lastGreeting && lastGreeting.text) session.greeting = lastGreeting.text;
   if (session.callSid) sessions.set(session.callSid, session);
@@ -1162,9 +1241,13 @@ async function onLiveStart(session, message) {
   const custom = start.customParameters || {};
   session.streamSid = start.streamSid || message.streamSid;
   session.engine = 'gemini-live';
-  await hydrateCall(session, custom.callSid || start.callSid, start.from || custom.from);
+  session.greetingSpoken = String(custom.greetingSpoken || '') === '1';
   if (custom.greeting) session.greeting = String(custom.greeting);
-  const profile = await deps.getAiAnswerSettings();
+  const [profile] = await Promise.all([
+    deps.getAiAnswerSettings(),
+    hydrateCall(session, custom.callSid || start.callSid, start.from || custom.from),
+  ]);
+  if (custom.greeting) session.greeting = String(custom.greeting);
   session.systemText = liveSystemPrompt(profile, session);
   if (session.twilioKeepalive) clearInterval(session.twilioKeepalive);
   session.twilioKeepalive = setInterval(() => {

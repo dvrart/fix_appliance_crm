@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
@@ -178,7 +179,17 @@ class LocalNotificationService {
       'inbox',
     };
     for (final from in keys) {
-      if (type.isEmpty || from.isEmpty) continue;
+      if (from.isEmpty) continue;
+      final digits = from.replaceAll(RegExp(r'\D'), '');
+      if (digits.length >= 10) {
+        final phone = digits.substring(digits.length - 10);
+        tags.add('crm_inbox_$phone');
+      } else if (from.contains('@')) {
+        final email = from.trim().toLowerCase();
+        final tag = 'crm_inbox_$email';
+        tags.add(tag.length <= 50 ? tag : tag.substring(0, 50));
+      }
+      if (type.isEmpty) continue;
       final raw = 'crm_${type}_$from';
       tags.add(raw.length <= 50 ? raw : raw.substring(0, 50));
     }
@@ -371,6 +382,15 @@ class LocalNotificationService {
     String? tag,
   }) async {
     await initialize();
+    if (await _showShadeNative(
+      title: title,
+      body: body,
+      tag: tag ?? '',
+      channelId: secretaryLearnChannelId,
+      extras: {'type': 'secretary_lesson'},
+    )) {
+      return;
+    }
     await _plugin.show(
       (tag != null && tag.isNotEmpty) ? 0 : 7400,
       title,
@@ -399,6 +419,19 @@ class LocalNotificationService {
     await initialize();
     final id =
         (tag != null && tag.isNotEmpty) ? 0 : visitConfirmNotificationId;
+    if (await _showShadeNative(
+      title: title,
+      body: body,
+      tag: tag ?? '',
+      channelId: visitConfirmChannelId,
+      extras: {
+        'type': 'visit_confirm',
+        if (jobId != null && jobId.isNotEmpty) 'jobId': jobId,
+        if (from != null && from.isNotEmpty) 'from': from,
+      },
+    )) {
+      return;
+    }
     await _plugin.show(
       id,
       title,
@@ -476,9 +509,24 @@ class LocalNotificationService {
     String channelName = 'SMS',
     String channelDescription = 'Incoming SMS and photos from clients',
     Map<String, String> data = const {},
+    String applianceType = '',
+    String clientName = '',
+    String city = '',
   }) async {
     await initialize();
     final id = (tag != null && tag.isNotEmpty) ? 0 : inboxIdForTag(tag ?? title);
+    if (await _showShadeNative(
+      title: title,
+      body: body,
+      tag: tag ?? '',
+      channelId: channelId,
+      applianceType: applianceType,
+      clientName: clientName,
+      city: city,
+      extras: data,
+    )) {
+      return;
+    }
     await _plugin.show(
       id,
       title,
@@ -546,7 +594,42 @@ class LocalNotificationService {
       title: 'Fix Appliance',
       body: 'Так выглядит уведомление. Можно смахнуть.'.tr,
       tag: 'look_preview',
+      applianceType: 'Washer',
+      clientName: 'Amelia',
+      city: 'Toronto',
     );
+  }
+
+  static Future<bool> _showShadeNative({
+    required String title,
+    required String body,
+    required String tag,
+    required String channelId,
+    String applianceType = '',
+    String clientName = '',
+    String city = '',
+    Map<String, String> extras = const {},
+  }) async {
+    if (defaultTargetPlatform != TargetPlatform.android) return false;
+    try {
+      await const MethodChannel('fix_appliance/device').invokeMethod(
+        'showShadeNotification',
+        {
+          'title': title,
+          'body': body,
+          'tag': tag,
+          'channelId': channelId,
+          'applianceType': applianceType,
+          'clientName': clientName,
+          'city': city,
+          ...extras,
+        },
+      );
+      return true;
+    } catch (e) {
+      debugPrint('LocalNotificationService: shade: $e');
+      return false;
+    }
   }
 
   static NotificationDetails _headsUpDetails({
@@ -661,13 +744,27 @@ class LocalNotificationService {
         });
         if (!when.isAfter(now)) {
           if (!activeIds.contains(id)) {
-            await _plugin.show(
-              id,
-              title,
-              body,
-              details,
-              payload: visitPayload,
-            );
+            if (!await _showShadeNative(
+              title: title,
+              body: body,
+              tag: 'visit_soon_${job.id}',
+              channelId: visitSoonChannelId,
+              applianceType: job.applianceType,
+              clientName: who,
+              city: job.displayCity,
+              extras: {
+                'type': 'visit_soon',
+                'jobId': job.id,
+              },
+            )) {
+              await _plugin.show(
+                id,
+                title,
+                body,
+                details,
+                payload: visitPayload,
+              );
+            }
           }
           await prefs.setBool(key, true);
         } else {

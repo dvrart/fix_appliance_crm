@@ -4,6 +4,7 @@ import '../models/document_settings.dart';
 import '../models/job.dart';
 import 'firestore_service.dart';
 import 'maps_service.dart';
+import 'network_status_service.dart';
 import '../core/l10n/app_locale.dart';
 import 'status_service.dart';
 
@@ -24,9 +25,8 @@ class SettingsService {
 
   /// Сохранить настройку
   static Future<void> updateConfig(String key, dynamic value) async {
-    await FirestoreService.configRef.set(
-      {key: value},
-      SetOptions(merge: true),
+    await settleWrite(
+      FirestoreService.configRef.set({key: value}, SetOptions(merge: true)),
     );
   }
 
@@ -190,12 +190,18 @@ class SettingsService {
         receiptSms = DocumentSettings.defaults.receiptSms;
         docsChanged = true;
       }
+      if (docs.smsHeader.trim().toLowerCase() == 'fixappliance.ca') {
+        docsChanged = true;
+      }
       if (docsChanged) {
         await saveDocumentSettings(
           docs.copyWith(
             invoiceSms: invoiceSms,
             estimateSms: estimateSms,
             receiptSms: receiptSms,
+            smsHeader: docs.smsHeader.trim().toLowerCase() == 'fixappliance.ca'
+                ? 'fix-appliance.ca'
+                : docs.smsHeader,
           ),
         );
       }
@@ -207,12 +213,17 @@ class SettingsService {
           : '';
       final oldWake = wake.toLowerCase();
       if (wake.isEmpty ||
+          oldWake == 'purysh' ||
+          oldWake == 'purish' ||
           oldWake == 'фикс' ||
-          oldWake == 'fix' ||
-          oldWake == 'purish') {
+          oldWake == 'fix') {
         await updateConfig('assistantWakeWord', defaultAssistantWakeWord);
       }
-      if (aliases.isEmpty || aliases.toLowerCase() == 'fix') {
+      if (aliases.isEmpty ||
+          aliases.toLowerCase().contains('purish') ||
+          aliases.toLowerCase().contains('purysh') ||
+          aliases.toLowerCase() ==
+              'fix, fiks, feeks, фикс, фик, фикса, fixes') {
         await updateConfig(
           'assistantWakeAliases',
           defaultAssistantWakeAliases,
@@ -222,14 +233,64 @@ class SettingsService {
           config['assistantWakeEnabled'] == false) {
         await updateConfig('assistantWakeEnabled', true);
       }
+      final visitMinutes = readJobDurationMinutes(config);
+      if (config['defaultJobDurationMinutes'] == null || visitMinutes == 60) {
+        await updateConfig(
+          'defaultJobDurationMinutes',
+          defaultJobDurationMinutes,
+        );
+      }
     } catch (_) {}
+  }
+
+  /// Custom chat quick-replies stored next to the built-in SMS templates.
+  static Future<List<Map<String, String>>> loadChatCustomTemplates() async {
+    try {
+      final doc = await FirestoreService.smsTemplatesRef.get();
+      if (!doc.exists || doc.data() == null) return const [];
+      final raw = (doc.data() as Map<String, dynamic>)['chat_custom'];
+      if (raw is! List) return const [];
+      final out = <Map<String, String>>[];
+      for (final item in raw) {
+        if (item is! Map) continue;
+        final title = (item['title'] ?? '').toString().trim();
+        final body = (item['body'] ?? '').toString().trim();
+        final id = (item['id'] ?? '').toString().trim();
+        if (title.isEmpty && body.isEmpty) continue;
+        out.add({
+          'id': id.isEmpty ? DateTime.now().millisecondsSinceEpoch.toString() : id,
+          'title': title.isEmpty ? body : title,
+          'body': body,
+        });
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  static Future<void> saveChatCustomTemplates(
+    List<Map<String, String>> templates,
+  ) async {
+    await FirestoreService.smsTemplatesRef.set(
+      {
+        'chat_custom': [
+          for (final item in templates)
+            {
+              'id': item['id'] ?? '',
+              'title': item['title'] ?? '',
+              'body': item['body'] ?? '',
+            },
+        ],
+      },
+      SetOptions(merge: true),
+    );
   }
 
   /// Сохранить SMS-шаблоны
   static Future<void> saveSmsTemplates(Map<String, String> templates) async {
-    await FirestoreService.smsTemplatesRef.set(
-      templates,
-      SetOptions(merge: true),
+    await settleWrite(
+      FirestoreService.smsTemplatesRef.set(templates, SetOptions(merge: true)),
     );
   }
 
@@ -295,17 +356,46 @@ class SettingsService {
     return (config['emailIntakeTitle'] ?? '').toString().trim();
   }
 
-  static List<String> readWatchedEmailSenders(Map<String, dynamic> config) {
+  /// Отслеживаемый отправитель: email + имя переписки в чате.
+  static List<WatchedEmailSender> readWatchedEmailSenders(
+    Map<String, dynamic> config,
+  ) {
     final raw = config['watchedEmailSenders'];
     if (raw is! List) return const [];
     final seen = <String>{};
-    final result = <String>[];
+    final result = <WatchedEmailSender>[];
     for (final item in raw) {
-      final email = item.toString().trim().toLowerCase();
-      if (!email.contains('@') || !seen.add(email)) continue;
-      result.add(email);
+      final parsed = WatchedEmailSender.fromConfig(item);
+      if (parsed == null || !seen.add(parsed.email)) continue;
+      result.add(parsed);
     }
     return result;
+  }
+
+  static List<Map<String, String>> serializeWatchedEmailSenders(
+    List<WatchedEmailSender> senders,
+  ) {
+    return [
+      for (final s in senders) s.toConfigMap(),
+    ];
+  }
+
+  /// Имя переписки для email из списка «Отслеживание писем», иначе ''.
+  static String watchedSenderNameFor(
+    Map<String, dynamic> config,
+    String email,
+  ) {
+    final key = email.trim().toLowerCase();
+    if (!key.contains('@')) return '';
+    for (final s in readWatchedEmailSenders(config)) {
+      if (s.email == key && s.name.isNotEmpty) return s.name;
+    }
+    return '';
+  }
+
+  static Future<String> loadWatchedSenderName(String email) async {
+    final config = await loadConfig();
+    return watchedSenderNameFor(config, email);
   }
 
   static bool readAutoReviewSmsEnabled(Map<String, dynamic> config) {
@@ -379,8 +469,181 @@ class SettingsService {
   /// Конец рабочего дня: 21:00
   static const int defaultWorkEndMinutes = 21 * 60;
 
-  static const int defaultJobDurationMinutes = 60;
-  static const int defaultTravelBufferMinutes = 20;
+  static const Set<int> defaultWorkDays = {1, 2, 3, 4, 5};
+
+  static Set<int> readWorkDays(Map<String, dynamic> config) {
+    final raw = config['workDays'];
+    final days = <int>{};
+    if (raw is List) {
+      for (final item in raw) {
+        final value = item is num ? item.toInt() : int.tryParse('$item');
+        if (value != null && value >= 1 && value <= 7) days.add(value);
+      }
+    }
+    return days.isEmpty ? {...defaultWorkDays} : days;
+  }
+
+  static List<String> readHolidayDates(Map<String, dynamic> config) {
+    final raw = config['holidayDates'];
+    if (raw is! List) return const [];
+    final out = raw
+        .map((item) => item.toString().trim())
+        .where((item) => RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(item))
+        .toList();
+    out.sort();
+    return out;
+  }
+
+  static List<({String from, String to})> readVacationRanges(
+    Map<String, dynamic> config,
+  ) {
+    final raw = config['vacationRanges'];
+    if (raw is! List) return const [];
+    final out = <({String from, String to})>[];
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final from = (item['from'] ?? '').toString().trim();
+      final to = (item['to'] ?? from).toString().trim();
+      if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(from)) {
+        out.add((from: from, to: to.isEmpty ? from : to));
+      }
+    }
+    out.sort((a, b) => a.from.compareTo(b.from));
+    return out;
+  }
+
+  static List<Map<String, String>> serializeVacationRanges(
+    List<({String from, String to})> ranges,
+  ) {
+    return [
+      for (final range in ranges) {'from': range.from, 'to': range.to},
+    ];
+  }
+
+  static String ymd(DateTime date) {
+    return '${date.year.toString().padLeft(4, '0')}-'
+        '${date.month.toString().padLeft(2, '0')}-'
+        '${date.day.toString().padLeft(2, '0')}';
+  }
+
+  static bool isVisitDay(Map<String, dynamic> config, DateTime day) {
+    final key = ymd(DateTime(day.year, day.month, day.day));
+    if (!readWorkDays(config).contains(day.weekday)) return false;
+    if (readHolidayDates(config).contains(key)) return false;
+    for (final range in readVacationRanges(config)) {
+      if (key.compareTo(range.from) >= 0 && key.compareTo(range.to) <= 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static String weekdayShort(int day) {
+    const labels = ['', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+    return labels[day.clamp(1, 7)];
+  }
+
+  static String workDaysLabel(Set<int> days) {
+    final sorted = days.toList()..sort();
+    if (sorted.isEmpty) return '—';
+    if (sorted.length == 7) return 'Каждый день';
+    String span(List<int> run) {
+      if (run.length >= 3) {
+        return '${weekdayShort(run.first)}–${weekdayShort(run.last)}';
+      }
+      return run.map(weekdayShort).join(', ');
+    }
+    final runs = <List<int>>[];
+    for (final day in sorted) {
+      if (runs.isNotEmpty && runs.last.last == day - 1) {
+        runs.last.add(day);
+      } else {
+        runs.add([day]);
+      }
+    }
+    return runs.map(span).join(', ');
+  }
+
+  static double _readDouble(
+    Map<String, dynamic> config,
+    String key,
+    double fallback,
+  ) {
+    final value = config[key];
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value.trim()) ?? fallback;
+    return fallback;
+  }
+
+  static double readServiceCallFee(Map<String, dynamic> config) {
+    return _readDouble(config, 'serviceCallFee', 99).clamp(0, 100000);
+  }
+
+  static double readHourlyRate(Map<String, dynamic> config) {
+    return _readDouble(config, 'hourlyRate', 0).clamp(0, 100000);
+  }
+
+  static double readMinimumCharge(Map<String, dynamic> config) {
+    return _readDouble(config, 'minimumCharge', 0).clamp(0, 100000);
+  }
+
+  static Future<void> savePricing({
+    required double serviceCallFee,
+    required double hourlyRate,
+    required double minimumCharge,
+    required double partsMarkupPercent,
+  }) async {
+    await updateConfigMap({
+      'serviceCallFee': serviceCallFee.clamp(0, 100000),
+      'hourlyRate': hourlyRate.clamp(0, 100000),
+      'minimumCharge': minimumCharge.clamp(0, 100000),
+      'partsMarkupPercent': partsMarkupPercent.clamp(0, 1000),
+    });
+  }
+
+  static String formatMoney(double value) {
+    final v = value <= 0 ? 0 : value;
+    if (v == v.roundToDouble()) return '\$${v.toStringAsFixed(0)}';
+    return '\$${v.toStringAsFixed(2)}';
+  }
+
+  static const int defaultJobDurationMinutes = kDefaultVisitMinutes;
+  static const String defaultCalendarView = 'week';
+  static const List<String> calendarViewIds = [
+    'day',
+    'workWeek',
+    'week',
+    'month',
+    'route',
+    'list',
+  ];
+
+  static String calendarViewLabel(String id) {
+    switch (id) {
+      case 'day':
+        return '1 день';
+      case 'workWeek':
+        return '5 дней';
+      case 'week':
+        return 'Неделя';
+      case 'month':
+        return 'Календарь';
+      case 'route':
+        return 'Маршрут';
+      case 'list':
+        return 'Список';
+      default:
+        return 'Неделя';
+    }
+  }
+
+  static String readDefaultCalendarView(Map<String, dynamic> config) {
+    final value = (config['defaultCalendarView'] ?? defaultCalendarView)
+        .toString()
+        .trim();
+    if (calendarViewIds.contains(value)) return value;
+    return defaultCalendarView;
+  }
 
   static int _readMinutes(Map<String, dynamic> config, String key, int fallback) {
     final value = config[key];
@@ -402,11 +665,6 @@ class SettingsService {
   static int readJobDurationMinutes(Map<String, dynamic> config) {
     return _readMinutes(config, 'defaultJobDurationMinutes', defaultJobDurationMinutes)
         .clamp(15, 8 * 60);
-  }
-
-  static int readTravelBufferMinutes(Map<String, dynamic> config) {
-    return _readMinutes(config, 'travelBufferMinutes', defaultTravelBufferMinutes)
-        .clamp(0, 3 * 60);
   }
 
   static String formatWorkMinutes(int minutes) {
@@ -459,7 +717,9 @@ class SettingsService {
   }
 
   static Future<void> saveDocumentSettings(DocumentSettings settings) async {
-    await FirestoreService.documentSettingsRef.set(settings.toMap());
+    await settleWrite(
+      FirestoreService.documentSettingsRef.set(settings.toMap()),
+    );
     _documentSettingsCache = settings;
   }
 
@@ -614,9 +874,9 @@ class SettingsService {
     return boolFlag(config, key);
   }
 
-  static const String defaultAssistantWakeWord = 'purysh';
+  static const String defaultAssistantWakeWord = 'FIX-Appliance';
   static const String defaultAssistantWakeAliases =
-      'purish, purush, parish, puresh, pirish, puris, purge, porish, пюриш, пуриш, пурыш, пуруш, пюришь';
+      'fix appliance, fix-appliance, fixappliance, фикс апплаенс, фиксапплаенс, фикс, fix';
 
   static const int defaultAiAnswerTimeoutSeconds = 20;
   static const int minAiAnswerTimeoutSeconds = 0;
@@ -707,12 +967,11 @@ class SettingsService {
   static const int aiVoiceRulesVersion = 11;
 
   static const String defaultAiVoiceGreeting =
-      "Hi, you've reached FIX Appliance. How can I help?";
+      'Hello, this is FIX Appliance CA. How can I help you?';
 
   static const String defaultAiVoiceExtraRules =
-      'We take repair requests every day, including Saturday, Sunday, and holidays.\n'
-      'Regular visits: Monday–Friday 7 a.m. to 9 p.m. Saturday is by agreement — if they want Saturday and the 2-hour window is free, book it. Do not say we do not take Saturday orders.\n'
-      'Sunday and holidays: still take the order. If they want that day and the window is free, book it as agreed. Never say we are closed those days.\n'
+      'Visits are Monday–Friday 7 a.m. to 9 p.m. Saturday and Sunday the technician does not visit. Still take the order for a weekday.\n'
+      'Public holidays: take the order; the technician must agree.\n'
       'Price: do not mention \$99 unless they asked. If they asked: a service call is \$99. If they approve the repair after diagnosis, they do not pay the service call — only the repair.\n'
       'If the appliance is at another house: keep their home address, take the repair address, who will be there, and that person\'s phone.\n'
       'Near the end, if they can, they may text this number a photo or the text of the model-number sticker. Optional — do not stall the call.';
@@ -741,11 +1000,12 @@ class SettingsService {
         g.contains("technician's with a customer") ||
         g.contains('I can take your details') ||
         g.contains('How can I help you today') ||
-        g.contains('ApplianceCA') ||
         g.contains('Чем могу помочь') ||
+        g == "Hi, you've reached FIX Appliance. How can I help?" ||
         g == 'Hi, FIX ApplianceCA. How can I help you?' ||
         g == 'Hi, FIX Appliance. How can I help you?' ||
-        g == 'Hi, FIX Appliance. How can I help?';
+        g == 'Hi, FIX Appliance. How can I help?' ||
+        g == "Hi, you've reached FixApplianceCA. How can I help?";
   }
 
   static Future<Map<String, String>> loadAiVoiceSettings() async {
@@ -786,38 +1046,26 @@ class SettingsService {
     await updateConfig('aiAnswerEnabled', profile.enabled);
     await updateConfig('aiAnswerTimeoutSeconds', timeout);
     await FirestoreService.aiVoiceRef.set({
-      ...profile.toFirestore(),
+      'liveIgnoresAppRules': true,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 
   static Future<void> setAiVoiceExtraRules(String extraRules) async {
-    final profile = await loadAiVoiceProfile();
-    await saveAiVoiceProfile(
-      AiVoiceProfile(
-        enabled: profile.enabled,
-        timeoutSeconds: profile.timeoutSeconds,
-        greeting: profile.greeting,
-        collectName: profile.collectName,
-        collectAddress: profile.collectAddress,
-        collectWhen: profile.collectWhen,
-        collectAppliance: profile.collectAppliance,
-        collectLocation: profile.collectLocation,
-        collectPhoto: profile.collectPhoto,
-        noPrice: profile.noPrice,
-        serviceArea: profile.serviceArea,
-        angryCallbackMinutes: profile.angryCallbackMinutes,
-        extraRules: extraRules,
-        instructions: profile.instructions,
-        learnedRules: profile.learnedRules,
-        learningEnabled: profile.learningEnabled,
-      ),
-    );
+    await FirestoreService.aiVoiceRef.set({
+      'extraRules': '',
+      'ownerBrief': '',
+      'learnedRules': <Map<String, dynamic>>[],
+      'liveIgnoresAppRules': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   static Future<void> updateConfigMap(Map<String, dynamic> values) async {
     if (values.isEmpty) return;
-    await FirestoreService.configRef.set(values, SetOptions(merge: true));
+    await settleWrite(
+      FirestoreService.configRef.set(values, SetOptions(merge: true)),
+    );
   }
 
   /// Текстовое описание зоны с карты «Зона обслуживания».
@@ -848,46 +1096,13 @@ class SettingsService {
   /// Пишет правила диспетчера в Firestore, если их ещё нет или это старая версия.
   static Future<void> ensureAiVoiceSettings() async {
     try {
-      final doc = await FirestoreService.aiVoiceRef.get();
-      final data = (doc.data() as Map<String, dynamic>?) ?? <String, dynamic>{};
-      final greeting = (data['greeting'] ?? '').toString().trim();
-      final staleGreeting = isStaleAiVoiceGreeting(greeting);
-      final needBrief = data['briefVersion'] != 1;
-      final needHoursPolicy = data['hoursPolicyVersion'] != 2;
-      if (data['rulesVersion'] == aiVoiceRulesVersion &&
-          !staleGreeting &&
-          !needBrief &&
-          !needHoursPolicy) {
-        return;
-      }
-      final profile = await loadAiVoiceProfile();
-      final extra = needBrief ||
-              needHoursPolicy ||
-              profile.extraRules.trim().isEmpty ||
-              profile.extraRules.contains('Sunday is closed') ||
-              profile.extraRules.contains('Saturday: do not')
-          ? defaultAiVoiceExtraRules
-          : profile.extraRules;
-      await saveAiVoiceProfile(
-        AiVoiceProfile(
-          enabled: profile.enabled,
-          timeoutSeconds: profile.timeoutSeconds,
-          greeting: staleGreeting ? defaultAiVoiceGreeting : profile.greeting,
-          collectName: profile.collectName,
-          collectAddress: profile.collectAddress,
-          collectWhen: profile.collectWhen,
-          collectAppliance: profile.collectAppliance,
-          collectLocation: profile.collectLocation,
-          collectPhoto: profile.collectPhoto,
-          noPrice: profile.noPrice,
-          serviceArea: profile.serviceArea,
-          angryCallbackMinutes: profile.angryCallbackMinutes,
-          extraRules: extra,
-          instructions: profile.instructions,
-          learnedRules: profile.learnedRules,
-          learningEnabled: profile.learningEnabled,
-        ),
-      );
+      await FirestoreService.aiVoiceRef.set({
+        'liveIgnoresAppRules': true,
+        'extraRules': '',
+        'ownerBrief': '',
+        'learnedRules': <Map<String, dynamic>>[],
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
     } catch (_) {}
   }
 }
@@ -1109,5 +1324,37 @@ class AiVoiceProfile {
       'briefVersion': 1,
       'hoursPolicyVersion': 2,
     };
+  }
+}
+
+/// Email из «Отслеживание писем» + имя для списка/шапки переписки.
+class WatchedEmailSender {
+  final String email;
+  final String name;
+
+  const WatchedEmailSender({required this.email, this.name = ''});
+
+  String get displayName => name.trim().isEmpty ? email : name.trim();
+
+  Map<String, String> toConfigMap() => {
+        'email': email,
+        if (name.trim().isNotEmpty) 'name': name.trim(),
+      };
+
+  static WatchedEmailSender? fromConfig(dynamic item) {
+    if (item is Map) {
+      final email = (item['email'] ?? item['address'] ?? '')
+          .toString()
+          .trim()
+          .toLowerCase();
+      if (!email.contains('@')) return null;
+      final name = (item['name'] ?? item['label'] ?? item['title'] ?? '')
+          .toString()
+          .trim();
+      return WatchedEmailSender(email: email, name: name);
+    }
+    final email = item.toString().trim().toLowerCase();
+    if (!email.contains('@')) return null;
+    return WatchedEmailSender(email: email);
   }
 }

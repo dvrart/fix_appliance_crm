@@ -13,6 +13,7 @@ import '../../services/catalog_service.dart';
 import '../../shared/widgets/catalog_picker.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/widgets/app_bar_save.dart';
+import '../../shared/widgets/dirty_leave_scope.dart';
 
 /// Экран предпросмотра извлечённых данных
 class JobPreviewScreen extends StatefulWidget {
@@ -175,7 +176,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
 
   bool get _isEmailOffer => (widget.sourceMessageId ?? '').trim().isNotEmpty;
 
-  Future<void> _saveJob() async {
+  Future<bool> _saveJob() async {
     final email = _emailController.text.trim();
     final phone = _phoneController.text.trim();
     var name = _nameController.text.trim();
@@ -185,7 +186,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
     }
     if (name.isEmpty) {
       _showError('Укажите имя клиента'.tr);
-      return;
+      return false;
     }
     if (phone.isEmpty && !email.contains('@')) {
       _showError(
@@ -193,15 +194,15 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
             ? 'Укажите телефон или email'.tr
             : 'Укажите телефон клиента'.tr,
       );
-      return;
+      return false;
     }
     if (_applianceController.text.trim().isEmpty) {
       _showError('Укажите тип техники'.tr);
-      return;
+      return false;
     }
     if (_scheduledDate == null || _scheduledTime == null) {
       _showError('Укажите дату и время визита'.tr);
-      return;
+      return false;
     }
 
     setState(() => _isSaving = true);
@@ -279,7 +280,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         sourceEmailFrom: widget.sourceEmailFrom,
         sourceEmailSubject: widget.sourceEmailSubject,
         sourceEmailPreview: widget.originalText,
-        durationMinutes: _isEmailOffer ? 120 : 60,
+        durationMinutes: kDefaultVisitMinutes,
       );
 
       final jobId = await JobService.create(job);
@@ -291,7 +292,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         );
       }
 
-      if (!mounted) return;
+      if (!mounted) return false;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -301,9 +302,11 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
       );
 
       Navigator.pop(context, true);
+      return true;
     } catch (e) {
       _showError('${'Ошибка сохранения'.tr}: $e');
       setState(() => _isSaving = false);
+      return false;
     }
   }
 
@@ -349,7 +352,10 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return DirtyLeaveScope(
+      dirty: !_isSaving,
+      onSave: _saveJob,
+      child: Scaffold(
       appBar: AppBar(
         title: Text(
           _isEmailOffer ? 'Письмо о ремонте'.tr : 'Проверьте данные'.tr,
@@ -357,6 +363,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         ),
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
+        automaticallyImplyLeading: false,
         actions: [
           if (_isEmailOffer)
             TextButton(
@@ -366,12 +373,6 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
                 style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w700),
               ),
             ),
-          AppBarSaveButton(
-            dirty: true,
-            saving: _isSaving,
-            label: 'Создать'.tr,
-            onPressed: _saveJob,
-          ),
         ],
       ),
       body: SingleChildScrollView(
@@ -724,6 +725,12 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
           ],
         ),
       ),
+      bottomNavigationBar: BottomConfirmButton(
+        dirty: !_isSaving,
+        saving: _isSaving,
+        onPressed: () { _saveJob(); },
+      ),
+    ),
     );
   }
 

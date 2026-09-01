@@ -1,0 +1,30 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function underLimit(maxBytes) {
+      return request.resource.size < maxBytes;
+    }
+
+    // Job photos and signatures from the shop app.
+    match /jobs/{jobId}/attachments/{fileName} {
+      allow read, delete: if true;
+      allow create, update: if underLimit(20 * 1024 * 1024);
+    }
+    match /jobs/{jobId}/signatures/{fileName} {
+      allow read, delete: if true;
+      allow create, update: if underLimit(20 * 1024 * 1024);
+    }
+
+    // Warehouse part photos.
+    match /warehouse/{fileName} {
+      allow read, delete: if true;
+      allow create, update: if underLimit(12 * 1024 * 1024);
+    }
+
+    // Shop branding, outbound files, call recordings, SMS media.
+    match /companies/fix_appliance_ca/{allPaths=**} {
+      allow read, delete: if true;
+      allow create, update: if underLimit(25 * 1024 * 1024);
+    }
+  }
+}

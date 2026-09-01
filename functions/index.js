@@ -977,13 +977,9 @@ async function attachCallRecordingToJob({
       ...prev,
       ...next,
       url: next.url || prev.url || '',
-      transcription: (function pickTranscript() {
-        const nextT = String(next.transcription || '');
-        const prevT = String(prev.transcription || '');
-        if (speakerCount(nextT) >= 2 && speakerCount(prevT) < 2) return nextT;
-        if (speakerCount(prevT) >= 2 && speakerCount(nextT) < 2) return prevT;
-        return nextT.length >= prevT.length ? nextT : prevT;
-      })(),
+      transcription: pickLongestTranscript(next.transcription, prev.transcription),
+      transcriptionRu: pickLongestTranscript(next.transcriptionRu, prev.transcriptionRu),
+      transcriptionEn: pickLongestTranscript(next.transcriptionEn, prev.transcriptionEn),
       summary: next.summary || prev.summary || '',
     };
   } else {
@@ -1014,29 +1010,18 @@ async function attachLiveCallNotesToJob({
   let summary = '';
   if (raw.length > 20) {
     try {
-      const shopRu = shopSpeaker(answeredBy, 'ru');
-      const result = await generateContentWithModelFallback([
+      const nextRu = await translateCallTranscriptFull(raw, answeredBy);
+      if (nextRu) russian = nextRu;
+      const summaryResult = await generateContentWithModelFallback([
         {
-          text: `Переведи этот ПОЛНЫЙ телефонный разговор на русский. Сохрани каждую реплику, тот же порядок, те же говорящие (${shopRu}: / Клиент:). Ничего не сокращай и не выкидывай конец. Потом краткое резюме на 2–4 предложения.
+          text: `Краткое резюме этого телефонного разговора на русском, 2–4 предложения. Только резюме.
 
-Разговор:
-${raw}
-
-Верни СТРОГО JSON:
-{"transcription_ru":"...полный текст...","summary":"..."}`,
+${raw}`,
         },
       ]);
-      let text = (result.response.text() || '').trim();
-      if (text.startsWith('```json')) text = text.slice(7);
-      else if (text.startsWith('```')) text = text.slice(3);
-      if (text.endsWith('```')) text = text.slice(0, -3);
-      const parsed = extractJsonObject(text.trim()) || {};
-      const nextRu = relabelTranscript(
-        String(parsed.transcription_ru || parsed.transcription || '').trim(),
-        answeredBy
-      );
-      if (nextRu && nextRu.length >= raw.length * 0.7) russian = nextRu;
-      if (parsed.summary) summary = String(parsed.summary).trim();
+      summary = stripModelFences(
+        (summaryResult.response && summaryResult.response.text()) || ''
+      ).trim();
     } catch (error) {
       console.warn('attachLiveCallNotesToJob translate:', error.message);
     }
@@ -1467,9 +1452,11 @@ function dialActionUrl(req) {
   return functionUrl(req, 'dialAction');
 }
 
-const DEFAULT_VOICE_GREETING = "Hi, you've reached FixApplianceCA. How can I help?";
+const DEFAULT_VOICE_GREETING = 'Hi, FIX Appliance CA. How can I help?';
 
 const STALE_VOICE_GREETINGS = [
+  'Hello, this is FIX Appliance CA. How can I help you?',
+  "Hi, you've reached FixApplianceCA. How can I help?",
   "Hi, you've reached {company}. How can I help?",
   "Hi, you've reached {company}. How can I help you today?",
   "Hi, you've reached {company}. I can take your repair details. How can I help you today?",
@@ -1481,33 +1468,19 @@ const STALE_VOICE_GREETINGS = [
   'Hi, FIX Appliance. How can I help? Чем могу помочь?',
 ];
 
-const DEFAULT_VOICE_INSTRUCTIONS = `You are the virtual receptionist for FixApplianceCA. Home appliances only.
+const DEFAULT_VOICE_INSTRUCTIONS = `You are a real receptionist for FixApplianceCA — a woman in a small Ontario shop. Home appliances only.
 
-Be a polite, easy, educated person — never an IVR, never a chatbot. One short sentence, then listen. Do not freeze, trail off, or go silent. If they ask a side question, answer it briefly and well, then return to the next missing repair fact. Always bring the call back to household-appliance repair.
+Talk like a person, not a form. First replies are ordinary: if they say the dryer is broken, "Oh no — what's it doing?" Then listen. One short thought. Wait. Contractions. A little warmth. If they joke, a small laugh is fine. If they ask something on the side, answer in one sentence and come back to the repair. Never an IVR line. Never "got it", "I understand", "please provide", "certainly".
 
-We repair: washing machines, dryers, dishwashers, gas ovens, electric ovens, electric cooktops, refrigerators, freezers, microwave ovens.
-We do not repair gas cooktops, TVs, laptops, computers, phones, or cars. Say so politely and stay on the line.
+We repair washers, dryers, dishwashers, gas ovens, electric ovens, electric cooktops, fridges, freezers, microwaves. Not gas cooktops, TVs, laptops, phones, or cars — say so kindly and stay on the line.
 
-You answer 24 hours a day and take orders at any hour.
-Visit days and clock hours are given below under "Shop hours" — that block is the truth, not anything you remember. Each visit is 2 hours.
-On a day the technician does not visit: still take the order and offer the next working day.
-Public holiday: take the order. The technician must agree — do not lock a holiday as a normal visit day. Offer a working day, or say the technician will confirm that holiday.
-Never confirm a taken 2-hour window. Offer another time the same day first.
+You answer 24/7 and take the order any hour. Visit days and hours are in Shop hours below — that block is the truth. Each visit is 2 hours. If a window is taken, offer another time the same day first. Closed / holiday: still take the order, offer the next working day.
 
-If they already told you something, do not ask it again. Jump to the next gap.
-If they have not said it yet, the natural order is: first name; what broke, type and brand; weekday and clock time; repair address; confirm the visit.
-Ask who will be at the house only if the repair is not at the owner's home.
+Pick up facts as they talk. Do not run a checklist. Do not re-ask. Typical things you need: first name, what broke and the brand, a day and time, where to go. If they already have a home on file, later ask if the repair is there. Another house → that street, who will be there, that phone. Ask who is home only if it is not their house. Addresses stay in English as spoken — repeat the house number and street once when they give it.
 
-Returning caller: use their first name. Ask if the repair is at the address we already have. Same address → put it on the job. Different place → add a job site: street, who will meet the technician, and that phone. Keep their home on the client card.
-New caller: ask where the repair is. That address goes on the client card and the job. If they then give another work site, add that second place plus who will be there and their phone.
+When you have enough — or they want a callback — say you'll pass it to the tech. Ask them to text a model-sticker photo. Ask if anything else. If they say no, "Have a good day" right away. Do not hang up. They hang up.
 
-When you have a name, what broke, type/brand, a free window on a working day, and the repair address — or they asked for a callback — confirm once ("I'll pass this to the tech"). Then ask them to text this number a photo of the model sticker. Then ask if anything else. If they say no, say "Have a good day." Do not hang up. Wait until they say goodbye. The caller hangs up.
-
-If they want a live person: a technician calls back within 30 minutes. Do not grill for a visit time.
-Do not bring up price unless they asked. Prices are given below under "Prices" — quote only what is written there, never a number you made up.
-If they are angry: stay polite. Someone from the company will call within 30 minutes. Stay on the line.
-
-English only. Understand any language, including Russian, but always answer in English.`;
+Live person: technician calls back in 30 minutes — do not grill for a time. Angry: someone from the shop calls in 30 minutes; stay polite. Price: only if they ask, and only the numbers under Prices. English only; understand any language.`;
 
 const VOICE_MODEL_CANDIDATES = [
   'gemini-flash-lite-latest',
@@ -1683,7 +1656,7 @@ async function getAiAnswerSettings() {
     const closedDates = describeClosedDates(config);
     const priceLine = describePricing(config);
     const needHoursPolicy = Number(voice.hoursPolicyVersion) !== HOURS_POLICY_VERSION;
-    if (Number(voice.briefVersion) !== 1 || staleGreeting || needHoursPolicy) {
+    if (Number(voice.briefVersion) !== 2 || staleGreeting || needHoursPolicy) {
       db.collection('companies')
         .doc(COMPANY_ID)
         .collection('settings')
@@ -1691,8 +1664,8 @@ async function getAiAnswerSettings() {
         .set(
           {
             greeting: DEFAULT_VOICE_GREETING,
-            briefVersion: 1,
-            rulesVersion: 13,
+            briefVersion: 2,
+            rulesVersion: 14,
             hoursPolicyVersion: HOURS_POLICY_VERSION,
             liveIgnoresAppRules: true,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1725,18 +1698,9 @@ async function getAiAnswerSettings() {
     const awayLine = describeClosedDatesLine(closedDates);
     let nextInstructions = withMappedServiceArea(DEFAULT_VOICE_INSTRUCTIONS, serviceArea);
     nextInstructions +=
-      `\n\nShop hours: answer 24/7 and take orders any time. Technician visits ${workDays.label} ${hours.label} America/Toronto. ${closedLine} Public holidays: take the order; the technician must agree. Last start ${voiceFacts.formatHour12(hours.endMinutes - 120)} so the visit ends by ${voiceFacts.formatHour12(hours.endMinutes)}. If they want a visit before ${voiceFacts.formatHour12(hours.startMinutes)} or a start that would end after ${voiceFacts.formatHour12(hours.endMinutes)}, do not book it.`
-      + (awayLine ? `\n\n${awayLine}` : '')
-      + `\n\n${priceLine}`
-      + '\n\nCalendar: each visit is 2 hours. Never confirm a taken window. If the time they want overlaps another job, offer another time the same day first.'
-      + '\n\nAfter you confirm, ask them to text a model-sticker photo, then ask if anything else. If they say no, say "Have a good day." Do not hang up.'
-      + '\n\nSpoken language lock: Always speak English on the phone. Understand Russian or any other language, but never answer in it. JSON "language" is always "en".';
-    const ownerBrief = String(voice.ownerBrief || '')
-      .trim()
-      .slice(0, 1800);
-    if (ownerBrief) {
-      nextInstructions += `\n\nOwner notes from the shop (short; follow unless they break hours, calendar, or safety):\n${ownerBrief}`;
-    }
+      `\n\nShop hours: visits ${workDays.label} ${hours.label} America/Toronto. ${closedLine} Last start ${voiceFacts.formatHour12(hours.endMinutes - 120)}. Holidays: take the order; the technician must agree.`
+      + (awayLine ? `\n${awayLine}` : '')
+      + `\n${priceLine}`;
     return {
       enabled: config.aiAnswerEnabled !== false,
       timeoutSeconds: Number.isFinite(timeout)
@@ -1994,6 +1958,21 @@ async function handleInboundToMaster(req, res, source) {
     await startAiReception(req, res, callSid);
     return;
   }
+  try {
+    const calledAt = voiceFacts.formatTorontoStamp();
+    await notifyMaster(
+      'Входящий звонок',
+      `${fromNumber}\n${calledAt}`,
+      {
+        type: 'call',
+        callSid,
+        from: fromNumber === 'Unknown' ? '' : fromNumber,
+        calledAt,
+      }
+    );
+  } catch (error) {
+    console.warn('handleInboundToMaster notify:', error.message);
+  }
   sendTwiml(res, twimlDialMaster(req, fromNumber, aiSettings.timeoutSeconds));
 }
 
@@ -2247,15 +2226,52 @@ function speakerCount(text) {
   return (hasShop ? 1 : 0) + (hasClient ? 1 : 0);
 }
 
+function speakerTurnCount(text) {
+  return String(text || '')
+    .split(/\n/)
+    .filter((line) =>
+      /^(ИИ|AI|Assistant|Secretary|Секретарь|Me|Master|Мастер|Моё|Мое|Technician|Клиент|Client|User|Caller)\s*:/i.test(
+        line.trim()
+      )
+    ).length;
+}
+
 function pickLongestTranscript(...parts) {
   return parts
     .map((part) => String(part || '').trim())
     .filter(Boolean)
     .sort((a, b) => {
+      const turns = speakerTurnCount(b) - speakerTurnCount(a);
+      if (turns) return turns;
       const speakers = speakerCount(b) - speakerCount(a);
       if (speakers) return speakers;
       return b.length - a.length;
     })[0] || '';
+}
+
+function mergeCallHistory(a, b) {
+  const left = Array.isArray(a) ? a : [];
+  const right = Array.isArray(b) ? b : [];
+  return left.length >= right.length ? left : right;
+}
+
+function withGreetingHistory(history, greeting) {
+  const text = String(greeting || '').trim();
+  const list = Array.isArray(history) ? [...history] : [];
+  if (!text) return list;
+  const already = list.some(
+    (item) => item && item.role === 'assistant' && isSameVoiceLine(item.text, text)
+  );
+  if (already) return list;
+  return [{ role: 'assistant', text }, ...list];
+}
+
+function stripModelFences(text) {
+  let raw = String(text || '').trim();
+  if (raw.startsWith('```json')) raw = raw.slice(7);
+  else if (raw.startsWith('```')) raw = raw.slice(3);
+  if (raw.endsWith('```')) raw = raw.slice(0, -3);
+  return raw.trim();
 }
 
 function normalizeVoiceLine(text) {
@@ -2468,9 +2484,11 @@ function twimlConversationRelay(req, { url, greeting, callSid }) {
   return twiml;
 }
 
-function twimlGeminiLiveStream(req, { url, callSid }) {
+function twimlGeminiLiveStream(req, { url, callSid, greeting }) {
   const twiml = new twilio.twiml.VoiceResponse();
   startCallRecordingNoun(twiml, req);
+  const spoken = englishGreetingOnly(greeting) || DEFAULT_VOICE_GREETING;
+  twiml.say(sayAttrs('en'), spoken);
   const connect = twiml.connect({
     action: functionUrl(req, 'aiRelayComplete'),
   });
@@ -2481,6 +2499,8 @@ function twimlGeminiLiveStream(req, { url, callSid }) {
   });
   if (callSid && typeof stream.parameter === 'function') {
     stream.parameter({ name: 'callSid', value: callSid });
+    stream.parameter({ name: 'greetingSpoken', value: '1' });
+    stream.parameter({ name: 'greeting', value: spoken });
   }
   return twiml;
 }
@@ -2517,42 +2537,66 @@ async function startAiReception(req, res, callSid, options = {}) {
     return;
   }
 
-  const profile = await getAiAnswerSettings();
+  const dialSeconds = parseInt(req.body.DialCallDuration || req.body.CallDuration, 10) || 0;
+  const greeting =
+    data.handoffToAi && dialSeconds > 1
+      ? 'The technician had to step away. How can I help?'
+      : DEFAULT_VOICE_GREETING;
+
+  const wss = forceGather ? '' : await resolveConversationRelayWss();
+  if (wss) {
+    if (process.env.USE_CONVERSATION_RELAY === '1') {
+      console.log(`startAiReception relay ${callSid} ${wss}`);
+      sendTwiml(res, twimlConversationRelay(req, { url: wss, greeting, callSid }));
+    } else {
+      console.log(`startAiReception live ${callSid} ${wss}`);
+      sendTwiml(res, twimlGeminiLiveStream(req, { url: wss, callSid, greeting }));
+    }
+    scheduleCallRecording(callSid, req);
+    completeAiPickup(callSid, data, greeting).catch((error) => {
+      console.warn('completeAiPickup:', error.message);
+    });
+    return;
+  }
+
+  sendTwiml(res, twimlGatherSpeech(req, { say: greeting, language: 'en' }));
+  scheduleCallRecording(callSid, req);
+  completeAiPickup(callSid, data, greeting).catch((error) => {
+    console.warn('completeAiPickup:', error.message);
+  });
+}
+
+async function completeAiPickup(callSid, data, greeting) {
   const existingClient = await findClientByPhone(data.fromNumber);
   const clientName = voiceFacts.usableClientName(
     existingClient ? existingClient.fullName || existingClient.name || '' : ''
   );
-  const dialSeconds = parseInt(req.body.DialCallDuration || req.body.CallDuration, 10) || 0;
-  const greeting = data.handoffToAi && dialSeconds > 1
-    ? 'The technician had to step away. How can I help?'
-    : fillVoiceTemplate(profile.greeting, {
-        company: profile.companyName,
-        name: firstNameOf(clientName),
-      });
-
   const knownAddress = voiceFacts.clientAddressFrom(existingClient);
   const extracted = {};
   if (clientName) extracted.client_name = clientName;
   if (knownAddress) extracted.address = knownAddress;
-
-  await callRef.set(
+  const latestSnap = await callsRef.doc(callSid).get();
+  const latest = latestSnap.exists ? latestSnap.data() || {} : data || {};
+  const reception = latest.aiReception || {};
+  const history = withGreetingHistory(reception.history, greeting);
+  await callsRef.doc(callSid).set(
     {
       status: 'in-progress',
       answeredBy: 'ai',
-      clientId: existingClient ? existingClient.id : data.clientId || null,
+      clientId: existingClient ? existingClient.id : latest.clientId || data.clientId || null,
       aiReception: {
-        history: [{ role: 'assistant', text: greeting }],
-        extracted,
-        language: 'en',
-        turns: 0,
+        ...reception,
+        history,
+        extracted: { ...extracted, ...(reception.extracted || {}) },
+        language: reception.language || 'en',
+        turns: Number(reception.turns || 0),
         knownClient: Boolean(existingClient),
         knownAddress,
       },
-      transcription: appendTranscript(data.transcription, `AI: ${greeting}`),
+      transcription: appendTranscript(latest.transcription || data.transcription, `AI: ${greeting}`),
     },
     { merge: true }
   );
-
   try {
     const calledAt = voiceFacts.formatTorontoStamp();
     await notifyMaster(
@@ -2569,23 +2613,6 @@ async function startAiReception(req, res, callSid, options = {}) {
   } catch (error) {
     console.warn('startAiReception notify:', error.message);
   }
-
-  const wss = forceGather ? '' : await resolveConversationRelayWss();
-  if (wss) {
-    if (process.env.USE_CONVERSATION_RELAY === '1') {
-      console.log(`startAiReception relay ${callSid} ${wss}`);
-      sendTwiml(res, twimlConversationRelay(req, { url: wss, greeting, callSid }));
-      scheduleCallRecording(callSid, req);
-      return;
-    }
-    console.log(`startAiReception live ${callSid} ${wss}`);
-    sendTwiml(res, twimlGeminiLiveStream(req, { url: wss, callSid }));
-    scheduleCallRecording(callSid, req);
-    return;
-  }
-
-  sendTwiml(res, twimlGatherSpeech(req, { say: greeting, language: 'en' }));
-  scheduleCallRecording(callSid, req);
 }
 
 async function finishAiReception(req, res, callSid, callData, say, language, extracted, createJob, options = {}) {
@@ -2761,7 +2788,7 @@ HOW TO TALK — this is the most important part:
 - "language" in JSON is always "en".
 - appliance_type in extracted must be Russian: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
 - scheduled_date must be YYYY-MM-DD relative to Today ${today} in America/Toronto. scheduled_time must be HH:mm 24-hour. "2" / "at 2" / "two" → 14:00 unless they said morning or a.m.
-- client_name: a normal short name as they said it. Never a phonetic spelling.
+- client_name: a normal short given name as they said it. Never a phonetic spelling. Never good/fine/okay/thanks — "I'm good" is not a name.
 
 Good "say" examples:
 - "Oh, the fridge isn't cooling. What brand is it?"
@@ -2871,6 +2898,23 @@ exports.dialAction = functions.https.onRequest(voiceAiRuntime, async (req, res) 
       }
       if (Object.keys(updates).length) {
         await callsRef.doc(callSid).set(updates, { merge: true });
+      }
+      if (inbound && (missed || callerGone)) {
+        try {
+          const calledAt = voiceFacts.formatTorontoStamp();
+          await notifyMaster(
+            callerGone ? 'Звонок сброшен' : 'Пропущенный вызов',
+            `${data.fromNumber || ''}\n${calledAt}`,
+            {
+              type: 'call',
+              callSid,
+              from: data.fromNumber || '',
+              calledAt,
+            }
+          );
+        } catch (error) {
+          console.warn('dialAction missed notify:', error.message);
+        }
       }
     }
   } catch (error) {
@@ -3082,6 +3126,7 @@ voiceRelay.init({
   findClientByPhone,
   callsRef,
   appendTranscript,
+  pickLongestTranscript,
   saveRelayHost,
   torontoTodayYmd: voiceFacts.torontoTodayYmd,
   calendarBrief: () => schedule.calendarBrief(),
@@ -3281,10 +3326,17 @@ async function generateContentWithModelFallback(parts, options = {}) {
         'gemini-flash-lite-latest',
       ]
     : GEMINI_MODEL_CANDIDATES;
+  const generationConfig = {};
+  if (options.maxOutputTokens) {
+    generationConfig.maxOutputTokens = Number(options.maxOutputTokens);
+  }
   let lastError;
   for (const name of names) {
     try {
-      const model = genAI.getGenerativeModel({ model: name });
+      const model = genAI.getGenerativeModel({
+        model: name,
+        ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
+      });
       const result = await generateContentWithRetry(model, parts, 2);
       console.log(`Gemini ответил моделью ${name}`);
       return result;
@@ -3449,7 +3501,7 @@ Compare the transcript with the first-pass JSON. Fix fields that are clearly in 
 ${voiceFacts.EXTRACT_CARD_RULES}
 NEVER invent an address, city, postal code, brand, or model.
 If the address was mumbled, incomplete, or you would be guessing: address=null, city=null, postal_code=null, address_uncertain=true.
-If the name is phonetic garbage, set client_name=null.
+If the name is phonetic garbage or a filler (good, fine, okay, thanks), set client_name=null.
 Keep client_phone as 10 digits if present.
 appliance_type must stay Russian if known: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
 confidence is 0..1.
@@ -3473,6 +3525,64 @@ Return STRICT JSON only:
   else if (raw.startsWith('```')) raw = raw.slice(3);
   if (raw.endsWith('```')) raw = raw.slice(0, -3);
   return extractJsonObject(raw.trim());
+}
+
+async function transcribeCallRecordingAudio({ audioBase64, shopEn, shopWho }) {
+  const transcriptPrompt = `Listen to the WHOLE phone recording from the first sound to the last. Take your time.
+Who spoke for the shop: ${shopWho}.
+Write EVERY spoken turn from BOTH people. One line per turn. Do not merge turns. Do not summarize. Do not skip the start or the end. If a word is unclear write [unclear].
+Return ONLY the dialog, no JSON, no title, like:
+${shopEn}: ...
+Client: ...`;
+  const transcriptResult = await generateContentWithModelFallback(
+    [
+      { text: transcriptPrompt },
+      { inlineData: { mimeType: 'audio/mp3', data: audioBase64 } },
+    ],
+    { quality: true, maxOutputTokens: 16384 }
+  );
+  const raw = stripModelFences(
+    (transcriptResult.response && transcriptResult.response.text()) || ''
+  );
+  return relabelTranscript(raw, shopEn === 'Me' ? 'master' : 'ai');
+}
+
+async function translateCallTranscriptFull(english, answeredBy) {
+  const source = String(english || '').trim();
+  if (!source) return '';
+  const shopRu = shopSpeaker(answeredBy, 'ru');
+  const chunks = [];
+  const lines = source.split('\n').filter((line) => String(line || '').trim());
+  if (source.length <= 9000) {
+    chunks.push(source);
+  } else {
+    const mid = Math.ceil(lines.length / 2);
+    chunks.push(lines.slice(0, mid).join('\n'), lines.slice(mid).join('\n'));
+  }
+  const translated = [];
+  for (const chunk of chunks) {
+    const result = await generateContentWithModelFallback(
+      [
+        {
+          text: `Переведи этот ПОЛНЫЙ кусок телефонного разговора на русский. Сохрани каждую реплику, тот же порядок, те же говорящие (${shopRu}: / Клиент:). Ничего не сокращай и не выкидывай конец. Имена и адреса не меняй. Верни только текст разговора.
+
+${chunk}`,
+        },
+      ],
+      { quality: true, maxOutputTokens: 16384 }
+    );
+    translated.push(
+      relabelTranscript(
+        stripModelFences((result.response && result.response.text()) || ''),
+        answeredBy
+      )
+    );
+  }
+  const russian = translated.filter(Boolean).join('\n').trim();
+  if (speakerTurnCount(russian) < Math.max(2, Math.floor(speakerTurnCount(source) * 0.9))) {
+    return '';
+  }
+  return russian;
 }
 
 async function processRecordingWithAiOnce(callId, recordingUrl) {
@@ -3510,41 +3620,11 @@ async function processRecordingWithAiOnce(callId, recordingUrl) {
         ? 'the technician (label Me / Моё), not the AI'
         : 'the AI receptionist (label AI / ИИ)';
 
-    const transcriptPrompt = `Listen to the WHOLE phone recording. Take your time. Do not skip the start or the end.
-Who spoke for the shop: ${shopWho}.
-Write EVERY turn from BOTH people. Do not merge turns. Do not summarize. If a word is unclear write [unclear].
-Return STRICT JSON only:
-{"transcription_en":"full verbatim dialog with ${shopEn}: and Client: on every line","transcription_ru":"the same dialog in Russian with ${shopRu}: and Клиент:"}`;
-
-    const transcriptResult = await generateContentWithModelFallback(
-      [
-        { text: transcriptPrompt },
-        { inlineData: { mimeType: 'audio/mp3', data: audioBase64 } },
-      ],
-      { quality: true }
-    );
-    let transcriptRaw = String(
-      (transcriptResult.response && transcriptResult.response.text()) || ''
-    ).trim();
-    if (transcriptRaw.startsWith('```json')) transcriptRaw = transcriptRaw.slice(7);
-    else if (transcriptRaw.startsWith('```')) transcriptRaw = transcriptRaw.slice(3);
-    if (transcriptRaw.endsWith('```')) transcriptRaw = transcriptRaw.slice(0, -3);
-    let parsed = {};
-    try {
-      parsed = extractJsonObject(transcriptRaw.trim()) || {};
-    } catch (_) {
-      parsed = {};
-    }
     const liveLabeled = labeledTranscriptFromHistory(
       liveHistory,
       liveTranscription,
       answeredBy
     );
-    const fromAudioRu = relabelTranscript(
-      parsed.transcription_ru || parsed.transcription || '',
-      answeredBy
-    );
-    const fromAudioEn = String(parsed.transcription_en || '').trim();
     const liveEn = liveHistory.length
       ? liveHistory
           .map((item) => {
@@ -3553,15 +3633,34 @@ Return STRICT JSON only:
           })
           .join('\n')
       : '';
-    const transcription = pickLongestTranscript(
-      fromAudioRu,
+    const fromAudioEn = await transcribeCallRecordingAudio({
+      audioBase64,
+      shopEn,
+      shopWho,
+    });
+    const transcriptionEn = pickLongestTranscript(
       fromAudioEn,
+      liveEn,
+      liveTranscription,
+      liveLabeled
+    );
+    let fromAudioRu = '';
+    if (transcriptionEn) {
+      fromAudioRu = await translateCallTranscriptFull(transcriptionEn, answeredBy);
+    }
+    const transcriptionRu = pickLongestTranscript(
+      fromAudioRu,
+      hasCyrillic(liveLabeled) ? liveLabeled : '',
+      hasCyrillic(liveTranscription) ? liveTranscription : ''
+    );
+    const transcription = pickLongestTranscript(
+      transcriptionRu,
+      transcriptionEn,
       liveLabeled,
       liveTranscription,
-      liveEn
+      liveEn,
+      fromAudioEn
     );
-    const transcriptionEn = pickLongestTranscript(fromAudioEn, liveEn, liveTranscription, liveLabeled);
-    const transcriptionRu = pickLongestTranscript(fromAudioRu, hasCyrillic(transcription) ? transcription : '');
 
     const extractPrompt = `From this complete appliance-repair phone transcript, write a short Russian summary and extract job fields.
 Do not change or shorten the transcript. Use only what is written.

@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../core/app_commands.dart';
 import 'firestore_service.dart';
+import 'network_status_service.dart';
 import '../models/warehouse_item.dart';
 
 /// Сервис для работы со складом
@@ -14,7 +16,24 @@ class WarehouseService {
       return snapshot.docs
           .map((doc) => WarehouseItem.fromMap(
               doc.data() as Map<String, dynamic>, doc.id))
+          .where((item) => !item.isDeleted)
           .toList();
+    });
+  }
+
+  /// Удалённые позиции склада (корзина).
+  static Stream<List<WarehouseItem>> streamTrashed() {
+    return _ref.snapshots().map((snapshot) {
+      final items = snapshot.docs
+          .map((doc) => WarehouseItem.fromMap(
+              doc.data() as Map<String, dynamic>, doc.id))
+          .where((item) => item.isDeleted)
+          .toList()
+        ..sort(
+          (a, b) => (b.deletedAt ?? b.createdAt ?? DateTime(0))
+              .compareTo(a.deletedAt ?? a.createdAt ?? DateTime(0)),
+        );
+      return items;
     });
   }
 
@@ -48,27 +67,34 @@ class WarehouseService {
         .get();
 
     if (snapshot.docs.isEmpty) return null;
-    return WarehouseItem.fromMap(
+    final item = WarehouseItem.fromMap(
       snapshot.docs.first.data() as Map<String, dynamic>,
       snapshot.docs.first.id,
     );
+    return item.isDeleted ? null : item;
   }
 
-  /// Создать товар
+  /// Создать товар. Id берём сами: без сети `add()` ждёт ответа сервера, и
+  /// окно «Новая деталь» не закрывается.
   static Future<String> create(WarehouseItem item) async {
-    final docRef = await _ref.add({
-      ...item.toMap(),
-      'createdAt': FieldValue.serverTimestamp(),
-    });
+    final docRef = _ref.doc();
+    await settleWrite(
+      docRef.set({
+        ...item.toMap(),
+        'createdAt': FieldValue.serverTimestamp(),
+      }),
+    );
     return docRef.id;
   }
 
   /// Обновить товар
   static Future<void> update(String id, Map<String, dynamic> data) async {
-    await _ref.doc(id).update({
-      ...data,
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+    await settleWrite(
+      _ref.doc(id).update({
+        ...data,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }),
+    );
   }
 
   /// Изменить количество (списание/приход)
@@ -77,10 +103,12 @@ class WarehouseService {
     if (item == null) return;
 
     final newQuantity = (item.quantity + delta).clamp(0, 999999);
-    await _ref.doc(id).update({
-      'quantity': newQuantity,
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+    await settleWrite(
+      _ref.doc(id).update({
+        'quantity': newQuantity,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }),
+    );
   }
 
   /// Списать единицу (при добавлении в заявку)
@@ -113,9 +141,43 @@ class WarehouseService {
     doc['stockApplied'] = !reverse;
   }
 
-  /// Удалить товар
-  static Future<void> delete(String id) async {
-    await _ref.doc(id).delete();
+  /// В корзину на 30 дней
+  static Future<void> delete(String id, {bool react = true}) async {
+    if (react) AppCommands.reactAngry();
+    await settleWrite(
+      _ref.doc(id).update({
+        'deletedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }),
+    );
+  }
+
+  static Future<void> restore(String id) async {
+    await settleWrite(
+      _ref.doc(id).update({
+        'deletedAt': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }),
+    );
+  }
+
+  static Future<void> deleteForever(String id) async {
+    await settleWrite(_ref.doc(id).delete());
+  }
+
+  static Future<void> purgeExpiredTrash() async {
+    final cutoff = DateTime.now()
+        .subtract(const Duration(days: WarehouseItem.trashKeepDays));
+    final snapshot = await _ref.get();
+    for (final doc in snapshot.docs) {
+      final item = WarehouseItem.fromMap(
+        doc.data() as Map<String, dynamic>,
+        doc.id,
+      );
+      if (item.deletedAt != null && item.deletedAt!.isBefore(cutoff)) {
+        await deleteForever(item.id);
+      }
+    }
   }
 
   /// Товары с низким остатком
@@ -124,7 +186,7 @@ class WarehouseService {
     return snapshot.docs
         .map((doc) =>
             WarehouseItem.fromMap(doc.data() as Map<String, dynamic>, doc.id))
-        .where((item) => item.needsReorder)
+        .where((item) => !item.isDeleted && item.needsReorder)
         .toList();
   }
 }

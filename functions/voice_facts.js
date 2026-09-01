@@ -16,35 +16,28 @@ const VOICE_FAREWELL_UK =
 const VOICE_FAREWELL_ES =
   'Que esté bien, adiós. Nuestro técnico se comunicará con usted lo antes posible.';
 
-const VOICE_CALL_FLOW = `Listen first. Do not run a script of questions.
-Take what they already said. Ask only the next missing thing, one short question, then wait.
-We take repair requests every day, including Saturday, Sunday, and holidays.
-Regular visits: Monday–Friday, 7 a.m. to 9 p.m. America/Toronto. Same-day is OK if it is still in those hours.
-Saturday visits are by agreement — if they want Saturday and the 2-hour window is free, book it. Do not say we don't take Saturday orders.
-Sunday and holidays: still take the order. If they want that day and the window is free, book it as agreed. Never say we are closed those days.
-Each visit is 2 hours — one job in that window. Never confirm a time if that 2-hour window is taken. Offer another time the same day first.
-If they say the repair is at another address, keep their home, take the new street, who will be there, and that phone. Do not hang up.
-If they want a live person, do not grill for a visit time. Say a technician will call back within 30 minutes.
-If they asked the price: a service call is $99. If they approve the repair after diagnosis, they do not pay the service call, only the repair. Do not bring up $99 unless they asked.
-After you confirm, keep talking. Ask if they have another appliance or anything else, then listen. Do not wrap up. Do not say goodbye. Do not hang up. The caller hangs up.
-Household appliances only. If they ask about a laptop or computer, say we repair home appliances, then listen.
-If we cannot take the job (outside the service area, not a home appliance, they cancel), say so in one short sentence, stay on the line, and do not create a job.
-Do not grill for model or serial. At the end, optionally they may text a model-sticker photo to this number.`;
+const VOICE_CALL_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
+Visit days, hours, and prices are in the owner rules. Each visit is 2 hours — do not book a taken window.
+When you have enough, or they want a callback: pass it to the tech, photo of the model sticker, anything else. If they say no: Have a good day. Do not hang up.`;
 
-const VOICE_LIVE_FLOW = `Listen. One short sentence, then wait. Do not fill silence with extra questions.
-Take orders every day, including Saturday, Sunday, and holidays. Regular visits Mon–Fri 7 a.m.–9 p.m. Saturday by agreement if the window is free. Never say we don't accept orders on weekends or holidays.
-Each visit is 2 hours. Never book a taken window; offer another time the same day first.
-If they ask for 6 a.m. or a start after 7 p.m. (visit would end after 9 p.m.), say we don't work then and offer a time that ends by 9 p.m.
-If they want a live person: technician calls back in 30 minutes. Do not hang up.
-If we cannot take the job, say so, stay on the line, do not create a job.
-After you confirm, keep the conversation going. Ask if anything else. Do not say goodbye. The caller hangs up.`;
+const EXTRACT_CARD_RULES = `Keep street, city, unit, and postal code in the original English/Canadian spelling. Never translate or transliterate into Russian (write "King Street", not "Кинг-стрит"; "Toronto", not "Торонто"). Person names stay in English as spoken. problem_description is ONLY the appliance fault and model number — never the SMS, email, or call transcript. client_email is the customer's email from the letter body, not a booking-agency From: address.`;
+
+const VOICE_LIVE_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
+Visit days and hours are in the owner rules. Each visit is 2 hours — do not book a taken window.
+When you have enough: pass it to the tech, photo, anything else. If they say no: Have a good day. Do not hang up.`;
 
 const NAME_STOP = new Set([
   'so', 'the', 'and', 'for', 'your', 'there', 'that', 'this', 'what', 'how', 'can',
-  'help', 'yeah', 'sure', 'wait', 'one', 'great', 'perfect', 'okay', 'alright',
-  'thanks', 'thank', 'hi', 'hello', 'sorry', 'please', 'today', 'tomorrow',
-  'fridge', 'washer', 'dryer', 'stove', 'oven', 'yes', 'no', 'here', 'well',
-  'right', 'just', 'got', 'let', 'me', 'you', 'our', 'tech', 'master',
+  'help', 'yeah', 'yep', 'yup', 'nah', 'nope', 'sure', 'wait', 'one', 'great',
+  'perfect', 'okay', 'ok', 'alright', 'thanks', 'thank', 'hi', 'hello', 'hey',
+  'sorry', 'please', 'today', 'tomorrow', 'fridge', 'washer', 'dryer', 'stove',
+  'oven', 'yes', 'no', 'here', 'well', 'right', 'just', 'got', 'let', 'me', 'you',
+  'our', 'tech', 'master', 'good', 'fine', 'nice', 'cool', 'awesome', 'calling',
+  'looking', 'trying', 'having', 'going', 'coming', 'doing', 'broken', 'about',
+  'from', 'with', 'have', 'had', 'been', 'was', 'were', 'not', 'all', 'done',
+  'back', 'home', 'house', 'street', 'morning', 'afternoon', 'evening', 'night',
+  'day', 'bye', 'goodbye', 'later', 'again', 'still', 'also', 'too', 'very',
+  'really', 'pretty', 'kinda', 'kind', 'sort', 'bit', 'little', 'much', 'more',
 ]);
 
 const WEEKDAYS = {
@@ -159,6 +152,97 @@ function conversationText(extracted, history, extra) {
   return bits.join('\n');
 }
 
+function inferApplianceFromText(text) {
+  const t = String(text || '');
+  const rules = [
+    [/dish\s*wash|посудомое/i, 'Dishwasher'],
+    [/\b(washer|washing machine|стиральн)/i, 'Washer'],
+    [/\b(dryer|сушильн)/i, 'Dryer'],
+    [/\b(fridge|refrigerator|холодильн)/i, 'Fridge'],
+    [/\b(freezer|морозил)/i, 'Freezer'],
+    [/\b(microwave|микроволн)/i, 'Microwave'],
+    [/\b(cooktop|cook top|варочн)/i, 'Cooktop'],
+    [/\b(stove|range|плит)/i, 'Stove'],
+    [/\b(oven|духовк)/i, 'Oven'],
+  ];
+  for (const [re, type] of rules) {
+    if (re.test(t)) return type;
+  }
+  return '';
+}
+
+function looksLikeRepairConversation(text) {
+  const t = String(text || '');
+  if (t.replace(/\s+/g, ' ').trim().length < 60) return false;
+  const hasClient = /(^|\n)\s*(Client|Клиент)\s*:/im.test(t);
+  const appliance = inferApplianceFromText(t);
+  const repair =
+    Boolean(appliance) ||
+    /\b(repair|fix|broken|not working|leak|leaking|noise|won't (start|spin|drain|heat)|book(ed|ing)?|appointment|visit|technician|service call|ремонт|починить|сломал|не работает|заявк)\b/i.test(
+      t
+    );
+  return repair && (hasClient || t.length > 180);
+}
+
+const MONTHS = {
+  january: 1,
+  february: 2,
+  march: 3,
+  april: 4,
+  may: 5,
+  june: 6,
+  july: 7,
+  august: 8,
+  september: 9,
+  october: 10,
+  november: 11,
+  december: 12,
+  jan: 1,
+  feb: 2,
+  mar: 3,
+  apr: 4,
+  jun: 6,
+  jul: 7,
+  aug: 8,
+  sep: 9,
+  sept: 9,
+  oct: 10,
+  nov: 11,
+  dec: 12,
+  января: 1,
+  февраля: 2,
+  марта: 3,
+  апреля: 4,
+  мая: 5,
+  июня: 6,
+  июля: 7,
+  августа: 8,
+  сентября: 9,
+  октября: 10,
+  ноября: 11,
+  декабря: 12,
+  август: 8,
+};
+
+function inferMonthDay(text, todayYmd) {
+  const names = Object.keys(MONTHS)
+    .sort((a, b) => b.length - a.length)
+    .join('|');
+  const re = new RegExp(
+    `\\b(?:(${names})\\s+(\\d{1,2})(?:st|nd|rd|th)?|(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${names}))\\b`,
+    'i'
+  );
+  const m = String(text || '').match(re);
+  if (!m) return '';
+  const month = MONTHS[String(m[1] || m[4] || '').toLowerCase()];
+  const day = Number(m[2] || m[3]);
+  if (!month || !day || day > 31) return '';
+  const year = Number(String(todayYmd).slice(0, 4));
+  let ymd = `${year}-${pad2(month)}-${pad2(day)}`;
+  if (ymd < todayYmd) ymd = `${year + 1}-${pad2(month)}-${pad2(day)}`;
+  return ymd;
+}
+
 function inferDateFromText(text, todayYmd) {
   const t = String(text || '');
   if (/\b(day after tomorrow|послезавтра)\b/i.test(t)) return addDaysYmd(todayYmd, 2);
@@ -166,6 +250,8 @@ function inferDateFromText(text, todayYmd) {
   if (/\b(today|сегодня)\b/i.test(t)) return todayYmd;
   const iso = t.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const monthDay = inferMonthDay(t, todayYmd);
+  if (monthDay) return monthDay;
   const wantsNext = /\bnext\b|\bследующ/i.test(t);
   for (const [name, idx] of Object.entries(WEEKDAYS)) {
     if (new RegExp(`\\b${name}\\b`, 'i').test(t)) {
@@ -177,10 +263,88 @@ function inferDateFromText(text, todayYmd) {
   return '';
 }
 
+const HOUR_WORDS = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  noon: 12,
+  midday: 12,
+  один: 1,
+  два: 2,
+  три: 3,
+  четыре: 4,
+  пять: 5,
+  шесть: 6,
+  семь: 7,
+  восемь: 8,
+  девять: 9,
+  десять: 10,
+  одиннадцать: 11,
+  двенадцать: 12,
+};
+
+function hourWordPattern() {
+  return Object.keys(HOUR_WORDS)
+    .sort((a, b) => b.length - a.length)
+    .join('|');
+}
+
+function looksMorning(text) {
+  const t = String(text || '');
+  return (
+    /\b\d{1,2}(?::\d{2})?\s*a\.?m\.?\b/i.test(t) ||
+    /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+a\.?m\.?\b/i.test(
+      t
+    ) ||
+    /\b\d{1,2}(?::\d{2})?\s+in the morning\b/i.test(t) ||
+    /\b(утра|утром)\b/i.test(t)
+  );
+}
+
+function looksEvening(text) {
+  const t = String(text || '');
+  return (
+    /\b\d{1,2}(?::\d{2})?\s*p\.?m\.?\b/i.test(t) ||
+    /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+p\.?m\.?\b/i.test(
+      t
+    ) ||
+    /\b(?:afternoon|this evening|tonight)\b/i.test(t) ||
+    /\b(вечера|вечером)\b/i.test(t)
+  );
+}
+
+/** Shop clock: bare "2" / "at 2" / "two" is 14:00, not 02:00. */
+function preferShopVisitTime(hhmm, spokenText) {
+  const m = String(hhmm || '').match(/^(\d{2}):(\d{2})$/);
+  if (!m) return hhmm || '';
+  let h = Number(m[1]);
+  const min = m[2];
+  if (!Number.isFinite(h) || h > 23) return hhmm;
+  const spoken = String(spokenText || '');
+  const morning = looksMorning(spoken);
+  const evening = looksEvening(spoken);
+  if (morning && !evening) return `${pad2(h)}:${min}`;
+  if (evening && h > 0 && h < 12) return `${pad2(h + 12)}:${min}`;
+  if (!morning && !evening && h >= 1 && h <= 6) return `${pad2(h + 12)}:${min}`;
+  return `${pad2(h)}:${min}`;
+}
+
 function inferTimeFromText(text) {
   const t = String(text || '');
+  if (/\bnoon\b|\bполдень\b/i.test(t) && !/\bafternoon\b/i.test(t)) {
+    return preferShopVisitTime('12:00', t);
+  }
   const patterns = [
-    /\b(?:at|around|by|for)\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b/i,
+    /\b(?:at|around|about|by|for)\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b/i,
     /\b(\d{1,2}):(\d{2})\s*(a\.?m\.?|p\.?m\.?)?\b/i,
     /\b(\d{1,2})\s*o['’]?clock\b/i,
     /\b(\d{1,2})\s*(a\.?m\.?|p\.?m\.?)\b/i,
@@ -196,9 +360,70 @@ function inferTimeFromText(text) {
     if (!normalized) continue;
     const h = Number(normalized.slice(0, 2));
     if (!Number.isFinite(h) || h > 23) continue;
-    return normalized;
+    return preferShopVisitTime(normalized, `${t} ${ap}`);
+  }
+  const words = hourWordPattern();
+  const wordRes = [
+    new RegExp(
+      `\\b(?:at|around|about|by|for|в)\\s+(${words})(?:\\s+(thirty|o['’]?clock))?\\b`,
+      'i'
+    ),
+    new RegExp(`\\bhalf\\s+past\\s+(${words})\\b`, 'i'),
+    new RegExp(`\\b(${words})\\s+o['’]?clock\\b`, 'i'),
+  ];
+  for (const re of wordRes) {
+    const m = t.match(re);
+    if (!m) continue;
+    const hour = HOUR_WORDS[String(m[1] || '').toLowerCase()];
+    if (!hour) continue;
+    const min = /half\s+past/i.test(m[0]) || /thirty/i.test(m[2] || '') ? '30' : '00';
+    const normalized = normalizeTime(`${hour}:${min}`);
+    if (!normalized) continue;
+    return preferShopVisitTime(normalized, t);
+  }
+  const utterances = String(t)
+    .split(/\n+/)
+    .map((line) =>
+      String(line)
+        .replace(/^(client|caller|user|assistant|ai|shop)\s*:\s*/i, '')
+        .replace(/[.!?]+$/g, '')
+        .trim()
+    )
+    .filter(Boolean);
+  for (const line of utterances.slice().reverse()) {
+    const bareNum = line.match(
+      /^(?:at|around|about|by|for|в)?\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?$/i
+    );
+    if (bareNum) {
+      const hour = Number(bareNum[1]);
+      if (hour >= 1 && hour <= 12) {
+        const min = bareNum[2] && /^\d{2}$/.test(bareNum[2]) ? bareNum[2] : '00';
+        const normalized = normalizeTime(`${hour}:${min}${bareNum[3] || ''}`);
+        if (normalized) {
+          return preferShopVisitTime(normalized, `${t} ${bareNum[3] || ''}`);
+        }
+      }
+    }
+    const bareWord = line.match(
+      new RegExp(
+        `^(?:at|around|about|by|for|в)?\\s*(${words})(?:\\s+(thirty|o['’]?clock))?$`,
+        'i'
+      )
+    );
+    if (bareWord) {
+      const hour = HOUR_WORDS[String(bareWord[1] || '').toLowerCase()];
+      if (hour) {
+        const min = /thirty/i.test(bareWord[2] || '') ? '30' : '00';
+        const normalized = normalizeTime(`${hour}:${min}`);
+        if (normalized) return preferShopVisitTime(normalized, t);
+      }
+    }
   }
   return '';
+}
+
+function isNameStop(word) {
+  return NAME_STOP.has(String(word || '').trim().toLowerCase());
 }
 
 function isPlaceholderClientName(name) {
@@ -207,6 +432,7 @@ function isPlaceholderClientName(name) {
   if (/^(клиент|client)(\s|$|\+)/i.test(s)) return true;
   if (/^без имени$/i.test(s)) return true;
   if (/^\+?\d[\d\s\-().]{6,}$/.test(s)) return true;
+  if (s.split(/\s+/).every((part) => isNameStop(part))) return true;
   return false;
 }
 
@@ -233,7 +459,9 @@ function looksLikeGarbageName(name) {
 function looksLikePersonName(name) {
   const s = String(name || '').trim();
   if (!s || looksLikeGarbageName(s)) return false;
-  return s.split(/\s+/).every((p) =>
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (parts.some((p) => isNameStop(p))) return false;
+  return parts.every((p) =>
     /^[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё'\-]{1,15}$/.test(p)
   );
 }
@@ -270,19 +498,12 @@ function nameFromHistory(history) {
 }
 
 function pickClientName(prev, next, history) {
-  const spoken = nameFromHistory(history);
-  const nextS = String(next || '').trim();
-  const prevS = String(prev || '').trim();
-  if (spoken && looksLikeGarbageName(nextS)) return spoken;
-  if (looksLikePersonName(nextS)) {
-    if (looksLikePersonName(prevS) && nextS.length > Math.max(prevS.length + 6, 14)) {
-      return titleCaseName(prevS);
-    }
-    return titleCaseName(nextS);
-  }
-  if (looksLikePersonName(spoken)) return spoken;
-  if (looksLikePersonName(prevS)) return titleCaseName(prevS);
-  return '';
+  const spoken = usableClientName(nameFromHistory(history));
+  const nextN = usableClientName(next);
+  const prevN = usableClientName(prev);
+  if (spoken) return spoken;
+  if (nextN && prevN && nextN.length + 2 < prevN.length) return prevN;
+  return nextN || prevN || '';
 }
 
 function detectLiveCallback(text) {
@@ -300,7 +521,7 @@ function saidCallbackPromise(text) {
 }
 
 function saidGoodbye(text) {
-  return /okay,?\s*bye|see you then|our technician will contact you|have a good (?:day|evening)|all the best,\s*goodbye|technician will contact you as soon as possible|we wish you a good day|see you at the scheduled time|всего доброго|до свидания|свяжется с вами в ближайшее время|хорошего вам дня|увидимся в назначенное/i.test(
+  return /okay,?\s*bye|see you then|our technician will contact you|all the best,\s*goodbye|technician will contact you as soon as possible|see you at the scheduled time|всего доброго|до свидания|свяжется с вами в ближайшее время|увидимся в назначенное/i.test(
     String(text || '')
   );
 }
@@ -386,6 +607,12 @@ function askedForAddress(text) {
   );
 }
 
+function askedForName(text) {
+  return /\b((your|the) (first )?name|may i (have|get) your name|who am i speaking|what(?:'s| is) your name|can i get your name)\b/i.test(
+    String(text || '')
+  );
+}
+
 function looksLikeStreetUtterance(text) {
   const t = String(text || '');
   if (detectJobSite(t) && !askedForVisitTime(t)) return true;
@@ -396,11 +623,11 @@ function looksLikeStreetUtterance(text) {
 function missingVisitDetails(extracted) {
   const e = extracted && typeof extracted === 'object' ? extracted : {};
   if (e.wants_callback === true) return '';
-  if (!e.address || e.address_uncertain === true) {
-    return 'street number, street name, and town';
-  }
   if (!e.scheduled_date || !e.scheduled_time) {
     return 'a day AND a clock time';
+  }
+  if (!e.address || e.address_uncertain === true) {
+    return 'street number, street name, and town';
   }
   return '';
 }
@@ -500,7 +727,10 @@ function enrichExtracted(extracted, history, extraText) {
   }
   const timeNorm = normalizeTime(out.scheduled_time);
   if (timeNorm) {
-    out.scheduled_time = timeNorm;
+    out.scheduled_time = preferShopVisitTime(
+      timeNorm,
+      `${out.scheduled_time}\n${text}`
+    );
   } else {
     const inferredTime = inferTimeFromText(text);
     if (inferredTime) out.scheduled_time = inferredTime;
@@ -508,6 +738,10 @@ function enrichExtracted(extracted, history, extraText) {
   const name = pickClientName(out.client_name, out.client_name, history);
   if (name) out.client_name = name;
   else if (looksLikeGarbageName(out.client_name)) delete out.client_name;
+  if (!String(out.appliance_type || '').trim()) {
+    const appliance = inferApplianceFromText(text);
+    if (appliance) out.appliance_type = appliance;
+  }
   if (out.wants_callback !== true && detectLiveCallback(text)) {
     out.wants_callback = true;
   }
@@ -595,7 +829,11 @@ function parseScheduledAtDate(extracted) {
   if (dateParts.length < 3 || dateParts.some((n) => !Number.isFinite(n))) return null;
   const [y, mo, d] = dateParts;
   if (!y || !mo || !d) return null;
-  const timeStr = normalizeTime(extracted.scheduled_time) || '09:00';
+  let timeStr = normalizeTime(extracted.scheduled_time);
+  if (timeStr) {
+    timeStr = preferShopVisitTime(timeStr, extracted.scheduled_time);
+  }
+  if (!timeStr) return null;
   const [hh, mm] = timeStr.split(':').map(Number);
   return fromTorontoWallClock(y, mo, d, hh, mm);
 }
@@ -603,12 +841,13 @@ function parseScheduledAtDate(extracted) {
 function isStaleVoiceGreeting(greeting) {
   const g = String(greeting || '').trim();
   if (!g) return true;
-  if (g === "Hi, you've reached FIX Appliance. How can I help?") return false;
+  if (g === 'Hello, this is FIX Appliance CA. How can I help you?') return true;
+  if (g === "Hi, you've reached FixApplianceCA. How can I help?") return true;
+  if (g === "Hi, you've reached FIX Appliance. How can I help?") return true;
   if (g === 'Hi, FIX Appliance. How can I help?') return true;
   if (/technician'?s with a customer/i.test(g)) return true;
   if (/i can take your (repair )?details/i.test(g)) return true;
   if (/help you today/i.test(g)) return true;
-  if (/ApplianceCA/i.test(g)) return true;
   if (/Чем могу помочь/i.test(g)) return true;
   if (/you'?ve reached \{company\}/i.test(g)) return true;
   if (g === 'Hi, FIX ApplianceCA. How can I help you?') return true;
@@ -650,6 +889,7 @@ module.exports = {
   addDaysYmd,
   fromTorontoWallClock,
   normalizeTime,
+  preferShopVisitTime,
   inferDateFromText,
   inferTimeFromText,
   looksLikeGarbageName,
@@ -659,6 +899,9 @@ module.exports = {
   titleCaseName,
   enrichExtracted,
   mergeExtracted,
+  conversationText,
+  inferApplianceFromText,
+  looksLikeRepairConversation,
   isServiceDeclined,
   parseScheduledAtDate,
   pickClientName,
@@ -679,6 +922,7 @@ module.exports = {
   missingVisitDetails,
   askedForVisitTime,
   askedForAddress,
+  askedForName,
   looksLikeStreetUtterance,
   mayHangUp,
   formatTorontoStamp,
@@ -688,6 +932,7 @@ module.exports = {
   detectJobSite,
   detectMoved,
   addressesLookDifferent,
+  EXTRACT_CARD_RULES,
   VOICE_LIVE_FLOW,
   VOICE_FAREWELL_EN,
   VOICE_FAREWELL_EN_CALLBACK,

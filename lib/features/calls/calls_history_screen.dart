@@ -1,358 +1,239 @@
 import 'package:flutter/material.dart';
+
+import '../../core/app_commands.dart';
 import '../../core/constants.dart';
-import '../../services/twilio_service.dart';
-import '../../services/job_service.dart';
-import '../ai/job_preview_screen.dart';
-import '../ai/post_call_screen.dart';
-import '../../services/ai_service.dart';
-import '../jobs/job_details/job_details_screen.dart';
-import 'call_screen.dart';
-import 'dial_pad_screen.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
+import '../../models/client.dart';
+import '../../services/client_service.dart';
+import '../../services/twilio_service.dart';
+import '../../shared/widgets/selection_action_bar.dart';
+import 'call_review_page.dart';
+import 'call_screen.dart';
+import 'dial_pad_screen.dart';
 
-/// Экран истории звонков: звонки, ожидающие проверки данных от ИИ, и общая
-/// история всех звонков (входящих и исходящих) через Twilio.
+/// История входящих и исходящих звонков Twilio.
 class CallsHistoryScreen extends StatefulWidget {
   final bool embedded;
+  final String? clientId;
+  final List<String> phones;
+  final String? contactName;
 
-  const CallsHistoryScreen({super.key, this.embedded = false});
+  const CallsHistoryScreen({
+    super.key,
+    this.embedded = false,
+    this.clientId,
+    this.phones = const [],
+    this.contactName,
+  });
 
   @override
   State<CallsHistoryScreen> createState() => _CallsHistoryScreenState();
 }
 
 class _CallsHistoryScreenState extends State<CallsHistoryScreen>
-    with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => widget.embedded;
   final Set<String> _retryingCallIds = {};
+  final ValueNotifier<Set<String>> _selected = ValueNotifier<Set<String>>({});
+  final ScrollController _scroll = ScrollController();
+  late final Stream<List<Client>> _clientsStream;
+  late final Stream<List<CallRecord>> _callsStream;
+  late final bool Function() _dismissSelection;
+  List<String> _visibleIds = const [];
+
+  @override
+  void dispose() {
+    AppCommands.removeSelectionGuard(_dismissSelection);
+    _selected.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _setSelected(Set<String> next) => _selected.value = next;
+
+  void _clearSelection() => _setSelected({});
+
+  void _toggleSelected(String id) {
+    final next = Set<String>.from(_selected.value);
+    if (!next.add(id)) next.remove(id);
+    _setSelected(next);
+  }
+
+  void _selectAllVisible() => _setSelected({..._visibleIds});
+
+  Future<void> _deleteSelected() async {
+    final ids = _selected.value.toList();
+    _clearSelection();
+    await TwilioService.deleteMany(ids);
+  }
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _dismissSelection = () {
+      if (_selected.value.isEmpty) return false;
+      _clearSelection();
+      return true;
+    };
+    AppCommands.addSelectionGuard(_dismissSelection);
+    _clientsStream = ClientService.streamAll();
+    _callsStream = widget.clientId == null
+        ? TwilioService.getAllCalls()
+        : TwilioService.streamForClient(
+            clientId: widget.clientId!,
+            phones: widget.phones,
+          );
     TwilioService.retryStuckAiCalls();
   }
 
   @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final tabs = TabBar(
-      controller: _tabController,
-      indicatorColor: AppColors.accent,
-      labelColor: widget.embedded ? AppColors.primary : AppColors.accent,
-      unselectedLabelColor: widget.embedded ? Colors.grey : Colors.white70,
-      tabs: [
-        Tab(text: 'К ОБРАБОТКЕ'.tr),
-        Tab(text: 'ВСЕ ЗВОНКИ'.tr),
-      ],
-    );
-    final body = TabBarView(
-      controller: _tabController,
-      children: [_buildPendingReview(), _buildAllCalls()],
-    );
-
+    super.build(context);
+    final body = _buildAllCalls();
     return Scaffold(
       backgroundColor: widget.embedded ? Colors.transparent : null,
       appBar: widget.embedded
           ? null
           : AppBar(
-              title: Text('Звонки'.tr, style: TextStyle(fontWeight: FontWeight.bold)),
+              title: Text(
+                'Звонки'.tr,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
-              bottom: tabs,
             ),
-      body: widget.embedded
-          ? Column(
-              children: [
-                Material(color: Colors.white, child: tabs),
-                Expanded(child: body),
-              ],
-            )
-          : body,
-      floatingActionButton: FloatingActionButton.extended(
-        heroTag: 'calls-dial-pad',
-        backgroundColor: AppColors.accent,
-        foregroundColor: Colors.black,
-        icon: const Icon(Icons.dialpad),
-        label: Text('Набрать номер'.tr),
-        onPressed: () => DialPadScreen.open(context),
-      ),
-    );
-  }
-
-  Widget _buildPendingReview() {
-    return StreamBuilder<List<CallRecord>>(
-      stream: TwilioService.getPendingReviewCalls(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final calls = snapshot.data ?? [];
-
-        if (calls.isEmpty) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.check_circle_outline, size: 80, color: Colors.green.shade300),
-                const SizedBox(height: 16),
-                Text(
-                  'Все звонки обработаны!'.tr,
-                  style: TextStyle(fontSize: 18, color: Colors.grey),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'После звонка ИИ сам расшифрует разговор\nи заявка появится здесь для проверки'.tr,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey),
-                ),
-              ],
+      body: body,
+      floatingActionButton: widget.embedded || widget.clientId != null
+          ? null
+          : FloatingActionButton.extended(
+              heroTag: 'calls-dial-pad',
+              backgroundColor: AppColors.accent,
+              foregroundColor: Colors.black,
+              icon: const Icon(Icons.dialpad),
+              label: Text('Набрать номер'.tr),
+              onPressed: () => DialPadScreen.open(context),
             ),
-          );
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: calls.length,
-          itemBuilder: (context, index) => _buildPendingCallCard(calls[index]),
-        );
-      },
-    );
-  }
-
-  Widget _buildPendingCallCard(CallRecord call) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: AppColors.accent, width: 2),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: AppColors.accent.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Icon(
-                    call.isIncoming ? Icons.phone_callback : Icons.phone_forwarded,
-                    color: AppColors.primary,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        call.isIncoming ? call.fromNumber : call.toNumber,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                      ),
-                      Text(
-                        call.startTime != null
-                            ? Formatters.formatDateTime(call.startTime)
-                            : '',
-                        style: const TextStyle(color: Colors.grey),
-                      ),
-                    ],
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade100,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    'Новое'.tr,
-                    style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
-            if (call.transcription != null && call.transcription!.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  call.transcription!,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: Colors.grey.shade700),
-                ),
-              ),
-            ],
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _skipCall(call),
-                    icon: const Icon(Icons.skip_next),
-                    label: Text('Пропустить'.tr),
-                    style: OutlinedButton.styleFrom(foregroundColor: Colors.grey),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () => _reviewCall(call),
-                    icon: const Icon(Icons.auto_awesome),
-                    label: Text(
-                      call.createdJobId != null ? 'Открыть заявку'.tr : 'Создать заявку'.tr,
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.accent,
-                      foregroundColor: Colors.black,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _reviewCall(CallRecord call) async {
-    if (call.createdJobId != null && call.createdJobId!.isNotEmpty) {
-      final job = await JobService.getById(call.createdJobId!);
-      if (!mounted) return;
-      if (job != null) {
-        await Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => JobDetailsScreen(
-              jobId: job.id,
-              clientId: job.clientId,
-              jobData: job.toMap(),
-            ),
-          ),
-        );
-        return;
-      }
-    }
-
-    ExtractedJobData extractedData;
-
-    if (call.extractedData != null && call.extractedData!.isNotEmpty) {
-      // ИИ уже извлёк данные на сервере сразу из записи разговора.
-      extractedData = ExtractedJobData.fromJson(call.extractedData!);
-    } else if (call.transcription != null && call.transcription!.isNotEmpty) {
-      // Запасной путь — если по какой-то причине сервер не извлёк данные,
-      // но транскрипция есть, извлекаем их прямо в приложении.
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => Center(
-          child: Card(
-            child: Padding(
-              padding: EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('ИИ анализирует разговор...'.tr),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-      try {
-        extractedData = await AiService.extractJobData(call.transcription!);
-      } catch (e) {
-        if (mounted) Navigator.pop(context);
-        _showError('${'Ошибка ИИ'.tr}: $e');
-        return;
-      }
-      if (mounted) Navigator.pop(context);
-    } else {
-      if (!mounted) return;
-      final dictated = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(builder: (_) => const PostCallScreen()),
-      );
-      if (dictated == true) {
-        await TwilioService.markReviewed(call.id);
-      }
-      return;
-    }
-
-    if (!mounted) return;
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => JobPreviewScreen(
-          extractedData: extractedData,
-          originalText: call.transcription ?? '',
-          fallbackPhone: call.isIncoming ? call.fromNumber : call.toNumber,
-        ),
-      ),
-    );
-
-    if (result == true) {
-      await TwilioService.markReviewed(call.id);
-    }
-  }
-
-  Future<void> _skipCall(CallRecord call) async {
-    await TwilioService.markReviewed(call.id);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Звонок пропущен'.tr)));
-    }
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
     );
   }
 
   Widget _buildAllCalls() {
-    return StreamBuilder<List<CallRecord>>(
-      stream: TwilioService.getAllCalls(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
+    return StreamBuilder<List<Client>>(
+      stream: _clientsStream,
+      builder: (context, clientsSnap) {
+        final names = _phoneNames(clientsSnap.data ?? const []);
+        return StreamBuilder<List<CallRecord>>(
+          stream: _callsStream,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    snapshot.error.toString(),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.black54),
+                  ),
+                ),
+              );
+            }
+            if (!snapshot.hasData &&
+                snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
 
-        final calls = snapshot.data ?? [];
+            final calls = snapshot.data ?? [];
+            if (calls.isEmpty) {
+              return Center(
+                child: Text(
+                  'Нет звонков'.tr,
+                  style: const TextStyle(color: Colors.black54, fontSize: 16),
+                ),
+              );
+            }
 
-        if (calls.isEmpty) {
-          return Center(child: Text('Нет звонков'.tr, style: TextStyle(color: Colors.grey)));
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: calls.length,
-          itemBuilder: (context, index) => _buildCallHistoryCard(calls[index]),
+            _visibleIds = [for (final call in calls) call.id];
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                Positioned.fill(
+                  child: ListView.builder(
+                  key: const PageStorageKey('calls-list'),
+                  controller: _scroll,
+                  padding: const EdgeInsets.all(16),
+                  itemCount: calls.length,
+                  itemBuilder: (context, index) {
+                    final call = calls[index];
+                    return ValueListenableBuilder<Set<String>>(
+                      key: ValueKey(call.id),
+                      valueListenable: _selected,
+                      builder: (context, selected, _) {
+                        return _buildCallHistoryCard(
+                          call,
+                          names,
+                          selected.contains(call.id),
+                          selected.isNotEmpty,
+                        );
+                      },
+                    );
+                  },
+                ),
+                ),
+                ValueListenableBuilder<Set<String>>(
+                  valueListenable: _selected,
+                  builder: (context, selected, _) {
+                    if (selected.isEmpty) return const SizedBox.shrink();
+                    return Positioned(
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      child: SelectionActionBar(
+                        count: selected.length,
+                        onCancel: _clearSelection,
+                        onSelectAll: _selectAllVisible,
+                        onDelete: _deleteSelected,
+                      ),
+                    );
+                  },
+                ),
+              ],
+            );
+          },
         );
       },
     );
   }
 
-  Widget _buildCallHistoryCard(CallRecord call) {
+  Map<String, String> _phoneNames(List<Client> clients) {
+    final names = <String, String>{};
+    void add(String phone, String name) {
+      final key = ClientService.normalizePhone(phone);
+      if (key.length >= 7 && name.trim().isNotEmpty) {
+        names[key] = name.trim();
+      }
+    }
+
+    for (final client in clients) {
+      add(client.phone, client.fullName);
+      for (final location in client.locations) {
+        for (final contact in location.contacts) {
+          add(
+            contact.phone,
+            contact.name.trim().isNotEmpty ? contact.name : client.fullName,
+          );
+        }
+      }
+    }
+    return names;
+  }
+
+  Widget _buildCallHistoryCard(
+    CallRecord call,
+    Map<String, String> names,
+    bool selected,
+    bool selecting,
+  ) {
     final isIncoming = call.isIncoming;
     final duration = call.durationSeconds != null
         ? '${call.durationSeconds! ~/ 60}:${(call.durationSeconds! % 60).toString().padLeft(2, '0')}'
@@ -364,49 +245,122 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     final canRetryAi = call.aiStatus == 'error' && (hasRecording || connected);
     final isRetrying = _retryingCallIds.contains(call.id);
     final phone = isIncoming ? call.fromNumber : call.toNumber;
+    final name = widget.contactName ?? names[ClientService.normalizePhone(phone)];
 
-    return Card(
+    final card = Card(
       margin: const EdgeInsets.only(bottom: 8),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+      color: selected ? const Color(0xFFE8EEF4) : Colors.white,
+      elevation: 0.6,
+      shadowColor: Colors.transparent,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onLongPress: () => _toggleSelected(call.id),
+        onTap: () {
+          if (selecting) {
+            _toggleSelected(call.id);
+            return;
+          }
+          CallReviewPage.open(
+            context,
+            callId: call.id,
+            contactName: name,
+            call: call,
+          );
+        },
+        child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: isIncoming ? Colors.green.shade50 : Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(
-                isIncoming ? Icons.call_received : Icons.call_made,
-                color: isIncoming ? Colors.green : Colors.blue,
+            SizedBox(
+              width: 64,
+              child: Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.topCenter,
+                children: [
+                  Column(
+                    children: [
+                      Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: isIncoming
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFF1565C0),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      call.answeredByAi
+                          ? Icons.notifications_active
+                          : isIncoming
+                              ? Icons.call_received
+                              : Icons.call_made,
+                      color: Colors.white,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    isIncoming ? 'Входящий'.tr : 'Исходящий'.tr,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: isIncoming
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFF1565C0),
+                    ),
+                  ),
+                    ],
+                  ),
+                  if (selecting)
+                    Positioned(
+                      left: -8,
+                      top: -8,
+                      child: SelectCheckbox(selected: selected),
+                    ),
+                ],
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: InkWell(
-                onTap: phone.trim().isEmpty
-                    ? null
-                    : () => CallScreen.open(context, phoneNumber: phone),
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 2, bottom: 2, right: 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        phone,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
+              child: Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 2, right: 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name ?? phone,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    if (name != null && phone.trim().isNotEmpty) ...[
                       const SizedBox(height: 2),
                       Text(
-                        call.startTime != null
-                            ? '${Formatters.formatDayTime(call.startTime)} • $duration'
-                            : duration,
+                        phone,
                         style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
                       ),
                     ],
-                  ),
+                    const SizedBox(height: 2),
+                    Text(
+                      call.startTime != null
+                          ? '${Formatters.formatDateTime(call.startTime)} • $duration'
+                          : duration,
+                      style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                    ),
+                    if (call.answeredByAi)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'Нажмите: запись, текст RU/EN, ошибка секретаря'.tr,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF475569),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ),
@@ -416,7 +370,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.1),
+                    color: statusColor.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
@@ -427,6 +381,17 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                       fontSize: 12,
                     ),
                   ),
+                ),
+                IconButton(
+                  tooltip: 'Перезвонить'.tr,
+                  onPressed: phone.trim().isEmpty
+                      ? null
+                      : () => CallScreen.open(
+                            context,
+                            phoneNumber: phone,
+                            contactName: name,
+                          ),
+                  icon: const Icon(Icons.call, size: 20),
                 ),
                 if (canRetryAi && !isRetrying)
                   TextButton(
@@ -451,7 +416,9 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
           ],
         ),
       ),
+      ),
     );
+    return card;
   }
 
   Future<void> _retryAi(CallRecord call) async {
@@ -463,9 +430,14 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('ИИ запущен повторно'.tr)),
       );
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
-      _showError('Не удалось запустить ИИ'.tr);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Не удалось запустить ИИ'.tr),
+          backgroundColor: Colors.red,
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() => _retryingCallIds.remove(call.id));

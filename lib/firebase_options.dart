@@ -55,6 +55,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '772324431093',
     projectId: 'fix-appliance-crm',
     storageBucket: 'fix-appliance-crm.firebasestorage.app',
+    
   );
 
   static const FirebaseOptions ios = FirebaseOptions(

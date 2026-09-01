@@ -1,11 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:twilio_voice/twilio_voice.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../core/app_commands.dart';
 import '../core/api_keys.dart';
+import '../models/job.dart';
+import 'client_service.dart';
 import 'firestore_service.dart';
 
 /// Идентификатор мастера, под которым приложение регистрируется в Twilio
@@ -42,6 +47,8 @@ class CallRecord {
   final String answeredBy; // '' | 'master' | 'ai'
   final bool serviceDeclined;
   final String declineReason;
+  final bool jobCreateBlocked;
+  final DateTime? deletedAt;
 
   CallRecord({
     required this.id,
@@ -69,7 +76,23 @@ class CallRecord {
     this.answeredBy = '',
     this.serviceDeclined = false,
     this.declineReason = '',
+    this.jobCreateBlocked = false,
+    this.deletedAt,
   });
+
+  bool get isDeleted => deletedAt != null;
+  bool get aiBlocked => jobCreateBlocked || isDeleted;
+
+  static const trashKeepDays = 30;
+
+  int get trashDaysLeft {
+    final deleted = deletedAt;
+    if (deleted == null) return 0;
+    return deleted
+        .add(const Duration(days: trashKeepDays))
+        .difference(DateTime.now())
+        .inDays;
+  }
 
   bool get isIncoming => direction == 'inbound';
   bool get answeredByAi => answeredBy == 'ai';
@@ -108,21 +131,30 @@ class CallRecord {
     return null;
   }
 
+  static int? _asInt(dynamic value) {
+    if (value == null) return null;
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value.toString());
+  }
+
   factory CallRecord.fromMap(Map<String, dynamic> map, String docId) {
     return CallRecord(
       id: docId,
-      callSid: map['callSid'] ?? docId,
-      fromNumber: map['fromNumber'] ?? '',
-      toNumber: map['toNumber'] ?? '',
-      direction: map['direction'] ?? 'inbound',
-      startTime: parseStamp(map['startTime']),
+      callSid: (map['callSid'] ?? docId).toString(),
+      fromNumber: (map['fromNumber'] ?? '').toString(),
+      toNumber: (map['toNumber'] ?? '').toString(),
+      direction: (map['direction'] ?? 'inbound').toString(),
+      startTime: parseStamp(map['startTime']) ?? parseStamp(map['createdAt']),
       endTime: parseStamp(map['endTime']),
-      durationSeconds: map['durationSeconds'],
-      recordingUrl: map['recordingUrl'],
+      durationSeconds: _asInt(map['durationSeconds']),
+      recordingUrl: (map['recordingUrl'] ?? '').toString().trim().isEmpty
+          ? null
+          : map['recordingUrl'].toString(),
       storageUrl: (map['storageUrl'] ?? '').toString().trim().isEmpty
           ? null
           : (map['storageUrl'] ?? '').toString(),
-      transcription: map['transcription'],
+      transcription: map['transcription']?.toString(),
       transcriptionRu: (map['transcriptionRu'] ?? '').toString().trim().isEmpty
           ? null
           : (map['transcriptionRu'] ?? '').toString(),
@@ -132,17 +164,22 @@ class CallRecord {
       summary: (map['summary'] ?? '').toString().trim().isEmpty
           ? null
           : (map['summary'] ?? '').toString(),
-      status: map['status'] ?? 'ringing',
-      aiStatus: map['aiStatus'] ?? 'none',
-      aiError: map['aiError'],
-      extractedData: map['extractedData'] != null
-          ? Map<String, dynamic>.from(map['extractedData'])
+      status: (map['status'] ?? 'ringing').toString(),
+      aiStatus: (map['aiStatus'] ?? 'none').toString(),
+      aiError: map['aiError']?.toString(),
+      extractedData: map['extractedData'] is Map
+          ? Map<String, dynamic>.from(map['extractedData'] as Map)
           : null,
       aiReception: map['aiReception'] is Map
           ? Map<String, dynamic>.from(map['aiReception'] as Map)
           : null,
-      clientId: map['clientId'],
-      createdJobId: map['createdJobId'],
+      clientId: map['clientId']?.toString(),
+      createdJobId: () {
+        final linked = (map['createdJobId'] ?? '').toString().trim();
+        if (linked.isNotEmpty) return linked;
+        final jobId = (map['jobId'] ?? '').toString().trim();
+        return jobId.isEmpty ? null : jobId;
+      }(),
       reviewed: map['reviewed'] == true,
       answeredBy: (map['answeredBy'] ?? '').toString(),
       serviceDeclined: map['serviceDeclined'] == true ||
@@ -150,6 +187,8 @@ class CallRecord {
               map['extractedData']['service_declined'] == true) ||
           (map['aiReception'] is Map &&
               map['aiReception']['serviceDeclined'] == true),
+      jobCreateBlocked: map['jobCreateBlocked'] == true,
+      deletedAt: parseStamp(map['deletedAt']),
       declineReason: () {
         final top = (map['declineReason'] ?? '').toString().trim();
         if (top.isNotEmpty) return top;
@@ -170,6 +209,7 @@ class CallRecord {
 class TwilioService {
   static bool _isInitialized = false;
   static bool _eventsAttached = false;
+  static String? lastPlaceError;
   static bool get isInitialized => _isInitialized;
 
   static final StreamController<ActiveCall?> _activeCallController =
@@ -200,6 +240,7 @@ class TwilioService {
 
   static bool get _isAndroid =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  static const _deviceChannel = MethodChannel('fix_appliance/device');
 
   /// Инициализация: запрашивает разрешения, регистрирует устройство в Twilio
   /// и начинает слушать события звонков. Безопасно вызывать многократно.
@@ -214,6 +255,11 @@ class TwilioService {
         await TwilioVoicePlatform.instance.requestReadPhoneStatePermission();
         await TwilioVoicePlatform.instance.requestReadPhoneNumbersPermission();
         await TwilioVoicePlatform.instance.requestManageOwnCallsPermission();
+        try {
+          await Permission.bluetoothConnect.request();
+        } catch (e) {
+          debugPrint('TwilioService: bluetoothConnect: $e');
+        }
         // Всегда перерегистрируем: старый CALL_PROVIDER-аккаунт нужно заменить
         // на self-managed, иначе входящие звонки всплывают в системном Phone.
         await TwilioVoicePlatform.instance.registerPhoneAccount();
@@ -262,6 +308,7 @@ class TwilioService {
       });
 
       _isInitialized = true;
+      lastPlaceError = null;
       debugPrint('TwilioService: инициализирован');
     } catch (e) {
       debugPrint('TwilioService: ошибка инициализации: $e');
@@ -287,6 +334,7 @@ class TwilioService {
   static void _setCallStatus(String status) {
     callStatus = status;
     _callStatusController.add(status);
+    _syncOutgoingRingback();
   }
 
   static void _handleCallEvent(CallEvent event) {
@@ -357,12 +405,66 @@ class TwilioService {
     return '+$formatted';
   }
 
+  static Future<bool> _refreshVoiceToken() async {
+    lastPlaceError = null;
+    final accessToken = await _fetchAccessToken();
+    if (accessToken == null) {
+      lastPlaceError = 'Нет токена Twilio. Проверьте интернет.';
+      return false;
+    }
+    String? deviceToken;
+    if (!kIsWeb) {
+      try {
+        deviceToken = await FirebaseMessaging.instance.getToken();
+      } catch (e) {
+        debugPrint('TwilioService: FCM токен при звонке: $e');
+      }
+    }
+    await TwilioVoicePlatform.instance.setTokens(
+      accessToken: accessToken,
+      deviceToken: deviceToken,
+    );
+    if (!_isInitialized) {
+      await TwilioVoicePlatform.instance.registerClient(
+        kTwilioMasterIdentity,
+        'Мастер',
+      );
+      await TwilioVoicePlatform.instance.setDefaultCallerName('Клиент');
+      if (!_eventsAttached) {
+        TwilioVoicePlatform.instance.callEventsListener.listen(_handleCallEvent);
+        _eventsAttached = true;
+      }
+      _isInitialized = true;
+    }
+    return true;
+  }
+
   /// Совершить исходящий звонок на номер клиента.
   static Future<bool> makeCall(String phoneNumber, {String? jobId}) async {
+    lastPlaceError = null;
+    _setCallStatus('connecting');
     if (!_isInitialized) {
       await initialize();
     }
-    if (!_isInitialized) return false;
+    final tokenOk = await _refreshVoiceToken();
+    if (!tokenOk) {
+      _setCallStatus('failed');
+      return false;
+    }
+
+    if (_isAndroid) {
+      try {
+        final enabled =
+            await TwilioVoicePlatform.instance.isPhoneAccountEnabled();
+        if (enabled == false) {
+          lastPlaceError =
+              'Аккаунт звонков выключен в настройках телефона.';
+          debugPrint('TwilioService: PhoneAccount выключен');
+        }
+      } catch (e) {
+        debugPrint('TwilioService: isPhoneAccountEnabled: $e');
+      }
+    }
 
     pendingJobId = (jobId != null && jobId.isNotEmpty) ? jobId : null;
     if (pendingJobId != null) {
@@ -370,6 +472,7 @@ class TwilioService {
     }
 
     placingOutgoing = true;
+    _setCallStatus('calling');
     try {
       final result = await TwilioVoicePlatform.instance.call.place(
         from: kTwilioMasterIdentity,
@@ -377,12 +480,16 @@ class TwilioService {
       );
       if (result != true) {
         placingOutgoing = false;
+        lastPlaceError ??= 'Телефон не принял вызов.';
+        _setCallStatus('failed');
       } else if (pendingJobId != null) {
         unawaited(_tagLatestOutboundWithJob(phoneNumber, pendingJobId!));
       }
       return result == true;
     } catch (e) {
       placingOutgoing = false;
+      lastPlaceError = e.toString();
+      _setCallStatus('failed');
       debugPrint('TwilioService: ошибка исходящего звонка: $e');
       return false;
     }
@@ -563,8 +670,69 @@ class TwilioService {
 
   static Future<bool> toggleSpeaker() async {
     final isSpeaker = await TwilioVoicePlatform.instance.call.isOnSpeaker() ?? false;
-    await TwilioVoicePlatform.instance.call.toggleSpeaker(!isSpeaker);
+    await setSpeaker(!isSpeaker);
     return !isSpeaker;
+  }
+
+  static Future<void> setSpeaker(bool on) async {
+    await TwilioVoicePlatform.instance.call.toggleSpeaker(on);
+  }
+
+  static bool _ringbackOn = false;
+
+  static void _syncOutgoingRingback() {
+    final want = placingOutgoing &&
+        (callStatus == 'connecting' ||
+            callStatus == 'calling' ||
+            callStatus == 'ringing');
+    if (want == _ringbackOn) return;
+    _ringbackOn = want;
+    if (want) {
+      unawaited(playOutgoingRingback());
+    } else {
+      unawaited(stopOutgoingRingback());
+    }
+  }
+
+  static Future<void> playOutgoingRingback() async {
+    if (!_isAndroid) return;
+    try {
+      await _deviceChannel.invokeMethod('playOutgoingRingback');
+      if (!_ringbackOn) {
+        await _deviceChannel.invokeMethod('stopOutgoingRingback');
+      }
+    } catch (e) {
+      debugPrint('TwilioService: playOutgoingRingback: $e');
+    }
+  }
+
+  static Future<void> stopOutgoingRingback() async {
+    if (!_isAndroid) return;
+    try {
+      await _deviceChannel.invokeMethod('stopOutgoingRingback');
+    } catch (e) {
+      debugPrint('TwilioService: stopOutgoingRingback: $e');
+    }
+  }
+
+  /// If the phone is on car Bluetooth / a headset, keep the call there.
+  static Future<void> preferCarAudio() async {
+    if (!_isAndroid) return;
+    try {
+      final hasCar =
+          await _deviceChannel.invokeMethod<bool>('hasCarAudio') ?? false;
+      if (!hasCar) return;
+      final onSpeaker =
+          await TwilioVoicePlatform.instance.call.isOnSpeaker() ?? false;
+      if (onSpeaker) return;
+      final onBt =
+          await TwilioVoicePlatform.instance.call.isBluetoothOn() ?? false;
+      if (!onBt) {
+        await TwilioVoicePlatform.instance.call.toggleBluetooth(bluetoothOn: true);
+      }
+    } catch (e) {
+      debugPrint('TwilioService: preferCarAudio: $e');
+    }
   }
 
   static Future<void> sendDigits(String digits) async {
@@ -580,6 +748,7 @@ class TwilioService {
         .snapshots()
         .map((snapshot) => snapshot.docs
             .map((doc) => CallRecord.fromMap(doc.data() as Map<String, dynamic>, doc.id))
+            .where((call) => !call.isDeleted)
             .toList()
           ..sort((a, b) => (b.startTime ?? DateTime(0)).compareTo(a.startTime ?? DateTime(0))));
   }
@@ -590,24 +759,147 @@ class TwilioService {
         .snapshots()
         .map((snapshot) => snapshot.docs
             .map((doc) => CallRecord.fromMap(doc.data() as Map<String, dynamic>, doc.id))
+            .where((call) => !call.isDeleted)
             .toList()
           ..sort((a, b) => (b.startTime ?? DateTime(0)).compareTo(a.startTime ?? DateTime(0))));
   }
 
-  static Stream<List<CallRecord>> getAllCalls() {
-    return _callsRef.orderBy('startTime', descending: true).limit(100).snapshots().map(
-          (snapshot) => snapshot.docs
-              .map((doc) => CallRecord.fromMap(doc.data() as Map<String, dynamic>, doc.id))
-              .toList(),
-        );
+  static List<CallRecord> _mapCallDocs(
+    Iterable<QueryDocumentSnapshot> docs, {
+    bool includeDeleted = false,
+  }) {
+    final calls = <CallRecord>[];
+    for (final doc in docs) {
+      try {
+        final data = doc.data();
+        if (data is! Map) continue;
+        calls.add(CallRecord.fromMap(Map<String, dynamic>.from(data), doc.id));
+      } catch (error) {
+        debugPrint('Call ${doc.id}: $error');
+      }
+    }
+    final visible = [
+      for (final call in calls)
+        if (includeDeleted || !call.isDeleted) call,
+    ];
+    visible.sort(
+      (a, b) => (b.startTime ?? DateTime(0)).compareTo(a.startTime ?? DateTime(0)),
+    );
+    return visible;
   }
+
+  static Stream<List<CallRecord>> getAllCalls() => streamAll();
 
   static Stream<List<CallRecord>> streamAll() {
     return _callsRef.snapshots().map(
-          (snapshot) => snapshot.docs
-              .map((doc) => CallRecord.fromMap(doc.data() as Map<String, dynamic>, doc.id))
-              .toList(),
+          (snapshot) => _mapCallDocs(snapshot.docs),
         );
+  }
+
+  static Stream<List<CallRecord>> streamTrashed() {
+    return _callsRef.snapshots().map(
+          (snapshot) => _mapCallDocs(snapshot.docs, includeDeleted: true)
+              .where((call) => call.isDeleted)
+              .toList()
+            ..sort(
+              (a, b) => (b.deletedAt ?? b.startTime ?? DateTime(0))
+                  .compareTo(a.deletedAt ?? a.startTime ?? DateTime(0)),
+            ),
+        );
+  }
+
+  static Future<void> delete(String id) async {
+    if (id.trim().isEmpty) return;
+    AppCommands.reactAngry();
+    final snap = await _callsRef.doc(id).get();
+    final data = snap.data() as Map<String, dynamic>?;
+    await _callsRef.doc(id).set(
+      {
+        'deletedAt': FieldValue.serverTimestamp(),
+        'jobCreateBlocked': true,
+        'reviewed': true,
+        'aiSkip': true,
+        'aiStatus': 'skipped',
+      },
+      SetOptions(merge: true),
+    );
+    final jobId =
+        ((data?['createdJobId'] ?? data?['jobId']) ?? '').toString().trim();
+    if (jobId.isEmpty) return;
+    try {
+      final jobSnap = await FirestoreService.jobsRef.doc(jobId).get();
+      final job = jobSnap.data() as Map<String, dynamic>?;
+      if (job == null || job['deletedAt'] != null) return;
+      if (job['needsReview'] == true) {
+        await FirestoreService.jobsRef.doc(jobId).set(
+          {
+            'deletedAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+        await ClientService.trashOrphanAutoClient(
+          clientId: (job['clientId'] ?? '').toString(),
+          discardedJobId: jobId,
+          jobWasUnconfirmedAuto: Job.isUnconfirmedAutoMap(job),
+        );
+      }
+    } catch (_) {}
+  }
+
+  static Future<void> restore(String id) async {
+    if (id.trim().isEmpty) return;
+    await _callsRef.doc(id).set(
+      {'deletedAt': FieldValue.delete()},
+      SetOptions(merge: true),
+    );
+  }
+
+  static Future<void> deleteForever(String id) async {
+    if (id.trim().isEmpty) return;
+    await _callsRef.doc(id).delete();
+  }
+
+  static Future<void> deleteMany(Iterable<String> ids) async {
+    for (final id in ids) {
+      await delete(id);
+    }
+  }
+
+  static Future<void> purgeExpiredTrash() async {
+    final cutoff = DateTime.now().subtract(const Duration(days: CallRecord.trashKeepDays));
+    final snapshot = await _callsRef.limit(400).get();
+    for (final doc in snapshot.docs) {
+      try {
+        final call = CallRecord.fromMap(doc.data() as Map<String, dynamic>, doc.id);
+        if (call.deletedAt != null && call.deletedAt!.isBefore(cutoff)) {
+          await deleteForever(call.id);
+        }
+      } catch (_) {}
+    }
+  }
+
+  static Stream<List<CallRecord>> streamForClient({
+    required String clientId,
+    List<String> phones = const [],
+  }) {
+    final keys = {
+      for (final phone in phones)
+        if (_digits(phone).length >= 10) _digits(phone),
+    };
+    return streamAll().map((calls) {
+      final matched = [
+        for (final call in calls)
+          if ((call.clientId ?? '') == clientId ||
+              keys.contains(_digits(call.fromNumber)) ||
+              keys.contains(_digits(call.toNumber)))
+            call,
+      ];
+      matched.sort(
+        (a, b) => (b.startTime ?? DateTime(0)).compareTo(a.startTime ?? DateTime(0)),
+      );
+      return matched;
+    });
   }
 
   static Stream<CallRecord?> watchCall(String callId) {
@@ -619,8 +911,87 @@ class TwilioService {
     });
   }
 
+  static Future<CallRecord?> getById(String callId) async {
+    if (callId.trim().isEmpty) return null;
+    final snap = await _callsRef.doc(callId).get();
+    final data = snap.data();
+    if (!snap.exists || data == null) return null;
+    return CallRecord.fromMap(data as Map<String, dynamic>, snap.id);
+  }
+
+  static Future<List<CallRecord>> recentCalls({int limit = 20}) async {
+    final snap =
+        await _callsRef.orderBy('startTime', descending: true).limit(limit).get();
+    return _mapCallDocs(snap.docs);
+  }
+
+  static Future<void> attachJob({
+    required String callId,
+    required String jobId,
+    String clientId = '',
+  }) async {
+    if (callId.trim().isEmpty || jobId.trim().isEmpty) return;
+    await _callsRef.doc(callId).set(
+      {
+        'createdJobId': jobId,
+        'jobId': jobId,
+        if (clientId.isNotEmpty) 'clientId': clientId,
+        'reviewed': false,
+      },
+      SetOptions(merge: true),
+    );
+  }
+
+  static Future<void> blockJobCreate(String callId) async {
+    if (callId.trim().isEmpty) return;
+    await _callsRef.doc(callId).set(
+      {
+        'jobCreateBlocked': true,
+        'reviewed': true,
+      },
+      SetOptions(merge: true),
+    );
+  }
+
+  static Future<void> blockJobCreateForJob(String jobId, {String? sourceCallId}) async {
+    if (sourceCallId != null && sourceCallId.trim().isNotEmpty) {
+      await blockJobCreate(sourceCallId);
+    }
+    if (jobId.trim().isEmpty) return;
+    final snaps = await Future.wait([
+      _callsRef.where('createdJobId', isEqualTo: jobId).get(),
+      _callsRef.where('jobId', isEqualTo: jobId).get(),
+    ]);
+    final ids = <String>{};
+    for (final snap in snaps) {
+      for (final doc in snap.docs) {
+        ids.add(doc.id);
+      }
+    }
+    for (final id in ids) {
+      await blockJobCreate(id);
+    }
+  }
+
   static Future<void> markReviewed(String callId) async {
+    if (callId.trim().isEmpty) return;
     await _callsRef.doc(callId).set({'reviewed': true}, SetOptions(merge: true));
+  }
+
+  static Future<String> latestInboxCallId({String from = ''}) async {
+    final phone = _digits(from);
+    final snap = await _callsRef.orderBy('startTime', descending: true).limit(20).get();
+    for (final doc in snap.docs) {
+      final call = CallRecord.fromMap(doc.data() as Map<String, dynamic>, doc.id);
+      if (call.reviewed) continue;
+      if (phone.length >= 10) {
+        final match = _digits(call.fromNumber) == phone ||
+            _digits(call.toNumber) == phone;
+        if (!match) continue;
+      }
+      return call.id;
+    }
+    return '';
   }
 
   static Future<void> markAllPendingReviewed() async {
@@ -657,6 +1028,10 @@ class TwilioService {
 
   /// Повторить ИИ-обработку записи (например, если она упала с ошибкой).
   static Future<void> retryAiProcessing(String callId) async {
+    final existing = await getById(callId);
+    if (existing != null && existing.aiBlocked) {
+      throw Exception('ИИ для этого звонка отключён');
+    }
     await _callsRef.doc(callId).set({
       'aiStatus': 'processing',
       'aiStartedAt': FieldValue.serverTimestamp(),
@@ -705,6 +1080,11 @@ class TwilioService {
       for (final doc in snapshot.docs) {
         if (started >= 3) break;
         final data = doc.data() as Map<String, dynamic>;
+        if (data['deletedAt'] != null ||
+            data['jobCreateBlocked'] == true ||
+            data['aiSkip'] == true) {
+          continue;
+        }
         final retries = (data['aiRetryCount'] as num?)?.toInt() ?? 0;
         if (retries >= 5) continue;
         final duration = (data['durationSeconds'] as num?)?.toInt() ?? 0;

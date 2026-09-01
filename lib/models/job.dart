@@ -555,6 +555,28 @@ class Job {
   /// Адрес для навигации (Job Site или адрес клиента)
   String get workAddress => hasJobSite ? (jobSiteAddress ?? clientAddress) : clientAddress;
 
+  /// Город для шторки и группировки: поле city или кусок адреса.
+  String get displayCity {
+    final raw = (city ?? '').trim();
+    if (raw.isNotEmpty) return raw;
+    return cityFromAddress(workAddress);
+  }
+
+  static String cityFromAddress(String address) {
+    final parts = address
+        .split(',')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return '';
+    final postalRe = RegExp(r'^[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d$');
+    if (parts.length >= 2 && postalRe.hasMatch(parts.last)) {
+      return parts.length >= 3 ? parts[parts.length - 2] : '';
+    }
+    if (parts.length >= 2) return parts.last;
+    return '';
+  }
+
   /// Контактное имя на месте
   String get contactName => hasJobSite ? (jobSiteName ?? clientName) : clientName;
 

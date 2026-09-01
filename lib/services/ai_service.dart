@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import '../core/api_keys.dart';
+import '../models/warehouse_item.dart';
 
 /// Результат извлечения данных из разговора
 class ExtractedJobData {
@@ -101,17 +102,17 @@ class ExtractedJobData {
 /// Сервис для работы с Gemini AI
 class AiService {
   static const _models = [
+    'gemini-3.6-flash',
     'gemini-2.5-flash',
     'gemini-flash-lite-latest',
     'gemini-flash-latest',
-    'gemini-2.0-flash',
   ];
 
   static GenerativeModel? _model;
 
   static GenerativeModel get model {
     _model ??= GenerativeModel(
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.6-flash',
       apiKey: kGeminiApiKey,
     );
     return _model!;
@@ -176,6 +177,9 @@ class AiService {
 - Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
 - Если клиент — владелец, а техника находится у арендатора, установи has_job_site: true
 - Если что-то не упомянуто, поставь null
+- Адрес, улицу, город и индекс оставляй как сказал клиент, по-английски. Не переводи на русский (King Street, не Кинг-стрит).
+- Имя клиента оставляй по-английски, как сказано.
+- problem_description — только поломка и модель, не весь разговор.
 
 Формат JSON:
 {
@@ -263,6 +267,190 @@ $conversationText
       return parsed.map((e) => e.toString()).toList();
     } catch (e) {
       return [];
+    }
+  }
+
+  /// К какой технике относится запчасть. Нужно, когда по названию не понять,
+  /// а есть только артикул вроде W10130913. Возвращает одну из [categories]
+  /// или null, если ИИ не уверен.
+  static Future<String?> guessPartCategory({
+    required String partNumber,
+    required String name,
+    required String model,
+    required List<String> categories,
+  }) async {
+    if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
+      return null;
+    }
+    if (partNumber.trim().isEmpty && name.trim().isEmpty) return null;
+
+    final prompt =
+        '''
+You are an appliance parts counter specialist in Canada.
+
+Part number: ${partNumber.isEmpty ? '(none)' : partNumber}
+Part name: ${name.isEmpty ? '(none)' : name}
+Fits model: ${model.isEmpty ? '(none)' : model}
+
+Which appliance is this part for? Answer with exactly one line from this list,
+copied character for character:
+${categories.join('\n')}
+
+Rules:
+- Answer only if you know the part. A guess sends the wrong part to a job.
+- A part used on several appliances, or one you do not recognise, is "unknown".
+- No explanation, no quotes, just the one line or the word unknown.
+''';
+
+    try {
+      final answer = (await generateText(prompt)).trim();
+      final clean = answer.split('\n').first.trim();
+      for (final category in categories) {
+        if (clean.toLowerCase() == category.toLowerCase()) return category;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Другие артикулы той же детали: OEM supersession, WP-префикс, aftermarket.
+  /// Пусто, если ИИ не уверен — лучше пустое поле, чем выдуманный номер.
+  static Future<List<String>> guessInterchangeNumbers({
+    required String partNumber,
+    required String name,
+    required String model,
+  }) async {
+    if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
+      return const [];
+    }
+    final part = partNumber.trim().toUpperCase();
+    if (part.length < 4) return const [];
+
+    final prompt =
+        '''
+You are an appliance parts counter specialist in Canada.
+
+Part number: $part
+Part name: ${name.isEmpty ? '(none)' : name}
+Fits model: ${model.isEmpty ? '(none)' : model}
+
+List genuine interchange / supersession numbers for THIS same physical part:
+OEM supersessions, the same OEM number with a WP / W / PS / AP prefix, or a
+known aftermarket equivalent sold as the same part.
+
+Hard rules:
+- Only numbers you actually know. Guessing sends the wrong part to a job.
+- Do not repeat $part itself.
+- At most 8 numbers.
+- If you are not sure, return [].
+
+Return ONLY JSON, no prose:
+["W10311524","WPW10311524"]
+''';
+
+    try {
+      final text = await generateText(prompt);
+      var jsonStr = text.trim();
+      if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr
+            .replaceAll(RegExp(r'^```\w*\n?'), '')
+            .replaceAll('```', '');
+      }
+      final start = jsonStr.indexOf('[');
+      final end = jsonStr.lastIndexOf(']');
+      if (start < 0 || end <= start) return const [];
+      final decoded = json.decode(jsonStr.substring(start, end + 1));
+      if (decoded is! List) return const [];
+      final skip = WarehouseItem.normalizePart(part);
+      final out = <String>[];
+      for (final row in decoded) {
+        final clean = row.toString().trim().toUpperCase();
+        if (clean.isEmpty) continue;
+        if (WarehouseItem.normalizePart(clean) == skip) continue;
+        if (out.contains(clean)) continue;
+        out.add(clean);
+        if (out.length >= 8) break;
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Какие детали со склада заменяют номер [wantedPart].
+  ///
+  /// [stock] — то, что реально лежит на складе: `id`, `partNumber`, `name`,
+  /// `modelNumber`. Возвращаем id тех, что подходят, и короткую причину.
+  /// Пусто — если ИИ не уверен: лучше ничего, чем неверная деталь в счёте.
+  static Future<Map<String, String>> findInterchangeableParts({
+    required String wantedPart,
+    required List<Map<String, String>> stock,
+  }) async {
+    if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
+      return {};
+    }
+    if (wantedPart.trim().isEmpty || stock.isEmpty) return {};
+
+    final lines = stock
+        .map(
+          (item) =>
+              '${item['id']} | ${item['partNumber']} | ${item['name']}'
+              '${(item['modelNumber'] ?? '').isEmpty ? '' : ' | fits ${item['modelNumber']}'}',
+        )
+        .join('\n');
+
+    final prompt =
+        '''
+You are an appliance parts counter specialist in Canada.
+
+The technician needs part number: $wantedPart
+It is NOT in stock. Below is what IS in stock, one per line:
+id | part number | name | fits model
+
+$lines
+
+Which of these in-stock parts is a genuine interchange / supersession for
+$wantedPart — the same physical part sold under another number (OEM
+supersession, a different brand of the same OEM part, or a known aftermarket
+equivalent)?
+
+Hard rules:
+- Only answer if you actually know the interchange. Guessing costs a wasted trip.
+- A part that merely looks similar or fits the same appliance is NOT a match.
+- Return at most 3.
+- If you are not sure about any of them, return an empty array.
+
+Return ONLY JSON, no prose:
+[{"id": "<id from the list>", "why": "<max 6 words, English>"}]
+''';
+
+    try {
+      final text = await generateText(prompt);
+      var jsonStr = text.trim();
+      if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr
+            .replaceAll(RegExp(r'^```\w*\n?'), '')
+            .replaceAll('```', '');
+      }
+      final start = jsonStr.indexOf('[');
+      final end = jsonStr.lastIndexOf(']');
+      if (start < 0 || end <= start) return {};
+      final decoded = json.decode(jsonStr.substring(start, end + 1));
+      if (decoded is! List) return {};
+
+      final known = {for (final item in stock) item['id']};
+      final out = <String, String>{};
+      for (final row in decoded) {
+        if (row is! Map) continue;
+        final id = (row['id'] ?? '').toString();
+        if (id.isEmpty || !known.contains(id)) continue;
+        out[id] = (row['why'] ?? '').toString().trim();
+        if (out.length >= 3) break;
+      }
+      return out;
+    } catch (_) {
+      return {};
     }
   }
 

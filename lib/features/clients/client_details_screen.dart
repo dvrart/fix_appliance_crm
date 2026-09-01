@@ -3,15 +3,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../../core/constants.dart';
 import '../../services/services.dart';
-import '../../shared/widgets/keyboard_safe.dart';
-import '../../widgets/smart_address_picker.dart';
 import '../jobs/job_details/job_details_screen.dart';
+import '../jobs/job_details/editors/call_recording_page.dart';
 import '../jobs/create_job_screen.dart';
 import '../calls/call_screen.dart';
 import '../messages/conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../models/job.dart';
-import '../../shared/widgets/email_field.dart';
+import 'edit_client_sheet.dart';
 
 class ClientDetailsScreen extends StatefulWidget {
   final String clientId;
@@ -27,22 +26,99 @@ class ClientDetailsScreen extends StatefulWidget {
   State<ClientDetailsScreen> createState() => _ClientDetailsScreenState();
 }
 
-class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
+class _ClientDetailsScreenState extends State<ClientDetailsScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _historyTabs;
+
+  @override
+  void initState() {
+    super.initState();
+    _historyTabs = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _historyTabs.dispose();
+    super.dispose();
+  }
+
   void _makeCall(String phone, String name) {
     if (phone.isEmpty) return;
     CallScreen.open(context, phoneNumber: phone, contactName: name);
   }
 
-  void _sendSms(String phone, String name, {String? email}) {
-    if (phone.isEmpty && !(email ?? '').contains('@')) return;
-    Navigator.push(
+  Future<void> _sendSms(String phone, String name, {String? email}) async {
+    final peers = await ConversationPeer.loadForClient(
+      clientId: widget.clientId,
+      name: name,
+      phone: phone,
+      email: email ?? '',
+    );
+    if (!mounted) return;
+    ConversationPeer? chosen = peers.isEmpty
+        ? ConversationPeer(
+            id: 'owner',
+            label: 'Хозяин'.tr,
+            name: name,
+            phone: phone,
+            email: email ?? '',
+          )
+        : peers.first;
+    if (peers.length > 1) {
+      chosen = await showModalBottomSheet<ConversationPeer>(
+        context: context,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        builder: (context) {
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    'Кому написать?'.tr,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                    ),
+                  ),
+                ),
+                for (final peer in peers)
+                  ListTile(
+                    leading: Icon(
+                      peer.id == 'owner' ? Icons.person : Icons.location_on,
+                      color: AppColors.primary,
+                    ),
+                    title: Text(peer.displayName),
+                    subtitle: Text(
+                      [
+                        peer.label,
+                        if (peer.hasPhone) peer.phone,
+                        if (peer.hasEmail) peer.email,
+                      ].join(' · '),
+                    ),
+                    onTap: () => Navigator.pop(context, peer),
+                  ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          );
+        },
+      );
+      if (chosen == null || !mounted) return;
+    }
+    if (chosen.phone.isEmpty && !chosen.hasEmail) return;
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => ConversationScreen(
-          phoneNumber: phone,
-          email: email,
-          contactName: name,
+          phoneNumber: chosen!.phone,
+          email: chosen.hasEmail ? chosen.email : null,
+          contactName: chosen.displayName,
           clientId: widget.clientId,
+          recipients: peers.length > 1 ? peers : const [],
         ),
       ),
     );
@@ -109,246 +185,24 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
   }
 
   void _editClientDialog(Map<String, dynamic> currentData) {
-    final nameController = TextEditingController(
-      text: _extractClientName(currentData),
-    );
-    final phoneController = TextEditingController(
-      text: currentData['phone'] ?? '',
-    );
-    final emailController = TextEditingController(
-      text: currentData['email'] ?? '',
-    );
-    final companyController = TextEditingController(
-      text: currentData['companyName'] ?? currentData['company'] ?? '',
-    );
-    final notesController = TextEditingController(
-      text: currentData['notes'] ?? currentData['description'] ?? '',
-    );
-    var source = (currentData['source'] ?? '').toString();
-
-    final addressParts = splitAddress((currentData['address'] ?? '').toString());
-    final streetController = TextEditingController(text: addressParts[0]);
-    final cityController = TextEditingController(text: addressParts[1]);
-    final postalController = TextEditingController(text: addressParts[2]);
-
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       useRootNavigator: true,
+      isDismissible: false,
+      enableDrag: false,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (builderContext, setSheetState) {
-            return KeyboardAvoidingSheet(
-              padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Заголовок
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Редактировать клиента'.tr,
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.primary,
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close),
-                          onPressed: () => Navigator.pop(sheetContext),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Форма
-                    Expanded(
-                      child: SingleChildScrollView(
-                        child: Column(
-                          children: [
-                            TextField(
-                              controller: nameController,
-                              decoration: InputDecoration(
-                                labelText: 'Имя'.tr,
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.person),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: phoneController,
-                              keyboardType: TextInputType.phone,
-                              decoration: InputDecoration(
-                                labelText: 'Телефон'.tr,
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.phone),
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-
-                            // --- КНОПКА ПОИСКА АДРЕСА (как в create_job_screen) ---
-                            GestureDetector(
-                              onTap: () {
-                                showSmartAddressPicker(
-                                  context: context,
-                                  initialStreet: streetController.text,
-                                  initialCity: cityController.text,
-                                  initialPostal: postalController.text,
-                                  onSaved: (street, city, postal) {
-                                    setSheetState(() {
-                                      streetController.text = street;
-                                      cityController.text = city;
-                                      postalController.text = postal;
-                                    });
-                                  },
-                                );
-                              },
-                              child: Container(
-                                margin: const EdgeInsets.only(bottom: 12),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 14,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade50,
-                                  border: Border.all(color: Colors.grey.shade300),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Row(
-                                  children: [
-                                    const Icon(
-                                      Icons.location_on,
-                                      color: Colors.grey,
-                                      size: 20,
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Text(
-                                        cityController.text.isEmpty
-                                            ? 'Нажмите, чтобы ввести адрес...'.tr
-                                            : '${streetController.text}, ${cityController.text}',
-                                        style: TextStyle(
-                                          color: cityController.text.isEmpty
-                                              ? Colors.black54
-                                              : Colors.black87,
-                                          fontSize: 16,
-                                        ),
-                                      ),
-                                    ),
-                                    const Icon(Icons.search, color: AppColors.primary),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            EmailAutocompleteField(
-                              controller: emailController,
-                              decoration: InputDecoration(
-                                labelText: 'Электронный адрес'.tr,
-                                border: const OutlineInputBorder(),
-                                prefixIcon: const Icon(Icons.email_outlined),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: companyController,
-                              decoration: InputDecoration(
-                                labelText: 'Название компании'.tr,
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.business),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: notesController,
-                              maxLines: 3,
-                              decoration: InputDecoration(
-                                labelText: 'Описание'.tr,
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.notes),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            StreamBuilder<List<String>>(
-                              stream: CatalogService.streamLeadSources(),
-                              builder: (context, snap) {
-                                final sources = snap.data ?? CatalogService.defaultLeadSources;
-                                return DropdownButtonFormField<String>(
-                                  value: sources.contains(source) ? source : null,
-                                  decoration: InputDecoration(
-                                    labelText: 'Откуда узнали'.tr,
-                                    border: OutlineInputBorder(),
-                                    prefixIcon: Icon(Icons.campaign_outlined),
-                                  ),
-                                  items: [
-                                    DropdownMenuItem(
-                                      value: null,
-                                      child: Text('Не указано'.tr),
-                                    ),
-                                    for (final item in sources)
-                                      DropdownMenuItem(value: item, child: Text(trAny(item))),
-                                  ],
-                                  onChanged: (value) {
-                                    setSheetState(() => source = value ?? '');
-                                  },
-                                );
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    // Кнопка сохранения
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: () async {
-                          await ClientService.update(widget.clientId, {
-                            'fullName': nameController.text.trim(),
-                            'phone': phoneController.text.trim(),
-                            'email': emailController.text.trim(),
-                            'companyName': companyController.text.trim(),
-                            'notes': notesController.text.trim(),
-                            'source': source,
-                            ...ClientService.addressFields(
-                              street: streetController.text.trim(),
-                              city: cityController.text.trim(),
-                              postal: postalController.text.trim(),
-                              currentData: currentData,
-                            ),
-                          });
-                          if (sheetContext.mounted) Navigator.pop(sheetContext);
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.accent,
-                          foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        child: Text(
-                          'СОХРАНИТЬ'.tr,
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                ),
-            );
-          },
-        );
-      },
+      builder: (_) => EditClientSheet(
+        clientId: widget.clientId,
+        currentData: currentData,
+        extractName: _extractClientName,
+      ),
     );
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -363,24 +217,9 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
         final email = (data['email'] ?? '').toString();
         final notes = (data['notes'] ?? data['description'] ?? '').toString();
         final source = (data['source'] ?? '').toString();
+        final topInset = MediaQuery.viewPaddingOf(context).top;
 
         return Scaffold(
-          appBar: AppBar(
-            title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-            backgroundColor: AppColors.primary,
-            foregroundColor: Colors.white,
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.edit),
-                onPressed: () => _editClientDialog(data),
-              ),
-              IconButton(
-                icon: const Icon(Icons.delete, color: Colors.red),
-                tooltip: 'Удалить клиента'.tr,
-                onPressed: () => _deleteClient(name),
-              ),
-            ],
-          ),
           floatingActionButton: FloatingActionButton.extended(
             onPressed: () => _openNewJob(name, phone, address, email: email, company: company),
             backgroundColor: AppColors.accent,
@@ -388,30 +227,45 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
             icon: const Icon(Icons.add),
             label: Text('Новый ремонт'.tr),
           ),
-          body: SingleChildScrollView(
-            padding: const EdgeInsets.only(bottom: 88),
-            child: Column(
-              children: [
-                // Шапка с контактами
-                Container(
+          body: NestedScrollView(
+            headerSliverBuilder: (context, innerBoxIsScrolled) => [
+              SliverToBoxAdapter(
+                child: Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(24),
-                  decoration: const BoxDecoration(
+                  padding: const EdgeInsets.fromLTRB(4, 2, 8, 16),
+                  decoration: BoxDecoration(
                     color: AppColors.primary,
-                    borderRadius: BorderRadius.only(
+                    borderRadius: const BorderRadius.only(
                       bottomLeft: Radius.circular(24),
                       bottomRight: Radius.circular(24),
                     ),
                   ),
                   child: Column(
                     children: [
+                      SizedBox(height: topInset),
+                      Row(
+                        children: [
+                          _headerIcon(
+                            icon: Icons.delete,
+                            color: Colors.red,
+                            tooltip: 'Удалить клиента'.tr,
+                            onTap: () => _deleteClient(name),
+                          ),
+                          const Spacer(),
+                          _headerIcon(
+                            icon: Icons.edit,
+                            tooltip: 'Изменить'.tr,
+                            onTap: () => _editClientDialog(data),
+                          ),
+                        ],
+                      ),
                       CircleAvatar(
-                        radius: 40,
+                        radius: 28,
                         backgroundColor: Colors.white,
                         child: Text(
                           name.isNotEmpty ? name[0].toUpperCase() : '?',
-                          style: const TextStyle(
-                            fontSize: 32,
+                          style: TextStyle(
+                            fontSize: 22,
                             fontWeight: FontWeight.bold,
                             color: AppColors.primary,
                           ),
@@ -438,21 +292,21 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                           _buildActionButton(
                             icon: Icons.phone,
                             label: 'Позвонить'.tr,
-                            color: Colors.green,
+                            color: const Color(0xFF25D366),
                             onTap: () => _makeCall(phone, name),
                           ),
                           const SizedBox(width: 16),
                           _buildActionButton(
                             icon: Icons.forum,
                             label: 'Написать'.tr,
-                            color: Colors.blue,
+                            color: const Color(0xFF1E88E5),
                             onTap: () => _sendSms(phone, name, email: email),
                           ),
                           const SizedBox(width: 16),
                           _buildActionButton(
                             icon: Icons.navigation,
                             label: 'Маршрут'.tr,
-                            color: Colors.orange,
+                            color: const Color(0xFFFF9800),
                             onTap: () => MapsService.openNavigator(address),
                           ),
                         ],
@@ -460,10 +314,10 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                     ],
                   ),
                 ),
-
-                // Информация
-                Padding(
-                  padding: const EdgeInsets.all(16),
+              ),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -481,7 +335,6 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                         icon: Icons.location_on,
                         title: 'Адрес'.tr,
                         value: address.isEmpty ? 'Не указан'.tr : address,
-                        onTap: () => _editAddress(data),
                       ),
                       _buildInfoCard(
                         icon: Icons.campaign_outlined,
@@ -494,42 +347,32 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
                           title: 'Описание'.tr,
                           value: notes,
                         ),
-
-                      const SizedBox(height: 24),
-                      Text(
-                        'Техника'.tr,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      _buildEquipmentHistory(),
-                      const SizedBox(height: 24),
-
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'История заявок'.tr,
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 18,
-                              ),
-                            ),
-                          ),
-                          TextButton.icon(
-                            onPressed: () => _openNewJob(name, phone, address, email: email, company: company),
-                            icon: const Icon(Icons.add_circle),
-                            label: Text('Новая работа'.tr),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      _buildJobsHistory(),
                     ],
                   ),
                 ),
+              ),
+              SliverPersistentHeader(
+                pinned: true,
+                delegate: _HistoryTabBarDelegate(
+                  TabBar(
+                    controller: _historyTabs,
+                    labelColor: AppColors.primary,
+                    unselectedLabelColor: Colors.grey.shade600,
+                    indicatorColor: AppColors.primary,
+                    indicatorWeight: 3,
+                    tabs: [
+                      Tab(text: 'История заявок'.tr),
+                      Tab(text: 'История звонков'.tr),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            body: TabBarView(
+              controller: _historyTabs,
+              children: [
+                _buildJobsHistory(),
+                _buildCallHistory(data),
               ],
             ),
           ),
@@ -538,23 +381,26 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
     );
   }
 
-  void _editAddress(Map<String, dynamic> data) {
-    final parts = splitAddress((data['address'] ?? '').toString());
-    showSmartAddressPicker(
-      context: context,
-      initialStreet: parts[0],
-      initialCity: parts[1],
-      initialPostal: parts[2],
-      onSaved: (street, city, postal) {
-        ClientService.updateAddress(
-          widget.clientId,
-          street: street,
-          city: city,
-          postal: postal,
-          currentData: data,
-        );
-      },
+  Widget _headerIcon({
+    required IconData icon,
+    required VoidCallback onTap,
+    Color color = Colors.white,
+    String? tooltip,
+  }) {
+    final button = Material(
+      color: Colors.transparent,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Icon(icon, color: color),
+        ),
+      ),
     );
+    if (tooltip == null) return button;
+    return Tooltip(message: tooltip, child: button);
   }
 
   Widget _buildActionButton({
@@ -568,12 +414,13 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
       child: Column(
         children: [
           Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.2),
+            width: 56,
+            height: 56,
+            decoration: const BoxDecoration(
+              color: Colors.white,
               shape: BoxShape.circle,
             ),
-            child: Icon(icon, color: Colors.white),
+            child: Icon(icon, color: color, size: 28),
           ),
           const SizedBox(height: 4),
           Text(
@@ -638,90 +485,114 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
     return '${(days / 30).floor()} ${'мес. назад'.tr}';
   }
 
-  Widget _buildEquipmentHistory() {
-    return StreamBuilder<List<Job>>(
-      stream: JobService.streamByClient(widget.clientId),
-      builder: (context, snapshot) {
-        final jobs = snapshot.data ?? const <Job>[];
-        final groups = <String, List<Job>>{};
-        for (final job in jobs) {
-          for (final appliance in job.appliances) {
-            final serial = appliance.serialNumber.trim();
-            final model = appliance.model.trim();
-            final key = serial.isNotEmpty
-                ? 'sn:$serial'
-                : [
-                    appliance.type,
-                    appliance.brand,
-                    model,
-                  ].where((part) => part.trim().isNotEmpty).join(' · ');
-            if (key.isEmpty) continue;
-            groups.putIfAbsent(key, () => []).add(job);
-          }
+  Set<String> _phoneKeys(Map<String, dynamic> data) {
+    final keys = <String>{};
+    void add(String raw) {
+      final n = SmsService.normalizePhone(raw);
+      if (n.length >= 10) keys.add(n.substring(n.length - 10));
+    }
+
+    add((data['phone'] ?? '').toString());
+    final locations = data['locations'];
+    if (locations is List) {
+      for (final loc in locations) {
+        if (loc is! Map) continue;
+        final contacts = loc['contacts'];
+        if (contacts is! List) continue;
+        for (final contact in contacts) {
+          if (contact is Map) add((contact['phone'] ?? '').toString());
         }
-        if (groups.isEmpty) {
-          return Text(
-            'Серийник и модель появятся после заявок'.tr,
-            style: const TextStyle(color: Colors.grey),
+      }
+    }
+    return keys;
+  }
+
+  String _callWhen(CallRecord call) {
+    final at = call.startTime;
+    if (at == null) return '';
+    return DateFormat('dd.MM.yyyy HH:mm').format(at);
+  }
+
+  String _callLength(CallRecord call) {
+    final seconds = call.durationSeconds ??
+        (call.startTime != null && call.endTime != null
+            ? call.endTime!.difference(call.startTime!).inSeconds
+            : null);
+    if (seconds == null || seconds <= 0) return '';
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    return '$m:${s.toString().padLeft(2, '0')}';
+  }
+
+  bool _callMatches(CallRecord call, Set<String> phones) {
+    bool hit(String raw) {
+      final n = SmsService.normalizePhone(raw);
+      if (n.length < 10) return false;
+      return phones.contains(n.substring(n.length - 10));
+    }
+
+    final id = (call.clientId ?? '').trim();
+    if (id.isNotEmpty && id == widget.clientId) return true;
+    return hit(call.fromNumber) || hit(call.toNumber);
+  }
+
+  Widget _buildCallHistory(Map<String, dynamic> data) {
+    final phones = _phoneKeys(data);
+    return StreamBuilder<List<CallRecord>>(
+      stream: TwilioService.streamAll(),
+      builder: (context, snapshot) {
+        final calls = [
+          for (final call in snapshot.data ?? const <CallRecord>[])
+            if (!call.isDeleted && _callMatches(call, phones)) call,
+        ];
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            calls.isEmpty) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (calls.isEmpty) {
+          return Center(
+            child: Text(
+              'Звонков пока нет'.tr,
+              style: const TextStyle(color: Colors.grey),
+            ),
           );
         }
-        return Column(
-          children: groups.entries.map((entry) {
-            final jobsForUnit = [...entry.value]
-              ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-            final latest = jobsForUnit.first;
-            final appliance = latest.appliances.firstWhere(
-              (item) {
-                final serial = item.serialNumber.trim();
-                if (entry.key.startsWith('sn:')) {
-                  return 'sn:$serial' == entry.key;
-                }
-                return [
-                      item.type,
-                      item.brand,
-                      item.model.trim(),
-                    ].where((part) => part.trim().isNotEmpty).join(' · ') ==
-                    entry.key;
-              },
-              orElse: () => latest.primaryAppliance ??
-                  JobAppliance(type: latest.applianceType),
-            );
-            final title = [
-              appliance.type,
-              appliance.brand,
-              appliance.model,
-            ].where((part) => part.trim().isNotEmpty).join(' · ');
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                leading: Icon(
-                  ApplianceCategories.getIcon(appliance.type),
-                  color: AppColors.primary,
-                ),
-                title: Text(title.isEmpty ? 'Техника'.tr : trAny(title)),
-                subtitle: Text(
-                  [
-                    if (appliance.serialNumber.trim().isNotEmpty)
-                      '${'S/N'.tr} ${appliance.serialNumber}',
-                    '${jobsForUnit.length} ${'визитов'.tr}',
-                    trAny(latest.status),
-                  ].join(' · '),
-                ),
-                onTap: () {
-                  Navigator.push(
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
+          children: [
+            for (final call in calls)
+              Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  leading: Icon(
+                    call.isIncoming ? Icons.call_received : Icons.call_made,
+                    color: call.isIncoming
+                        ? const Color(0xFF2EBD59)
+                        : AppColors.primary,
+                  ),
+                  title: Text(
+                    [
+                      call.isIncoming ? 'Входящий'.tr : 'Исходящий'.tr,
+                      _callWhen(call),
+                    ].where((part) => part.trim().isNotEmpty).join(' · '),
+                  ),
+                  subtitle: Text(
+                    [
+                      call.isIncoming ? call.fromNumber : call.toNumber,
+                      _callLength(call),
+                      if ((call.summary ?? '').trim().isNotEmpty)
+                        call.summary!.trim(),
+                    ].where((part) => part.trim().isNotEmpty).join(' · '),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: () => openCallRecordingSheet(
                     context,
-                    MaterialPageRoute(
-                      builder: (context) => JobDetailsScreen(
-                        jobId: latest.id,
-                        clientId: widget.clientId,
-                        jobData: latest.toMap(),
-                      ),
-                    ),
-                  );
-                },
+                    call.toAttachment(),
+                  ),
+                ),
               ),
-            );
-          }).toList(),
+          ],
         );
       },
     );
@@ -735,25 +606,32 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
           return const Center(child: CircularProgressIndicator());
         }
 
-        final jobs = snapshot.data ?? [];
+        final jobs = [...(snapshot.data ?? [])]
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
         if (jobs.isEmpty) {
-          return Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Center(
-              child: Text(
-                'Нет заявок'.tr,
-                style: TextStyle(color: Colors.grey),
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 24, 16, 88),
+            children: [
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Center(
+                  child: Text(
+                    'Нет заявок'.tr,
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                ),
               ),
-            ),
+            ],
           );
         }
 
-        return Column(
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
           children: jobs.map((job) {
             final status = job.status;
             final applianceType = job.applianceType;
@@ -830,4 +708,33 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen> {
       },
     );
   }
+}
+
+class _HistoryTabBarDelegate extends SliverPersistentHeaderDelegate {
+  _HistoryTabBarDelegate(this.tabBar);
+
+  final TabBar tabBar;
+
+  @override
+  double get minExtent => tabBar.preferredSize.height;
+
+  @override
+  double get maxExtent => tabBar.preferredSize.height;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
+    return Material(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      elevation: overlapsContent ? 1 : 0,
+      child: tabBar,
+    );
+  }
+
+  @override
+  bool shouldRebuild(covariant _HistoryTabBarDelegate oldDelegate) =>
+      tabBar != oldDelegate.tabBar;
 }

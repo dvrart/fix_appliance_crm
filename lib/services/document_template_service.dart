@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
+import '../core/api_keys.dart';
 import '../core/l10n/app_locale.dart';
 import '../core/utils/formatters.dart';
 import '../models/document_settings.dart';
@@ -13,6 +15,7 @@ import '../shared/widgets/keyboard_safe.dart';
 import 'job_service.dart';
 import 'outbound_media_service.dart';
 import 'settings_service.dart';
+import 'short_link_service.dart';
 import 'sms_service.dart';
 
 class DocumentSendData {
@@ -36,6 +39,9 @@ class DocumentSendData {
   final String clientEmail;
   final String clientCompany;
   final Future<void> Function(String url)? persistPdfUrl;
+  final Future<void> Function(Map<String, dynamic> patch)? persistFields;
+  final String? pdfShortCode;
+  final String signatureUrl;
 
   const DocumentSendData({
     required this.kind,
@@ -58,6 +64,9 @@ class DocumentSendData {
     this.clientEmail = '',
     this.clientCompany = '',
     this.persistPdfUrl,
+    this.persistFields,
+    this.pdfShortCode,
+    this.signatureUrl = '',
   });
 }
 
@@ -111,7 +120,9 @@ class DocumentTemplateService {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Клиенту уйдёт SMS на английском: ссылка на PDF или сам файл.'.tr,
+                    data.kind == 'estimate'
+                        ? 'Клиенту уйдёт SMS со ссылкой. Он откроет её и подтвердит ремонт. PDF не отправляем.'.tr
+                        : 'Клиенту уйдёт SMS на английском: ссылка на PDF или сам файл.'.tr,
                     style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
                   ),
                   const SizedBox(height: 16),
@@ -140,7 +151,11 @@ class DocumentTemplateService {
                             );
                           },
                           icon: const Icon(Icons.link),
-                          label: Text('Отправить ссылку'.tr),
+                          label: Text(
+                            data.kind == 'estimate'
+                                ? 'Отправить ссылку'.tr
+                                : 'Отправить ссылку'.tr,
+                          ),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF14557F),
                             foregroundColor: Colors.white,
@@ -150,28 +165,30 @@ class DocumentTemplateService {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: () async {
-                        Navigator.pop(sheetContext);
-                        await _sendDocumentSms(
-                          context: context,
-                          settings: settings,
-                          data: data,
-                          body: preview.text.trim(),
-                          asFile: true,
-                        );
-                      },
-                      icon: const Icon(Icons.picture_as_pdf),
-                      label: Text('Отправить PDF'.tr),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: const Color(0xFF14557F),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
+                  if (data.kind != 'estimate') ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          Navigator.pop(sheetContext);
+                          await _sendDocumentSms(
+                            context: context,
+                            settings: settings,
+                            data: data,
+                            body: preview.text.trim(),
+                            asFile: true,
+                          );
+                        },
+                        icon: const Icon(Icons.picture_as_pdf),
+                        label: Text('Отправить PDF'.tr),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF14557F),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                   const SizedBox(height: 20),
                 ],
               ),
@@ -185,20 +202,71 @@ class DocumentTemplateService {
     }
   }
 
-  static Future<String> _ensurePdfUrl({
+  static String _randomToken() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    final random = Random.secure();
+    return List.generate(28, (_) => chars[random.nextInt(chars.length)]).join();
+  }
+
+  static Future<({String smsUrl, String fallbackUrl})> _ensureEstimateConfirmUrl(DocumentSendData data) async {
+    final token = _randomToken();
+    final docId =
+        'est-${data.jobId}-${data.documentNumber}-${DateTime.now().millisecondsSinceEpoch}';
+    await data.persistFields?.call({
+      'id': docId,
+      'confirmToken': token,
+      'estimateStatus': 'sent',
+      'confirmSentAt': DateTime.now().toIso8601String(),
+    });
+    final longUrl =
+        '$kFirebaseFunctionsUrl/estimateConfirm?jobId=${Uri.encodeQueryComponent(data.jobId)}&doc=${data.documentNumber - 1}&token=${Uri.encodeQueryComponent(token)}';
+    final shortened = await ShortLinkService.ensure(
+      targetUrl: longUrl,
+      code: data.pdfShortCode,
+      type: 'estimate',
+      jobId: data.jobId,
+    );
+    await data.persistFields?.call({
+      'confirmShortUrl': shortened.url,
+      'confirmShortCode': shortened.code,
+      'confirmLongUrl': longUrl,
+    });
+    return (smsUrl: longUrl, fallbackUrl: shortened.smsCarrier.isNotEmpty
+        ? shortened.smsCarrier
+        : shortened.url);
+  }
+
+  static Future<({String smsUrl, String fileUrl, String fallbackUrl})> _ensurePdfUrls({
     required DocumentSettings settings,
     required DocumentSendData data,
   }) async {
     final bytes = await buildPdf(settings: settings, data: data);
-    final url = await OutboundMediaService.upload(
+    final storageUrl = await OutboundMediaService.upload(
       OutboundAttachment(
         name: _fileName(data),
         mime: 'application/pdf',
         bytes: bytes,
       ),
     );
-    await data.persistPdfUrl?.call(url);
-    return url;
+    final shortened = await ShortLinkService.ensure(
+      targetUrl: storageUrl,
+      code: data.pdfShortCode,
+      type: 'pdf',
+      jobId: data.jobId,
+    );
+    final patch = {
+      'pdfUrl': storageUrl,
+      'pdfShortUrl': shortened.url,
+      'pdfShortCode': shortened.code,
+    };
+    if (data.persistFields != null) {
+      await data.persistFields!(patch);
+    } else {
+      await data.persistPdfUrl?.call(storageUrl);
+    }
+    return (smsUrl: storageUrl, fileUrl: storageUrl, fallbackUrl: shortened.smsCarrier.isNotEmpty
+        ? shortened.smsCarrier
+        : shortened.url);
   }
 
   static String _bodyWithUrl(String body, String url) {
@@ -243,26 +311,41 @@ class DocumentTemplateService {
     );
 
     var ok = false;
+    var text = '';
     try {
-      final pdfUrl = await _ensurePdfUrl(settings: settings, data: data);
-      final text = asFile ? _bodyWithoutUrl(body) : _bodyWithUrl(body, pdfUrl);
-      if (text.isEmpty && !asFile) {
-        throw 'Текст SMS пустой'.tr;
-      }
-      ok = await SmsService.sendSms(
-        to: data.clientPhone,
-        body: text.isEmpty && asFile
-            ? 'Hi ${data.clientName}, your invoice is attached.'
-            : text,
-        clientId: data.clientId,
-        mediaUrls: asFile ? [pdfUrl] : const [],
-      );
-      if (!ok && asFile) {
+      if (data.kind == 'estimate') {
+        final links = await _ensureEstimateConfirmUrl(data);
+        text = _bodyWithUrl(body, links.smsUrl);
+        if (text.isEmpty) throw 'Текст SMS пустой'.tr;
         ok = await SmsService.sendSms(
           to: data.clientPhone,
-          body: _bodyWithUrl(body, pdfUrl),
+          body: text,
+          fallbackBody: _bodyWithUrl(body, links.fallbackUrl),
           clientId: data.clientId,
         );
+      } else {
+        final pdf = await _ensurePdfUrls(settings: settings, data: data);
+        text = asFile ? _bodyWithoutUrl(body) : _bodyWithUrl(body, pdf.smsUrl);
+        if (text.isEmpty && !asFile) {
+          throw 'Текст SMS пустой'.tr;
+        }
+        ok = await SmsService.sendSms(
+          to: data.clientPhone,
+          body: text.isEmpty && asFile
+              ? 'Hi ${data.clientName}, your invoice is attached.'
+              : text,
+          fallbackBody: asFile ? null : _bodyWithUrl(body, pdf.fallbackUrl),
+          clientId: data.clientId,
+          mediaUrls: asFile ? [pdf.fileUrl] : const [],
+        );
+        if (!ok && asFile) {
+          text = _bodyWithUrl(body, pdf.smsUrl);
+          ok = await SmsService.sendSms(
+            to: data.clientPhone,
+            body: text,
+            clientId: data.clientId,
+          );
+        }
       }
       await JobService.sendMessage(
         jobId: data.jobId,
@@ -298,7 +381,7 @@ class DocumentTemplateService {
     if (data.clientPhone.trim().isEmpty) return false;
     final settings = await SettingsService.loadDocumentSettings();
     try {
-      final pdfUrl = await _ensurePdfUrl(settings: settings, data: data);
+      final pdf = await _ensurePdfUrls(settings: settings, data: data);
       final body = settings.wrapOutgoingMessage(
         settings.renderSms(
           kind: data.kind,
@@ -307,14 +390,15 @@ class DocumentTemplateService {
           due: data.due,
           paid: data.paid,
           items: data.items,
-          url: pdfUrl,
+          url: pdf.smsUrl,
         ),
       );
-      final text = _bodyWithUrl(body, pdfUrl);
+      final text = _bodyWithUrl(body, pdf.smsUrl);
       if (text.isEmpty) return false;
       final ok = await SmsService.sendSms(
         to: data.clientPhone,
         body: text,
+        fallbackBody: _bodyWithUrl(body, pdf.fallbackUrl),
         clientId: data.clientId,
       );
       await JobService.sendMessage(
@@ -324,7 +408,8 @@ class DocumentTemplateService {
         sender: 'company',
       );
       return ok;
-    } catch (_) {
+    } catch (error) {
+      debugPrint('sendPdfLinkQuietly: $error');
       return false;
     }
   }
@@ -368,17 +453,150 @@ class DocumentTemplateService {
         }
       } catch (_) {}
     }
+    pw.ImageProvider? signatureImage;
+    if (data.signatureUrl.startsWith('http')) {
+      try {
+        final response = await http
+            .get(Uri.parse(data.signatureUrl))
+            .timeout(const Duration(seconds: 12));
+        if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+          signatureImage = pw.MemoryImage(response.bodyBytes);
+        }
+      } catch (_) {}
+    }
     final qrData = settings.effectiveSmsHeader.contains('.')
         ? (settings.effectiveSmsHeader.startsWith('http')
             ? settings.effectiveSmsHeader
             : 'https://${settings.effectiveSmsHeader}')
-        : 'https://fixappliance.ca';
+        : 'https://fix-appliance.ca';
     final paidLabel = data.kind == 'estimate'
         ? 'Total'
         : (data.due <= 0 && data.paid > 0 ? 'Total Paid' : 'Amount Due');
     final paidValue = data.kind == 'estimate'
         ? data.total
         : (data.due <= 0 && data.paid > 0 ? data.paid : data.due);
+
+    final logoSize = settings.invoiceLogoSize.clamp(24.0, 120.0);
+    final qrSize = settings.invoiceQrSize.clamp(24.0, 120.0);
+    final qrInFooter = settings.invoiceShowQr &&
+        (settings.invoiceQrAlign == DocumentSettings.invoiceQrFooterLeft ||
+            settings.invoiceQrAlign == DocumentSettings.invoiceQrFooterRight);
+    final qrInHeader = settings.invoiceShowQr &&
+        settings.invoiceQrAlign == DocumentSettings.invoiceQrHeaderRight;
+    final qrUnderTotals = settings.invoiceShowQr &&
+        settings.invoiceQrAlign == DocumentSettings.invoiceQrUnderTotals;
+
+    pw.Widget? logoBox() {
+      if (logo == null) return null;
+      return pw.Container(
+        width: logoSize,
+        height: logoSize,
+        child: pw.Image(logo, fit: pw.BoxFit.contain),
+      );
+    }
+
+    pw.Widget? qrBox() {
+      if (!settings.invoiceShowQr) return null;
+      return pw.BarcodeWidget(
+        barcode: pw.Barcode.qrCode(),
+        data: qrData,
+        width: qrSize,
+        height: qrSize,
+      );
+    }
+
+    pw.Widget companyInfoCol() {
+      return pw.Expanded(
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Text(
+              settings.companyName,
+              style: pw.TextStyle(
+                fontSize: 14,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+            if (settings.companyEmail.isNotEmpty)
+              pw.Text(settings.companyEmail,
+                  style: const pw.TextStyle(fontSize: 9)),
+            if (settings.companyPhone.isNotEmpty)
+              pw.Text(settings.companyPhone,
+                  style: const pw.TextStyle(fontSize: 9)),
+            if (settings.hstNumber.isNotEmpty)
+              pw.Text(
+                '${data.taxRate == 0.05 ? 'GST' : 'HST'} ${settings.hstNumber}',
+                style: const pw.TextStyle(fontSize: 9),
+              ),
+          ],
+        ),
+      );
+    }
+
+    pw.Widget docNumberCol() {
+      return pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.end,
+        children: [
+          pw.Text(
+            '#${data.documentNumber.toString().padLeft(6, '0')}',
+            style: pw.TextStyle(
+              fontSize: 16,
+              fontWeight: pw.FontWeight.bold,
+            ),
+          ),
+          pw.Text(
+            Formatters.formatDateEn(issued),
+            style: const pw.TextStyle(fontSize: 10),
+          ),
+        ],
+      );
+    }
+
+    pw.Widget buildHeaderRow() {
+      final logoW = logoBox();
+      final qrW = qrInHeader ? qrBox() : null;
+      if (settings.invoiceLogoAlign == DocumentSettings.invoiceLogoAlignCenter &&
+          logoW != null) {
+        return pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Center(child: logoW),
+            pw.SizedBox(height: 8),
+            pw.Row(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                companyInfoCol(),
+                if (qrW != null) ...[pw.SizedBox(width: 12), qrW],
+                pw.SizedBox(width: 12),
+                docNumberCol(),
+              ],
+            ),
+          ],
+        );
+      }
+      if (settings.invoiceLogoAlign == DocumentSettings.invoiceLogoAlignRight) {
+        return pw.Row(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            companyInfoCol(),
+            if (logoW != null) ...[pw.SizedBox(width: 12), logoW],
+            if (qrW != null) ...[pw.SizedBox(width: 12), qrW],
+            pw.SizedBox(width: 12),
+            docNumberCol(),
+          ],
+        );
+      }
+      return pw.Row(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          if (logoW != null) ...[logoW, pw.SizedBox(width: 12)],
+          companyInfoCol(),
+          if (qrW != null) ...[pw.SizedBox(width: 12), qrW],
+          pw.SizedBox(width: 12),
+          docNumberCol(),
+        ],
+      );
+    }
 
     pw.Widget infoCol(String title, List<String> lines) {
       return pw.Expanded(
@@ -415,20 +633,29 @@ class DocumentTemplateService {
           ),
         ),
         footer: (context) {
+          if (!qrInFooter) {
+            return pw.Align(
+              alignment: pw.Alignment.centerRight,
+              child: pw.Text(
+                'Page ${context.pageNumber} of ${context.pagesCount}',
+                style: const pw.TextStyle(
+                  fontSize: 9,
+                  color: PdfColors.grey600,
+                ),
+              ),
+            );
+          }
+          final qrW = qrBox();
+          final footerRight =
+              settings.invoiceQrAlign == DocumentSettings.invoiceQrFooterRight;
           return pw.Column(
             children: [
               pw.SizedBox(height: 8),
               pw.Row(
                 crossAxisAlignment: pw.CrossAxisAlignment.end,
                 children: [
-                  if (settings.invoiceShowQr)
-                    pw.BarcodeWidget(
-                      barcode: pw.Barcode.qrCode(),
-                      data: qrData,
-                      width: 52,
-                      height: 52,
-                    ),
-                  if (settings.invoiceShowQr) pw.SizedBox(width: 12),
+                  if (!footerRight && qrW != null) qrW,
+                  if (!footerRight && qrW != null) pw.SizedBox(width: 12),
                   pw.Expanded(
                     child: pw.Text(
                       qrData.replaceFirst(RegExp(r'^https://'), ''),
@@ -436,8 +663,14 @@ class DocumentTemplateService {
                         fontSize: 9,
                         color: PdfColors.grey700,
                       ),
+                      textAlign: footerRight
+                          ? pw.TextAlign.right
+                          : pw.TextAlign.left,
                     ),
                   ),
+                  if (footerRight && qrW != null) pw.SizedBox(width: 12),
+                  if (footerRight && qrW != null) qrW,
+                  pw.SizedBox(width: 12),
                   pw.Text(
                     'Page ${context.pageNumber} of ${context.pagesCount}',
                     style: const pw.TextStyle(
@@ -454,60 +687,7 @@ class DocumentTemplateService {
           return [
             pw.Container(height: 4, color: primary),
             pw.SizedBox(height: 16),
-            pw.Row(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                if (logo != null) ...[
-                  pw.Container(
-                    width: 56,
-                    height: 56,
-                    child: pw.Image(logo, fit: pw.BoxFit.contain),
-                  ),
-                  pw.SizedBox(width: 12),
-                ],
-                pw.Expanded(
-                  child: pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text(
-                        settings.companyName,
-                        style: pw.TextStyle(
-                          fontSize: 14,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                      if (settings.companyEmail.isNotEmpty)
-                        pw.Text(settings.companyEmail,
-                            style: const pw.TextStyle(fontSize: 9)),
-                      if (settings.companyPhone.isNotEmpty)
-                        pw.Text(settings.companyPhone,
-                            style: const pw.TextStyle(fontSize: 9)),
-                      if (settings.hstNumber.isNotEmpty)
-                        pw.Text(
-                          '${data.taxRate == 0.05 ? 'GST' : 'HST'} ${settings.hstNumber}',
-                          style: const pw.TextStyle(fontSize: 9),
-                        ),
-                    ],
-                  ),
-                ),
-                pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.end,
-                  children: [
-                    pw.Text(
-                      '#${data.documentNumber.toString().padLeft(6, '0')}',
-                      style: pw.TextStyle(
-                        fontSize: 16,
-                        fontWeight: pw.FontWeight.bold,
-                      ),
-                    ),
-                    pw.Text(
-                      Formatters.formatDateEn(issued),
-                      style: const pw.TextStyle(fontSize: 10),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+            buildHeaderRow(),
             pw.SizedBox(height: 18),
             pw.Text(
               data.subject.trim().isEmpty
@@ -594,6 +774,13 @@ class DocumentTemplateService {
                 ),
               ),
             ),
+            if (qrUnderTotals) ...[
+              pw.SizedBox(height: 12),
+              pw.Align(
+                alignment: pw.Alignment.centerRight,
+                child: qrBox(),
+              ),
+            ],
             if (settings.invoiceShowPayments && data.payments.isNotEmpty) ...[
               pw.SizedBox(height: 18),
               pw.Text(
@@ -610,7 +797,9 @@ class DocumentTemplateService {
                       pw.Text(
                         [
                           (payment['date'] ?? '').toString().split('T').first,
-                          (payment['method'] ?? 'Payment').toString(),
+                          _paymentMethodEn(
+                            (payment['method'] ?? 'Payment').toString(),
+                          ),
                         ].where((part) => part.trim().isNotEmpty).join('  ·  '),
                         style: const pw.TextStyle(fontSize: 10),
                       ),
@@ -634,6 +823,37 @@ class DocumentTemplateService {
                 'Valid for ${settings.estimateValidDays} days.',
                 style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
               ),
+            if (signatureImage != null) ...[
+              pw.SizedBox(height: 22),
+              pw.Text(
+                'Customer signature',
+                style: pw.TextStyle(
+                  fontSize: 9,
+                  fontWeight: pw.FontWeight.bold,
+                  color: PdfColors.grey700,
+                ),
+              ),
+              pw.SizedBox(height: 6),
+              pw.Container(
+                height: 56,
+                alignment: pw.Alignment.centerLeft,
+                child: pw.Image(
+                  signatureImage,
+                  height: 56,
+                  fit: pw.BoxFit.contain,
+                ),
+              ),
+              if (data.clientName.trim().isNotEmpty) ...[
+                pw.SizedBox(height: 4),
+                pw.Text(
+                  data.clientName,
+                  style: const pw.TextStyle(
+                    fontSize: 9,
+                    color: PdfColors.grey700,
+                  ),
+                ),
+              ],
+            ],
           ];
         },
       ),
@@ -675,6 +895,28 @@ class DocumentTemplateService {
     if ((rate - 0.05).abs() < 0.0001) return 'GST (5%)';
     if (rate <= 0) return 'Tax (0%)';
     return 'Tax (${(rate * 100).round()}%)';
+  }
+
+  static String _paymentMethodEn(String method) {
+    final m = method.trim();
+    final lower = m.toLowerCase();
+    if (lower == 'наличные' || lower == 'cash') return 'Cash';
+    if (lower.contains('чаевые') || lower == 'tip') return 'Tip';
+    if (lower.contains('возврат (наличные)') ||
+        lower.contains('refund (cash)')) {
+      return 'Refund (cash)';
+    }
+    if (lower.contains('возврат') && !lower.contains('stripe')) {
+      return 'Refund';
+    }
+    if (lower.contains('stripe (refund)')) return 'Stripe (refund)';
+    if (lower.contains('stripe (deposit)')) return 'Stripe (deposit)';
+    if (lower.contains('stripe (card present)')) {
+      return 'Stripe (card present)';
+    }
+    if (lower.contains('stripe')) return m.contains('Stripe') ? m : 'Stripe';
+    if (lower == 'оплата' || lower == 'payment') return 'Payment';
+    return m;
   }
 
   static pw.Widget _pdfTotalRow(String label, String value, {bool bold = false}) {

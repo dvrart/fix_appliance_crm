@@ -631,38 +631,7 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 
   Widget _buildJobTiles() {
-    final packingItems = packingItemsFromNotes(ctrl.packingNotes);
-    final packing = packingItems.isEmpty
-        ? ''
-        : packingItems.length == 1
-        ? packingItems.first
-        : '${packingItems.length}';
-    final description = ctrl.currentDescription.trim();
-    final emptyDescription =
-        description.isEmpty || description == 'Нет описания';
-    final tracking = ctrl.trackingNumber.isEmpty
-        ? ''
-        : [
-            ctrl.trackingNumber,
-            if (ctrl.trackingStatus.isNotEmpty)
-              _trackingLabel(ctrl.trackingStatus),
-          ].join(' · ');
-    final appliance = _applianceSummary();
-    final photoItems = ctrl.attachments.where((item) {
-      final kind = (item['kind'] ?? '').toString();
-      return kind != 'call' && kind != 'signature';
-    }).toList();
-    final photoCount = photoItems.length;
-    final photoThumb = photoCount == 0 ? null : photoItems.first;
     final fromEmail = Job.intakeSourceOf(ctrl.jobData) == 'email';
-    final emailSubject = (ctrl.jobData['sourceEmailSubject'] ?? '')
-        .toString()
-        .trim();
-    final emailPreview = (ctrl.jobData['sourceEmailPreview'] ?? '')
-        .toString()
-        .trim();
-    final emailFrom = (ctrl.jobData['sourceEmailFrom'] ?? '').toString().trim();
-
     return Column(
       children: [
         Row(
@@ -676,100 +645,143 @@ class _DetailsTabState extends State<DetailsTab> {
               ),
             ),
             const SizedBox(width: 8),
-            Expanded(
-              child: _detailTile(
-                icon: Icons.inventory_2_outlined,
-                title: 'С собой'.tr,
-                value: packing.isEmpty ? '—' : packing,
-                muted: packing.isEmpty,
-                onTap: () => openPackingEditor(context, ctrl),
-              ),
-            ),
+            Expanded(child: _packingTile()),
             const SizedBox(width: 8),
-            Expanded(
-              child: _detailTile(
-                icon: Icons.local_shipping_outlined,
-                title: 'Отслеживание'.tr,
-                value: tracking.isEmpty ? '—' : tracking,
-                muted: tracking.isEmpty,
-                onTap: _editTracking,
-              ),
-            ),
+            Expanded(child: _trackingTile()),
           ],
         ),
         const SizedBox(height: 8),
         Row(
           children: [
-            Expanded(
-              child: _detailTile(
-                icon: Icons.notes,
-                title: 'Описание'.tr,
-                value: emptyDescription ? '—' : description,
-                muted: emptyDescription,
-                onTap: () => openDescriptionEditor(context, ctrl),
-              ),
-            ),
+            Expanded(child: _descriptionTile()),
             const SizedBox(width: 8),
-            Expanded(
-              child: _detailTile(
-                icon: Icons.kitchen,
-                graphic: AppliancePicture(type: appliance.type, size: 44),
-                title: 'Техника'.tr,
-                value: appliance.label,
-                onTap: () => openApplianceEditor(context, ctrl),
-              ),
-            ),
+            Expanded(child: _applianceTile()),
             const SizedBox(width: 8),
-            Expanded(
-              child: _detailTile(
-                icon: Icons.photo_camera_outlined,
-                title: 'Фото'.tr,
-                value: ctrl.isUploadingImage
-                    ? 'Загрузка...'.tr
-                    : (photoCount == 0 ? '—' : '$photoCount'),
-                muted: photoCount == 0 && !ctrl.isUploadingImage,
-                thumbnail: photoThumb,
-                onTap: () => openPhotosEditor(context, ctrl),
-              ),
-            ),
+            Expanded(child: _photosTile()),
           ],
         ),
         if (fromEmail) ...[
           const SizedBox(height: 8),
-          _detailTile(
-            icon: Icons.email_outlined,
-            graphic: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: const Color(0xFF2E7D32).withValues(alpha: 0.15),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.email_outlined,
-                color: Color(0xFF2E7D32),
-                size: 22,
-              ),
-            ),
-            title: context.tr('Письмо', 'Email'),
-            value: emailSubject.isNotEmpty
-                ? emailSubject
-                : (emailFrom.isNotEmpty
-                      ? emailFrom
-                      : (emailPreview.isNotEmpty
-                            ? emailPreview
-                            : context.tr('Открыть письмо', 'Open the email'))),
-            onTap: () => openSourceEmailSheet(
-              context,
-              jobData: ctrl.jobData,
-              jobId: ctrl.jobId,
-              clientId: ctrl.clientId,
-              clientName: (ctrl.jobData['clientName'] ?? '').toString(),
-              clientEmail: ctrl.clientEmail,
-            ),
-          ),
+          _emailTile(),
         ],
       ],
+    );
+  }
+
+  Widget _packingTile() {
+    final packingItems = packingItemsFromNotes(ctrl.packingNotes);
+    final packing = packingItems.isEmpty
+        ? ''
+        : packingItems.length == 1
+        ? packingItems.first
+        : '${packingItems.length}';
+    return _detailTile(
+      icon: Icons.inventory_2_outlined,
+      title: 'С собой'.tr,
+      value: packing.isEmpty ? '—' : packing,
+      muted: packing.isEmpty,
+      onTap: () => openPackingEditor(context, ctrl),
+    );
+  }
+
+  Widget _trackingTile() {
+    final tracking = ctrl.trackingNumber.isEmpty
+        ? ''
+        : [
+            ctrl.trackingNumber,
+            if (ctrl.trackingStatus.isNotEmpty)
+              _trackingLabel(ctrl.trackingStatus),
+          ].join(' · ');
+    return _detailTile(
+      icon: Icons.local_shipping_outlined,
+      title: 'Отслеживание'.tr,
+      value: tracking.isEmpty ? '—' : tracking,
+      muted: tracking.isEmpty,
+      onTap: _editTracking,
+    );
+  }
+
+  Widget _descriptionTile() {
+    final description = ctrl.currentDescription.trim();
+    final emptyDescription =
+        description.isEmpty || description == 'Нет описания';
+    return _detailTile(
+      icon: Icons.notes,
+      title: 'Описание'.tr,
+      value: emptyDescription ? '—' : description,
+      muted: emptyDescription,
+      onTap: () => openDescriptionEditor(context, ctrl),
+    );
+  }
+
+  Widget _applianceTile() {
+    final appliance = _applianceSummary();
+    return _detailTile(
+      icon: Icons.kitchen,
+      graphic: AppliancePicture(type: appliance.type, size: 44),
+      title: 'Техника'.tr,
+      value: appliance.label,
+      onTap: () => openApplianceEditor(context, ctrl),
+    );
+  }
+
+  Widget _photosTile() {
+    final photoItems = ctrl.attachments.where((item) {
+      final kind = (item['kind'] ?? '').toString();
+      return kind != 'call' && kind != 'signature';
+    }).toList();
+    final photoCount = photoItems.length;
+    return _detailTile(
+      icon: Icons.photo_camera_outlined,
+      title: 'Фото'.tr,
+      value: ctrl.isUploadingImage
+          ? 'Загрузка...'.tr
+          : (photoCount == 0 ? '—' : '$photoCount'),
+      muted: photoCount == 0 && !ctrl.isUploadingImage,
+      thumbnail: photoCount == 0 ? null : photoItems.first,
+      onTap: () => openPhotosEditor(context, ctrl),
+    );
+  }
+
+  Widget _emailTile() {
+    final emailSubject = (ctrl.jobData['sourceEmailSubject'] ?? '')
+        .toString()
+        .trim();
+    final emailPreview = (ctrl.jobData['sourceEmailPreview'] ?? '')
+        .toString()
+        .trim();
+    final emailFrom = (ctrl.jobData['sourceEmailFrom'] ?? '').toString().trim();
+    return _detailTile(
+      icon: Icons.email_outlined,
+      graphic: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: const Color(0xFF2E7D32).withValues(alpha: 0.15),
+          shape: BoxShape.circle,
+        ),
+        child: const Icon(
+          Icons.email_outlined,
+          color: Color(0xFF2E7D32),
+          size: 22,
+        ),
+      ),
+      title: context.tr('Письмо', 'Email'),
+      value: emailSubject.isNotEmpty
+          ? emailSubject
+          : (emailFrom.isNotEmpty
+              ? emailFrom
+              : (emailPreview.isNotEmpty
+                  ? emailPreview
+                  : context.tr('Открыть письмо', 'Open the email'))),
+      onTap: () => openSourceEmailSheet(
+        context,
+        jobData: ctrl.jobData,
+        jobId: ctrl.jobId,
+        clientId: ctrl.clientId,
+        clientName: (ctrl.jobData['clientName'] ?? '').toString(),
+        clientEmail: ctrl.clientEmail,
+      ),
     );
   }
 
@@ -1869,9 +1881,44 @@ class _DetailsTabState extends State<DetailsTab> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (ctrl.needsReview) ...[
-            Container(
+            _reviewBanner(),
+            const SizedBox(height: 16),
+          ],
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: _buildStatusButton()),
+                const SizedBox(width: 8),
+                Expanded(child: _buildClientIconButton()),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildJobSiteAndCallsRow(),
+          const SizedBox(height: 12),
+          _buildVisitsCard(),
+          const SizedBox(height: 12),
+          _buildContactActions(),
+          const SizedBox(height: 12),
+          _buildJobTiles(),
+          if (_originalJob != null) ...[
+            const SizedBox(height: 12),
+            _buildOriginalJobLink(),
+          ],
+          if (_relatedJobs.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            _buildRelatedJobs(),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _reviewBanner() {
+    return Container(
               width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 16),
+              margin: EdgeInsets.zero,
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color: Colors.orange.shade50,
@@ -1917,36 +1964,97 @@ class _DetailsTabState extends State<DetailsTab> {
                   ),
                 ],
               ),
+            );
+  }
+
+  Widget _routeButton() {
+    final travelHint = ctrl.travelTime.trim();
+    final showTravelHint =
+        travelHint.isNotEmpty && travelHint != 'GO' && travelHint != '...';
+    return Tooltip(
+      message: showTravelHint
+          ? '${'Проложить маршрут'.tr} · $travelHint'
+          : 'Проложить маршрут'.tr,
+      child: _contactActionButton(
+        onPressed: () => MapsService.openNavigator(ctrl.workAddress),
+        background: AppColors.accent,
+        foreground: Colors.black,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (ctrl.isLoadingTime)
+              const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.black,
+                ),
+              )
+            else
+              const _GoogleMapsLogoIcon(),
+            const SizedBox(width: 6),
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  ctrl.isLoadingTime
+                      ? '...'
+                      : (travelHint.isEmpty ? 'GO' : travelHint),
+                  maxLines: 1,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
             ),
           ],
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(child: _buildStatusButton()),
-                const SizedBox(width: 8),
-                Expanded(child: _buildClientIconButton()),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          _buildJobSiteAndCallsRow(),
-          const SizedBox(height: 12),
-          _buildVisitsCard(),
-          const SizedBox(height: 12),
-          _buildContactActions(),
-          const SizedBox(height: 12),
-          _buildJobTiles(),
-          if (_originalJob != null) ...[
-            const SizedBox(height: 12),
-            _buildOriginalJobLink(),
-          ],
-          if (_relatedJobs.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            _buildRelatedJobs(),
-          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _callButton() {
+    return _contactActionButton(
+      onPressed: _callSelected,
+      background: const Color(0xFF008F3B),
+      foreground: Colors.white,
+      child: const Icon(Icons.phone, size: 28, color: Colors.white),
+    );
+  }
+
+  Widget _smsButton() {
+    return _contactActionButton(
+      onPressed: _smsSelected,
+      background: const Color(0xFF1E88E5),
+      foreground: Colors.white,
+      child: const Icon(Icons.sms, size: 28, color: Colors.white),
+    );
+  }
+
+  Widget _buildJobSiteAndCallsRow() {
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(child: _sitePiece()),
+          const SizedBox(width: 8),
+          Expanded(child: _recordingPiece()),
         ],
       ),
+    );
+  }
+
+  Widget _buildContactActions() {
+    return Row(
+      children: [
+        Expanded(child: _routeButton()),
+        const SizedBox(width: 8),
+        Expanded(child: _callButton()),
+        const SizedBox(width: 8),
+        Expanded(child: _smsButton()),
+      ],
     );
   }
 
@@ -2109,9 +2217,7 @@ class _DetailsTabState extends State<DetailsTab> {
     await openCallRecordingSheet(context, chosen, jobId: ctrl.jobId);
   }
 
-  Widget _buildJobSiteAndCallsRow() {
-    final callItems = ctrl.callItems;
-    final lastCall = callItems.isEmpty ? null : callItems.last;
+  Widget _sitePiece() {
     final siteName = ctrl.hasJobSite
         ? (ctrl.jobSiteName.isEmpty
             ? 'Контакт на адресе'.tr
@@ -2119,41 +2225,29 @@ class _DetailsTabState extends State<DetailsTab> {
         : ((ctrl.jobData['clientName'] ?? '').toString().trim().isEmpty
             ? 'Клиент'.tr
             : (ctrl.jobData['clientName'] ?? '').toString().trim());
+    return _compactSiteNameCard(name: siteName, onTap: _editJobSite);
+  }
 
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child: _compactSiteNameCard(
-              name: siteName,
-              onTap: _editJobSite,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _compactRecordingCard(
-              source: _jobSource(),
-              when: lastCall == null ? null : _callWhen(lastCall),
-              inbound: lastCall == null ? true : _callInbound(lastCall),
-              extraCount: callItems.length > 1 ? callItems.length - 1 : 0,
-              onTap: lastCall != null
-                  ? _openJobCalls
-                  : (_jobSource() == 'email' || _jobSource() == 'website'
-                      ? () => openSourceEmailSheet(
-                            context,
-                            jobData: ctrl.jobData,
-                            jobId: ctrl.jobId,
-                            clientId: ctrl.clientId,
-                            clientName:
-                                (ctrl.jobData['clientName'] ?? '').toString(),
-                            clientEmail: ctrl.clientEmail,
-                          )
-                      : null),
-            ),
-          ),
-        ],
-      ),
+  Widget _recordingPiece() {
+    final callItems = ctrl.callItems;
+    final lastCall = callItems.isEmpty ? null : callItems.last;
+    return _compactRecordingCard(
+      source: _jobSource(),
+      when: lastCall == null ? null : _callWhen(lastCall),
+      inbound: lastCall == null ? true : _callInbound(lastCall),
+      extraCount: callItems.length > 1 ? callItems.length - 1 : 0,
+      onTap: lastCall != null
+          ? _openJobCalls
+          : (_jobSource() == 'email' || _jobSource() == 'website'
+              ? () => openSourceEmailSheet(
+                    context,
+                    jobData: ctrl.jobData,
+                    jobId: ctrl.jobId,
+                    clientId: ctrl.clientId,
+                    clientName: (ctrl.jobData['clientName'] ?? '').toString(),
+                    clientEmail: ctrl.clientEmail,
+                  )
+              : null),
     );
   }
 
@@ -2338,78 +2432,6 @@ class _DetailsTabState extends State<DetailsTab> {
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildContactActions() {
-    final travelHint = ctrl.travelTime.trim();
-    final showTravelHint =
-        travelHint.isNotEmpty && travelHint != 'GO' && travelHint != '...';
-    return Row(
-      children: [
-        Expanded(
-          child: Tooltip(
-            message: showTravelHint
-                ? '${'Проложить маршрут'.tr} · $travelHint'
-                : 'Проложить маршрут'.tr,
-            child: _contactActionButton(
-              onPressed: () => MapsService.openNavigator(ctrl.workAddress),
-              background: AppColors.accent,
-              foreground: Colors.black,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (ctrl.isLoadingTime)
-                    const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.black,
-                      ),
-                    )
-                  else
-                    const _GoogleMapsLogoIcon(),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Text(
-                        ctrl.isLoadingTime
-                            ? '...'
-                            : (travelHint.isEmpty ? 'GO' : travelHint),
-                        maxLines: 1,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: _contactActionButton(
-            onPressed: _callSelected,
-            background: const Color(0xFF008F3B),
-            foreground: Colors.white,
-            child: const Icon(Icons.phone, size: 28, color: Colors.white),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: _contactActionButton(
-            onPressed: _smsSelected,
-            background: const Color(0xFF1E88E5),
-            foreground: Colors.white,
-            child: const Icon(Icons.sms, size: 28, color: Colors.white),
-          ),
-        ),
-      ],
     );
   }
 

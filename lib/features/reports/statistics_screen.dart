@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -15,6 +14,7 @@ import '../../services/expense_service.dart';
 import '../../services/job_service.dart';
 import '../../services/sms_service.dart';
 import '../../services/twilio_service.dart';
+import 'statistics_detail_page.dart';
 
 class StatisticsScreen extends StatefulWidget {
   const StatisticsScreen({super.key});
@@ -181,6 +181,121 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     setState(() => _selectedDate = picked);
   }
 
+  List<StatPoint> _callPoints() {
+    return [
+      for (final call in _calls)
+        if (call.startTime != null) StatPoint(call.startTime!),
+    ];
+  }
+
+  List<StatPoint> _jobPoints() {
+    return [for (final job in _jobs) StatPoint(job.createdAt)];
+  }
+
+  List<StatPoint> _clientPoints() {
+    return [
+      for (final client in _clients)
+        if (client.createdAt != null) StatPoint(client.createdAt!),
+    ];
+  }
+
+  List<StatPoint> _invoicePoints() {
+    return [
+      for (final job in _jobs)
+        for (final inv in job.documents)
+          if (Job.isInvoice(inv))
+            if (_invoiceDate(inv) != null) StatPoint(_invoiceDate(inv)!),
+    ];
+  }
+
+  List<StatPoint> _paymentPoints() {
+    final points = <StatPoint>[];
+    for (final job in _jobs) {
+      for (final inv in job.documents) {
+        if (!Job.isInvoice(inv)) continue;
+        final invDate = _invoiceDate(inv);
+        final paymentsRaw = inv['payments'];
+        if (paymentsRaw is! List) continue;
+        for (final payment in paymentsRaw) {
+          if (payment is! Map) continue;
+          final amount = (payment['amount'] as num?)?.toDouble() ?? 0;
+          if (amount <= 0) continue;
+          final payDate = _paymentDate(payment, invDate);
+          if (payDate == null) continue;
+          points.add(StatPoint(payDate, amount));
+        }
+      }
+    }
+    return points;
+  }
+
+  List<StatPoint> _visitPoints() {
+    final points = <StatPoint>[];
+    for (final job in _jobs) {
+      if (job.visits.isEmpty) {
+        if (job.scheduledAt != null) points.add(StatPoint(job.scheduledAt!));
+        continue;
+      }
+      for (final visit in job.visits) {
+        points.add(StatPoint(visit.startAt));
+      }
+    }
+    return points;
+  }
+
+  List<StatPoint> _donePoints() {
+    return [
+      for (final job in _jobs)
+        if (job.completedAt != null && JobStatuses.isCompletedStatus(job.status))
+          StatPoint(job.completedAt!),
+    ];
+  }
+
+  List<StatPoint> _emailPoints() {
+    return [
+      for (final message in _messages)
+        if (message.isEmail &&
+            message.direction == 'inbound' &&
+            message.createdAt != null)
+          StatPoint(message.createdAt!),
+    ];
+  }
+
+  List<StatPoint> _smsPoints() {
+    return [
+      for (final message in _messages)
+        if (!message.isEmail &&
+            message.direction == 'inbound' &&
+            message.createdAt != null)
+          StatPoint(message.createdAt!),
+    ];
+  }
+
+  List<StatPoint> _expensePoints() {
+    return [for (final expense in _expenses) StatPoint(expense.date)];
+  }
+
+  void _openDetail({
+    required String title,
+    required IconData icon,
+    required Color color,
+    required List<StatPoint> points,
+  }) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StatisticsDetailPage(
+          title: title,
+          icon: icon,
+          color: color,
+          filter: _filter,
+          selectedDate: _selectedDate,
+          points: points,
+        ),
+      ),
+    );
+  }
+
   _ShopStats get _stats {
     var jobs = 0;
     var done = 0;
@@ -188,13 +303,10 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     var invoices = 0;
     var payments = 0;
     var paidAmount = 0.0;
-    final jobBuckets = <String, double>{};
 
     for (final job in _jobs) {
       if (_inPeriod(job.createdAt)) {
         jobs++;
-        final key = _bucketKey(job.createdAt);
-        jobBuckets[key] = (jobBuckets[key] ?? 0) + 1;
       }
       if (_inPeriod(job.completedAt) && JobStatuses.isCompletedStatus(job.status)) {
         done++;
@@ -232,10 +344,6 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         .length;
     final expenses = _expenses.where((e) => _inPeriod(e.date)).length;
 
-    final labels = <String>[];
-    final values = <double>[];
-    _fillBuckets(jobBuckets, labels, values);
-
     return _ShopStats(
       calls: calls,
       jobs: jobs,
@@ -248,52 +356,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       emails: emails,
       sms: sms,
       expenses: expenses,
-      barLabels: labels,
-      barValues: values,
     );
-  }
-
-  String _bucketKey(DateTime? date) {
-    if (date == null) return '';
-    switch (_filter) {
-      case 'Месяц':
-        return '${date.year}-${date.month}-${date.day}';
-      case 'Неделя':
-        return '${date.year}-${date.month}-${date.day}';
-      default:
-        return '${date.year}-${date.month}-${date.day}-${date.hour}';
-    }
-  }
-
-  void _fillBuckets(
-    Map<String, double> buckets,
-    List<String> labels,
-    List<double> values,
-  ) {
-    final start = _periodStart;
-    final end = _periodEndExclusive;
-    if (_filter == 'Месяц') {
-      var day = start;
-      while (day.isBefore(end)) {
-        labels.add('${day.day}');
-        values.add(buckets['${day.year}-${day.month}-${day.day}'] ?? 0);
-        day = day.add(const Duration(days: 1));
-      }
-      return;
-    }
-    if (_filter == 'Неделя') {
-      final names = ['Пн'.tr, 'Вт'.tr, 'Ср'.tr, 'Чт'.tr, 'Пт'.tr, 'Сб'.tr, 'Вс'.tr];
-      for (var i = 0; i < 7; i++) {
-        final day = start.add(Duration(days: i));
-        labels.add(names[i]);
-        values.add(buckets['${day.year}-${day.month}-${day.day}'] ?? 0);
-      }
-      return;
-    }
-    for (var hour = 0; hour < 24; hour++) {
-      labels.add(hour % 3 == 0 ? hour.toString().padLeft(2, '0') : '');
-      values.add(buckets['${start.year}-${start.month}-${start.day}-$hour'] ?? 0);
-    }
   }
 
   @override
@@ -390,24 +453,28 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                       '${stats.calls}',
                       Icons.phone_in_talk,
                       const Color(0xFF1565C0),
+                      points: _callPoints(),
                     ),
                     _tile(
                       context.tr('Заявки', 'Jobs'),
                       '${stats.jobs}',
                       Icons.assignment,
                       const Color(0xFF14557F),
+                      points: _jobPoints(),
                     ),
                     _tile(
                       context.tr('Клиенты', 'Clients'),
                       '${stats.clients}',
                       Icons.people_alt_outlined,
                       const Color(0xFF6A1B9A),
+                      points: _clientPoints(),
                     ),
                     _tile(
                       context.tr('Инвойсы', 'Invoices'),
                       '${stats.invoices}',
                       Icons.receipt_long,
                       const Color(0xFF00897B),
+                      points: _invoicePoints(),
                     ),
                     _tile(
                       context.tr('Оплаты', 'Payments'),
@@ -415,50 +482,45 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                       Icons.payments_outlined,
                       const Color(0xFF2E7D32),
                       subtitle: money.format(stats.paidAmount),
+                      points: _paymentPoints(),
                     ),
                     _tile(
                       context.tr('Визиты', 'Visits'),
                       '${stats.visits}',
                       Icons.event_available,
                       const Color(0xFFEF6C00),
+                      points: _visitPoints(),
                     ),
                     _tile(
                       context.tr('Завершено', 'Completed'),
                       '${stats.done}',
                       Icons.check_circle_outline,
                       const Color(0xFF43A047),
+                      points: _donePoints(),
                     ),
                     _tile(
                       context.tr('Письма', 'Emails'),
                       '${stats.emails}',
                       Icons.email_outlined,
                       const Color(0xFFC62828),
+                      points: _emailPoints(),
                     ),
                     _tile(
                       context.tr('SMS', 'SMS'),
                       '${stats.sms}',
                       Icons.sms_outlined,
                       const Color(0xFF455A64),
+                      points: _smsPoints(),
                     ),
                     _tile(
                       context.tr('Расходы', 'Expenses'),
                       '${stats.expenses}',
                       Icons.receipt_outlined,
                       const Color(0xFFD84315),
+                      points: _expensePoints(),
                     ),
                   ],
                 ),
-                const SizedBox(height: 20),
-                Text(
-                  context.tr('Заявки по времени', 'Jobs over time'),
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFF14557F),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                _chart(stats),
               ],
             ),
           ),
@@ -473,123 +535,75 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     IconData icon,
     Color color, {
     String? subtitle,
+    required List<StatPoint> points,
   }) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      elevation: 0,
+      child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color, size: 22),
-          const Spacer(),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.w900,
-              color: color,
-              height: 1,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            title,
-            style: const TextStyle(
-              color: Colors.black54,
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-            ),
-          ),
-          if (subtitle != null)
-            Text(
-              subtitle,
-              style: TextStyle(
-                color: color.withValues(alpha: 0.8),
-                fontWeight: FontWeight.w700,
-                fontSize: 12,
+        onTap: () => _openDetail(
+          title: title,
+          icon: icon,
+          color: color,
+          points: points,
+        ),
+        child: Ink(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
               ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _chart(_ShopStats stats) {
-    final maxY = stats.barValues.fold<double>(0, (m, v) => v > m ? v : m);
-    return Container(
-      height: 220,
-      padding: const EdgeInsets.fromLTRB(8, 16, 8, 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: maxY <= 0
-          ? Center(
-              child: Text(
-                context.tr('Нет заявок за этот период', 'No jobs in this period'),
-                style: const TextStyle(color: Colors.black54),
-              ),
-            )
-          : BarChart(
-              BarChartData(
-                maxY: maxY < 4 ? 4 : (maxY * 1.2).ceilToDouble(),
-                gridData: const FlGridData(show: false),
-                borderData: FlBorderData(show: false),
-                titlesData: FlTitlesData(
-                  leftTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false),
-                  ),
-                  topTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false),
-                  ),
-                  rightTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false),
-                  ),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      reservedSize: 28,
-                      getTitlesWidget: (value, meta) {
-                        final i = value.toInt();
-                        if (i < 0 || i >= stats.barLabels.length) {
-                          return const SizedBox.shrink();
-                        }
-                        final step = stats.barLabels.length > 16 ? 4 : 1;
-                        if (i % step != 0) return const SizedBox.shrink();
-                        return Text(
-                          stats.barLabels[i],
-                          style: const TextStyle(fontSize: 10, color: Colors.black54),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-                barGroups: [
-                  for (var i = 0; i < stats.barValues.length; i++)
-                    BarChartGroupData(
-                      x: i,
-                      barRods: [
-                        BarChartRodData(
-                          toY: stats.barValues[i],
-                          width: _filter == 'День' ? 6 : 10,
-                          color: AppColors.accent,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ],
-                    ),
+            ],
+          ),
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, color: color, size: 22),
+                  const Spacer(),
+                  Icon(Icons.chevron_right, color: Colors.black26, size: 20),
                 ],
               ),
-            ),
+              const Spacer(),
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w900,
+                  color: color,
+                  height: 1,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.black54,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+              if (subtitle != null)
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: color.withValues(alpha: 0.8),
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -606,8 +620,6 @@ class _ShopStats {
   final int emails;
   final int sms;
   final int expenses;
-  final List<String> barLabels;
-  final List<double> barValues;
 
   const _ShopStats({
     required this.calls,
@@ -621,7 +633,5 @@ class _ShopStats {
     required this.emails,
     required this.sms,
     required this.expenses,
-    required this.barLabels,
-    required this.barValues,
   });
 }

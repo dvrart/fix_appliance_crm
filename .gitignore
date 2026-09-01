@@ -43,3 +43,17 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Firebase Functions secrets (Twilio/Gemini keys) — никогда не коммитим
+functions/.env
+functions/.env.*
+functions/node_modules/
+functions/service-account.json
+
+# App API keys (Maps / Gemini) — copy from api_keys.example.dart
+lib/core/api_keys.dart
+
+# Local / build junk
+.firebase/
+.zip
+android/build/

@@ -1,8 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../core/app_commands.dart';
+import '../core/constants.dart';
 import '../models/client.dart';
 import '../models/location.dart';
 import 'firestore_service.dart';
+import 'client_job_sync.dart';
+import 'network_status_service.dart';
 
 /// Сервис для работы с клиентами
 class ClientService {
@@ -87,13 +91,17 @@ class ClientService {
     return false;
   }
 
-  /// Создать нового клиента
+  /// Создать нового клиента. Id генерируем сами, чтобы карточка открывалась
+  /// сразу и без сети.
   static Future<String> create(Client client) async {
-    final docRef = await _ref.add({
-      ...client.toMap(),
-      'createdAt': FieldValue.serverTimestamp(),
-      'lastActiveAt': FieldValue.serverTimestamp(),
-    });
+    final docRef = _ref.doc();
+    await settleWrite(
+      docRef.set({
+        ...client.toMap(),
+        'createdAt': FieldValue.serverTimestamp(),
+        'lastActiveAt': FieldValue.serverTimestamp(),
+      }),
+    );
     invalidateCache();
     return docRef.id;
   }
@@ -108,11 +116,27 @@ class ClientService {
 
   /// Обновить клиента
   static Future<void> update(String id, Map<String, dynamic> data) async {
-    await _ref.doc(id).update({
+    final name = (data['fullName'] ?? data['name'] ?? data['clientName'])
+        ?.toString()
+        .trim();
+    final payload = <String, dynamic>{
       ...data,
+      if (name != null && name.isNotEmpty) ...{
+        'fullName': name,
+        'name': name,
+        'clientName': name,
+      },
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    };
+    await settleWrite(_ref.doc(id).update(payload));
     invalidateCache();
+    await ClientJobSync.apply(
+      clientId: id,
+      name: name,
+      phone: data['phone']?.toString(),
+      address: data['address']?.toString(),
+      email: data['email']?.toString(),
+    );
   }
 
   /// Address string plus the first entry in [locations], if any.
@@ -192,9 +216,11 @@ class ClientService {
     if (client == null) return;
 
     final newLocations = [...client.locations, location];
-    await _ref.doc(clientId).update({
-      'locations': newLocations.map((l) => l.toMap()).toList(),
-    });
+    await settleWrite(
+      _ref.doc(clientId).update({
+        'locations': newLocations.map((l) => l.toMap()).toList(),
+      }),
+    );
   }
 
   /// Сохранить координаты объектов клиента (кэш геокодинга для карты).
@@ -218,26 +244,66 @@ class ClientService {
       return l.id == locationId ? newLocation : l;
     }).toList();
 
-    await _ref.doc(clientId).update({
-      'locations': newLocations.map((l) => l.toMap()).toList(),
-    });
+    await settleWrite(
+      _ref.doc(clientId).update({
+        'locations': newLocations.map((l) => l.toMap()).toList(),
+      }),
+    );
   }
 
   /// В корзину на 30 дней
-  static Future<void> delete(String id) async {
-    await _ref.doc(id).update({
-      'deletedAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+  static Future<void> delete(String id, {bool react = true}) async {
+    if (react) AppCommands.reactAngry();
+    await settleWrite(
+      _ref.doc(id).update({
+        'deletedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }),
+    );
     invalidateCache();
   }
 
   static Future<void> restore(String id) async {
-    await _ref.doc(id).update({
-      'deletedAt': FieldValue.delete(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+    await settleWrite(
+      _ref.doc(id).update({
+        'deletedAt': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }),
+    );
     invalidateCache();
+  }
+
+  /// Discarded unconfirmed AI job: trash the auto-created contact if nothing
+  /// else keeps them (other live jobs, or a client FIX added by hand).
+  static Future<void> trashOrphanAutoClient({
+    required String clientId,
+    required String discardedJobId,
+    required bool jobWasUnconfirmedAuto,
+  }) async {
+    if (!jobWasUnconfirmedAuto) return;
+    final id = clientId.trim();
+    if (id.isEmpty) return;
+    try {
+      final client = await getById(id);
+      if (client == null || client.isDeleted) return;
+      if (!client.createdByAi && !Client.isPlaceholderName(client.fullName)) {
+        return;
+      }
+      final snap = await FirestoreService.jobsRef
+          .where('clientId', isEqualTo: id)
+          .get();
+      for (final doc in snap.docs) {
+        if (doc.id == discardedJobId) continue;
+        final data = doc.data();
+        if (data is! Map) continue;
+        final map = Map<String, dynamic>.from(data);
+        if (map['deletedAt'] != null) continue;
+        final status = (map['status'] ?? '').toString();
+        if (JobStatuses.isCancelledStatus(status)) continue;
+        return;
+      }
+      await delete(id, react: false);
+    } catch (_) {}
   }
 
   static Future<void> deleteForever(String id) async {
@@ -257,6 +323,7 @@ class ClientService {
   }
 
   static Future<void> deleteMany(Iterable<String> ids) async {
+    AppCommands.reactAngry();
     final list = ids.where((id) => id.isNotEmpty).toSet().toList();
     const chunk = 450;
     for (var i = 0; i < list.length; i += chunk) {
@@ -283,10 +350,13 @@ class ClientService {
     String? companyName,
     String? notes,
     String? source,
+    bool createdByAi = false,
   }) async {
     if (existingId != null) {
       await update(existingId, {
         'fullName': fullName,
+        'name': fullName,
+        'clientName': fullName,
         'phone': phone,
         'address': address,
         'email': email,
@@ -305,6 +375,7 @@ class ClientService {
       companyName: companyName,
       notes: notes,
       source: source,
+      createdByAi: createdByAi,
       locations: [
         Location(
           id: 'primary',
@@ -343,6 +414,12 @@ class ClientService {
       } catch (_) {}
     }
     return null;
+  }
+
+  static Future<Client?> findExisting({String? phone, String? email}) async {
+    final byPhone = await findByPhone(phone ?? '');
+    if (byPhone != null) return byPhone;
+    return findByEmail(email ?? '');
   }
 
   static Future<Client?> findByEmail(String email) async {

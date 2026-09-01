@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firestore_service.dart';
+import 'network_status_service.dart';
 
 /// Справочники «Тип техники» и «Бренд» — используются в форме создания
 /// заявки как выпадающий список с возможностью добавить новое значение,
@@ -34,7 +35,6 @@ class CatalogService {
 
   static const List<String> defaultLeadSources = [
     'Google',
-    'Facebook',
     'Рекомендация',
     'Повторный клиент',
     'Листовка',
@@ -63,11 +63,56 @@ class CatalogService {
       }
       if (data == null || data['leadSources'] == null) {
         updates['leadSources'] = defaultLeadSources;
+      } else {
+        final sources = List<String>.from(data['leadSources'] as List);
+        if (sources.any((s) => s.toLowerCase() == 'facebook')) {
+          updates['leadSources'] = sources
+              .where((s) => s.toLowerCase() != 'facebook')
+              .toList();
+        }
       }
       if (updates.isNotEmpty) {
         await _ref.set(updates, SetOptions(merge: true));
       }
     } catch (_) {}
+  }
+
+  static Future<List<String>> loadList(String field) async {
+    await _ensureSeeded();
+    final snap = await _ref.get();
+    final data = snap.data() as Map<String, dynamic>?;
+    final defaults = switch (field) {
+      'applianceTypes' => defaultApplianceTypes,
+      'brands' => defaultBrands,
+      'leadSources' => defaultLeadSources,
+      _ => const <String>[],
+    };
+    final raw = data?[field];
+    final result = raw is List
+        ? List<String>.from(raw.map((e) => e.toString()))
+        : List<String>.from(defaults);
+    if (field == 'leadSources') {
+      result.removeWhere((s) => s.toLowerCase() == 'facebook');
+    }
+    if (field == 'applianceTypes' || field == 'brands') {
+      result.sort();
+    }
+    return result;
+  }
+
+  static Future<void> replaceList(String field, List<String> items) async {
+    await _ensureSeeded();
+    var next = [
+      for (final item in items)
+        if (item.trim().isNotEmpty) item.trim(),
+    ];
+    if (field == 'leadSources') {
+      next = [
+        for (final item in next)
+          if (item.toLowerCase() != 'facebook') item,
+      ];
+    }
+    await settleWrite(_ref.set({field: next}, SetOptions(merge: true)));
   }
 
   static Stream<List<String>> streamApplianceTypes() {
@@ -104,6 +149,7 @@ class CatalogService {
       final result = list != null
           ? List<String>.from(list)
           : List<String>.from(defaultLeadSources);
+      result.removeWhere((s) => s.toLowerCase() == 'facebook');
       return result;
     });
   }
@@ -111,6 +157,7 @@ class CatalogService {
   static Future<void> addLeadSource(String source) async {
     final trimmed = source.trim();
     if (trimmed.isEmpty) return;
+    if (trimmed.toLowerCase() == 'facebook') return;
     await _ensureSeeded();
     await _ref.set({
       'leadSources': FieldValue.arrayUnion([trimmed]),
@@ -118,9 +165,7 @@ class CatalogService {
   }
 
   static Future<void> removeLeadSource(String source) async {
-    await _ref.set({
-      'leadSources': FieldValue.arrayRemove([source]),
-    }, SetOptions(merge: true));
+    await _removeFromList('leadSources', source);
   }
 
   static Future<void> addApplianceType(String type) async {
@@ -142,15 +187,44 @@ class CatalogService {
   }
 
   static Future<void> removeApplianceType(String type) async {
-    await _ref.set({
-      'applianceTypes': FieldValue.arrayRemove([type]),
-    }, SetOptions(merge: true));
+    await _removeFromList('applianceTypes', type);
   }
 
   static Future<void> removeBrand(String brand) async {
-    await _ref.set({
-      'brands': FieldValue.arrayRemove([brand]),
-    }, SetOptions(merge: true));
+    await _removeFromList('brands', brand);
+  }
+
+  /// Читаем список и пишем без выбранных — надёжнее, чем arrayRemove.
+  static Future<void> _removeFromList(String field, String value) async {
+    await _ensureSeeded();
+    final snap = await _ref.get();
+    final data = snap.data() as Map<String, dynamic>?;
+    final raw = data?[field];
+    final current = raw is List
+        ? List<String>.from(raw.map((e) => e.toString()))
+        : <String>[];
+    final next = [
+      for (final item in current)
+        if (item != value) item,
+    ];
+    await _ref.set({field: next}, SetOptions(merge: true));
+  }
+
+  static Future<void> removeMany(String field, Iterable<String> values) async {
+    await _ensureSeeded();
+    final remove = values.toSet();
+    if (remove.isEmpty) return;
+    final snap = await _ref.get();
+    final data = snap.data() as Map<String, dynamic>?;
+    final raw = data?[field];
+    final current = raw is List
+        ? List<String>.from(raw.map((e) => e.toString()))
+        : <String>[];
+    final next = [
+      for (final item in current)
+        if (!remove.contains(item)) item,
+    ];
+    await _ref.set({field: next}, SetOptions(merge: true));
   }
 
   static Stream<List<PricebookItem>> streamPricebook() {

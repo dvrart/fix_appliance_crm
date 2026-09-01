@@ -3,17 +3,33 @@ import 'package:flutter/material.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../core/utils/app_time_picker.dart';
 import '../../../services/morning_briefing_service.dart';
+import '../../../services/notification_service.dart';
 import '../../../services/on_the_way_service.dart';
 import '../../../services/settings_service.dart';
 import '../../../services/twilio_service.dart';
-import '../../../shared/widgets/app_bar_save.dart';
 import '../../../shared/widgets/email_field.dart';
 import '../widgets/company_name_dialog.dart';
 import '../widgets/settings_ui.dart';
-import 'message_templates_page.dart';
 
+enum _CommSection { hub, calls, sms, alerts, gmail }
+
+/// Связь: сначала плитки, внутри — свои экраны (звонки / SMS / уведомления / Gmail).
 class CommunicationSettingsPage extends StatefulWidget {
-  const CommunicationSettingsPage({super.key});
+  const CommunicationSettingsPage({super.key}) : _sectionIndex = 0;
+
+  const CommunicationSettingsPage.calls({super.key}) : _sectionIndex = 1;
+
+  const CommunicationSettingsPage.sms({super.key}) : _sectionIndex = 2;
+
+  const CommunicationSettingsPage.alerts({super.key}) : _sectionIndex = 3;
+
+  const CommunicationSettingsPage.gmail({super.key}) : _sectionIndex = 4;
+
+  const CommunicationSettingsPage._at(this._sectionIndex, {super.key});
+
+  final int _sectionIndex;
+
+  _CommSection get _section => _CommSection.values[_sectionIndex.clamp(0, 4)];
 
   @override
   State<CommunicationSettingsPage> createState() =>
@@ -23,7 +39,7 @@ class CommunicationSettingsPage extends StatefulWidget {
 class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   bool? _phoneAccountEnabled;
   bool _savingGmail = false;
-  String _smsHeader = 'fixappliance.ca';
+  String _smsHeader = 'fix-appliance.ca';
   bool _morning = true;
   bool _onWayGeo = true;
   bool _bookingSms = true;
@@ -37,31 +53,94 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   String _onWayText = '';
   final _gmailUserCtrl = TextEditingController();
   final _gmailPassCtrl = TextEditingController();
-  final _emailIntakeCtrl = TextEditingController();
   final _watchCtrl = TextEditingController();
-  List<String> _watchedSenders = [];
+  final _watchNameCtrl = TextEditingController();
+  List<WatchedEmailSender> _watchedSenders = [];
   String _savedGmailUser = '';
-  String _savedIntake = '';
-  List<String> _savedWatchers = [];
+  List<WatchedEmailSender> _savedWatchers = [];
   bool _gmailSaved = false;
   bool _gmailListening = false;
+  bool _notificationsEnabled = true;
+  String _gmailUserHint = '';
+  String _savedSmsHeader = 'fix-appliance.ca';
+  bool _savedMorning = true;
+  bool _savedOnWayGeo = true;
+  bool _savedBookingSms = true;
+  bool _savedReminderSms = true;
+  bool _savedAutoReview = true;
+  List<String> _savedReminderOffsets = const ['24h'];
+  int _savedMorningHour = 7;
+  int _savedEveningHour = 19;
+  int _savedReminderMorningHour = 8;
+  int _savedOnWayMeters = 2000;
+  String _savedOnWayText = '';
 
   @override
   void initState() {
     super.initState();
-    _checkPhone();
-    _loadSmsHeader();
-    _loadFlags();
-    _loadGmail();
+    switch (widget._section) {
+      case _CommSection.hub:
+        _checkPhone();
+        _loadSmsHeader();
+        _loadFlags();
+        _loadGmailHint();
+        _loadNotificationAccess();
+        break;
+      case _CommSection.calls:
+        _checkPhone();
+        break;
+      case _CommSection.sms:
+        _loadSmsHeader();
+        _loadFlags();
+        break;
+      case _CommSection.alerts:
+        _loadFlags();
+        _loadNotificationAccess();
+        break;
+      case _CommSection.gmail:
+        _loadFlags();
+        _loadGmail();
+        break;
+    }
+  }
+
+  Future<void> _loadGmailHint() async {
+    final gmail = await SettingsService.loadGmailSettings();
+    if (!mounted) return;
+    setState(() {
+      _gmailUserHint = (gmail['user'] ?? '').toString().trim();
+      _gmailSaved = (gmail['appPassword'] ?? '').toString().isNotEmpty;
+    });
+  }
+
+  Future<void> _loadNotificationAccess() async {
+    final enabled = await NotificationService.areNotificationsEnabled();
+    if (mounted) setState(() => _notificationsEnabled = enabled);
   }
 
   @override
   void dispose() {
     _gmailUserCtrl.dispose();
     _gmailPassCtrl.dispose();
-    _emailIntakeCtrl.dispose();
     _watchCtrl.dispose();
+    _watchNameCtrl.dispose();
     super.dispose();
+  }
+
+  void _open(_CommSection section) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CommunicationSettingsPage._at(section.index),
+      ),
+    ).then((_) {
+      if (!mounted || widget._section != _CommSection.hub) return;
+      _checkPhone();
+      _loadSmsHeader();
+      _loadFlags();
+      _loadGmailHint();
+      _loadNotificationAccess();
+    });
   }
 
   Future<void> _checkPhone() async {
@@ -72,15 +151,16 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   Future<void> _loadSmsHeader() async {
     final docs = await SettingsService.loadDocumentSettings();
     if (!mounted) return;
-    setState(() => _smsHeader = docs.smsHeader);
+    setState(() {
+      _smsHeader = docs.smsHeader;
+      _savedSmsHeader = docs.smsHeader;
+    });
   }
 
   Future<void> _loadFlags() async {
     final config = await SettingsService.loadConfig();
     if (!mounted) return;
-    final intake = SettingsService.readEmailIntakeTitle(config);
     final watched = SettingsService.readWatchedEmailSenders(config);
-    _emailIntakeCtrl.text = intake;
     if (!mounted) return;
     setState(() {
       _morning = SettingsService.boolFlag(config, 'morningBriefingEnabled');
@@ -94,22 +174,95 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       _reminderMorningHour = SettingsService.readReminderMorningHour(config);
       _onWayMeters = SettingsService.readOnTheWayMeters(config);
       _onWayText = SettingsService.readOnTheWayText(config);
-      _savedIntake = intake;
       _watchedSenders = watched;
-      _savedWatchers = List<String>.from(watched);
+      _savedWatchers = List<WatchedEmailSender>.from(watched);
+      _savedMorning = _morning;
+      _savedOnWayGeo = _onWayGeo;
+      _savedBookingSms = _bookingSms;
+      _savedReminderSms = _reminderSms;
+      _savedAutoReview = _autoReview;
+      _savedReminderOffsets = List<String>.from(_reminderOffsets);
+      _savedMorningHour = _morningHour;
+      _savedEveningHour = _eveningHour;
+      _savedReminderMorningHour = _reminderMorningHour;
+      _savedOnWayMeters = _onWayMeters;
+      _savedOnWayText = _onWayText;
     });
   }
 
-  Future<void> _setMorning(bool value) async {
-    setState(() => _morning = value);
-    await SettingsService.updateConfig('morningBriefingEnabled', value);
-    await MorningBriefingService.refresh();
+  String _offsetsKey(List<String> items) {
+    final copy = [...items]..sort();
+    return copy.join(',');
   }
 
-  Future<void> _setOnWayGeo(bool value) async {
+  bool get _smsDirty =>
+      _smsHeader != _savedSmsHeader ||
+      _bookingSms != _savedBookingSms ||
+      _reminderSms != _savedReminderSms ||
+      _autoReview != _savedAutoReview ||
+      _onWayMeters != _savedOnWayMeters ||
+      _onWayText != _savedOnWayText ||
+      _reminderMorningHour != _savedReminderMorningHour ||
+      _offsetsKey(_reminderOffsets) != _offsetsKey(_savedReminderOffsets);
+
+  bool get _alertsDirty =>
+      _morning != _savedMorning ||
+      _onWayGeo != _savedOnWayGeo ||
+      _morningHour != _savedMorningHour ||
+      _eveningHour != _savedEveningHour;
+
+  void _setMorning(bool value) {
+    setState(() => _morning = value);
+  }
+
+  void _setOnWayGeo(bool value) {
     setState(() => _onWayGeo = value);
-    await SettingsService.updateConfig('onTheWayPromptEnabled', value);
-    if (!value) await OnTheWayService.instance.stop();
+  }
+
+  Future<bool> _saveSms() async {
+    if (_smsHeader != _savedSmsHeader) {
+      await SettingsService.updateSmsHeader(_smsHeader);
+    }
+    await SettingsService.updateConfigMap({
+      'bookingSmsEnabled': _bookingSms,
+      'reminderSmsEnabled': _reminderSms,
+      'autoReviewSmsEnabled': _autoReview,
+      'reminderOffsets': _reminderOffsets,
+      'reminderMorningHour': _reminderMorningHour,
+      'onTheWayMeters': _onWayMeters,
+      'onTheWayText': _onWayText,
+    });
+    if (!mounted) return true;
+    setState(() {
+      _savedSmsHeader = _smsHeader;
+      _savedBookingSms = _bookingSms;
+      _savedReminderSms = _reminderSms;
+      _savedAutoReview = _autoReview;
+      _savedReminderOffsets = List<String>.from(_reminderOffsets);
+      _savedReminderMorningHour = _reminderMorningHour;
+      _savedOnWayMeters = _onWayMeters;
+      _savedOnWayText = _onWayText;
+    });
+    return true;
+  }
+
+  Future<bool> _saveAlerts() async {
+    await SettingsService.updateConfigMap({
+      'morningBriefingEnabled': _morning,
+      'onTheWayPromptEnabled': _onWayGeo,
+      'morningBriefingHour': _morningHour,
+      'eveningBriefingHour': _eveningHour,
+    });
+    await MorningBriefingService.refresh();
+    if (!_onWayGeo) await OnTheWayService.instance.stop();
+    if (!mounted) return true;
+    setState(() {
+      _savedMorning = _morning;
+      _savedOnWayGeo = _onWayGeo;
+      _savedMorningHour = _morningHour;
+      _savedEveningHour = _eveningHour;
+    });
+    return true;
   }
 
   Future<void> _loadGmail() async {
@@ -124,69 +277,89 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
     });
     if (_gmailListening) return;
     _gmailListening = true;
-    for (final controller in [_gmailUserCtrl, _gmailPassCtrl, _emailIntakeCtrl]) {
+    for (final controller in [_gmailUserCtrl, _gmailPassCtrl]) {
       controller.addListener(() {
         if (mounted) setState(() {});
       });
     }
   }
 
-  Future<void> _saveGmail() async {
+  Future<bool> _saveGmail() async {
     final user = _gmailUserCtrl.text.trim();
     if (!user.contains('@')) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Укажите Gmail'.tr), backgroundColor: Colors.red),
       );
-      return;
+      return false;
     }
     setState(() => _savingGmail = true);
     await SettingsService.saveGmailSettings(
       user: user,
-      appPassword: _gmailPassCtrl.text.trim().isEmpty ? null : _gmailPassCtrl.text.trim(),
+      appPassword:
+          _gmailPassCtrl.text.trim().isEmpty ? null : _gmailPassCtrl.text.trim(),
     );
     await SettingsService.updateConfigMap({
-      'emailIntakeTitle': _emailIntakeCtrl.text.trim(),
-      'watchedEmailSenders': _watchedSenders,
+      'watchedEmailSenders':
+          SettingsService.serializeWatchedEmailSenders(_watchedSenders),
     });
-    if (!mounted) return;
+    if (!mounted) return false;
     _gmailPassCtrl.clear();
     setState(() {
       _savingGmail = false;
       _gmailSaved = true;
       _savedGmailUser = user;
-      _savedIntake = _emailIntakeCtrl.text.trim();
-      _savedWatchers = List<String>.from(_watchedSenders);
+      _savedWatchers = List<WatchedEmailSender>.from(_watchedSenders);
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Gmail сохранён'.tr), backgroundColor: Colors.green),
     );
+    return true;
   }
+
+  String _watchKey(List<WatchedEmailSender> list) =>
+      list.map((s) => '${s.email}|${s.name.trim()}').join(';');
 
   bool get _gmailDirty {
     if (_gmailPassCtrl.text.trim().isNotEmpty) return true;
     if (_gmailUserCtrl.text.trim() != _savedGmailUser) return true;
-    if (_emailIntakeCtrl.text.trim() != _savedIntake) return true;
-    if (_watchedSenders.join('|') != _savedWatchers.join('|')) return true;
+    if (_watchKey(_watchedSenders) != _watchKey(_savedWatchers)) return true;
     return false;
   }
 
   void _addWatcher() {
     final email = _watchCtrl.text.trim().toLowerCase();
+    final name = _watchNameCtrl.text.trim();
     if (!email.contains('@')) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Укажите email отправителя'.tr)),
       );
       return;
     }
-    if (_watchedSenders.contains(email)) {
+    if (_watchedSenders.any((s) => s.email == email)) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Этот адрес уже в списке'.tr)),
       );
       return;
     }
     setState(() {
-      _watchedSenders = [..._watchedSenders, email];
+      _watchedSenders = [
+        ..._watchedSenders,
+        WatchedEmailSender(email: email, name: name),
+      ];
       _watchCtrl.clear();
+      _watchNameCtrl.clear();
+    });
+  }
+
+  void _setWatcherName(String email, String name) {
+    setState(() {
+      _watchedSenders = [
+        for (final s in _watchedSenders)
+          if (s.email == email)
+            WatchedEmailSender(email: s.email, name: name)
+          else
+            s,
+      ];
     });
   }
 
@@ -230,11 +403,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       _morningHour = morning.hour;
       _eveningHour = evening.hour;
     });
-    await SettingsService.updateConfigMap({
-      'morningBriefingHour': _morningHour,
-      'eveningBriefingHour': _eveningHour,
-    });
-    await MorningBriefingService.refresh();
   }
 
   Future<void> _editOnWay() async {
@@ -292,10 +460,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       _onWayMeters = meters;
       _onWayText = text;
     });
-    await SettingsService.updateConfigMap({
-      'onTheWayMeters': meters,
-      'onTheWayText': text,
-    });
   }
 
   Future<void> _editReminders() async {
@@ -308,17 +472,12 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setSheet) {
-            Future<void> persist() async {
+            void applyDraft() {
               if (selected.isEmpty) selected = ['24h'];
               setState(() {
                 _reminderOffsets = List<String>.from(selected);
                 _reminderMorningHour = morningHour;
                 _reminderSms = true;
-              });
-              await SettingsService.updateConfigMap({
-                'reminderSmsEnabled': true,
-                'reminderOffsets': selected,
-                'reminderMorningHour': morningHour,
               });
             }
 
@@ -348,7 +507,8 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                         title: Text(
                           key == 'morning'
                               ? 'Утром в день визита'.tr
-                              : _offsetLabel(key).replaceAll(RegExp(r' \(.*\)$'), ''),
+                              : _offsetLabel(key)
+                                  .replaceAll(RegExp(r' \(.*\)$'), ''),
                         ),
                         controlAffinity: ListTileControlAffinity.leading,
                         onChanged: (on) {
@@ -359,7 +519,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                               selected.remove(key);
                             }
                           });
-                          persist();
+                          applyDraft();
                         },
                       ),
                     if (selected.contains('morning'))
@@ -375,7 +535,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                           );
                           if (picked == null) return;
                           setSheet(() => morningHour = picked.hour);
-                          await persist();
+                          applyDraft();
                         },
                       ),
                   ],
@@ -394,302 +554,437 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       initialValue: _smsHeader,
     );
     if (saved == null || !mounted) return;
-    await SettingsService.updateSmsHeader(saved);
-    if (!mounted) return;
     setState(() => _smsHeader = saved);
+  }
+
+  Future<void> _openAndroidPhoneHelp() async {
+    await TwilioService.openPhoneAccountSettings();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Где искать'.tr),
+        content: Text(
+          'Приложение не стоит в списке «Телефон / Сообщения» — это не замена звонилке Samsung.\n\n'
+          'Если открылся список учёток: ищите FIX APPLIANCE и включите.\n\n'
+          'Если списка нет — так и задумано. Звонки идут через приложение, не через SIM. Первый входящий может спросить разрешение на звонки — нажмите Разрешить.'.tr,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+    Future.delayed(const Duration(seconds: 1), _checkPhone);
   }
 
   @override
   Widget build(BuildContext context) {
+    switch (widget._section) {
+      case _CommSection.hub:
+        return _buildHub();
+      case _CommSection.calls:
+        return _buildCalls();
+      case _CommSection.sms:
+        return _buildSms();
+      case _CommSection.alerts:
+        return _buildAlerts();
+      case _CommSection.gmail:
+        return _buildGmail();
+    }
+  }
+
+  Widget _buildHub() {
+    final phoneOk = _phoneAccountEnabled == true;
+    final phoneBad = _phoneAccountEnabled == false;
     return SettingsPageScaffold(
       title: 'Связь'.tr,
-      actions: [
-        AppBarSaveButton(
-          dirty: _gmailDirty,
-          saving: _savingGmail,
-          onPressed: _saveGmail,
-        ),
-      ],
       body: ListView(
-        padding: const EdgeInsets.only(top: 20, bottom: 40),
+        padding: const EdgeInsets.only(top: 12, bottom: 32),
         children: [
-          SettingsGroup(
-            children: [
-              SettingsRow(
+          SettingsTileSection(
+            title: 'Связь'.tr,
+            tiles: [
+              SettingsHubTile(
+                title: 'Звонки'.tr,
+                subtitle: phoneBad
+                    ? 'Не работают'.tr
+                    : phoneOk
+                        ? 'Twilio'.tr
+                        : '…',
+                icon: phoneBad ? Icons.phone_disabled : Icons.phone_in_talk,
+                color: phoneBad ? Colors.red : Colors.green,
+                active: phoneOk,
+                onTap: () => _open(_CommSection.calls),
+              ),
+              SettingsHubTile(
+                title: 'SMS'.tr,
+                subtitle: _smsHeader.isEmpty ? 'Клиентам'.tr : _smsHeader,
+                icon: Icons.sms_outlined,
+                color: Colors.indigo,
+                onTap: () => _open(_CommSection.sms),
+              ),
+              SettingsHubTile(
+                title: 'Уведомления'.tr,
+                subtitle: _notificationsEnabled ? 'Вкл'.tr : 'Выкл'.tr,
+                icon: Icons.notifications_outlined,
+                color: _notificationsEnabled ? Colors.teal : Colors.red,
+                active: _notificationsEnabled,
+                onTap: () => _open(_CommSection.alerts),
+              ),
+              SettingsHubTile(
+                title: 'Gmail'.tr,
+                subtitle: _gmailUserHint.isEmpty
+                    ? (_gmailSaved ? 'Сохранён'.tr : 'Настроить'.tr)
+                    : _gmailUserHint,
+                icon: Icons.mail_outline,
+                color: const Color(0xFFEA4335),
+                onTap: () => _open(_CommSection.gmail),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCalls() {
+    return SettingsPageScaffold(
+      title: 'Звонки'.tr,
+      body: ListView(
+        padding: const EdgeInsets.only(top: 12, bottom: 32),
+        children: [
+          SettingsTileSection(
+            title: 'Звонки'.tr,
+            tiles: [
+              SettingsHubTile(
                 title: _phoneAccountEnabled == false
-                    ? 'Звонки не работают'.tr
-                    : 'Звонки Twilio'.tr,
+                    ? 'Не работают'.tr
+                    : 'Twilio'.tr,
                 subtitle: _phoneAccountEnabled == false
-                    ? 'Разрешите приложению свои звонки, чтобы входящие открывались в CRM'.tr
+                    ? 'Включить'.tr
                     : _phoneAccountEnabled == true
-                        ? 'Входящие принимаются в приложении'.tr
-                        : 'Проверка статуса…'.tr,
+                        ? 'Вкл'.tr
+                        : '…',
                 icon: _phoneAccountEnabled == false
                     ? Icons.phone_disabled
                     : Icons.phone_in_talk,
-                iconColor:
-                    _phoneAccountEnabled == false ? Colors.red : Colors.green,
-                trailing: _phoneAccountEnabled == true
-                    ? const Icon(Icons.check_circle, color: Colors.green)
-                    : _phoneAccountEnabled == null
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : null,
+                color: _phoneAccountEnabled == false ? Colors.red : Colors.green,
+                active: _phoneAccountEnabled == true,
                 onTap: _checkPhone,
               ),
-              SettingsRow(
-                title: 'Разрешения звонков Android'.tr,
-                subtitle:
-                    'Samsung не показывает VoIP рядом с SIM. Ищите FIX APPLIANCE, не «телефон по умолчанию».'.tr,
+              SettingsHubTile(
+                title: 'Android'.tr,
+                subtitle: 'Разрешения'.tr,
                 icon: Icons.settings_phone,
-                iconColor: Colors.blueGrey,
-                showDivider: false,
-                onTap: () async {
-                  await TwilioService.openPhoneAccountSettings();
-                  if (!context.mounted) return;
-                  await showDialog<void>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: Text('Где искать'.tr),
-                      content: Text(
-                        'Приложение не стоит в списке «Телефон / Сообщения» — это не замена звонилке Samsung.\n\n'
-                        'Если открылся список учёток: ищите FIX APPLIANCE и включите.\n\n'
-                        'Если списка нет — так и задумано. Звонки идут через приложение, не через SIM. Первый входящий может спросить разрешение на звонки — нажмите Разрешить.'.tr,
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx),
-                          child: const Text('OK'),
-                        ),
-                      ],
-                    ),
-                  );
-                  Future.delayed(const Duration(seconds: 1), _checkPhone);
-                },
+                color: Colors.blueGrey,
+                onTap: _openAndroidPhoneHelp,
               ),
             ],
           ),
-          SettingsGroup(
-            children: [
-              SettingsRow(
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSms() {
+    return SettingsPageScaffold(
+      title: 'SMS'.tr,
+      dirty: _smsDirty,
+      onSave: _saveSms,
+      body: ListView(
+        padding: const EdgeInsets.only(top: 12, bottom: 32),
+        children: [
+          SettingsTileSection(
+            title: 'SMS клиентам'.tr,
+            tiles: [
+              SettingsHubTile(
                 title: 'Шапка SMS'.tr,
-                subtitle: _smsHeader.isEmpty
-                    ? 'Без шапки — только текст сообщения'.tr
-                    : _smsHeader,
+                subtitle: _smsHeader.isEmpty ? 'Нет'.tr : _smsHeader,
                 icon: Icons.text_fields,
-                iconColor: Colors.indigo,
+                color: Colors.indigo,
                 onTap: _editSmsHeader,
               ),
-              SettingsRow(
-                title: 'Заявки утром и вечером'.tr,
+              SettingsHubTile(
+                title: 'Я в пути'.tr,
                 subtitle:
-                    '${'Утром'.tr} ${_hh(_morningHour)}, ${'вечером'.tr} ${_hh(_eveningHour)}',
-                icon: Icons.wb_sunny_outlined,
-                iconColor: Colors.orange,
-                trailing: Switch(value: _morning, onChanged: _setMorning),
-                onTap: _editBriefingTimes,
-              ),
-              SettingsRow(
-                title: 'SMS «я в пути»'.tr,
-                subtitle:
-                    '${'После'.tr} ${(_onWayMeters / 1000).toStringAsFixed(_onWayMeters % 1000 == 0 ? 0 : 1)} ${'км'.tr}',
+                    '${(_onWayMeters / 1000).toStringAsFixed(_onWayMeters % 1000 == 0 ? 0 : 1)} ${'км'.tr}',
                 icon: Icons.near_me,
-                iconColor: Colors.teal,
-                trailing: Switch(value: _onWayGeo, onChanged: _setOnWayGeo),
+                color: Colors.teal,
+                active: _onWayGeo,
                 onTap: _editOnWay,
               ),
-              SettingsRow(
-                title: 'SMS при записи'.tr,
-                subtitle: 'После вашего подтверждения заявки. Клиент отвечает 1 / 0 / 5. С почты — письмо на e-mail.'.tr,
+              SettingsHubTile(
+                title: 'При записи'.tr,
+                subtitle: _bookingSms ? 'Вкл'.tr : 'Выкл'.tr,
                 icon: Icons.event_available,
-                iconColor: Colors.blue,
-                trailing: Switch(
-                  value: _bookingSms,
-                  onChanged: (value) {
-                    setState(() => _bookingSms = value);
-                    SettingsService.updateConfig('bookingSmsEnabled', value);
-                  },
-                ),
+                color: Colors.blue,
+                active: _bookingSms,
+                onTap: () => setState(() => _bookingSms = !_bookingSms),
               ),
-              SettingsRow(
-                title: 'Напоминание о визите'.tr,
-                subtitle: _reminderSubtitle,
+              SettingsHubTile(
+                title: 'Напоминание'.tr,
+                subtitle: _reminderSms ? _reminderSubtitle : 'Выкл'.tr,
                 icon: Icons.notifications_active_outlined,
-                iconColor: Colors.indigo,
-                trailing: Switch(
-                  value: _reminderSms,
-                  onChanged: (value) {
-                    setState(() => _reminderSms = value);
-                    SettingsService.updateConfig('reminderSmsEnabled', value);
-                  },
-                ),
+                color: Colors.indigo,
+                active: _reminderSms,
                 onTap: _editReminders,
               ),
-              SettingsRow(
-                title: 'Авто-отзыв после работы'.tr,
-                subtitle: 'SMS со ссылкой на Google после «Завершено»'.tr,
+              SettingsHubTile(
+                title: 'Отзыв'.tr,
+                subtitle: _autoReview ? 'Спросить'.tr : 'Выкл'.tr,
                 icon: Icons.star_outline,
-                iconColor: Colors.amber.shade800,
-                showDivider: false,
-                trailing: Switch(
-                  value: _autoReview,
-                  onChanged: (value) {
-                    setState(() => _autoReview = value);
-                    SettingsService.updateConfig('autoReviewSmsEnabled', value);
-                  },
+                color: Colors.amber.shade800,
+                active: _autoReview,
+                onTap: () => setState(() => _autoReview = !_autoReview),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAlerts() {
+    return SettingsPageScaffold(
+      title: 'Уведомления'.tr,
+      dirty: _alertsDirty,
+      onSave: _saveAlerts,
+      body: ListView(
+        padding: const EdgeInsets.only(top: 12, bottom: 32),
+        children: [
+          SettingsTileSection(
+            title: 'Уведомления'.tr,
+            tiles: [
+              SettingsHubTile(
+                title: 'Утро / вечер'.tr,
+                subtitle: _morning
+                    ? '${_hh(_morningHour)} · ${_hh(_eveningHour)}'
+                    : 'Выкл'.tr,
+                icon: Icons.wb_sunny_outlined,
+                color: Colors.orange,
+                active: _morning,
+                onTap: _editBriefingTimes,
+              ),
+              SettingsHubTile(
+                title: 'Шторка'.tr,
+                subtitle: _notificationsEnabled ? 'Вкл'.tr : 'Выкл'.tr,
+                icon: Icons.notifications_outlined,
+                color: _notificationsEnabled ? Colors.green : Colors.red,
+                active: _notificationsEnabled,
+                onTap: () async {
+                  await NotificationService.openSoundSettings();
+                  await _loadNotificationAccess();
+                },
+              ),
+              SettingsHubTile(
+                title: 'Батарея'.tr,
+                subtitle: 'Чтобы SMS приходили, когда приложение закрыто'.tr,
+                icon: Icons.battery_charging_full_outlined,
+                color: Colors.deepOrange,
+                onTap: () async {
+                  await NotificationService.openBatterySettings();
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        'Разрешите работу в фоне. На Samsung: «Без ограничений» и добавьте в «Никогда не спящие».'
+                            .tr,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              SettingsHubTile(
+                title: 'Я в пути'.tr,
+                subtitle: _onWayGeo ? 'Вкл'.tr : 'Выкл'.tr,
+                icon: Icons.near_me,
+                color: Colors.teal,
+                active: _onWayGeo,
+                onTap: () => _setOnWayGeo(!_onWayGeo),
+              ),
+              SettingsHubTile(
+                title: 'Брифинг'.tr,
+                subtitle: _morning ? 'Вкл'.tr : 'Выкл'.tr,
+                icon: Icons.toggle_on,
+                color: Colors.orange,
+                active: _morning,
+                onTap: () => _setMorning(!_morning),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGmail() {
+    return SettingsPageScaffold(
+      title: 'Gmail'.tr,
+      dirty: _gmailDirty,
+      onSave: _saveGmail,
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+        children: [
+          Text(
+            'Проверяются только письма с адресов из списка ниже. Из них составляется заявка. Ответы клиентов на ваши письма попадают в переписку. Пароль — «Пароль приложения» Google, не обычный пароль от почты.'.tr,
+            style: const TextStyle(color: Colors.black54),
+          ),
+          const SizedBox(height: 12),
+          EmailAutocompleteField(
+            controller: _gmailUserCtrl,
+            decoration: InputDecoration(
+              labelText: 'Gmail'.tr,
+              prefixIcon: const Icon(Icons.email, color: Color(0xFFEA4335)),
+              border: const OutlineInputBorder(),
+              filled: true,
+              fillColor: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _gmailPassCtrl,
+            obscureText: true,
+            decoration: InputDecoration(
+              labelText: _gmailSaved
+                  ? 'Новый пароль приложения'.tr
+                  : 'Пароль приложения'.tr,
+              hintText: _gmailSaved ? 'Оставьте пустым, чтобы не менять'.tr : null,
+              prefixIcon: const Icon(Icons.password),
+              border: const OutlineInputBorder(),
+              filled: true,
+              fillColor: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Отслеживание писем'.tr,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Заявки составляются только с этих адресов. Имя переписки — как нить показывается в чате.'.tr,
+            style: const TextStyle(color: Colors.black54),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 5,
+                child: EmailAutocompleteField(
+                  controller: _watchCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: InputDecoration(
+                    labelText: 'Адрес отправителя'.tr,
+                    prefixIcon: const Icon(Icons.mark_email_unread_outlined),
+                    border: const OutlineInputBorder(),
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 4,
+                child: TextField(
+                  controller: _watchNameCtrl,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _addWatcher(),
+                  decoration: InputDecoration(
+                    labelText: 'Имя переписки'.tr,
+                    hintText: 'Например Jobber'.tr,
+                    border: const OutlineInputBorder(),
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                height: 56,
+                child: IconButton.filled(
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFFFCC520),
+                    foregroundColor: Colors.black,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onPressed: _addWatcher,
+                  icon: const Icon(Icons.add),
                 ),
               ),
             ],
           ),
-          Padding(
-            padding: EdgeInsets.fromLTRB(20, 8, 20, 8),
-            child: Text(
-              'GMAIL'.tr,
-              style: TextStyle(
-                color: Colors.grey,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.1,
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: Column(
-              children: [
-                Text(
-                  'Каждое новое письмо проверяется. Если там ремонт бытовой техники — придёт уведомление, и можно создать карточку клиента и встречу. Ответы клиентов на ваши письма попадают в переписку. Пароль — «Пароль приложения» Google, не обычный пароль от почты.'.tr,
-                  style: const TextStyle(color: Colors.black54),
+          if (_watchedSenders.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            for (final sender in _watchedSenders)
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.black12),
                 ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _emailIntakeCtrl,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: InputDecoration(
-                    labelText: 'Заголовок для заявок с почты'.tr,
-                    helperText: 'Если тема содержит эту фразу — письмо сразу идёт как заявка на проверку. Письма про ремонт техники тоже разбираются.'.tr,
-                    helperMaxLines: 2,
-                    prefixIcon: const Icon(Icons.title),
-                    border: const OutlineInputBorder(),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                EmailAutocompleteField(
-                  controller: _gmailUserCtrl,
-                  decoration: InputDecoration(
-                    labelText: 'Gmail'.tr,
-                    prefixIcon: const Icon(Icons.email, color: Color(0xFFEA4335)),
-                    border: const OutlineInputBorder(),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _gmailPassCtrl,
-                  obscureText: true,
-                  decoration: InputDecoration(
-                    labelText: _gmailSaved ? 'Новый пароль приложения'.tr : 'Пароль приложения'.tr,
-                    hintText: _gmailSaved ? 'Оставьте пустым, чтобы не менять'.tr : null,
-                    prefixIcon: const Icon(Icons.password),
-                    border: const OutlineInputBorder(),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Отслеживание писем'.tr,
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Письма с этих адресов попадут в CRM, даже если это не ответ клиенту.'.tr,
-                  style: const TextStyle(color: Colors.black54),
-                ),
-                const SizedBox(height: 12),
-                Row(
+                child: Row(
+                  key: ValueKey('watch-${sender.email}'),
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
-                      child: EmailAutocompleteField(
-                        controller: _watchCtrl,
-                        textInputAction: TextInputAction.done,
-                        onFieldSubmitted: (_) => _addWatcher(),
-                        decoration: InputDecoration(
-                          labelText: 'Добавить адрес отправителя'.tr,
-                          prefixIcon: const Icon(Icons.mark_email_unread_outlined),
-                          border: const OutlineInputBorder(),
-                          filled: true,
-                          fillColor: Colors.white,
+                      flex: 5,
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Text(
+                          sender.email,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
                         ),
                       ),
                     ),
                     const SizedBox(width: 8),
-                    SizedBox(
-                      height: 56,
-                      child: IconButton.filled(
-                        style: IconButton.styleFrom(
-                          backgroundColor: const Color(0xFFFCC520),
-                          foregroundColor: Colors.black,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
+                    Expanded(
+                      flex: 4,
+                      child: TextFormField(
+                        initialValue: sender.name,
+                        onChanged: (value) =>
+                            _setWatcherName(sender.email, value),
+                        decoration: InputDecoration(
+                          labelText: 'Имя переписки'.tr,
+                          isDense: true,
+                          border: const OutlineInputBorder(),
                         ),
-                        onPressed: _addWatcher,
-                        icon: const Icon(Icons.add),
                       ),
+                    ),
+                    IconButton(
+                      tooltip: 'Удалить'.tr,
+                      onPressed: () {
+                        setState(() {
+                          _watchedSenders = [
+                            for (final item in _watchedSenders)
+                              if (item.email != sender.email) item,
+                          ];
+                        });
+                      },
+                      icon: const Icon(Icons.close, color: Colors.red),
                     ),
                   ],
                 ),
-                if (_watchedSenders.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final email in _watchedSenders)
-                        InputChip(
-                          label: Text(email),
-                          onDeleted: () {
-                            setState(() {
-                              _watchedSenders = [
-                                for (final item in _watchedSenders)
-                                  if (item != email) item,
-                              ];
-                            });
-                          },
-                        ),
-                    ],
-                  ),
-                ],
-              ],
-            ),
-          ),
-          SettingsGroup(
-            children: [
-              SettingsRow(
-                title: 'Шаблоны сообщений'.tr,
-                subtitle: 'Все SMS клиенту, всегда English'.tr,
-                icon: Icons.sms_outlined,
-                iconColor: Colors.blue,
-                showDivider: false,
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const MessageTemplatesPage()),
-                  );
-                },
               ),
-            ],
-          ),
+          ],
+          if (_savingGmail)
+            const Padding(
+              padding: EdgeInsets.only(top: 16),
+              child: Center(child: CircularProgressIndicator()),
+            ),
         ],
       ),
     );

@@ -19,19 +19,37 @@ class NotificationService {
   static const _deviceChannel = MethodChannel('fix_appliance/device');
 
   static String inboxTag({required String type, required String from}) {
-    final raw = 'crm_${type}_$from';
-    return raw.length <= 50 ? raw : raw.substring(0, 50);
+    return shadeTag(type: type, from: from);
   }
 
-  static String tagFor(Map<String, String> data) {
-    final existing = (data['tag'] ?? '').trim();
-    if (existing.isNotEmpty) return existing;
-    final type = (data['type'] ?? 'sms').trim();
-    final from = (data['from'] ?? '').trim();
-    final to = (data['to'] ?? '').trim();
-    final callSid = (data['callSid'] ?? data['callId'] ?? '').trim();
-    final messageId = (data['messageId'] ?? '').trim();
-    final jobId = (data['jobId'] ?? '').trim();
+  static String last10(String raw) {
+    final digits = raw.replaceAll(RegExp(r'\D'), '');
+    if (digits.length < 10) return '';
+    return digits.substring(digits.length - 10);
+  }
+
+  /// Один тег на телефон / почту: звонок и заявка с одного номера
+  /// не висят в шторке двумя карточками.
+  static String shadeTag({
+    String type = 'sms',
+    String from = '',
+    String to = '',
+    String callSid = '',
+    String messageId = '',
+    String jobId = '',
+  }) {
+    final phone = last10(from.isNotEmpty ? from : to);
+    if (phone.isNotEmpty) {
+      final tag = 'crm_inbox_$phone';
+      return tag.length <= 50 ? tag : tag.substring(0, 50);
+    }
+    final email = from.contains('@')
+        ? from.trim().toLowerCase()
+        : (to.contains('@') ? to.trim().toLowerCase() : '');
+    if (email.isNotEmpty) {
+      final tag = 'crm_inbox_$email';
+      return tag.length <= 50 ? tag : tag.substring(0, 50);
+    }
     final key = from.isNotEmpty
         ? from
         : (to.isNotEmpty
@@ -41,7 +59,19 @@ class NotificationService {
                 : (messageId.isNotEmpty
                     ? messageId
                     : (jobId.isNotEmpty ? jobId : 'inbox'))));
-    return inboxTag(type: type.isEmpty ? 'sms' : type, from: key);
+    final raw = 'crm_${type.isEmpty ? 'sms' : type}_$key';
+    return raw.length <= 50 ? raw : raw.substring(0, 50);
+  }
+
+  static String tagFor(Map<String, String> data) {
+    return shadeTag(
+      type: (data['type'] ?? 'sms').trim(),
+      from: (data['from'] ?? '').trim(),
+      to: (data['to'] ?? '').trim(),
+      callSid: (data['callSid'] ?? data['callId'] ?? '').trim(),
+      messageId: (data['messageId'] ?? '').trim(),
+      jobId: (data['jobId'] ?? '').trim(),
+    );
   }
 
   static Future<void> initialize() async {
@@ -51,6 +81,7 @@ class NotificationService {
     try {
       await LocalNotificationService.initialize();
       await LocalNotificationService.ensureInboxChannels();
+      unawaited(_startBackgroundGuard());
       unawaited(InboxPushMirror.start());
       _deviceChannel.setMethodCallHandler((call) async {
         if (call.method == 'notificationTap') {
@@ -106,6 +137,15 @@ class NotificationService {
     } catch (e) {
       debugPrint('NotificationService: openBatterySettings: $e');
       return null;
+    }
+  }
+
+  static Future<void> _startBackgroundGuard() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      await _deviceChannel.invokeMethod('startBackgroundGuard');
+    } catch (e) {
+      debugPrint('NotificationService: background guard: $e');
     }
   }
 
@@ -217,11 +257,15 @@ class NotificationService {
     final rawPhone = (phone ?? '').trim();
     if (rawPhone.isNotEmpty) {
       add('sms', rawPhone);
-      final digits = rawPhone.replaceAll(RegExp(r'\D'), '');
-      if (digits.length >= 10) {
-        final last10 = digits.substring(digits.length - 10);
-        add('sms', last10);
-        add('sms', '+1$last10');
+      add('call', rawPhone);
+      add('job', rawPhone);
+      final digits = last10(rawPhone);
+      if (digits.isNotEmpty) {
+        tags.add(shadeTag(from: rawPhone));
+        add('sms', digits);
+        add('sms', '+1$digits');
+        add('call', '+1$digits');
+        add('job', '+1$digits');
         add('sms', '+$digits');
       }
     }
@@ -331,6 +375,9 @@ class NotificationService {
           : isCall
               ? 'Incoming calls and when the secretary answers'
               : 'Incoming SMS and photos from clients',
+      applianceType: (data['applianceType'] ?? '').toString(),
+      clientName: (data['clientName'] ?? '').toString(),
+      city: (data['city'] ?? '').toString(),
       data: {
         'type': type,
         'jobId': (data['jobId'] ?? '').toString(),
@@ -340,6 +387,9 @@ class NotificationService {
         'source': (data['source'] ?? '').toString(),
         'messageId': (data['messageId'] ?? '').toString(),
         'tag': tag,
+        'applianceType': (data['applianceType'] ?? '').toString(),
+        'clientName': (data['clientName'] ?? '').toString(),
+        'city': (data['city'] ?? '').toString(),
       },
     );
   }
@@ -347,8 +397,8 @@ class NotificationService {
   static Future<void> _askUnrestrictedBatteryOnce() async {
     if (defaultTargetPlatform != TargetPlatform.android) return;
     final prefs = await SharedPreferences.getInstance();
-    if (prefs.getBool('asked_ignore_battery') == true) return;
-    await prefs.setBool('asked_ignore_battery', true);
+    if (prefs.getBool('asked_ignore_battery_v2') == true) return;
+    await prefs.setBool('asked_ignore_battery_v2', true);
     try {
       await _deviceChannel.invokeMethod('requestIgnoreBatteryOptimizations');
     } catch (e) {

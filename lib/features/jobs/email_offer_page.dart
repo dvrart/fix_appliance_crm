@@ -45,12 +45,19 @@ class EmailOfferPage {
     final extracted = loaded.extractedData != null && loaded.extractedData!.isNotEmpty
         ? ExtractedJobData.fromJson(loaded.extractedData!)
         : ExtractedJobData(
-            clientEmail: loaded.counterpartEmail,
+            clientEmail: loaded.isWebsiteFormMail
+                ? (loaded.replyToEmail.contains('@') ? loaded.replyToEmail : null)
+                : loaded.counterpartEmail,
             problemDescription: loaded.body,
           );
-    final from = loaded.counterpartEmail.isNotEmpty
-        ? loaded.counterpartEmail
-        : loaded.from;
+    final website = loaded.isWebsiteFormMail;
+    final from = website
+        ? (loaded.replyToEmail.contains('@')
+            ? loaded.replyToEmail
+            : (extracted.clientEmail ?? ''))
+        : (loaded.counterpartEmail.isNotEmpty
+            ? loaded.counterpartEmail
+            : loaded.from);
     await Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute(
         builder: (_) => JobPreviewScreen(
@@ -60,7 +67,7 @@ class EmailOfferPage {
             loaded.body.trim(),
           ].where((line) => line.isNotEmpty).join('\n\n'),
           fallbackEmail: from.contains('@') ? from : extracted.clientEmail,
-          existingClientId: loaded.clientId,
+          existingClientId: website ? null : loaded.clientId,
           sourceMessageId: loaded.id,
           sourceEmailFrom: from,
           sourceEmailSubject: loaded.subject,

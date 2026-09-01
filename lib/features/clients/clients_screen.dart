@@ -2,7 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../../core/app_commands.dart';
+import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../shared/widgets/confirm_action_sheet.dart';
+import '../../shared/widgets/unsaved_changes_dialog.dart';
 import '../../core/ui_scale.dart';
 import '../../models/client.dart';
 import '../../services/catalog_service.dart';
@@ -13,9 +17,11 @@ import 'client_details_screen.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../services/import_export_service.dart';
 import '../../services/client_service.dart';
+import '../../services/network_status_service.dart';
 import '../../shared/widgets/alphabet_index_bar.dart';
 import '../../shared/widgets/animated_app_logo.dart';
 import '../../shared/widgets/email_field.dart';
+import '../../shared/widgets/selection_action_bar.dart';
 import 'clients_map_screen.dart';
 import 'clients_duplicates_screen.dart';
 
@@ -29,12 +35,39 @@ class ClientsScreen extends StatefulWidget {
 class _ClientsScreenState extends State<ClientsScreen> {
   String _searchQuery = '';
   String _sortMethod = 'Имя (А-Я)';
-  bool _selecting = false;
-  final Set<String> _selectedIds = {};
+  final ValueNotifier<Set<String>?> _selected = ValueNotifier<Set<String>?>(null);
   List<String> _visibleIds = [];
   List<Map<String, dynamic>> _latestClients = [];
 
   final ScrollController _scrollController = ScrollController();
+  late final Stream<QuerySnapshot> _clientsStream;
+  late final bool Function() _dismissSelection;
+
+  @override
+  void initState() {
+    super.initState();
+    _clientsStream = FirebaseFirestore.instance
+        .collection('companies')
+        .doc(kCompanyId)
+        .collection('clients')
+        .snapshots();
+    _dismissSelection = () {
+      if (_selected.value == null) return false;
+      _exitSelect();
+      return true;
+    };
+    AppCommands.addSelectionGuard(_dismissSelection);
+  }
+
+  @override
+  void dispose() {
+    AppCommands.removeSelectionGuard(_dismissSelection);
+    _selected.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _setSelected(Set<String>? next) => _selected.value = next;
 
   void _openMap() {
     Navigator.of(context, rootNavigator: true).push(
@@ -43,40 +76,33 @@ class _ClientsScreenState extends State<ClientsScreen> {
   }
 
   void _enterSelect({String? id, bool all = false}) {
-    setState(() {
-      _selecting = true;
-      if (all) {
-        _selectedIds
-          ..clear()
-          ..addAll(_visibleIds);
-      } else if (id != null) {
-        _selectedIds.add(id);
-      }
-    });
+    if (all) {
+      _setSelected({..._visibleIds});
+      return;
+    }
+    final current = Set<String>.from(_selected.value ?? {});
+    if (id != null) current.add(id);
+    _setSelected(current);
   }
 
-  void _exitSelect() {
-    setState(() {
-      _selecting = false;
-      _selectedIds.clear();
-    });
-  }
+  void _exitSelect() => _setSelected(null);
 
   void _toggleSelect(String id) {
-    setState(() {
-      if (!_selectedIds.add(id)) _selectedIds.remove(id);
-    });
+    final next = Set<String>.from(_selected.value ?? {});
+    if (!next.add(id)) next.remove(id);
+    _setSelected(next);
   }
 
   Future<void> _deleteSelected() async {
-    if (_selectedIds.isEmpty) return;
+    final ids = _selected.value;
+    if (ids == null || ids.isEmpty) return;
     final confirm = await showDialog<bool>(
       context: context,
       useRootNavigator: true,
       builder: (context) => AlertDialog(
         title: Text('Удалить клиентов?'.tr),
         content: Text(
-          '${_selectedIds.length} ${'выбрано'.tr}\n\n${'Карточки будут удалены. Заявки в календаре останутся.'.tr}',
+          '${ids.length} ${'выбрано'.tr}\n\n${'Карточки будут удалены. Заявки в календаре останутся.'.tr}',
         ),
         actions: [
           TextButton(
@@ -95,16 +121,9 @@ class _ClientsScreenState extends State<ClientsScreen> {
       ),
     );
     if (confirm != true) return;
-    final messenger = ScaffoldMessenger.of(context);
-    await ClientService.deleteMany(_selectedIds);
+    await ClientService.deleteMany(ids);
     if (!mounted) return;
     _exitSelect();
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text('Клиенты удалены'.tr),
-        backgroundColor: Colors.red,
-      ),
-    );
   }
 
   void _openDuplicates() {
@@ -129,9 +148,23 @@ class _ClientsScreenState extends State<ClientsScreen> {
     var phoneMatches = <Client>[];
     var phoneSearching = false;
 
+    bool isDirty() {
+      return nameCtrl.text.trim().isNotEmpty ||
+          phoneCtrl.text.trim().isNotEmpty ||
+          streetCtrl.text.trim().isNotEmpty ||
+          cityCtrl.text.trim().isNotEmpty ||
+          postalCtrl.text.trim().isNotEmpty ||
+          companyCtrl.text.trim().isNotEmpty ||
+          emailCtrl.text.trim().isNotEmpty ||
+          notesCtrl.text.trim().isNotEmpty ||
+          source.trim().isNotEmpty;
+    }
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      isDismissible: false,
+      enableDrag: false,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -139,90 +172,184 @@ class _ClientsScreenState extends State<ClientsScreen> {
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (builderContext, setSheetState) {
-            return KeyboardAvoidingSheet(
+            Future<bool> saveClient() async {
+              if (nameCtrl.text.trim().isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Укажите имя клиента'.tr),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                return false;
+              }
+              final phone = phoneCtrl.text.trim();
+              final existing = phone.isEmpty
+                  ? const <Client>[]
+                  : (phoneMatches.isNotEmpty
+                      ? phoneMatches
+                      : await ClientService.searchByPhone(phone));
+              if (existing.isNotEmpty) {
+                final client = existing.first;
+                final open = await showDialog<bool>(
+                  context: context,
+                  useRootNavigator: true,
+                  builder: (context) => AlertDialog(
+                    title: Text('Клиент с этим номером уже есть'.tr),
+                    content: Text(
+                      '${client.fullName.isEmpty ? 'Без имени'.tr : client.fullName}\n${client.phone}\n\n${'Открыть карточку?'.tr}',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: Text('Отмена'.tr),
+                      ),
+                      ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: Text('Открыть'.tr),
+                      ),
+                    ],
+                  ),
+                );
+                if (open == true && context.mounted) {
+                  if (sheetContext.mounted) Navigator.pop(sheetContext);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ClientDetailsScreen(
+                        clientId: client.id,
+                        clientData: client.toUiMap(),
+                      ),
+                    ),
+                  );
+                }
+                return false;
+              }
+              final fullAddress =
+                  '${streetCtrl.text}, ${cityCtrl.text}, ${postalCtrl.text}';
+              await settleWrite(
+                FirebaseFirestore.instance
+                    .collection('companies')
+                    .doc(kCompanyId)
+                    .collection('clients')
+                    .doc()
+                    .set({
+                      'name': nameCtrl.text.trim(),
+                      'fullName': nameCtrl.text.trim(),
+                      'phone': phone,
+                      'address': fullAddress.trim(),
+                      'company': companyCtrl.text.trim(),
+                      'companyName': companyCtrl.text.trim(),
+                      'email': emailCtrl.text.trim(),
+                      'notes': notesCtrl.text.trim(),
+                      'source': source,
+                      'createdAt': FieldValue.serverTimestamp(),
+                      'lastActiveAt': FieldValue.serverTimestamp(),
+                    }),
+              );
+              ClientService.invalidateCache();
+              AppCommands.reactHappy();
+              if (sheetContext.mounted) Navigator.pop(sheetContext);
+              return true;
+            }
+
+            Future<void> requestClose() async {
+              if (!isDirty()) {
+                if (sheetContext.mounted) Navigator.pop(sheetContext);
+                return;
+              }
+              final action = await showUnsavedChangesDialog(
+                sheetContext,
+                title: 'Сохранить клиента?'.tr,
+              );
+              if (!sheetContext.mounted) return;
+              if (action == UnsavedChangesAction.save) {
+                await saveClient();
+              } else if (action == UnsavedChangesAction.discard) {
+                Navigator.pop(sheetContext);
+              }
+            }
+
+            return PopScope(
+              canPop: false,
+              onPopInvokedWithResult: (didPop, result) {
+                if (!didPop) requestClose();
+              },
+              child: KeyboardAvoidingSheet(
               padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Заголовок
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Новый клиент'.tr,
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.primary,
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close),
-                          onPressed: () => Navigator.pop(sheetContext),
-                        ),
-                      ],
+                    Text(
+                      'Новый клиент'.tr,
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.primary,
+                      ),
                     ),
                     const SizedBox(height: 16),
 
-                    // Форма
-                    Expanded(
-                      child: SingleChildScrollView(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                    TextField(
+                      controller: nameCtrl,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: InputDecoration(
+                        labelText: 'Имя / Контактное лицо'.tr,
+                        helperText: 'Имя на английском'.tr,
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.person),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: phoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      decoration: InputDecoration(
+                        labelText: 'Телефон'.tr,
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.phone),
+                        suffixIcon: phoneSearching
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              )
+                            : null,
+                      ),
+                      onChanged: (value) {
+                        phoneDebounce?.cancel();
+                        final digits = ClientService.normalizePhone(value);
+                        if (digits.length < 7) {
+                          setSheetState(() {
+                            phoneMatches = [];
+                            phoneSearching = false;
+                          });
+                          return;
+                        }
+                        setSheetState(() => phoneSearching = true);
+                        phoneDebounce = Timer(
+                          const Duration(milliseconds: 350),
+                          () async {
+                            final found =
+                                await ClientService.searchByPhone(value);
+                            if (!sheetContext.mounted) return;
+                            setSheetState(() {
+                              phoneMatches = found;
+                              phoneSearching = false;
+                            });
+                          },
+                        );
+                      },
+                    ),
+                    if (phoneMatches.isNotEmpty)
+                      Expanded(
+                        child: ListView(
+                          keyboardDismissBehavior:
+                              ScrollViewKeyboardDismissBehavior.onDrag,
                           children: [
-                            TextField(
-                              controller: nameCtrl,
-                              textCapitalization: TextCapitalization.words,
-                              decoration: InputDecoration(
-                                labelText: 'Имя / Контактное лицо'.tr,
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.person),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: phoneCtrl,
-                              keyboardType: TextInputType.phone,
-                              decoration: InputDecoration(
-                                labelText: 'Телефон'.tr,
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.phone),
-                                suffixIcon: phoneSearching
-                                    ? const Padding(
-                                        padding: EdgeInsets.all(12),
-                                        child: SizedBox(
-                                          width: 18,
-                                          height: 18,
-                                          child: CircularProgressIndicator(strokeWidth: 2),
-                                        ),
-                                      )
-                                    : null,
-                              ),
-                              onChanged: (value) {
-                                phoneDebounce?.cancel();
-                                final digits = ClientService.normalizePhone(value);
-                                if (digits.length < 7) {
-                                  setSheetState(() {
-                                    phoneMatches = [];
-                                    phoneSearching = false;
-                                  });
-                                  return;
-                                }
-                                setSheetState(() => phoneSearching = true);
-                                phoneDebounce = Timer(
-                                  const Duration(milliseconds: 350),
-                                  () async {
-                                    final found =
-                                        await ClientService.searchByPhone(value);
-                                    if (!sheetContext.mounted) return;
-                                    setSheetState(() {
-                                      phoneMatches = found;
-                                      phoneSearching = false;
-                                    });
-                                  },
-                                );
-                              },
-                            ),
                             PhoneClientMatches(
                               clients: phoneMatches,
                               onSelect: (client) {
@@ -239,6 +366,15 @@ class _ClientsScreenState extends State<ClientsScreen> {
                                 );
                               },
                             ),
+                          ],
+                        ),
+                      )
+                    else
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
                             const SizedBox(height: 16),
 
                             // --- УМНЫЙ ПОИСК АДРЕСА (как в create_job_screen) ---
@@ -365,106 +501,149 @@ class _ClientsScreenState extends State<ClientsScreen> {
                       ),
                     ),
 
-                    // Кнопка создания
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: () async {
-                          if (nameCtrl.text.trim().isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Укажите имя клиента'.tr),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
-                            return;
-                          }
-                          final phone = phoneCtrl.text.trim();
-                          final existing = phone.isEmpty
-                              ? const <Client>[]
-                              : (phoneMatches.isNotEmpty
-                                  ? phoneMatches
-                                  : await ClientService.searchByPhone(phone));
-                          if (existing.isNotEmpty) {
-                            final client = existing.first;
-                            final open = await showDialog<bool>(
-                              context: context,
-                              useRootNavigator: true,
-                              builder: (context) => AlertDialog(
-                                title: Text('Клиент с этим номером уже есть'.tr),
-                                content: Text(
-                                  '${client.fullName.isEmpty ? 'Без имени'.tr : client.fullName}\n${client.phone}\n\n${'Открыть карточку?'.tr}',
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context, false),
-                                    child: Text('Отмена'.tr),
-                                  ),
-                                  ElevatedButton(
-                                    onPressed: () => Navigator.pop(context, true),
-                                    child: Text('Открыть'.tr),
-                                  ),
-                                ],
-                              ),
-                            );
-                            if (open == true && context.mounted) {
-                              if (sheetContext.mounted) Navigator.pop(sheetContext);
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => ClientDetailsScreen(
-                                    clientId: client.id,
-                                    clientData: client.toUiMap(),
-                                  ),
-                                ),
-                              );
-                            }
-                            return;
-                          }
-                          final fullAddress =
-                              '${streetCtrl.text}, ${cityCtrl.text}, ${postalCtrl.text}';
-                          await FirebaseFirestore.instance
-                              .collection('companies')
-                              .doc(kCompanyId)
-                              .collection('clients')
-                              .add({
-                                'name': nameCtrl.text.trim(),
-                                'fullName': nameCtrl.text.trim(),
-                                'phone': phone,
-                                'address': fullAddress.trim(),
-                                'company': companyCtrl.text.trim(),
-                                'companyName': companyCtrl.text.trim(),
-                                'email': emailCtrl.text.trim(),
-                                'notes': notesCtrl.text.trim(),
-                                'source': source,
-                                'createdAt': FieldValue.serverTimestamp(),
-                                'lastActiveAt': FieldValue.serverTimestamp(),
-                              });
-                          ClientService.invalidateCache();
-                          if (sheetContext.mounted) Navigator.pop(sheetContext);
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFFCC520),
-                          foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          RoundActionButton(
+                            color: const Color(0xFF22C55E),
+                            icon: Icons.check_rounded,
+                            tooltip: 'Сохранить'.tr,
+                            size: 72,
+                            onTap: () => saveClient(),
                           ),
-                        ),
-                        child: Text(
-                          'СОЗДАТЬ КЛИЕНТА'.tr,
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                        ),
+                          RoundActionButton(
+                            color: const Color(0xFFE53935),
+                            icon: Icons.close_rounded,
+                            tooltip: 'Удалить'.tr,
+                            size: 72,
+                            onTap: requestClose,
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 16),
                   ],
                 ),
+            ),
             );
           },
         );
       },
     ).whenComplete(() => phoneDebounce?.cancel());
+  }
+
+  Widget _buildClientTile(
+    Map<String, dynamic> data,
+    bool selected,
+    bool selecting,
+  ) {
+    final name = (data['display_name'] as String?) ?? 'Без имени';
+    final company = (data['company'] as String?) ?? '';
+    final phone = ((data['phone'] as String?) ?? '').trim().isEmpty
+        ? 'Нет телефона'.tr
+        : (data['phone'] as String).trim();
+    final avatar = CircleAvatar(
+      backgroundColor: Colors.blue.shade50,
+      child: Text(
+        name != 'Без имени' ? name[0].toUpperCase() : '?',
+        style: TextStyle(
+          color: AppColors.primary,
+          fontWeight: FontWeight.bold,
+          fontSize: 18,
+        ),
+      ),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: selected ? const Color(0xFFE8EEF4) : Colors.white,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: selected ? AppColors.primary : const Color(0xFFBBDEFB),
+            width: selected ? 2 : 1,
+          ),
+        ),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onLongPress: () {
+            if (!selecting) _enterSelect(id: data['id'] as String);
+          },
+          onTap: () {
+            if (selecting) {
+              _toggleSelect(data['id'] as String);
+              return;
+            }
+            AppFeedback.pleasant();
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => ClientDetailsScreen(
+                  clientId: data['id'],
+                  clientData: data,
+                ),
+              ),
+            );
+          },
+          child: SizedBox(
+            height: 72,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        avatar,
+                        Positioned(
+                          left: -10,
+                          top: -8,
+                          child: Opacity(
+                            opacity: selecting ? 1 : 0,
+                            child: SelectCheckbox(selected: selected),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          name == 'Без имени' ? 'Без имени'.tr : name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        Text(
+                          company.isNotEmpty ? '$company • $phone' : phone,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: Colors.grey.shade600),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right, color: Colors.grey),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   // --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ ПОИСКА ИМЕНИ ---
@@ -490,34 +669,46 @@ class _ClientsScreenState extends State<ClientsScreen> {
       builder: (context, _) {
         return Scaffold(
       backgroundColor: Colors.grey.shade100,
-      floatingActionButton: _selecting
-          ? null
-          : FloatingActionButton(
-              heroTag: 'clients-add',
-              backgroundColor: AppColors.accent,
-              foregroundColor: AppColors.primary,
-              elevation: 4,
-              onPressed: _showAddClientDialog,
-              child: const Icon(Icons.add, size: 34),
-            ),
+      floatingActionButton: ValueListenableBuilder<Set<String>?>(
+        valueListenable: _selected,
+        builder: (context, selected, _) {
+          if (selected != null) return const SizedBox.shrink();
+          return FloatingActionButton(
+            heroTag: 'clients-add',
+            backgroundColor: AppColors.accent,
+            foregroundColor: AppColors.primary,
+            elevation: 4,
+            onPressed: _showAddClientDialog,
+            child: const Icon(Icons.add, size: 34),
+          );
+        },
+      ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
-        toolbarHeight: 48,
+        toolbarHeight: 44,
         elevation: 0,
         scrolledUnderElevation: 0,
         automaticallyImplyLeading: false,
-        leading: _selecting
-            ? IconButton(
-                icon: const Icon(Icons.close),
-                tooltip: 'Отмена'.tr,
-                onPressed: _exitSelect,
-              )
-            : null,
-        title: _selecting
-            ? Text('${_selectedIds.length} ${'выбрано'.tr}')
-            : Align(
+        leading: ValueListenableBuilder<Set<String>?>(
+          valueListenable: _selected,
+          builder: (context, selected, _) {
+            if (selected == null) return const SizedBox.shrink();
+            return IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Отмена'.tr,
+              onPressed: _exitSelect,
+            );
+          },
+        ),
+        title: ValueListenableBuilder<Set<String>?>(
+          valueListenable: _selected,
+          builder: (context, selected, _) {
+            if (selected != null) {
+              return Text('${selected.length} ${'выбрано'.tr}');
+            }
+            return Align(
                 alignment: Alignment.centerLeft,
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
@@ -547,27 +738,40 @@ class _ClientsScreenState extends State<ClientsScreen> {
                     },
                   ),
                 ),
-              ),
-        actions: _selecting
-            ? [
-                IconButton(
-                  tooltip: 'Выбрать все'.tr,
-                  onPressed: () {
-                    setState(() {
-                      _selectedIds
-                        ..clear()
-                        ..addAll(_visibleIds);
-                    });
-                  },
-                  icon: const Icon(Icons.select_all),
-                ),
-                IconButton(
-                  tooltip: 'Удалить'.tr,
-                  onPressed: _selectedIds.isEmpty ? null : _deleteSelected,
-                  icon: const Icon(Icons.delete_outline),
-                ),
-              ]
-            : [
+              );
+          },
+        ),
+        actions: [
+          ValueListenableBuilder<Set<String>?>(
+            valueListenable: _selected,
+            builder: (context, selected, _) {
+              if (selected == null) {
+                return const SizedBox.shrink();
+              }
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Выбрать все'.tr,
+                    onPressed: () => _enterSelect(all: true),
+                    icon: const Icon(Icons.select_all),
+                  ),
+                  IconButton(
+                    tooltip: 'Удалить'.tr,
+                    onPressed: selected.isEmpty ? null : _deleteSelected,
+                    icon: const Icon(Icons.delete_outline),
+                  ),
+                ],
+              );
+            },
+          ),
+          ValueListenableBuilder<Set<String>?>(
+            valueListenable: _selected,
+            builder: (context, selected, _) {
+              if (selected != null) return const SizedBox.shrink();
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
           IconButton(
             tooltip: 'Клиенты на карте'.tr,
             padding: EdgeInsets.zero,
@@ -620,12 +824,10 @@ class _ClientsScreenState extends State<ClientsScreen> {
               ),
             ],
           ),
-          IconButton(
-            icon: const Icon(Icons.add, color: Colors.white, size: 28),
-            tooltip: 'Добавить клиента'.tr,
-            onPressed: _showAddClientDialog,
+                ],
+              );
+            },
           ),
-          const SizedBox(width: 8),
         ],
       ),
       body: Column(
@@ -663,13 +865,10 @@ class _ClientsScreenState extends State<ClientsScreen> {
 
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('companies')
-                  .doc(kCompanyId)
-                  .collection('clients')
-                  .snapshots(),
+              stream: _clientsStream,
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
+                if (!snapshot.hasData &&
+                    snapshot.connectionState == ConnectionState.waiting) {
                   return const AppLoading();
                 }
                 if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
@@ -750,6 +949,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                   clipBehavior: Clip.none,
                   children: [
                     ListView.builder(
+                      key: const PageStorageKey('clients-list'),
                       controller: _scrollController,
                       padding: const EdgeInsets.only(
                         left: 16,
@@ -760,94 +960,16 @@ class _ClientsScreenState extends State<ClientsScreen> {
                       itemExtent: 80.0,
                       itemBuilder: (context, index) {
                         final data = clients[index];
-                        final name = (data['display_name'] as String?) ?? 'Без имени';
-                        final company = (data['company'] as String?) ?? '';
-                        final phone = ((data['phone'] as String?) ?? '').trim().isEmpty
-                            ? 'Нет телефона'.tr
-                            : (data['phone'] as String).trim();
-
-                        return Container(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Card(
-                            elevation: 0,
-                            margin: EdgeInsets.zero,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              side: BorderSide(
-                                color: _selecting &&
-                                        _selectedIds.contains(data['id'])
-                                    ? AppColors.primary
-                                    : const Color(0xFFBBDEFB),
-                                width: _selecting &&
-                                        _selectedIds.contains(data['id'])
-                                    ? 2
-                                    : 1,
-                              ),
-                            ),
-                            child: ListTile(
-                              leading: _selecting
-                                  ? Checkbox(
-                                      value: _selectedIds.contains(data['id']),
-                                      activeColor: AppColors.primary,
-                                      onChanged: (_) =>
-                                          _toggleSelect(data['id'] as String),
-                                    )
-                                  : CircleAvatar(
-                                backgroundColor: Colors.blue.shade50,
-                                child: Text(
-                                  name != 'Без имени'
-                                      ? name[0].toUpperCase()
-                                      : '?',
-                                  style: TextStyle(
-                                    color: AppColors.primary,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 18,
-                                  ),
-                                ),
-                              ),
-                              title: Text(
-                                name == 'Без имени' ? 'Без имени'.tr : name,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
-                              subtitle: Text(
-                                company.isNotEmpty
-                                    ? '$company • $phone'
-                                    : phone,
-                                style: TextStyle(color: Colors.grey.shade600),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              trailing: _selecting
-                                  ? null
-                                  : const Icon(
-                                      Icons.chevron_right,
-                                      color: Colors.grey,
-                                    ),
-                              onLongPress: () {
-                                if (!_selecting) {
-                                  _enterSelect(id: data['id'] as String);
-                                }
-                              },
-                              onTap: () {
-                                if (_selecting) {
-                                  _toggleSelect(data['id'] as String);
-                                  return;
-                                }
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => ClientDetailsScreen(
-                                      clientId: data['id'],
-                                      clientData: data,
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
+                        return ValueListenableBuilder<Set<String>?>(
+                          key: ValueKey(data['id']),
+                          valueListenable: _selected,
+                          builder: (context, selected, _) {
+                            return _buildClientTile(
+                              data,
+                              selected?.contains(data['id']) ?? false,
+                              selected != null,
+                            );
+                          },
                         );
                       },
                     ),

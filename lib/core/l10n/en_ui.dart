@@ -1644,4 +1644,7 @@ const Map<String, String> kEnglishUi = {
   'Удалить мероприятие?': 'Delete this event?',
   'Добавить в календарь': 'Add to calendar',
   'Текст, время и фото': 'Text, time and photo',
+  'Срочно': 'Urgent',
+  'Не сильно срочно': 'Not very urgent',
+  'Вообще не срочно': 'Not urgent',
 };

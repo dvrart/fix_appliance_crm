@@ -1,8 +1,7 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import 'call_screen.dart';
 import '../../core/l10n/app_locale.dart';
@@ -12,6 +11,7 @@ class DialPadScreen extends StatefulWidget {
   const DialPadScreen({super.key});
 
   static Future<void> open(BuildContext context) {
+    AppFeedback.pleasant();
     return Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute(builder: (_) => const DialPadScreen()),
     );
@@ -22,6 +22,8 @@ class DialPadScreen extends StatefulWidget {
 }
 
 class _DialPadScreenState extends State<DialPadScreen> {
+  static const _callGreen = Color(0xFF25D366);
+
   String _digits = '';
   bool _callPressed = false;
   bool _calling = false;
@@ -75,6 +77,7 @@ class _DialPadScreenState extends State<DialPadScreen> {
     final digits = _digits.replaceAll(RegExp(r'[^\d+]'), '');
     if (digits.replaceAll('+', '').length < 10) return;
     HapticFeedback.mediumImpact();
+    if (_calling) return;
     setState(() {
       _callPressed = true;
       _calling = true;
@@ -106,132 +109,113 @@ class _DialPadScreenState extends State<DialPadScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            const Spacer(),
+            const Spacer(flex: 3),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: GestureDetector(
-                onLongPress: _paste,
-                onDoubleTap: _paste,
-                child: Container(
-                  width: double.infinity,
-                  constraints: const BoxConstraints(minHeight: 72),
-                  alignment: Alignment.center,
-                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                  child: Column(
-                    children: [
-                      Text(
-                        _display.isEmpty ? 'Введите номер'.tr : _display,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: _display.isEmpty ? Colors.white54 : Colors.white,
-                          fontSize: _display.isEmpty ? 22 : 32,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 1,
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+              child: Row(
+                children: [
+                  Listener(
+                    behavior: HitTestBehavior.opaque,
+                    onPointerDown: canCall && !_calling ? (_) => _call() : null,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 320),
+                      curve: Curves.easeOutCubic,
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        color: !canCall
+                            ? Colors.white24
+                            : callLit
+                                ? const Color(0xFF1DB954)
+                                : _callGreen,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.call,
+                        color: canCall ? Colors.white : const Color(0xFFB9F6CA),
+                        size: 24,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: _paste,
+                      onLongPress: _paste,
+                      onDoubleTap: _paste,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        child: Text(
+                          _display.isEmpty ? 'Вставить номер'.tr : _display,
+                          textAlign: TextAlign.center,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _display.isEmpty ? Colors.white54 : Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.8,
+                            height: 1.1,
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 6),
-                      Text(
-                        'Зажмите, чтобы вставить'.tr,
-                        style: const TextStyle(color: Colors.white54, fontSize: 12),
-                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 56,
+                    height: 56,
+                    child: _digits.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Стереть'.tr,
+                            onPressed: _backspace,
+                            onLongPress: () => setState(() => _digits = ''),
+                            icon: const Icon(
+                              Icons.backspace_outlined,
+                              color: Colors.white,
+                              size: 24,
+                            ),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 280),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+                  child: Column(
+                    children: [
+                      for (final row in const [
+                        ['1', '2', '3'],
+                        ['4', '5', '6'],
+                        ['7', '8', '9'],
+                        ['*', '0', '#'],
+                      ])
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            children: [
+                              for (var i = 0; i < row.length; i++) ...[
+                                if (i > 0) const SizedBox(width: 8),
+                                Expanded(
+                                  child: _Key(
+                                    label: row[i],
+                                    onTap: () => _append(row[i]),
+                                    onLongPress:
+                                        row[i] == '0' ? () => _append('+') : null,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
                     ],
                   ),
                 ),
               ),
             ),
-            const SizedBox(height: 28),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28),
-              child: Column(
-                children: [
-                  for (final row in const [
-                    ['1', '2', '3'],
-                    ['4', '5', '6'],
-                    ['7', '8', '9'],
-                    ['*', '0', '#'],
-                  ])
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          for (final key in row)
-                            _Key(
-                              label: key,
-                              subtitle: key == '0' ? '+' : null,
-                              onTap: () => _append(key),
-                              onLongPress: key == '0' ? () => _append('+') : null,
-                            ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                SizedBox(
-                  width: 84,
-                  height: 84,
-                  child: IconButton(
-                    tooltip: 'Вставить номер'.tr,
-                    onPressed: _paste,
-                    icon: const Icon(Icons.content_paste, color: Colors.white70, size: 26),
-                  ),
-                ),
-                Listener(
-                  onPointerDown: canCall
-                      ? (_) => setState(() => _callPressed = true)
-                      : null,
-                  onPointerUp: (_) => setState(() => _callPressed = _calling),
-                  onPointerCancel: (_) => setState(() => _callPressed = _calling),
-                  child: GestureDetector(
-                    onTap: canCall ? _call : null,
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 90),
-                      width: 78,
-                      height: 78,
-                      decoration: BoxDecoration(
-                        color: !canCall
-                            ? Colors.white24
-                            : callLit
-                                ? const Color(0xFF2E7D32)
-                                : Colors.white.withValues(alpha: 0.18),
-                        shape: BoxShape.circle,
-                        boxShadow: callLit
-                            ? [
-                                BoxShadow(
-                                  color: const Color(0xFF2E7D32).withValues(alpha: 0.55),
-                                  blurRadius: 22,
-                                  offset: const Offset(0, 8),
-                                ),
-                              ]
-                            : null,
-                      ),
-                      child: Icon(
-                        Icons.call,
-                        color: callLit ? Colors.white : Colors.white70,
-                        size: 32,
-                      ),
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  width: 84,
-                  height: 84,
-                  child: _digits.isEmpty
-                      ? null
-                      : IconButton(
-                          onPressed: _backspace,
-                          onLongPress: () => setState(() => _digits = ''),
-                          icon: const Icon(Icons.backspace_outlined, color: Colors.white, size: 28),
-                        ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 28),
+            const SizedBox(height: 20),
           ],
         ),
       ),
@@ -241,14 +225,12 @@ class _DialPadScreenState extends State<DialPadScreen> {
 
 class _Key extends StatefulWidget {
   final String label;
-  final String? subtitle;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
 
   const _Key({
     required this.label,
     required this.onTap,
-    this.subtitle,
     this.onLongPress,
   });
 
@@ -256,71 +238,80 @@ class _Key extends StatefulWidget {
   State<_Key> createState() => _KeyState();
 }
 
-class _KeyState extends State<_Key> {
-  bool _pressed = false;
-  Timer? _linger;
+class _KeyState extends State<_Key> with SingleTickerProviderStateMixin {
+  late final AnimationController _glow;
+
+  @override
+  void initState() {
+    super.initState();
+    _glow = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 780),
+    );
+  }
 
   @override
   void dispose() {
-    _linger?.cancel();
+    _glow.dispose();
     super.dispose();
   }
 
-  void _setPressed(bool value) {
-    _linger?.cancel();
-    if (!mounted) return;
-    setState(() => _pressed = value);
+  void _light() {
+    _glow
+      ..stop()
+      ..value = 1;
   }
 
-  void _flashOff() {
-    _linger?.cancel();
-    _linger = Timer(const Duration(milliseconds: 140), () {
-      if (mounted) setState(() => _pressed = false);
-    });
+  void _fadeOut() {
+    _glow.animateTo(
+      0,
+      duration: const Duration(milliseconds: 780),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final yellow = AppColors.accent;
+    const idle = Color(0x1FFFFFFF);
+    const shape = StadiumBorder();
     return Listener(
-      onPointerDown: (_) => _setPressed(true),
-      onPointerUp: (_) => _flashOff(),
-      onPointerCancel: (_) => _setPressed(false),
-      child: Material(
-        color: _pressed ? yellow : Colors.white.withValues(alpha: 0.12),
-        shape: const CircleBorder(),
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          splashColor: yellow.withValues(alpha: 0.65),
-          highlightColor: yellow,
-          onTap: widget.onTap,
-          onLongPress: widget.onLongPress,
-          child: SizedBox(
-            width: 84,
-            height: 84,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  widget.label,
-                  style: TextStyle(
-                    color: _pressed ? Colors.black : Colors.white,
-                    fontSize: 30,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (widget.subtitle != null)
-                  Text(
-                    widget.subtitle!,
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (_) {
+        _light();
+        if (widget.onLongPress == null) widget.onTap();
+      },
+      onPointerUp: (_) => _fadeOut(),
+      onPointerCancel: (_) => _fadeOut(),
+      child: AnimatedBuilder(
+        animation: _glow,
+        builder: (context, _) {
+          final t = _glow.value;
+          return Material(
+            color: Color.lerp(idle, yellow, t),
+            shape: shape,
+            child: InkWell(
+              customBorder: shape,
+              splashColor: Colors.transparent,
+              highlightColor: Colors.transparent,
+              onTap: widget.onLongPress == null ? () {} : widget.onTap,
+              onLongPress: widget.onLongPress,
+              child: SizedBox(
+                height: 48,
+                child: Center(
+                  child: Text(
+                    widget.label,
                     style: TextStyle(
-                      color: _pressed ? Colors.black54 : Colors.white54,
-                      fontSize: 12,
+                      color: Color.lerp(Colors.white, Colors.black, t),
+                      fontSize: 22,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
-              ],
+                ),
+              ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }
