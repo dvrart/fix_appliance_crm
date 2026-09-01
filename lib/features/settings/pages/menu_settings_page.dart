@@ -18,7 +18,9 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
   bool _warehouse = true;
   bool _statistics = true;
   bool _reports = true;
+  bool _expenses = true;
   bool _invoices = true;
+  bool _trash = true;
 
   @override
   void initState() {
@@ -34,8 +36,10 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
       _warehouse = SettingsService.menuFlag(data, 'menuShowWarehouse');
       _statistics = SettingsService.menuFlag(data, 'menuShowStatistics');
       _reports = SettingsService.menuFlag(data, 'menuShowReports');
+      _expenses = SettingsService.menuFlag(data, 'menuShowExpenses');
       _invoices = SettingsService.menuFlag(data, 'menuShowInvoices') ||
           SettingsService.menuFlag(data, 'menuShowEstimates');
+      _trash = SettingsService.menuFlag(data, 'menuShowTrash');
       _loading = false;
     });
   }
@@ -87,6 +91,16 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
                       },
                     ),
                     _flag(
+                      'Расходы'.tr,
+                      Icons.receipt_long_outlined,
+                      Colors.deepOrange,
+                      _expenses,
+                      (v) {
+                        setState(() => _expenses = v);
+                        SettingsService.updateConfig('menuShowExpenses', v);
+                      },
+                    ),
+                    _flag(
                       'Счета'.tr,
                       Icons.receipt_long,
                       Colors.teal,
@@ -95,6 +109,16 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
                         setState(() => _invoices = v);
                         SettingsService.updateConfig('menuShowInvoices', v);
                         SettingsService.updateConfig('menuShowEstimates', v);
+                      },
+                    ),
+                    _flag(
+                      'Корзина'.tr,
+                      Icons.delete_outline,
+                      const Color(0xFFE53935),
+                      _trash,
+                      (v) {
+                        setState(() => _trash = v);
+                        SettingsService.updateConfig('menuShowTrash', v);
                       },
                       showDivider: false,
                     ),

@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/client.dart';
 import '../models/location.dart';
 import 'firestore_service.dart';
+import 'client_job_sync.dart';
 
 /// Сервис для работы с клиентами
 class ClientService {
@@ -108,11 +109,26 @@ class ClientService {
 
   /// Обновить клиента
   static Future<void> update(String id, Map<String, dynamic> data) async {
-    await _ref.doc(id).update({
+    final name = (data['fullName'] ?? data['name'] ?? data['clientName'])
+        ?.toString()
+        .trim();
+    final payload = <String, dynamic>{
       ...data,
+      if (name != null && name.isNotEmpty) ...{
+        'fullName': name,
+        'name': name,
+        'clientName': name,
+      },
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    };
+    await _ref.doc(id).update(payload);
     invalidateCache();
+    await ClientJobSync.apply(
+      clientId: id,
+      name: name,
+      phone: data['phone']?.toString(),
+      address: data['address']?.toString(),
+    );
   }
 
   /// Address string plus the first entry in [locations], if any.
@@ -287,6 +303,8 @@ class ClientService {
     if (existingId != null) {
       await update(existingId, {
         'fullName': fullName,
+        'name': fullName,
+        'clientName': fullName,
         'phone': phone,
         'address': address,
         'email': email,

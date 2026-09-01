@@ -207,6 +207,7 @@ class CustomDrawer extends StatelessWidget {
                         children: tiles,
                       ),
                     ),
+                    if (SettingsService.menuFlag(config, 'menuShowTrash'))
                     SafeArea(
                       top: false,
                       child: Padding(
