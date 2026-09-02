@@ -6,8 +6,10 @@ import 'package:flutter/services.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../services/app_lock_service.dart';
+import '../../services/auth_service.dart';
 import '../../services/error_log_service.dart';
 import 'animated_app_logo.dart';
+import 'sign_in_screen.dart';
 
 /// Показывает клавиатуру PIN поверх приложения, пока замок закрыт.
 class AppLockGate extends StatefulWidget {
@@ -50,14 +52,24 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
     return ValueListenableBuilder<bool>(
       valueListenable: AppLockService.locked,
       builder: (context, locked, child) {
-        return Stack(
-          children: [
-            child!,
-            if (locked)
-              const Positioned.fill(
-                child: PinLockScreen(),
-              ),
-          ],
+        return ListenableBuilder(
+          listenable: AuthService.user,
+          builder: (context, _) {
+            final signedIn = AuthService.user.value != null;
+            return Stack(
+              children: [
+                child!,
+                if (!signedIn)
+                  const Positioned.fill(
+                    child: SignInScreen(),
+                  )
+                else if (locked)
+                  const Positioned.fill(
+                    child: PinLockScreen(),
+                  ),
+              ],
+            );
+          },
         );
       },
       child: widget.child,

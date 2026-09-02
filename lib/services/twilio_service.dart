@@ -12,6 +12,7 @@ import '../core/api_keys.dart';
 import '../models/job.dart';
 import 'client_service.dart';
 import 'firestore_service.dart';
+import 'auth_service.dart';
 
 /// Идентификатор мастера, под которым приложение регистрируется в Twilio
 /// Voice и на который Twilio-номер направляет входящие звонки.
@@ -319,6 +320,7 @@ class TwilioService {
     try {
       final response = await http.get(
         Uri.parse('$kFirebaseFunctionsUrl/twilioAccessToken?identity=$kTwilioMasterIdentity'),
+        headers: await AuthService.headers(),
       );
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -1041,7 +1043,7 @@ class TwilioService {
       final response = await http
           .post(
             Uri.parse('$kFirebaseFunctionsUrl/processCallRecording'),
-            headers: {'Content-Type': 'application/json'},
+            headers: await AuthService.headers(),
             body: json.encode({'callId': callId}),
           )
           .timeout(const Duration(seconds: 45));

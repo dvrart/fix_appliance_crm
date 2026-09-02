@@ -12,6 +12,7 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const crypto = require('crypto');
+const { requireAppUser } = require('./auth_guard');
 
 const COMPANY_ID = 'fix_appliance_ca';
 const ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz';
@@ -157,6 +158,7 @@ exports.shortenLink = functions.https.onRequest(httpOpts, async (req, res) => {
     res.status(405).json({ error: 'POST only' });
     return;
   }
+  if (!(await requireAppUser(req, res))) return;
   const url = String((req.body && req.body.url) || '').trim();
   if (!isHttpUrl(url)) {
     res.status(400).json({ error: 'url must be http(s)' });

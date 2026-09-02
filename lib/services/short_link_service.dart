@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/api_keys.dart';
+import 'auth_service.dart';
 
 class ShortLink {
   final String url;
@@ -40,7 +41,7 @@ class ShortLinkService {
       final response = await http
           .post(
             Uri.parse('$kFirebaseFunctionsUrl/shortenLink'),
-            headers: {'Content-Type': 'application/json'},
+            headers: await AuthService.headers(),
             body: json.encode({
               'url': original,
               if (code != null && code.trim().isNotEmpty) 'code': code.trim(),

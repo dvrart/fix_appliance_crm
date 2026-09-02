@@ -5,6 +5,7 @@ import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/api_keys.dart';
+import 'auth_service.dart';
 
 /// Перевод переписки с клиентом: входящие EN→RU, исходящие RU→EN.
 class MessageTranslateService {
@@ -228,7 +229,7 @@ class MessageTranslateService {
       final response = await http
           .post(
             Uri.parse('$kFirebaseFunctionsUrl/translateMessage'),
-            headers: const {'Content-Type': 'application/json'},
+            headers: await AuthService.headers(),
             body: json.encode({
               'text': text,
               'to': to,

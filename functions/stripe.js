@@ -7,6 +7,7 @@
 
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
+const { requireAppUser } = require('./auth_guard');
 
 const COMPANY_ID = 'fix_appliance_ca';
 const CURRENCY = 'cad';
@@ -345,6 +346,7 @@ async function getOrCreateTerminalLocation() {
 exports.getStripeBalance = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
   if (req.method !== 'GET' && req.method !== 'POST') {
     res.status(405).json({ error: 'GET or POST' });
     return;
@@ -377,6 +379,7 @@ exports.getStripeBalance = functions.https.onRequest(async (req, res) => {
 exports.createStripePayment = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'POST only' });
     return;
@@ -715,6 +718,7 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
 exports.createTerminalConnectionToken = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
   if (req.method !== 'POST' && req.method !== 'GET') {
     res.status(405).json({ error: 'GET or POST only' });
     return;
@@ -740,6 +744,7 @@ exports.createTerminalConnectionToken = functions.https.onRequest(async (req, re
 exports.createTerminalPaymentIntent = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'POST only' });
     return;
@@ -839,6 +844,7 @@ exports.createTerminalPaymentIntent = functions.https.onRequest(async (req, res)
 exports.completeTerminalPayment = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'POST only' });
     return;
@@ -1199,6 +1205,7 @@ async function handleCheckoutCompleted(session) {
 exports.createStripeRefund = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'POST only' });
     return;
