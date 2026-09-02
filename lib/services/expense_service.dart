@@ -14,6 +14,7 @@ import '../core/constants.dart';
 import '../models/expense.dart';
 import 'firestore_service.dart';
 import 'network_status_service.dart';
+import 'auth_service.dart';
 
 class ExpenseParseException implements Exception {
   final String message;
@@ -358,7 +359,7 @@ class ExpenseService {
     final response = await http
         .post(
           Uri.parse('$kFirebaseFunctionsUrl/parseExpenseReceipt'),
-          headers: {'Content-Type': 'application/json'},
+          headers: await AuthService.headers(),
           body: json.encode({
             'imageBase64': imageBase64,
             'mime': mime,

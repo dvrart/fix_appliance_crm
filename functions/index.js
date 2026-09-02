@@ -19,6 +19,7 @@ const { withSmsHeader, sanitizeSmsHeader } = require('./sms_header');
 const visitSms = require('./visit_sms');
 const schedule = require('./schedule');
 const { notifyMaster } = require('./notify');
+const { requireAppUser, requireTwilioSignature } = require('./auth_guard');
 
 admin.initializeApp();
 
@@ -80,7 +81,7 @@ const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 function setCors(res) {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
 function handleOptions(req, res) {
@@ -1058,6 +1059,7 @@ ${raw}`,
 exports.twilioAccessToken = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
 
   try {
     if (!TWILIO_API_KEY_SID || !TWILIO_API_KEY_SECRET || !TWILIO_TWIML_APP_SID) {
@@ -1981,6 +1983,7 @@ async function handleInboundToMaster(req, res, source) {
 // ============================================================================
 
 exports.incomingCall = functions.https.onRequest(async (req, res) => {
+  if (!requireTwilioSignature(req, res)) return;
   // Если TwiML App тоже смотрит сюда, исходящий из приложения приходит
   // как From=client:master. Его нельзя снова звонить на master — иначе
   // мастер видит «входящий» сам себе (короткий номер вроде 627837).
@@ -1997,6 +2000,7 @@ exports.incomingCall = functions.https.onRequest(async (req, res) => {
 // ============================================================================
 
 exports.outgoingCall = functions.https.onRequest(async (req, res) => {
+  if (!requireTwilioSignature(req, res)) return;
   if (!isFromClient(req.body) && !outboundDestination(req.body)) {
     await handleInboundToMaster(req, res, 'outgoingCall');
     return;
@@ -2009,6 +2013,7 @@ exports.outgoingCall = functions.https.onRequest(async (req, res) => {
 // ============================================================================
 
 exports.callStatusCallback = functions.https.onRequest(async (req, res) => {
+  if (!requireTwilioSignature(req, res)) return;
   const callSid = req.body.CallSid;
   const callStatus = req.body.CallStatus || req.body.DialCallStatus;
   const duration = parseInt(req.body.CallDuration || req.body.DialCallDuration, 10) || null;
@@ -2858,6 +2863,7 @@ Return STRICT JSON, no markdown:
 
 // Dial finished: master answered, or timeout → AI receptionist.
 exports.dialAction = functions.https.onRequest(voiceAiRuntime, async (req, res) => {
+  if (!requireTwilioSignature(req, res)) return;
   const callSid = req.body.CallSid;
   const dialStatus = req.body.DialCallStatus || req.body.CallStatus || '';
   const duration = parseInt(req.body.DialCallDuration || req.body.CallDuration, 10) || null;
@@ -2926,6 +2932,7 @@ exports.dialAction = functions.https.onRequest(voiceAiRuntime, async (req, res) 
 });
 
 exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res) => {
+  if (!requireTwilioSignature(req, res)) return;
   const callSid = req.body.CallSid;
   const incomingSpeech = String(req.body.SpeechResult || '').trim();
   console.log(`aiVoiceTurn ${callSid} speech="${incomingSpeech.slice(0, 80)}"`);
@@ -3040,6 +3047,7 @@ exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res)
 });
 
 exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, res) => {
+  if (!requireTwilioSignature(req, res)) return;
   const callSid = req.body.CallSid;
   const sessionStatus = String(req.body.SessionStatus || req.body.CallStatus || '').toLowerCase();
   const errorCode = String(req.body.ErrorCode || '').trim();
@@ -3154,6 +3162,7 @@ exports.aiVoiceRelay = onRequestV2(
 // ============================================================================
 
 exports.recordingComplete = functions.https.onRequest(recordingRuntime, async (req, res) => {
+  if (!requireTwilioSignature(req, res)) return;
   const rawSid = req.body.CallSid;
   const recordingUrl = req.body.RecordingUrl;
   const recordingSid = req.body.RecordingSid;
@@ -3233,6 +3242,7 @@ exports.callRecordingAudio = onRequestV2(
   async (req, res) => {
     setCors(res);
     if (handleOptions(req, res)) return;
+    if (!(await requireAppUser(req, res))) return;
     const requested = String(req.query.callId || req.body.callId || '').trim();
     if (!requested) {
       res.status(400).send('callId required');
@@ -3931,6 +3941,7 @@ exports.processCallRecording = functions.https.onRequest(
   async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
 
   const rawBody = req.body;
   const payload = typeof rawBody === 'string'
@@ -4256,6 +4267,7 @@ exports.retryStuckCallAi = functions.scheduler.onSchedule(
 exports.recoverStuckCallJobs = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
   try {
     const jobs = await recoverJobsMissingVisits(20);
     const calls = await recoverAiCallsMissingJobs(15);
@@ -4269,6 +4281,7 @@ exports.recoverStuckCallJobs = functions.https.onRequest(async (req, res) => {
 exports.registerFcmToken = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
 
   const { token, platform } = req.body || {};
   if (!token) {
@@ -4298,6 +4311,7 @@ exports.registerFcmToken = functions.https.onRequest(async (req, res) => {
 exports.sendSms = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
+  if (!(await requireAppUser(req, res))) return;
 
   if (!client) {
     res.status(500).json({ error: 'Twilio не настроен (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN)' });
@@ -4390,6 +4404,7 @@ exports.translateMessage = functions.https.onRequest(
   async (req, res) => {
     setCors(res);
     if (handleOptions(req, res)) return;
+    if (!(await requireAppUser(req, res))) return;
     const payload = req.body || {};
     const text = String(payload.text || payload.body || '').trim();
     const mode = String(payload.mode || '').trim().toLowerCase();
@@ -4595,6 +4610,7 @@ exports.sendVisitReminders = visitSms.sendVisitReminders;
 // ============================================================================
 
 exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
+  if (!requireTwilioSignature(req, res)) return;
   const sid = req.body.MessageSid;
   const status = req.body.MessageStatus;
   const errorCode = String(req.body.ErrorCode || '').trim();
@@ -5607,7 +5623,10 @@ const emailHandlers = createEmailModule({
 });
 exports.sendEmail = functions.https.onRequest(
   { timeoutSeconds: 120, memory: '512MiB', invoker: 'public' },
-  emailHandlers.sendEmail
+  async (req, res) => {
+    if (req.method !== 'OPTIONS' && !(await requireAppUser(req, res))) return;
+    await emailHandlers.sendEmail(req, res);
+  }
 );
 exports.syncGmailInbox = functions.scheduler.onSchedule(
   {
@@ -5681,6 +5700,7 @@ exports.appErrors = onRequestV2(
   async (req, res) => {
     if (handleOptions(req, res)) return;
     setCors(res);
+    if (!(await requireAppUser(req, res))) return;
     try {
       const limit = Math.min(Number(req.query.limit) || 40, 200);
       const snapshot = await db
@@ -5719,6 +5739,7 @@ exports.runCloudBackupNow = onRequestV2(
   async (req, res) => {
     if (handleOptions(req, res)) return;
     setCors(res);
+    if (!(await requireAppUser(req, res))) return;
     try {
       const result = await cloudBackup.runCloudBackup({
         admin,
@@ -5742,6 +5763,7 @@ exports.secretaryOwnerTurn = functions.https.onRequest(
   async (req, res) => {
     if (handleOptions(req, res)) return;
     setCors(res);
+    if (!(await requireAppUser(req, res))) return;
     const payload = req.body || {};
     const mode = String(payload.mode || 'setup') === 'test' ? 'test' : 'setup';
     const userText = String(payload.text || '').trim();

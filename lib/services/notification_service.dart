@@ -11,6 +11,7 @@ import '../core/l10n/app_locale.dart';
 import 'inbox_push_mirror.dart';
 import 'local_notification_service.dart';
 import 'notification_router.dart';
+import 'auth_service.dart';
 
 /// Регистрирует FCM-токен устройства на сервере, чтобы Cloud Functions
 /// могли присылать уведомления о входящих SMS, даже когда приложение свёрнуто.
@@ -411,7 +412,7 @@ class NotificationService {
     try {
       await http.post(
         Uri.parse('$kFirebaseFunctionsUrl/registerFcmToken'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await AuthService.headers(),
         body: json.encode({
           'token': token,
           'platform': defaultTargetPlatform.name,

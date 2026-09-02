@@ -12,6 +12,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/api_keys.dart';
 import '../core/constants.dart';
 import 'import_export_service.dart';
+import 'auth_service.dart';
 
 class BackupFile {
   final File file;
@@ -224,7 +225,7 @@ class BackupService {
       final response = await http
           .post(
             Uri.parse('$kFirebaseFunctionsUrl/runCloudBackupNow'),
-            headers: const {'Content-Type': 'application/json'},
+            headers: await AuthService.headers(),
             body: '{}',
           )
           .timeout(const Duration(minutes: 3));

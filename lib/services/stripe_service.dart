@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../core/api_keys.dart';
+import 'auth_service.dart';
 
 /// Результат создания Stripe-инвойса, депозита или Checkout-ссылки.
 class StripePaymentLink {
@@ -54,7 +55,7 @@ class StripeService {
     final response = await http
         .post(
           Uri.parse('$kFirebaseFunctionsUrl/createStripePayment'),
-          headers: {'Content-Type': 'application/json'},
+          headers: await AuthService.headers(),
           body: json.encode({
             'jobId': jobId,
             'documentIndex': documentIndex,
@@ -165,7 +166,7 @@ class StripeService {
     final response = await http
         .post(
           Uri.parse('$kFirebaseFunctionsUrl$path'),
-          headers: {'Content-Type': 'application/json'},
+          headers: await AuthService.headers(),
           body: json.encode(payload),
         )
         .timeout(_httpTimeout);

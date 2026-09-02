@@ -9,6 +9,7 @@ import '../core/sms_text.dart';
 import '../models/client.dart';
 import 'firestore_service.dart';
 import 'notification_service.dart';
+import 'auth_service.dart';
 
 DateTime? _asDate(dynamic value) {
   if (value == null) return null;
@@ -408,7 +409,7 @@ class SmsService {
       final response = await http
           .post(
         Uri.parse('$kFirebaseFunctionsUrl/sendSms'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await AuthService.headers(),
         body: json.encode({
           'to': toE164(to),
           'body': SmsText.formatSentences(body.trim()),

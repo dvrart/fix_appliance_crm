@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/api_keys.dart';
+import 'auth_service.dart';
 
 /// Исходящая почта через Cloud Function (Gmail SMTP).
 class EmailService {
@@ -23,7 +24,7 @@ class EmailService {
       final response = await http
           .post(
             Uri.parse('$kFirebaseFunctionsUrl/sendEmail'),
-            headers: {'Content-Type': 'application/json'},
+            headers: await AuthService.headers(),
             body: json.encode({
               'to': email,
               'body': body.trim(),

@@ -10,6 +10,7 @@ import '../../../../core/api_keys.dart';
 import '../../../../core/constants.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/utils/formatters.dart';
+import '../../../../services/auth_service.dart';
 import '../../../../services/job_service.dart';
 import '../../../../services/twilio_service.dart';
 import '../../../../services/message_translate_service.dart';
@@ -21,7 +22,9 @@ String playableCallUrl(Map<String, dynamic> attachment) {
   if (storage.isNotEmpty) return storage;
   final callId = (attachment['callId'] ?? '').toString().trim();
   if (callId.isNotEmpty) {
-    return '$kCallRecordingAudioUrl?callId=${Uri.encodeQueryComponent(callId)}';
+    return AuthService.withAuthQuery(
+      '$kCallRecordingAudioUrl?callId=${Uri.encodeQueryComponent(callId)}',
+    );
   }
   return (attachment['url'] ?? '').toString().trim();
 }
@@ -41,10 +44,12 @@ List<String> _callAudioUrls(String primary, {String storageUrl = '', String call
       ? callId
       : (uri?.queryParameters['callId'] ?? '');
   if (id.isNotEmpty) {
-    add('$kCallRecordingAudioUrl?callId=${Uri.encodeQueryComponent(id)}');
-    add(
+    add(AuthService.withAuthQuery(
+      '$kCallRecordingAudioUrl?callId=${Uri.encodeQueryComponent(id)}',
+    ));
+    add(AuthService.withAuthQuery(
       '$kFirebaseFunctionsUrl/callRecordingAudio?callId=${Uri.encodeQueryComponent(id)}',
-    );
+    ));
   }
   return urls;
 }

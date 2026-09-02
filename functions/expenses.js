@@ -1,4 +1,5 @@
 const functions = require('firebase-functions');
+const { requireAppUser } = require('./auth_guard');
 
 const CATEGORIES = {
   vehicle: { gifi: '9281' },
@@ -51,6 +52,7 @@ module.exports = function createExpenseHandlers({
   async function parseExpenseReceipt(req, res) {
     setCors(res);
     if (handleOptions(req, res)) return;
+    if (!(await requireAppUser(req, res))) return;
     if (req.method !== 'POST') {
       res.status(405).json({ success: false, error: 'POST only' });
       return;
