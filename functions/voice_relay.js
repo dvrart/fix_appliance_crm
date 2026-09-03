@@ -1441,6 +1441,22 @@ function getWss() {
   return wss;
 }
 
+// Секрет из адреса стрима (index.js relayUrlWithKey). Twilio не подписывает
+// upgrade-запрос, а инстанс тут 2GiB на час — без ключа его может занять любой.
+function relayKeyOk(incoming) {
+  const expected = process.env.VOICE_RELAY_KEY;
+  if (!expected) {
+    console.warn('voiceRelay: VOICE_RELAY_KEY not set, upgrade left open');
+    return true;
+  }
+  const raw = String(incoming.url || '');
+  const qs = raw.includes('?') ? raw.slice(raw.indexOf('?') + 1) : '';
+  const got = new URLSearchParams(qs).get('k') || '';
+  if (got === expected) return true;
+  console.warn('voiceRelay: rejected upgrade, bad or missing k');
+  return false;
+}
+
 function handleRequest(req, res) {
   const incoming = req.rawRequest || req;
   const headers = incoming.headers || req.headers || {};
@@ -1448,6 +1464,13 @@ function handleRequest(req, res) {
   const host = String((req.get && req.get('host')) || headers.host || '');
   if (host.includes('run.app') && deps && deps.saveRelayHost) {
     deps.saveRelayHost(`wss://${host.split(',')[0].trim()}`).catch(() => {});
+  }
+  if (upgrade === 'websocket' && !relayKeyOk(incoming)) {
+    if (incoming.socket && !incoming.socket.destroyed) {
+      incoming.socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      incoming.socket.destroy();
+    }
+    return;
   }
   if (upgrade === 'websocket') {
     const server = getWss();

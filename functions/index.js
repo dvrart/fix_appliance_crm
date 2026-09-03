@@ -2380,6 +2380,17 @@ async function resolveConversationRelayWss() {
   return 'wss://aivoicerelay-wmdrqa3n7q-uc.a.run.app';
 }
 
+// aiVoiceRelay — публичный WebSocket (Twilio не подписывает upgrade-запрос),
+// поэтому пускаем внутрь только по секрету в адресе стрима.
+function relayUrlWithKey(wss) {
+  let url = String(wss || '');
+  const key = process.env.VOICE_RELAY_KEY;
+  if (!url || !key) return url;
+  // Без пути некоторые клиенты теряют query, поэтому доводим до wss://host/?k=...
+  if (!url.includes('?') && !/^wss:\/\/[^/]+\//i.test(url)) url = `${url}/`;
+  return `${url}${url.includes('?') ? '&' : '?'}k=${encodeURIComponent(key)}`;
+}
+
 function twimlGatherSpeech(req, { say, language }) {
   const twiml = new twilio.twiml.VoiceResponse();
   const gather = twiml.gather({
@@ -2550,12 +2561,13 @@ async function startAiReception(req, res, callSid, options = {}) {
 
   const wss = forceGather ? '' : await resolveConversationRelayWss();
   if (wss) {
+    const streamUrl = relayUrlWithKey(wss);
     if (process.env.USE_CONVERSATION_RELAY === '1') {
       console.log(`startAiReception relay ${callSid} ${wss}`);
-      sendTwiml(res, twimlConversationRelay(req, { url: wss, greeting, callSid }));
+      sendTwiml(res, twimlConversationRelay(req, { url: streamUrl, greeting, callSid }));
     } else {
       console.log(`startAiReception live ${callSid} ${wss}`);
-      sendTwiml(res, twimlGeminiLiveStream(req, { url: wss, callSid, greeting }));
+      sendTwiml(res, twimlGeminiLiveStream(req, { url: streamUrl, callSid, greeting }));
     }
     scheduleCallRecording(callSid, req);
     completeAiPickup(callSid, data, greeting).catch((error) => {
@@ -4439,6 +4451,7 @@ exports.translateMessage = functions.https.onRequest(
 exports.incomingSms = functions.https.onRequest(
   { timeoutSeconds: 120, memory: '512MiB', invoker: 'public' },
   async (req, res) => {
+  if (!requireTwilioSignature(req, res)) return;
   const from = req.body.From || req.body.from;
   const to = req.body.To || req.body.to;
   const body = req.body.Body || req.body.body || '';

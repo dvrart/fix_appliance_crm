@@ -157,6 +157,48 @@ Startup must never hang: the Firestore-dependent part of `main.dart` `_init` is 
 timeouts and falls back to `OfflineQueueService`, and the job card then shows «Нет сети — фото
 сохранится и загрузится позже». Stripe HTTP has a 45s timeout.
 
+## Доступ (Firebase Auth) — не откатывать
+
+База больше не открыта. Do **not** loosen these:
+
+- `firestore.rules` + `storage.rules` lie in the repo and are wired into `firebase.json`.
+  Everything requires `request.auth != null`. There is exactly one owner account
+  (email + password), created by hand in the Firebase console.
+- `AuthService` (`lib/services/auth_service.dart`) keeps the ID token and hands out
+  `AuthService.headers()`. **Every** app → function call must use it; `withAuthQuery` is only
+  for URLs that a player/browser opens itself (audio). A new HTTP call without headers gets 401.
+- `SignInScreen` is shown by `AppLockGate` when `AuthService.user.value == null`, on top of the
+  PIN screen. Sign-in survives offline, so the app still opens in a basement.
+- `functions/auth_guard.js`: `requireAppUser` for anything the app calls,
+  `requireTwilioSignature` for Twilio webhooks (`incomingCall`, `outgoingCall`,
+  `callStatusCallback`, `dialAction`, `aiVoiceTurn`, `aiRelayComplete`, `recordingComplete`,
+  `incomingSms`, `smsStatusCallback`). `stripeWebhook` has its own Stripe signature check.
+- **Gen2 host trap.** `require('firebase-functions')` v7 is v2, so functions run on Cloud Run and
+  `host` arrives as `*.run.app`, while Twilio signed the `cloudfunctions.net` address. That is why
+  `candidateUrls()` checks several addresses instead of one. Do not simplify it back to a single
+  reconstructed URL — every call would 403. On a mismatch the log prints all tried addresses.
+- Two env vars in `functions/.env`:
+  - `VOICE_RELAY_KEY` — secret in the `<Stream>` URL for `aiVoiceRelay` (public WebSocket,
+    2GiB for an hour). `relayUrlWithKey` adds it, `relayKeyOk` in `voice_relay.js` checks it.
+    Not set → the socket stays open to anyone, with a warning in the log.
+  - `TWILIO_SIGNATURE_MODE=log` — signature is checked and logged, request still passes.
+    Only for the first deploy, to see the real address Twilio signs. Remove afterwards.
+- **Rotating the Twilio Auth Token with no downtime.** The token signs the webhooks, so a naive
+  swap 403s every call for the length of a deploy. `auth_guard` therefore accepts two tokens at
+  once (`TWILIO_AUTH_TOKEN` + optional `TWILIO_AUTH_TOKEN_PREV`). Order:
+  1. `POST https://accounts.twilio.com/v1/AuthTokens/Secondary` (basic auth: account SID +
+     current token) → new token; both are valid, Twilio still signs with the old one.
+  2. Write the new one to `TWILIO_AUTH_TOKEN`, the old one to `TWILIO_AUTH_TOKEN_PREV`, deploy.
+  3. `POST https://accounts.twilio.com/v1/AuthTokens/Promote` — the old token dies instantly.
+  4. Drop `TWILIO_AUTH_TOKEN_PREV`, deploy again.
+  Checking the setup: `GET /2010-04-01/Accounts/{sid}/IncomingPhoneNumbers.json` shows the exact
+  URLs Twilio signs — all of them must be the `cloudfunctions.net` form, the way `functionUrl`
+  builds them (`index.js:1437`). `firebase functions:log` returns stale slices and cannot be
+  trusted for this; probe the live endpoint with `twilio.getExpectedTwilioSignature` instead.
+- `firebase deploy --only functions` dies with `Timeout after 10000` on this repo — `index.js` is
+  too big for the default discovery window. Set `FUNCTIONS_DISCOVERY_TIMEOUT=120`. Storage rules
+  deploy as `--only storage`, **not** `--only storage:rules`.
+
 ## Ошибки приложения
 
 `ErrorLogService` (`lib/services/error_log_service.dart`) is installed in `main()` before
@@ -171,9 +213,12 @@ set at the next launch becomes a «crash» row naming the last screen. Call
 `ErrorLogService.markScreen('Склад')` in `initState` of any screen worth naming.
 
 FIX sees them in **Настройки → Данные → Ошибки** (`ErrorLogPage`) with «Копировать всё». The
-agent reads them directly: `GET https://us-central1-fix-appliance-crm.cloudfunctions.net/appErrors?limit=40`
-(plain text; `&format=json` for JSON). `weeklyCloudBackup` drops rows older than 14 days via
-`pruneAppErrors`. Deploy `appErrors`, `weeklyCloudBackup`.
+endpoint is `GET https://us-central1-fix-appliance-crm.cloudfunctions.net/appErrors?limit=40`
+(plain text; `&format=json` for JSON), but since the auth pass it needs
+`Authorization: Bearer <Firebase ID token>` (`requireAppUser`) and answers **401** without one —
+the agent cannot just curl it any more. Ask FIX to copy the pack from the page instead.
+`weeklyCloudBackup` drops rows older than 14 days via `pruneAppErrors`.
+Deploy `appErrors`, `weeklyCloudBackup`.
 
 ## Склад
 
