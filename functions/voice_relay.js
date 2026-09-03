@@ -14,11 +14,16 @@ let wss = null;
 let deps = null;
 const sessions = new Map();
 
+// Порядок по замеру времени до первого звука (3 прогона каждая):
+//   3.1-flash-live               539 мс
+//   2.5-native-audio-09-2025    2537 мс
+//   2.5-native-audio-12-2025    7451 мс  ← была второй: срыв на неё означал
+//                                          семисекундные паузы в разговоре
+//   2.5-flash-live-preview      соединение закрывается (1008), убрана
 const LIVE_MODELS = [
   process.env.GEMINI_LIVE_MODEL || 'gemini-3.1-flash-live-preview',
-  'gemini-2.5-flash-native-audio-preview-12-2025',
   'gemini-2.5-flash-native-audio-preview-09-2025',
-  'gemini-2.5-flash-live-preview',
+  'gemini-2.5-flash-native-audio-preview-12-2025',
 ];
 
 function init(nextDeps) {
@@ -59,9 +64,9 @@ function uniqueModels() {
 // Скорость реакции. Меняется переменными окружения, деплой функций без правки кода.
 const SILENCE_MS = (() => {
   const raw = Number(process.env.VOICE_SILENCE_MS);
-  // Замер: сама модель отвечает ~640 мс. Плюс это ожидание — столько клиент
-  // и слышит как паузу. 320 мс даёт около секунды в сумме, ближе к живой речи.
-  return Number.isFinite(raw) && raw >= 200 && raw <= 1200 ? Math.round(raw) : 320;
+  // Замер: сама модель отвечает ~540 мс, плюс дорога через Twilio. Это
+  // ожидание — единственная часть паузы, которой мы управляем.
+  return Number.isFinite(raw) && raw >= 120 && raw <= 1200 ? Math.round(raw) : 160;
 })();
 const END_SENSITIVITY =
   String(process.env.VOICE_END_SENSITIVITY || '').toUpperCase() === 'LOW'
