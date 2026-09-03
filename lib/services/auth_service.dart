@@ -41,9 +41,9 @@ class AuthService {
     if (u != null) await _refreshToken(u);
   }
 
-  static Future<void> _refreshToken(User u) async {
+  static Future<void> _refreshToken(User u, {bool force = false}) async {
     try {
-      final token = await u.getIdToken();
+      final token = await u.getIdToken(force);
       if (token != null && token.isNotEmpty) {
         _cachedIdToken = token;
         _cachedAt = DateTime.now();
@@ -65,6 +65,15 @@ class AuthService {
         onTimeout: () {},
       );
     }
+    if (_cachedIdToken.isEmpty) {
+      // Без токена запрос уходит без заголовка и сервер отвечает 401 — а на
+      // экране это выглядело просто как «не удалось отправить SMS». Пробуем
+      // выпросить токен принудительно, прежде чем сдаваться.
+      await _refreshToken(u, force: true).timeout(
+        const Duration(seconds: 8),
+        onTimeout: () {},
+      );
+    }
     return _cachedIdToken;
   }
 
@@ -74,6 +83,9 @@ class AuthService {
   /// Заголовки для HTTP-вызовов функций: Content-Type + Authorization.
   static Future<Map<String, String>> headers() async {
     final token = await idToken();
+    if (token.isEmpty) {
+      debugPrint('AuthService: запрос уходит БЕЗ токена — сервер ответит 401');
+    }
     return {
       'Content-Type': 'application/json',
       if (token.isNotEmpty) 'Authorization': 'Bearer $token',

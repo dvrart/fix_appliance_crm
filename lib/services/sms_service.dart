@@ -5,8 +5,10 @@ import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/app_commands.dart';
 import '../core/api_keys.dart';
+import '../core/l10n/app_locale.dart';
 import '../core/sms_text.dart';
 import '../models/client.dart';
+import 'error_log_service.dart';
 import 'firestore_service.dart';
 import 'notification_service.dart';
 import 'auth_service.dart';
@@ -393,6 +395,36 @@ class SmsService {
     );
   }
 
+  /// Почему не ушло последнее SMS. Раньше причина уходила в debugPrint,
+  /// которого в релизе не видно, и владелец получал бесполезное
+  /// «Не удалось отправить SMS» без единой подсказки.
+  static String lastError = '';
+
+  /// Текст для подсказки на экране — с причиной, если она известна.
+  static String failureText() {
+    final base = 'Не удалось отправить SMS'.tr;
+    return lastError.isEmpty ? base : '$base: $lastError';
+  }
+
+  static String _describeSendError(int status, String body) {
+    if (status == 401) {
+      return 'нужно войти в приложение заново';
+    }
+    if (status == 0) return 'нет связи с сервером';
+    String detail = '';
+    try {
+      final decoded = json.decode(body);
+      if (decoded is Map && decoded['error'] != null) {
+        detail = decoded['error'].toString();
+      }
+    } catch (_) {
+      detail = body.trim();
+    }
+    detail = detail.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (detail.length > 120) detail = '${detail.substring(0, 120)}…';
+    return detail.isEmpty ? 'сервер ответил $status' : detail;
+  }
+
   /// Отправить SMS. Шапку ставит сервер из настроек «Шапка SMS».
   static Future<bool> sendSms({
     required String to,
@@ -433,11 +465,21 @@ class SmsService {
             }
           } catch (_) {}
         }
+        lastError = '';
         return true;
       }
+      lastError = _describeSendError(response.statusCode, response.body);
+      // В журнал ошибок, иначе причину видно только в отладочной сборке.
+      ErrorLogService.record(
+        'SMS не ушло (${response.statusCode}): ${response.body.trim()}',
+        null,
+        kind: 'sms',
+      );
       debugPrint('SmsService: ошибка отправки — ${response.statusCode}: ${response.body}');
       return false;
-    } catch (e) {
+    } catch (e, s) {
+      lastError = e is TimeoutException ? 'сервер не ответил вовремя' : 'нет связи';
+      ErrorLogService.record(e, s, kind: 'sms');
       debugPrint('SmsService: ошибка отправки: $e');
       return false;
     }

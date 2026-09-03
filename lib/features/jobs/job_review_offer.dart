@@ -90,7 +90,7 @@ class JobReviewOffer {
         content: Text(
           ok
               ? 'SMS с просьбой об отзыве отправлено'.tr
-              : 'Не удалось отправить SMS'.tr,
+              : SmsService.failureText(),
         ),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),

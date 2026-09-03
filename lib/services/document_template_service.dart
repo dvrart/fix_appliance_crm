@@ -368,7 +368,7 @@ class DocumentTemplateService {
     Navigator.of(context, rootNavigator: true).pop();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok ? 'SMS отправлено клиенту'.tr : 'Не удалось отправить SMS'.tr),
+        content: Text(ok ? 'SMS отправлено клиенту'.tr : SmsService.failureText()),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),
     );

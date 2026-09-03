@@ -48,7 +48,13 @@ async function accessToken() {
   });
   const body = await res.json();
   if (!body.access_token) {
-    throw new Error(`обмен токена не удался: ${JSON.stringify(body).slice(0, 200)}`);
+    // invalid_rapt — Google просит подтвердить вход заново. Без внятного
+    // текста это выглядит как «данных нет», и легко пойти искать не там.
+    const hint =
+      body.error === 'invalid_grant'
+        ? 'вход в Google больше не действует — выполните: firebase login --reauth'
+        : JSON.stringify(body).slice(0, 200);
+    throw new Error(hint);
   }
   return body.access_token;
 }

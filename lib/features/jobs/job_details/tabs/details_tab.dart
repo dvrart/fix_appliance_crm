@@ -1399,7 +1399,7 @@ class _DetailsTabState extends State<DetailsTab> {
         content: Text(
           ok
               ? 'SMS с просьбой об отзыве отправлено'.tr
-              : 'Не удалось отправить SMS'.tr,
+              : SmsService.failureText(),
         ),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),
@@ -1847,7 +1847,7 @@ class _DetailsTabState extends State<DetailsTab> {
         content: Text(
           ok
               ? 'SMS с подтверждением визита отправлено'.tr
-              : 'Не удалось отправить SMS'.tr,
+              : SmsService.failureText(),
         ),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),

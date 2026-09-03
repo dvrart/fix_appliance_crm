@@ -23,8 +23,16 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
 /**
- * Шторка как у Pinterest: три скруглённые картинки
- * (техника / имя / город) под системной шапкой приложения.
+ * Шторка как у Pinterest: три скруглённые плитки под шапкой приложения.
+ *
+ *   1. О чём уведомление  — заявка, пропущенный звонок, напоминание, спам.
+ *   2. О чём речь         — картинка техники; знак запрета, если это реклама;
+ *                           текст встречи, если это напоминание.
+ *   3. Кто                — имя клиента, прочерк если имени нет.
+ *
+ * Данные приходят двумя путями: напрямую из FCM (VoiceFirebaseMessagingService
+ * → showFromMap, поля сервера kind/appliance/spam/clientName) и из приложения
+ * через канал showShadeNotification (там историческое имя applianceType).
  */
 object CrmShadeNotifier {
     private const val TAG = "CrmShadeNotifier"
@@ -61,10 +69,13 @@ object CrmShadeNotifier {
         val title = data["title"]?.takeIf { it.isNotBlank() } ?: fallbackTitle(type)
         val body = data["body"]?.takeIf { it.isNotBlank() } ?: ""
         val tag = shadeTag(data)
-        val appliance = data["applianceType"].orEmpty()
+        // Сервер шлёт appliance, старые уведомления — applianceType.
+        val appliance = data["appliance"]?.takeIf { it.isNotBlank() }
+            ?: data["applianceType"].orEmpty()
         val name = data["clientName"]?.takeIf { it.isNotBlank() }
-            ?: guessName(title, data["from"].orEmpty())
-        val city = data["city"]?.takeIf { it.isNotBlank() } ?: "—"
+            ?: guessName(title, peerOf(data))
+        val spam = data["spam"] == "1"
+        val kind = shadeKind(data["kind"].orEmpty(), type, spam)
 
         val app = context.applicationContext
         val density = app.resources.displayMetrics.density
@@ -72,22 +83,20 @@ object CrmShadeNotifier {
         val tileH = (72 * density).toInt().coerceIn(96, 180)
         val radius = 14f * density
 
-        val applianceBmp = rounded(
-            applianceTile(app, appliance, tileW, tileH),
-            radius,
-        )
-        val nameBmp = rounded(textTile(name.ifBlank { "Клиент" }, tileW, tileH), radius)
-        val cityBmp = rounded(textTile(city, tileW, tileH), radius)
+        // Три плитки: о чём уведомление · о чём речь · кто звонил.
+        val kindBmp = rounded(kindTile(kind, tileW, tileH), radius)
+        val subjectBmp = rounded(subjectTile(app, kind, appliance, body, tileW, tileH), radius)
+        val nameBmp = rounded(textTile(name.ifBlank { "—" }, tileW, tileH), radius)
 
         val collapsed = RemoteViews(app.packageName, R.layout.notification_shade_collapsed)
-        collapsed.setImageViewBitmap(R.id.shade_tile_1, applianceBmp)
-        collapsed.setImageViewBitmap(R.id.shade_tile_2, nameBmp)
-        collapsed.setImageViewBitmap(R.id.shade_tile_3, cityBmp)
+        collapsed.setImageViewBitmap(R.id.shade_tile_1, kindBmp)
+        collapsed.setImageViewBitmap(R.id.shade_tile_2, subjectBmp)
+        collapsed.setImageViewBitmap(R.id.shade_tile_3, nameBmp)
 
         val expanded = RemoteViews(app.packageName, R.layout.notification_shade_expanded)
-        expanded.setImageViewBitmap(R.id.shade_tile_1, applianceBmp)
-        expanded.setImageViewBitmap(R.id.shade_tile_2, nameBmp)
-        expanded.setImageViewBitmap(R.id.shade_tile_3, cityBmp)
+        expanded.setImageViewBitmap(R.id.shade_tile_1, kindBmp)
+        expanded.setImageViewBitmap(R.id.shade_tile_2, subjectBmp)
+        expanded.setImageViewBitmap(R.id.shade_tile_3, nameBmp)
         expanded.setTextViewText(R.id.shade_title, title)
         expanded.setTextViewText(R.id.shade_body, body)
         expanded.setViewVisibility(
@@ -118,7 +127,7 @@ object CrmShadeNotifier {
         val notification = NotificationCompat.Builder(app, channelId)
             .setSmallIcon(if (iconId != 0) iconId else android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
-            .setContentText(listOf(name, city).filter { it.isNotBlank() && it != "—" }.joinToString(" · "))
+            .setContentText(listOf(name, appliance).filter { it.isNotBlank() && it != "—" }.joinToString(" · "))
             .setColor(ACCENT)
             .setColorized(false)
             .setAutoCancel(false)
@@ -151,8 +160,17 @@ object CrmShadeNotifier {
         return if (digits.length >= 10) digits.takeLast(10) else ""
     }
 
+    /**
+     * Номер собеседника. FCM запрещает ключ `from` в данных и отклоняет всё
+     * сообщение целиком, поэтому сервер шлёт его как `peer`. Старые локальные
+     * уведомления из приложения всё ещё кладут `from` — читаем оба.
+     */
+    private fun peerOf(data: Map<String, String>): String {
+        return data["peer"]?.takeIf { it.isNotBlank() } ?: data["from"].orEmpty()
+    }
+
     private fun shadeTag(data: Map<String, String>): String {
-        val from = data["from"].orEmpty().ifBlank { data["to"].orEmpty() }
+        val from = peerOf(data).ifBlank { data["to"].orEmpty() }
         val phone = last10(from)
         if (phone.isNotEmpty()) return "crm_inbox_$phone".take(50)
         val email = when {
@@ -176,7 +194,7 @@ object CrmShadeNotifier {
         data: Map<String, String>,
         keep: String,
     ) {
-        val from = data["from"].orEmpty()
+        val from = peerOf(data)
         val to = data["to"].orEmpty()
         val jobId = data["jobId"].orEmpty()
         val phone = last10(from.ifBlank { to })
@@ -258,6 +276,111 @@ object CrmShadeNotifier {
         }
         if (raw.isNotBlank() && raw != title.trim()) return raw
         return from.ifBlank { "Клиент" }
+    }
+
+    /** О чём уведомление: заявка, пропущенный, напоминание, спам, сообщение. */
+    private fun shadeKind(kindHint: String, type: String, spam: Boolean): String {
+        if (spam) return "spam"
+        if (kindHint == "job" || kindHint == "missed" || kindHint == "reminder") return kindHint
+        return when (type) {
+            "job" -> "job"
+            "call" -> "missed"
+            "visit_confirm", "estimate_confirm", "visit_soon", "on_the_way", "leave_status",
+            "morning", "evening" -> "reminder"
+            "email", "email_offer", "shipment" -> "letter"
+            else -> "message"
+        }
+    }
+
+    private fun kindLabel(kind: String): String = when (kind) {
+        "job" -> "ЗАЯВКА"
+        "missed" -> "ПРОПУЩЕН\u00A0ЗВОНОК"
+        "spam" -> "СПАМ"
+        "reminder" -> "НАПОМИНАНИЕ"
+        "letter" -> "ПИСЬМО"
+        else -> "СООБЩЕНИЕ"
+    }
+
+    private fun kindColor(kind: String): Int = when (kind) {
+        "job" -> 0xFF1E8E3E.toInt()      // зелёный — есть работа
+        "missed" -> 0xFFB3261E.toInt()   // красный — звонок потерян
+        "spam" -> 0xFF5F6368.toInt()     // серый — мусор
+        "reminder" -> NAVY
+        else -> 0xFF3B5BA5.toInt()
+    }
+
+    private fun kindTile(kind: String, width: Int, height: Int): Bitmap {
+        return labelTile(kindLabel(kind), kindColor(kind), width, height)
+    }
+
+    /** Плитка с крупной надписью на заливке. */
+    private fun labelTile(text: String, background: Int, width: Int, height: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(background)
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            textAlign = Paint.Align.LEFT
+            textSize = height * 0.24f
+        }
+        val maxWidth = (width * 0.86f).toInt().coerceAtLeast(8)
+        var layout = buildLayout(text, paint, maxWidth)
+        while (layout.height > height * 0.8f && paint.textSize > height * 0.12f) {
+            paint.textSize *= 0.9f
+            layout = buildLayout(text, paint, maxWidth)
+        }
+        canvas.save()
+        canvas.translate((width - maxWidth) / 2f, (height - layout.height) / 2f)
+        layout.draw(canvas)
+        canvas.restore()
+        return bmp
+    }
+
+    /** Красный запрещающий знак для рекламных звонков. */
+    private fun spamTile(width: Int, height: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+        val red = 0xFFD93025.toInt()
+        val cx = width / 2f
+        val cy = height / 2f
+        val r = minOf(width, height) * 0.32f
+        val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = red
+            style = Paint.Style.STROKE
+            strokeWidth = r * 0.34f
+        }
+        canvas.drawCircle(cx, cy, r, ring)
+        val bar = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = red
+            strokeWidth = r * 0.34f
+            strokeCap = Paint.Cap.BUTT
+        }
+        val d = r * 0.70f
+        canvas.drawLine(cx - d, cy + d, cx + d, cy - d, bar)
+        return bmp
+    }
+
+    /**
+     * О чём речь: техника — картинкой, реклама — знаком запрета,
+     * напоминание — текстом встречи.
+     */
+    private fun subjectTile(
+        context: Context,
+        kind: String,
+        appliance: String,
+        body: String,
+        width: Int,
+        height: Int,
+    ): Bitmap {
+        if (kind == "spam") return spamTile(width, height)
+        if (appliance.isNotBlank()) return applianceTile(context, appliance, width, height)
+        if (kind == "reminder" || kind == "letter" || kind == "message") {
+            val line = body.split('\n').firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+            if (line.isNotBlank()) return textTile(line.take(60), width, height)
+        }
+        return applianceTile(context, "", width, height)
     }
 
     private fun applianceFile(type: String): String {

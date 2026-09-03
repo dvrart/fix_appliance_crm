@@ -10,6 +10,7 @@ import '../../services/job_service.dart';
 import '../../services/local_notification_service.dart';
 import '../../services/morning_briefing_service.dart';
 import '../../services/on_the_way_service.dart';
+import '../../services/sms_service.dart';
 import '../../services/status_service.dart';
 import '../../services/twilio_service.dart';
 
@@ -61,7 +62,7 @@ class _FieldAssistantHostState extends State<FieldAssistantHost> {
     setState(() => _sending = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok ? 'SMS «я в пути» отправлено'.tr : 'Не удалось отправить SMS'.tr),
+        content: Text(ok ? 'SMS «я в пути» отправлено'.tr : SmsService.failureText()),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),
     );

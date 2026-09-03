@@ -1874,7 +1874,7 @@ class _FinanceTabState extends State<FinanceTab> {
     );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(ok ? 'SMS отправлено'.tr : 'Не удалось отправить SMS'.tr)),
+      SnackBar(content: Text(ok ? 'SMS отправлено'.tr : SmsService.failureText())),
     );
   }
 
