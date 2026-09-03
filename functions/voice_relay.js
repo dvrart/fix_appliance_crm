@@ -56,6 +56,16 @@ function uniqueModels() {
   return [...new Set(LIVE_MODELS.map((name) => String(name || '').trim()).filter(Boolean))];
 }
 
+// Скорость реакции. Меняется переменными окружения, деплой функций без правки кода.
+const SILENCE_MS = (() => {
+  const raw = Number(process.env.VOICE_SILENCE_MS);
+  return Number.isFinite(raw) && raw >= 200 && raw <= 1200 ? Math.round(raw) : 420;
+})();
+const END_SENSITIVITY =
+  String(process.env.VOICE_END_SENSITIVITY || '').toUpperCase() === 'LOW'
+    ? 'END_SENSITIVITY_LOW'
+    : 'END_SENSITIVITY_HIGH';
+
 /// 2.5 Live думает по умолчанию (секунды тишины). 3.1 — через thinkingLevel.
 function thinkingConfigFor(model) {
   const name = String(model || '').toLowerCase();
@@ -174,6 +184,14 @@ ${profile.awayLine || ''}
 
 ${profile.instructions}
 
+HOW YOU SOUND — you are on a phone, not reading:
+- Answer straight away. Do not leave a gap before you start talking.
+- Start with the short human bit while you think: "oh no", "right", "mm-hm, okay", "gotcha". Then the actual sentence.
+- Ordinary speed of a busy office, not slow and not rushed. Contractions always: what's, that's, you're, I'll, we've.
+- One thought per turn. If it needs two sentences, make the second one short.
+- Never spell things out or read a list aloud. Never repeat back the whole thing they just told you.
+- If they pause to look something up, wait quietly. Do not fill the silence with chatter.
+
 You cannot hang up. After "Have a good day," wait. They hang up.`;
 }
 
@@ -201,9 +219,14 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
       automaticActivityDetection: {
         disabled: false,
         startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
-        endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+        // Сколько ждать после того, как звонящий замолчал. Это и есть пауза
+        // перед ответом. END_SENSITIVITY_LOW + 550 мс звучало как задумчивый
+        // автоответчик; живой человек отвечает примерно через 300 мс.
+        // Если начнёт перебивать тех, кто ищет шильдик — поднять
+        // VOICE_SILENCE_MS до 600 и вернуть VOICE_END_SENSITIVITY=LOW.
+        endOfSpeechSensitivity: END_SENSITIVITY,
         prefixPaddingMs: 200,
-        silenceDurationMs: 550,
+        silenceDurationMs: SILENCE_MS,
       },
     },
     sessionResumption: resumeHandle ? { handle: resumeHandle } : {},
