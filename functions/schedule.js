@@ -420,7 +420,11 @@ function briefOpen(cfg, windows, now) {
   const days = nextBookableDays(today, 5, cfg);
   const parts = [];
   for (const ymd of days) {
-    const free = freeStartsOnDay(ymd, cfg, windows, now, null).slice(0, 5);
+    // Раньше здесь стояло .slice(0, 5) — модель видела только пять утренних
+    // окон и на просьбу «завтра в шесть вечера» отвечала, что всё занято, даже
+    // когда день был пуст целиком. Список должен быть полным за день:
+    // при рабочем дне 7:00–21:00 это не больше 13 значений.
+    const free = freeStartsOnDay(ymd, cfg, windows, now, null);
     if (!free.length) {
       parts.push(`${WEEKDAYS_SHORT[weekdayOfYmd(ymd)]} ${ymd.slice(8)}: full`);
       continue;
@@ -450,7 +454,8 @@ async function calendarBrief() {
 Take orders 24/7. Technician visits ${cfg.workDaysLabel} ${hours}. ${closedLine} Public holidays: take the order; the technician must agree.
 Taken: ${taken}
 Open 2-hour starts on working days: ${open}
-If they want a taken time, offer another time the SAME day first. Only offer another day if that day is full or they ask. Last start is ${lastStart} so the visit ends by ${voiceFacts.formatHour12(cfg.workEndMinutes)}.`;
+The Open list is COMPLETE for the days shown — every start on it is free. Never tell a caller a time is taken unless it is missing from that day's Open list. A day marked "full" is the only day with nothing free.
+Let the caller name the time first. Only when the time they asked for is not on the Open list, say that one is taken and offer the nearest free starts the SAME day. Only move to another day if that day is full or they ask. Last start is ${lastStart} so the visit ends by ${voiceFacts.formatHour12(cfg.workEndMinutes)}.`;
 }
 
 module.exports = {

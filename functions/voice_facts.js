@@ -18,12 +18,14 @@ const VOICE_FAREWELL_ES =
 
 const VOICE_CALL_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
 Visit days, hours, and prices are in the owner rules. Each visit is 2 hours — do not book a taken window.
+The caller picks the day and time. Ask what suits them; never propose a slot of your own unless the one they asked for is taken.
 When you have enough, or they want a callback: pass it to the tech, photo of the model sticker, anything else. If they say no: Have a good day. Do not hang up.`;
 
 const EXTRACT_CARD_RULES = `Keep street, city, unit, and postal code in the original English/Canadian spelling. Never translate or transliterate into Russian (write "King Street", not "Кинг-стрит"; "Toronto", not "Торонто"). Person names stay in English as spoken. problem_description is ONLY the appliance fault and model number — never the SMS, email, or call transcript. client_email is the customer's email from the letter body, not a booking-agency From: address.`;
 
 const VOICE_LIVE_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
 Visit days and hours are in the owner rules. Each visit is 2 hours — do not book a taken window.
+The caller picks the day and time. Ask what suits them; never propose a slot of your own unless the one they asked for is taken.
 When you have enough: pass it to the tech, photo, anything else. If they say no: Have a good day. Do not hang up.`;
 
 const NAME_STOP = new Set([
