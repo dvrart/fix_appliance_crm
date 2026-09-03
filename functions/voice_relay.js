@@ -288,7 +288,7 @@ appliance_type must be Russian: Холодильник, Стиральная м�
 brand: the make they named (Samsung, LG, Whirlpool, GE, Bosch…). Never invent a brand. Not the model number.
 Today is ${today} in America/Toronto.
 scheduled_date must be YYYY-MM-DD. "tomorrow" = the next calendar day after ${today}. Never leave the date empty if they named a day.
-scheduled_time must be HH:mm 24-hour. "11:00", "at 11", "eleven o'clock" → 11:00. "2", "at 2", "two", "around two" on a repair call → 14:00 unless they said morning or a.m. Never leave time empty if they named a clock time.
+scheduled_time must be HH:mm 24-hour. "11:00", "at 11", "eleven o'clock" → 11:00. A bare "2", "at 2", "two", "around two" on a repair call → 14:00. But if they said a.m. or morning, keep the hour exactly as spoken: "10 a.m." → 10:00, NEVER 22:00. Only add 12 hours when they said p.m., afternoon, or evening about that same hour. Never leave time empty if they named a clock time.
 client_name: a normal short given name as spoken (Artem, Amelia). NEVER a phonetic mash. NEVER a mood or filler: good, fine, okay, thanks, well, sure. "I'm good" / "sounds good" is not a name. If they already said a real first name, keep that spelling.
 address: the REPAIR address (where the technician drives). Street number + street name. null if mumbled.
 owner_address: the caller's home if it is different from the repair address.
@@ -657,12 +657,18 @@ function forwardMulawToGemini(session, payload) {
   return true;
 }
 
+// Один чанк Twilio — 20 мс, значит 200 чанков это всего 4 секунды. Установка
+// сессии Gemini занимает до 8 (setupTimer), плюс переподключение по goAway —
+// и первые слова звонящего просто выбрасывались. 1500 чанков это 30 секунд
+// и меньше мегабайта в памяти.
+const PENDING_AUDIO_MAX = 1500;
+
 function sendCallerAudio(session, payload) {
   if (!payload) return;
   if (!session.ready || !forwardMulawToGemini(session, payload)) {
     session.pendingAudio = session.pendingAudio || [];
     session.pendingAudio.push(payload);
-    if (session.pendingAudio.length > 200) session.pendingAudio.shift();
+    if (session.pendingAudio.length > PENDING_AUDIO_MAX) session.pendingAudio.shift();
   }
 }
 
@@ -1028,6 +1034,11 @@ function handleGeminiMessage(session, raw) {
   const output = pick(content, 'outputTranscription', 'output_transcription');
   if (output && output.text) {
     clearReplyWatchdog(session);
+    // Ответ модели приходит отдельным потоком и часто завершается раньше, чем
+    // расшифровка клиента. Без этого в стенограмме реплика секретаря
+    // оказывалась ВЫШЕ вопроса, на который она отвечает, и разбор звонка
+    // потом винил секретаря в том, чего не было.
+    if (session.userPartial) flushPartial(session, 'userPartial');
     setPartial(session, 'assistantPartial', output.text, output.finished === true);
   }
   const turn = pick(content, 'modelTurn', 'model_turn') || {};

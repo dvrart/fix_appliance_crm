@@ -322,19 +322,52 @@ function looksEvening(text) {
   );
 }
 
+/**
+ * Маркер a.m./p.m., привязанный именно к этому часу: «10 a.m.» → morning.
+ * Нужен потому, что в preferShopVisitTime приходит весь текст звонка, а в нём
+ * почти всегда звучат и утренние, и вечерние варианты.
+ */
+function markerForHour(text, h) {
+  const t = String(text || '');
+  if (!Number.isFinite(h)) return '';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  const alts = [String(h12), ...Object.keys(HOUR_WORDS).filter((k) => HOUR_WORDS[k] === h12)];
+  const re = new RegExp(
+    `\\b(?:${alts.join('|')})(?::\\d{2})?\\s*(a\\.?m\\.?|p\\.?m\\.?|in the morning|in the evening|tonight|утра|вечера)`,
+    'i'
+  );
+  const m = t.match(re);
+  if (!m) return '';
+  const mark = m[1].toLowerCase().replace(/\./g, '');
+  if (mark === 'am' || mark.includes('morning') || mark === 'утра') return 'morning';
+  return 'evening';
+}
+
 /** Shop clock: bare "2" / "at 2" / "two" is 14:00, not 02:00. */
 function preferShopVisitTime(hhmm, spokenText) {
   const m = String(hhmm || '').match(/^(\d{2}):(\d{2})$/);
   if (!m) return hhmm || '';
-  let h = Number(m[1]);
+  const h = Number(m[1]);
   const min = m[2];
   if (!Number.isFinite(h) || h > 23) return hhmm;
   const spoken = String(spokenText || '');
+  const asMorning = () => `${pad2(h >= 12 ? h - 12 : h)}:${min}`;
+  const asEvening = () => `${pad2(h > 0 && h < 12 ? h + 12 : h)}:${min}`;
+
+  // Сначала смотрим маркер у самого этого часа. Без этого «10 a.m.» уезжало в
+  // 22:00 только потому, что в том же разговоре секретарь предлагала «6 p.m.».
+  const exact = markerForHour(spoken, h);
+  if (exact === 'morning') return asMorning();
+  if (exact === 'evening') return asEvening();
+
   const morning = looksMorning(spoken);
   const evening = looksEvening(spoken);
   if (morning && !evening) return `${pad2(h)}:${min}`;
-  if (evening && h > 0 && h < 12) return `${pad2(h + 12)}:${min}`;
-  if (!morning && !evening && h >= 1 && h <= 6) return `${pad2(h + 12)}:${min}`;
+  if (evening && !morning) return asEvening();
+  // Есть и утро, и вечер, но ни одно не про этот час — не двигаем.
+  if (morning && evening) return `${pad2(h)}:${min}`;
+  // Ни того, ни другого: голое «2» на ремонтном звонке — это 14:00.
+  if (h >= 1 && h <= 6) return asEvening();
   return `${pad2(h)}:${min}`;
 }
 
