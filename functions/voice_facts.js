@@ -47,6 +47,14 @@ const NAME_STOP = new Set([
   'hmm', 'huh', 'uh', 'um', 'erm', 'oh', 'ah', 'eh', 'yea', 'mhm', 'nope',
   'speaking', 'holding', 'hold', 'wondering', 'checking', 'mine', 'mister',
   'madam', 'maam', 'sir', 'miss', 'missus', 'lady', 'guy', 'man', 'woman',
+  // Роли, а не имена. «Technician» приехало в заявку как имя клиента: слово
+  // звучало в разговоре («техник перезвонит»), поэтому сверка с расшифровкой
+  // его пропустила — на роли нужен отдельный запрет.
+  'technician', 'technicians', 'engineer', 'plumber', 'electrician',
+  'operator', 'receptionist', 'secretary', 'manager', 'owner', 'landlord',
+  'tenant', 'customer', 'client', 'caller', 'husband', 'wife', 'mom', 'dad',
+  'mother', 'father', 'son', 'daughter', 'neighbour', 'neighbor', 'company',
+  'appliance', 'service', 'repair', 'warranty', 'insurance',
 ]);
 
 const WEEKDAYS = {
