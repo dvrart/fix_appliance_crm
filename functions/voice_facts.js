@@ -38,6 +38,15 @@ const NAME_STOP = new Set([
   'back', 'home', 'house', 'street', 'morning', 'afternoon', 'evening', 'night',
   'day', 'bye', 'goodbye', 'later', 'again', 'still', 'also', 'too', 'very',
   'really', 'pretty', 'kinda', 'kind', 'sort', 'bit', 'little', 'much', 'more',
+  // Обычные слова разговора, которые модель принимала за имя. «Look» приехало
+  // в заявку как имя клиента, хотя имени он не называл вовсе.
+  'look', 'looks', 'listen', 'see', 'hear', 'know', 'think', 'thought', 'mean',
+  'say', 'said', 'tell', 'told', 'ask', 'asked', 'call', 'called', 'come',
+  'came', 'give', 'take', 'make', 'want', 'need', 'like', 'guess', 'suppose',
+  'actually', 'basically', 'anyway', 'anyhow', 'maybe', 'probably', 'course',
+  'hmm', 'huh', 'uh', 'um', 'erm', 'oh', 'ah', 'eh', 'yea', 'mhm', 'nope',
+  'speaking', 'holding', 'hold', 'wondering', 'checking', 'mine', 'mister',
+  'madam', 'maam', 'sir', 'miss', 'missus', 'lady', 'guy', 'man', 'woman',
 ]);
 
 const WEEKDAYS = {
@@ -459,6 +468,76 @@ function isNameStop(word) {
   return NAME_STOP.has(String(word || '').trim().toLowerCase());
 }
 
+function editDistance(a, b) {
+  const s = String(a || '');
+  const t = String(b || '');
+  if (s === t) return 0;
+  if (!s.length || !t.length) return Math.max(s.length, t.length);
+  let prev = Array.from({ length: t.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= s.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= t.length; j++) {
+      row[j] = Math.min(
+        prev[j] + 1,
+        row[j - 1] + 1,
+        prev[j - 1] + (s[i - 1] === t[j - 1] ? 0 : 1)
+      );
+    }
+    prev = row;
+  }
+  return prev[t.length];
+}
+
+/** Города, которые уже записаны в карточке клиента — самая надёжная сверка. */
+function citiesFromClient(client) {
+  const out = [];
+  if (!client) return out;
+  const push = (v) => {
+    const s = String(v || '').trim();
+    if (s) out.push(s);
+  };
+  push(client.city);
+  push(client.displayCity);
+  for (const loc of Array.isArray(client.locations) ? client.locations : []) {
+    if (loc) push(loc.city);
+  }
+  return out;
+}
+
+/**
+ * Исправляет услышанный город по списку известных: «Branford» → «Brantford».
+ * Речевое распознавание регулярно теряет букву, и заявка уезжает в город,
+ * которого не существует — маршрут по такому адресу не строится.
+ */
+function snapCity(city, known) {
+  const raw = String(city || '').trim();
+  if (!raw) return raw;
+  const seen = new Set();
+  const list = [];
+  for (const item of known || []) {
+    const s = String(item || '').trim();
+    const key = s.toLowerCase();
+    if (!s || seen.has(key)) continue;
+    seen.add(key);
+    list.push(s);
+  }
+  const lower = raw.toLowerCase();
+  for (const item of list) {
+    if (item.toLowerCase() === lower) return item;
+  }
+  let best = '';
+  let bestDist = Infinity;
+  for (const item of list) {
+    const limit = item.length >= 7 ? 2 : 1;
+    const dist = editDistance(lower, item.toLowerCase());
+    if (dist <= limit && dist < bestDist) {
+      best = item;
+      bestDist = dist;
+    }
+  }
+  return best || raw;
+}
+
 function isPlaceholderClientName(name) {
   const s = String(name || '').trim();
   if (!s) return true;
@@ -530,13 +609,33 @@ function nameFromHistory(history) {
   return '';
 }
 
+/**
+ * Имя должно реально звучать в разговоре. Без этой проверки модель приносила
+ * имя, которого никто не называл: в живой заявке так появился клиент «Look».
+ * Настоящее имя всегда есть в расшифровке, поэтому проверка безопасна.
+ */
+function nameWasSpoken(name, history) {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return false;
+  if (!Array.isArray(history) || !history.length) return true; // нечего сверять
+  const text = history
+    .map((item) => String((item && item.text) || ''))
+    .join('\n')
+    .toLowerCase();
+  return n.split(/\s+/).every((part) =>
+    new RegExp(`(^|[^a-zа-яё])${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-zа-яё]|$)`, 'i').test(text)
+  );
+}
+
 function pickClientName(prev, next, history) {
   const spoken = usableClientName(nameFromHistory(history));
   const nextN = usableClientName(next);
   const prevN = usableClientName(prev);
   if (spoken) return spoken;
-  if (nextN && prevN && nextN.length + 2 < prevN.length) return prevN;
-  return nextN || prevN || '';
+  const nextOk = nextN && nameWasSpoken(nextN, history) ? nextN : '';
+  const prevOk = prevN && nameWasSpoken(prevN, history) ? prevN : '';
+  if (nextOk && prevOk && nextOk.length + 2 < prevOk.length) return prevOk;
+  return nextOk || prevOk || '';
 }
 
 function detectLiveCallback(text) {
@@ -770,7 +869,10 @@ function enrichExtracted(extracted, history, extraText) {
   }
   const name = pickClientName(out.client_name, out.client_name, history);
   if (name) out.client_name = name;
-  else if (looksLikeGarbageName(out.client_name)) delete out.client_name;
+  // Раньше имя выбрасывали только если оно «мусорное» по форме, поэтому
+  // обычное слово вроде «Look» оставалось и уезжало в заявку как имя клиента.
+  // Если сборщик имени ничего не вернул — имени нет, и точка.
+  else delete out.client_name;
   if (!String(out.appliance_type || '').trim()) {
     const appliance = inferApplianceFromText(text);
     if (appliance) out.appliance_type = appliance;
@@ -929,6 +1031,8 @@ module.exports = {
   looksLikePersonName,
   isPlaceholderClientName,
   usableClientName,
+  snapCity,
+  citiesFromClient,
   titleCaseName,
   enrichExtracted,
   mergeExtracted,

@@ -109,11 +109,11 @@ class NotificationService {
       FirebaseMessaging.instance.onTokenRefresh.listen(_saveToken);
       FirebaseMessaging.onMessage.listen(_onForegroundMessage);
       FirebaseMessaging.onMessageOpenedApp.listen((message) {
-        NotificationRouter.open(message.data);
+        NotificationRouter.open(normalizeRemoteData(message.data));
       });
       final initial = await FirebaseMessaging.instance.getInitialMessage();
       if (initial != null) {
-        await NotificationRouter.open(initial.data);
+        await NotificationRouter.open(normalizeRemoteData(initial.data));
       }
       await _askUnrestrictedBatteryOnce();
       debugPrint('NotificationService: FCM-токен зарегистрирован');
@@ -284,11 +284,22 @@ class NotificationService {
     await showRemoteMessage(message);
   }
 
-  static Future<void> showRemoteMessage(RemoteMessage message) async {
+  /// FCM запрещает ключ `from` в данных и отклоняет всё сообщение целиком,
+  /// поэтому сервер присылает номер как `peer`. Приводим к привычному `from`
+  /// в одном месте, чтобы остальной код не менялся.
+  static Map<String, String> normalizeRemoteData(Map<String, dynamic> raw) {
     final data = <String, String>{
-      for (final entry in message.data.entries)
-        entry.key: '${entry.value ?? ''}',
+      for (final entry in raw.entries) entry.key: '${entry.value ?? ''}',
     };
+    final peer = (data['peer'] ?? '').trim();
+    if (peer.isNotEmpty && (data['from'] ?? '').trim().isEmpty) {
+      data['from'] = peer;
+    }
+    return data;
+  }
+
+  static Future<void> showRemoteMessage(RemoteMessage message) async {
+    final data = normalizeRemoteData(message.data);
     final title = (message.notification?.title ?? data['title'] ?? '').toString();
     final body = (message.notification?.body ?? data['body'] ?? '').toString();
     if (title.trim().isNotEmpty) data['title'] = title;

@@ -661,6 +661,18 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
     });
   }
   let clientId = existingClient && existingClient.id;
+  // Распознавание речи теряет буквы в названиях городов: с живого звонка
+  // приехал «Branford» вместо «Brantford», и маршрут по такому адресу не
+  // строится. Сверяем с городами из карточки клиента и с теми, по которым
+  // мастер работает.
+  if (extracted && extracted.city) {
+    const known = [...voiceFacts.citiesFromClient(existingClient), ...SERVICE_TOWNS];
+    const snapped = voiceFacts.snapCity(extracted.city, known);
+    if (snapped && snapped !== extracted.city) {
+      console.log(`city snapped "${extracted.city}" -> "${snapped}"`);
+      extracted.city = snapped;
+    }
+  }
   let extractedName = voiceFacts.usableClientName(
     (extracted && extracted.client_name) || ''
   );
@@ -1484,11 +1496,14 @@ When you have enough — or they want a callback — say you'll pass it to the t
 
 Live person: technician calls back in 30 minutes — do not grill for a time. Angry: someone from the shop calls in 30 minutes; stay polite. Price: only if they ask, and only the numbers under Prices. English only; understand any language.`;
 
+// Проверено запросами с нашим ключом (Sep 3 2026): живая только lite-latest.
+// gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.0-flash, gemini-3-flash —
+// 404 «no longer available». gemini-flash-latest и gemini-3.6-flash — 429,
+// нужен платный тариф. Держать их первыми означало сорок секунд впустую на
+// каждый отчёт по звонку.
 const VOICE_MODEL_CANDIDATES = [
-  'gemini-flash-lite-latest',
+  process.env.GEMINI_TEXT_MODEL || 'gemini-flash-lite-latest',
   'gemini-flash-latest',
-  'gemini-2.5-flash',
-  'gemini-3.6-flash',
 ];
 
 function describeServiceArea(config) {
@@ -2315,8 +2330,17 @@ function sayGreeting(gather, greeting, _language) {
   gather.say(sayAttrs('en'), text);
 }
 
+// Города, по которым мастер выезжает. Используются и как подсказки распознаванию
+// речи, и как список для исправления услышанного города в заявке.
+const SERVICE_TOWNS = [
+  'Brantford', 'Paris', 'Scotland', 'Tillsonburg', 'Delhi', 'Port Dover',
+  'Norwich', 'Simcoe', 'Waterford', 'Burford', 'Cayuga', 'Hagersville',
+  'Dunnville', 'Woodstock', 'Ingersoll', 'Norfolk', 'Ancaster', 'Caledonia',
+];
+
 const VOICE_HINTS =
-  'fridge, refrigerator, freezer, washer, washing machine, dryer, dishwasher, stove, oven, range, microwave, repair, leak, leaking, not cooling, Brantford, Paris, Scotland, Tillsonburg, Delhi, Port Dover, Norwich';
+  'fridge, refrigerator, freezer, washer, washing machine, dryer, dishwasher, stove, oven, range, microwave, repair, leak, leaking, not cooling, ' +
+  SERVICE_TOWNS.join(', ');
 
 let cachedRelayWss = '';
 
@@ -3375,20 +3399,18 @@ async function generateContentWithRetry(model, parts, maxAttempts = 3) {
 }
 
 const GEMINI_MODEL_CANDIDATES = [
-  'gemini-flash-lite-latest',
+  process.env.GEMINI_TEXT_MODEL || 'gemini-flash-lite-latest',
   'gemini-flash-latest',
-  'gemini-2.5-flash',
-  'gemini-3.6-flash',
 ];
 
 async function generateContentWithModelFallback(parts, options = {}) {
   if (!genAI) throw new Error('GEMINI_API_KEY не настроен');
+  // «Качественная» модель у нас упирается в квоту, поэтому первой всё равно
+  // идёт рабочая. Появится платный тариф — поставьте GEMINI_QUALITY_MODEL.
   const names = options.quality
     ? [
+        process.env.GEMINI_QUALITY_MODEL || 'gemini-flash-lite-latest',
         'gemini-flash-latest',
-        'gemini-2.5-flash',
-        'gemini-3.6-flash',
-        'gemini-flash-lite-latest',
       ]
     : GEMINI_MODEL_CANDIDATES;
   const generationConfig = {};

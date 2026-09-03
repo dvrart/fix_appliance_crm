@@ -118,6 +118,27 @@ async function attachShadeFields(stringData) {
   }
 }
 
+/**
+ * FCM отклоняет всё сообщение целиком, если в data есть зарезервированное имя.
+ * `from` было именно таким: в логах это выглядело как
+ * `messaging/invalid-argument Invalid data payload key: from`, и уведомления о
+ * звонках и SMS не доходили вообще. Отдаём его как `peer`; приложение читает
+ * `peer`, а при его отсутствии — старое `from`.
+ */
+const FCM_RESERVED = new Set(['from', 'notification', 'message_type', 'collapse_key']);
+
+function sanitizeFcmData(payload) {
+  for (const key of Object.keys(payload)) {
+    if (FCM_RESERVED.has(key)) {
+      if (key === 'from' && payload.peer === undefined) payload.peer = payload[key];
+      delete payload[key];
+      continue;
+    }
+    if (/^(google|gcm)/i.test(key)) delete payload[key];
+  }
+  return payload;
+}
+
 async function notifyMaster(title, body, data = {}) {
   const snapshot = await tokensRef().get();
   const tokens = snapshot.docs.map((d) => d.data().token).filter(Boolean);
@@ -140,6 +161,7 @@ async function notifyMaster(title, body, data = {}) {
   stringData.channelId = channelId;
   stringData.title = String(title || '');
   stringData.body = String(body || '');
+  sanitizeFcmData(stringData);
 
   const response = await admin.messaging().sendEachForMulticast({
     tokens,
@@ -195,4 +217,4 @@ async function notifyMaster(title, body, data = {}) {
   await Promise.all(stale.map((id) => tokensRef().doc(id).delete()));
 }
 
-module.exports = { notifyMaster, channelFor };
+module.exports = { notifyMaster, channelFor, sanitizeFcmData };
