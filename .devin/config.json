@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Exec(flutter)",
+      "Exec(firebase deploy)",
+      "Exec(node)",
+      "Exec(adb)",
+      "Exec(git status)",
+      "Exec(git diff)",
+      "Exec(git log)",
+      "Exec(git add)",
+      "Exec(git commit)",
+      "Exec(git fetch)",
+      "Write(lib/**)",
+      "Write(functions/**)",
+      "Write(android/**)",
+      "Write(tools/**)",
+      "Write(test/**)",
+      "Write(.cursor/**)"
+    ],
+    "deny": [
+      "Exec(rm)",
+      "Exec(sudo)",
+      "Write(functions/.env)",
+      "Write(android/key.properties)"
+    ]
+  }
+}

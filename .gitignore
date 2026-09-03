@@ -57,3 +57,10 @@ lib/core/api_keys.dart
 .firebase/
 .zip
 android/build/
+
+# Релизный ключ подписи. Файл ключа лежит ВНЕ репозитория (~/keys),
+# здесь только страховка от случайного коммита.
+android/key.properties
+*.jks
+*.p12
+*.keystore

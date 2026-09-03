@@ -56,14 +56,16 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
           listenable: AuthService.user,
           builder: (context, _) {
             final signedIn = AuthService.user.value != null;
+            // До входа приложение не строим вообще. Если построить его под
+            // экраном входа, все подписки на базу уйдут без токена, получат
+            // «доступа нет» и после входа заново не переподпишутся — экраны
+            // останутся пустыми. На свежей установке это выглядело так, будто
+            // пропали клиенты, календарь и переписка.
+            if (!signedIn) return const SignInScreen();
             return Stack(
               children: [
                 child!,
-                if (!signedIn)
-                  const Positioned.fill(
-                    child: SignInScreen(),
-                  )
-                else if (locked)
+                if (locked)
                   const Positioned.fill(
                     child: PinLockScreen(),
                   ),
