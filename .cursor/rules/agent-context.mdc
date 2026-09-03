@@ -199,6 +199,28 @@ timeouts and falls back to `OfflineQueueService`, and the job card then shows «
   too big for the default discovery window. Set `FUNCTIONS_DISCOVERY_TIMEOUT=120`. Storage rules
   deploy as `--only storage`, **not** `--only storage:rules`.
 
+## Память и фон (Aug 31 → Sep 3 2026)
+
+Две причины, по которым приложение падало и мусорило в журнале. Не откатывать:
+
+- **`Image.network` без `cacheWidth` / `cacheHeight` убивает приложение.** Flutter распаковывает
+  картинку в полном разрешении независимо от размера на экране. Миниатюра чека 72×72 в
+  `_ExpenseThumb` (`expenses_screen.dart`) держала в памяти ~13 МБ, и список чеков получал
+  OOM-kill — в журнале это выглядело как «Приложение закрылось само на экране Расходы».
+  `cacheWidth`/`cacheHeight` теперь стоят там же, в превью переписки
+  (`conversation_screen.dart`) и на подписи (`finance_tab.dart`). Любой новый `Image.network`
+  для миниатюры обязан их иметь; полный просмотр в `InteractiveViewer` — единственное
+  исключение.
+- **Android 14+ и служба с типом location.** Одних `ACCESS_FINE_LOCATION` +
+  `FOREGROUND_SERVICE_LOCATION` мало: при разрешении «только при использовании» запуск
+  `foregroundNotificationConfig` в фоне падает SecurityException («must be in the eligible
+  state»). `OnTheWayService._hasBackgroundLocation()` спрашивает `Permission.locationAlways`
+  **один раз** (флаг `on_way_asked_always` в SharedPreferences) и, если разрешения нет, поднимает
+  поток **без** `foregroundNotificationConfig` — маршрут работает при открытом приложении и
+  ничего не роняет. `ACCESS_BACKGROUND_LOCATION` добавлен в манифест, но выдаёт его владелец
+  вручную («Разрешить всё время»). `start()` и `stop()` обёрнуты в try/catch: плагин бросает
+  «No active stream to cancel», если поток так и не поднялся.
+
 ## Ошибки приложения
 
 `ErrorLogService` (`lib/services/error_log_service.dart`) is installed in `main()` before

@@ -485,6 +485,10 @@ class _ExpenseThumb extends StatelessWidget {
           width: size,
           height: size,
           fit: BoxFit.cover,
+          // Без cacheWidth чек распаковывается в полный размер: миниатюра 72×72
+          // съедала ~13 МБ на каждый, и список чеков убивал приложение.
+          cacheWidth: (size * 3).round(),
+          cacheHeight: (size * 3).round(),
           errorBuilder: (_, _, _) => Icon(
             Icons.broken_image_outlined,
             color: Colors.grey.shade500,

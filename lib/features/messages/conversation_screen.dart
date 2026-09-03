@@ -1241,6 +1241,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
             height: 180,
             width: double.infinity,
             fit: BoxFit.cover,
+            // Превью в переписке: без cacheHeight каждое фото от клиента
+            // распаковывается целиком, и длинная ветка съедает память.
+            cacheHeight: 540,
             loadingBuilder: (context, child, progress) {
               if (progress == null) return child;
               return const SizedBox(

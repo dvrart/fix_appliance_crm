@@ -1375,6 +1375,7 @@ class _FinanceTabState extends State<FinanceTab> {
                       height: 88,
                       fit: BoxFit.contain,
                       alignment: Alignment.centerLeft,
+                      cacheHeight: 264,
                       errorBuilder: (context, error, stackTrace) =>
                           const Text('Signature saved'),
                     ),

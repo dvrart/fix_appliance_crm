@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/job.dart';
@@ -100,6 +101,26 @@ class OnTheWayService extends ChangeNotifier {
     await start();
   }
 
+  /// Android 14+ пускает службу с типом location в фоне только при разрешении
+  /// «всё время». С «только при использовании» запуск падает SecurityException,
+  /// поэтому спрашиваем один раз и дальше живём без фоновой службы.
+  Future<bool> _hasBackgroundLocation() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return true;
+    if (await Geolocator.checkPermission() == LocationPermission.always) {
+      return true;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('on_way_asked_always') != true) {
+      await prefs.setBool('on_way_asked_always', true);
+      try {
+        await Permission.locationAlways.request();
+      } catch (e) {
+        debugPrint('OnTheWayService: locationAlways: $e');
+      }
+    }
+    return await Geolocator.checkPermission() == LocationPermission.always;
+  }
+
   Future<void> start() async {
     if (_sub != null || _starting) return;
     _starting = true;
@@ -115,33 +136,48 @@ class OnTheWayService extends ChangeNotifier {
       }
       if (!await Geolocator.isLocationServiceEnabled()) return;
 
+      final background = await _hasBackgroundLocation();
       _sub = Geolocator.getPositionStream(
         locationSettings: defaultTargetPlatform == TargetPlatform.android
             ? AndroidSettings(
                 accuracy: LocationAccuracy.high,
                 distanceFilter: 80,
                 intervalDuration: const Duration(seconds: 20),
-                foregroundNotificationConfig: ForegroundNotificationConfig(
-                  notificationTitle: 'Fix Appliance',
-                  notificationText:
-                      'Когда отъедете, спросим статус заявки и SMS следующему клиенту'.tr,
-                  notificationChannelName: 'Маршрут'.tr,
-                  enableWakeLock: true,
-                  setOngoing: true,
-                ),
+                foregroundNotificationConfig: background
+                    ? ForegroundNotificationConfig(
+                        notificationTitle: 'Fix Appliance',
+                        notificationText:
+                            'Когда отъедете, спросим статус заявки и SMS следующему клиенту'.tr,
+                        notificationChannelName: 'Маршрут'.tr,
+                        enableWakeLock: true,
+                        setOngoing: true,
+                      )
+                    : null,
               )
             : const LocationSettings(
                 accuracy: LocationAccuracy.high,
                 distanceFilter: 80,
               ),
-      ).listen(_onPosition, onError: (_) {});
+      ).listen(_onPosition, onError: (error) {
+        debugPrint('OnTheWayService: поток координат: $error');
+      });
+    } catch (e) {
+      // Служба может не запуститься (нет фонового разрешения, экономия батареи).
+      // Маршрут — не главная функция, приложение из-за этого падать не должно.
+      debugPrint('OnTheWayService: не удалось запустить слежение: $e');
+      _sub = null;
     } finally {
       _starting = false;
     }
   }
 
   Future<void> stop() async {
-    await _sub?.cancel();
+    // Плагин бросает «No active stream to cancel», если поток так и не поднялся.
+    try {
+      await _sub?.cancel();
+    } catch (e) {
+      debugPrint('OnTheWayService: отмена потока: $e');
+    }
     _sub = null;
     var changed = false;
     if (pending != null) {
