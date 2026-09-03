@@ -1305,8 +1305,12 @@ async function onLiveStart(session, message) {
   }
   session.authorized = true;
   clearAuthGrace(session);
+  session.startedAt = Date.now();
   session.streamSid = start.streamSid || message.streamSid;
   session.engine = 'gemini-live';
+  // Продолжение после обрыва потока: не здороваться заново, подхватить разговор
+  // с того места, где он оборвался (историю поднимает hydrateCall ниже).
+  session.resumedStream = String(custom.resume || '') === '1';
   session.greetingSpoken = String(custom.greetingSpoken || '') === '1';
   if (custom.greeting) session.greeting = String(custom.greeting);
   const [profile] = await Promise.all([
@@ -1314,6 +1318,13 @@ async function onLiveStart(session, message) {
     hydrateCall(session, custom.callSid || start.callSid, start.from || custom.from),
   ]);
   if (custom.greeting) session.greeting = String(custom.greeting);
+  if (session.resumedStream && (session.history || []).length) {
+    session.greetingSpoken = true;
+    session.needsContinue = true;
+    console.log(
+      `voiceRelay resumed stream ${session.callSid} turns=${(session.history || []).length}`
+    );
+  }
   session.systemText = liveSystemPrompt(profile, session);
   if (session.twilioKeepalive) clearInterval(session.twilioKeepalive);
   session.twilioKeepalive = setInterval(() => {
@@ -1487,7 +1498,15 @@ function handleSocket(ws) {
       console.error('voiceRelay message:', error.message);
     }
   });
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
+    // Раньше здесь молчали, и обрыв потока не оставлял в журнале ничего —
+    // приходилось гадать, кто закрыл соединение.
+    const lived = session.startedAt ? Math.round((Date.now() - session.startedAt) / 1000) : null;
+    console.log(
+      `voiceRelay twilio close ${session.callSid || '?'} code=${code} lived=${lived}s ` +
+        `gemini=${session.geminiWs ? 'up' : 'down'} ready=${Boolean(session.ready)} ` +
+        `reason="${String(reason || '').slice(0, 80)}"`
+    );
     session.closed = true;
     clearSessionTimers(session);
     if (session.twilioKeepalive) {

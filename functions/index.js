@@ -2502,7 +2502,7 @@ function twimlConversationRelay(req, { url, greeting, callSid }) {
   return twiml;
 }
 
-function twimlGeminiLiveStream(req, { url, callSid, greeting }) {
+function twimlGeminiLiveStream(req, { url, callSid, greeting, resume }) {
   const twiml = new twilio.twiml.VoiceResponse();
   startCallRecordingNoun(twiml, req);
   const spoken = englishGreetingOnly(greeting) || DEFAULT_VOICE_GREETING;
@@ -2521,9 +2521,11 @@ function twimlGeminiLiveStream(req, { url, callSid, greeting }) {
   if (typeof stream.parameter === 'function') {
     const key = relayStreamKey();
     if (key) stream.parameter({ name: 'k', value: key });
+    if (resume) stream.parameter({ name: 'resume', value: '1' });
     if (callSid) {
       stream.parameter({ name: 'callSid', value: callSid });
-      stream.parameter({ name: 'greetingSpoken', value: '0' });
+      // При переподключении здороваться заново нельзя — разговор продолжается.
+      stream.parameter({ name: 'greetingSpoken', value: resume ? '1' : '0' });
       stream.parameter({ name: 'greeting', value: spoken });
     }
   }
@@ -2539,10 +2541,27 @@ function twimlHangup(say, language) {
 
 async function startAiReception(req, res, callSid, options = {}) {
   const forceGather = options.forceGather === true;
+  // Поток Twilio может оборваться посреди живого звонка. Раньше в этом случае
+  // разговор доживал в медленном Gather — клиент слышал паузы по три секунды и
+  // повторные вопросы. Теперь поднимаем поток заново и продолжаем в Live.
+  const resumeStream = options.resumeStream === true;
   const callRef = callsRef.doc(callSid);
   const snap = await callRef.get();
   const data = snap.exists ? snap.data() || {} : {};
   const alreadyAi = data.answeredBy === 'ai' && data.aiReception;
+
+  if (resumeStream && !forceGather) {
+    const greeting = DEFAULT_VOICE_GREETING;
+    const wss = await resolveConversationRelayWss();
+    if (wss) {
+      console.log(`startAiReception resume ${callSid} ${wss}`);
+      sendTwiml(
+        res,
+        twimlGeminiLiveStream(req, { url: wss, callSid, greeting, resume: true })
+      );
+      return;
+    }
+  }
 
   if (alreadyAi && forceGather) {
     sendTwiml(
@@ -3099,7 +3118,19 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
 
     const callEnded = await isTwilioCallEnded(callSid, req.body.CallStatus);
     if (!callEnded) {
-      console.log(`aiRelayComplete: call still live ${callSid}, no job yet`);
+      // Поток оборвался, а клиент ещё на линии. Пробуем вернуть Live, но не
+      // бесконечно: если поток рвётся раз за разом, уходим в Gather, иначе
+      // получится карусель из запросов Twilio.
+      const resumes = Number((data.aiReception && data.aiReception.streamResumes) || 0);
+      if (resumes < 4) {
+        await callsRef
+          .doc(callSid)
+          .set({ aiReception: { streamResumes: resumes + 1 } }, { merge: true });
+        console.log(`aiRelayComplete: call still live ${callSid}, resuming stream #${resumes + 1}`);
+        await startAiReception(req, res, callSid, { resumeStream: true });
+        return;
+      }
+      console.warn(`aiRelayComplete: ${callSid} stream died ${resumes} times, falling back`);
       await startAiReception(req, res, callSid, { forceGather: true });
       return;
     }
