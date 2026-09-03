@@ -220,33 +220,15 @@ Return STRICT JSON:
       { merge: true }
     );
     await batch.commit();
-    const shouldNotify =
-      severity === 'fail' || severity === 'issue' || Boolean(String(report.problemRu || '').trim());
-    if (!shouldNotify) return;
-    const body = titles.filter(Boolean).join(' · ') || 'Разбор звонка секретаря';
-    try {
-      await notifyMaster('Разбор звонка секретаря', body, {
-        type: 'secretary_lesson',
-        callSid,
-      });
-    } catch (error) {
-      console.warn('secretaryLearn notify:', error.message);
-    }
+    // Разбор звонка в шторку больше не шлём: он приходил после каждого звонка
+    // и забивал телефон вместо того, что действительно нужно — заявки и
+    // пропущенные. Записи остаются в базе, их видно в колокольчике и в
+    // «Настройки → Ошибки секретаря».
   }
 
   async function weeklyDigest() {
-    const pending = await lessonsRef.where('status', '==', 'pending').get();
-    if (pending.empty) return;
-    const count = pending.size;
-    const first = String((pending.docs[0].data() || {}).titleRu || '').trim();
-    const body =
-      count === 1
-        ? first || '1 предложение'
-        : `${count} предложений. ${first}`;
-    await notifyMaster('Секретарь: разборы, которые ждут вас', body, {
-      type: 'secretary_lesson',
-      weekly: '1',
-    });
+    // Еженедельная сводка тоже только копится в базе, без уведомления.
+    return;
   }
 
   return { proposeFromCall, weeklyDigest };

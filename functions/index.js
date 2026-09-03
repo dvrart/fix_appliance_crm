@@ -2666,21 +2666,58 @@ async function completeAiPickup(callSid, data, greeting) {
     },
     { merge: true }
   );
+  // «ИИ взял звонок» в шторку не шлём. Оно приходило в начале каждого звонка,
+  // до того как что-то известно, и дублировало итог. Владельцу нужен результат:
+  // заявка или пропущенный. Запись о звонке в базе остаётся.
+}
+
+// Реклама, роботы и «ошиблись номером» — это не заявка и не отказ по услуге.
+const SPAM_HINTS =
+  /\b(marketing|advertis|promotion|seo|website design|google (my )?business|listing|insurance offer|solar|warranty (offer|program)|survey|robocall|telemarket|scam|press one|wrong number)\b/i;
+
+function looksLikeSpamCall(extracted, callData) {
+  const reason = String((extracted && extracted.decline_reason) || '');
+  const notes = String((extracted && extracted.notes) || '');
+  const text = `${reason}\n${notes}\n${String((callData && callData.transcription) || '').slice(0, 2000)}`;
+  return SPAM_HINTS.test(text);
+}
+
+/**
+ * Одно уведомление на звонок, по итогу: заявка или пропущенный.
+ * Поля appliance / clientName / spam нужны шторке, чтобы подобрать картинки.
+ */
+async function notifyCallOutcome({ callSid, callData, extracted, kind, jobId, reason }) {
   try {
-    const calledAt = voiceFacts.formatTorontoStamp();
-    await notifyMaster(
-      'ИИ взял звонок',
-      `${data.fromNumber || callSid}\n${calledAt}`,
-      {
-        type: 'call',
-        callSid,
-        answeredBy: 'ai',
-        calledAt,
-        from: data.fromNumber || '',
-      }
+    const data = extracted && typeof extracted === 'object' ? extracted : {};
+    const calledAt = voiceFacts.formatTorontoStamp(
+      callData && callData.startTime && callData.startTime.toDate
+        ? callData.startTime.toDate()
+        : new Date()
     );
+    const phone = (callData && callData.fromNumber) || '';
+    const name = voiceFacts.usableClientName(data.client_name || '');
+    const appliance = String(data.appliance_type || '').trim();
+    const spam = kind === 'missed' && looksLikeSpamCall(data, callData);
+
+    const title = kind === 'job' ? 'Заявка с телефона' : 'Пропущенный звонок';
+    const line = kind === 'job'
+      ? [name || phone, appliance].filter(Boolean).join(' · ')
+      : [name || phone, spam ? 'похоже на рекламу' : reason || ''].filter(Boolean).join(' · ');
+
+    await notifyMaster(title, `${line}\n${calledAt}`, {
+      type: kind === 'job' ? 'job' : 'call',
+      kind,
+      source: 'phone',
+      callSid,
+      calledAt,
+      from: phone,
+      clientName: name,
+      appliance,
+      spam: spam ? '1' : '',
+      ...(jobId ? { jobId } : {}),
+    });
   } catch (error) {
-    console.warn('startAiReception notify:', error.message);
+    console.warn('notifyCallOutcome:', error.message);
   }
 }
 
@@ -2717,15 +2754,13 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
     updates.extractedData = extracted && typeof extracted === 'object' ? extracted : {};
     const reason = String((extracted && extracted.decline_reason) || '').trim();
     if (reason) updates.declineReason = reason;
-    try {
-      await notifyMaster(
-        'Звонок: заявку не создаём',
-        reason || (extracted && extracted.client_name) || callData.fromNumber || '',
-        { type: 'call', callSid, from: callData.fromNumber || '' }
-      );
-    } catch (error) {
-      console.warn('finishAiReception declined notify:', error.message);
-    }
+    await notifyCallOutcome({
+      callSid,
+      callData,
+      extracted,
+      kind: 'missed',
+      reason,
+    });
   } else if (createJob || hasConversationToBook(extracted, callData)) {
     try {
       const matchedClient = await findExistingClient({
@@ -2752,33 +2787,24 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
         updates.clientId = created.clientId;
       }
       if (created.created && created.jobId && callAgeHours(callData) <= 4) {
-        try {
-          const calledAt = voiceFacts.formatTorontoStamp(
-            callData.startTime && callData.startTime.toDate
-              ? callData.startTime.toDate()
-              : new Date()
-          );
-          await notifyMaster(
-            'Заявка с телефона',
-            `${extracted.client_name || extracted.appliance_type || callData.fromNumber || ''}\n${calledAt}`,
-            {
-              type: 'job',
-              source: 'phone',
-              jobId: created.jobId,
-              callSid,
-              calledAt,
-              from: callData.fromNumber || '',
-            }
-          );
-        } catch (error) {
-          console.warn('finishAiReception notify:', error.message);
-        }
+        await notifyCallOutcome({
+          callSid,
+          callData,
+          extracted,
+          kind: 'job',
+          jobId: created.jobId,
+        });
       }
     } catch (error) {
       console.error('finishAiReception job:', error);
       updates.aiStatus = 'error';
       updates.aiError = error.message;
     }
+  } else {
+    // Ни заявки, ни отказа: звонок ни во что не вылился — молчание, ошиблись
+    // номером, реклама. Раньше в этом случае не приходило ничего, и звонок
+    // терялся совсем. Теперь это пропущенный.
+    await notifyCallOutcome({ callSid, callData, extracted, kind: 'missed' });
   }
 
   await callsRef.doc(callSid).set(updates, { merge: true });
@@ -2977,7 +3003,7 @@ exports.dialAction = functions.https.onRequest(voiceAiRuntime, async (req, res) 
         try {
           const calledAt = voiceFacts.formatTorontoStamp();
           await notifyMaster(
-            callerGone ? 'Звонок сброшен' : 'Пропущенный вызов',
+            'Пропущенный звонок',
             `${data.fromNumber || ''}\n${calledAt}`,
             {
               type: 'call',
@@ -3914,21 +3940,13 @@ ${transcription || transcriptionEn || liveLabeled}`;
         created = await createDraftJobFromCall(callId, extracted, matchedClient);
         jobId = created.jobId || jobId;
         if (created.created && created.jobId && callAgeHours(callData) <= 4) {
-          try {
-            await notifyMaster(
-              'Заявка с телефона',
-              String(extracted.client_name || extracted.appliance_type || callerNumber || ''),
-              {
-                type: 'job',
-                source: 'phone',
-                jobId: created.jobId,
-                callId,
-                from: callerNumber || '',
-              }
-            );
-          } catch (error) {
-            console.warn('processRecording job notify:', error.message);
-          }
+          await notifyCallOutcome({
+            callSid: callId,
+            callData,
+            extracted,
+            kind: 'job',
+            jobId: created.jobId,
+          });
         }
       } catch (jobError) {
         console.error(`createDraftJobFromCall(${callId}) failed:`, jobError);
@@ -3982,15 +4000,13 @@ ${transcription || transcriptionEn || liveLabeled}`;
     await callsRef.doc(callId).set(callUpdates, { merge: true });
 
     if (declined && !jobId && callData.serviceDeclined !== true) {
-      try {
-        await notifyMaster(
-          'Звонок: заявку не создаём',
-          String(extracted.decline_reason || extracted.client_name || callerNumber || ''),
-          { type: 'call', callId, from: callerNumber || '' }
-        );
-      } catch (error) {
-        console.warn('processRecording declined notify:', error.message);
-      }
+      await notifyCallOutcome({
+        callSid: callId,
+        callData,
+        extracted,
+        kind: 'missed',
+        reason: String(extracted.decline_reason || ''),
+      });
     }
 
     console.log(`AI processing done for call ${callId}, job=${jobId || 'none'}`);
