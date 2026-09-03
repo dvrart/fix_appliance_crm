@@ -525,6 +525,7 @@ async function runBackgroundExtract(session) {
 
 function clearSessionTimers(session) {
   clearReplyWatchdog(session);
+  clearAuthGrace(session);
   if (session.extractTimer) {
     clearTimeout(session.extractTimer);
     session.extractTimer = null;
@@ -1295,6 +1296,15 @@ async function hydrateCall(session, callSid, fromNumber) {
 async function onLiveStart(session, message) {
   const start = message.start || {};
   const custom = start.customParameters || {};
+  if (!relayKeyOk(custom)) {
+    session.closed = true;
+    try {
+      session.twilioWs.close(1008, 'unauthorized');
+    } catch (_) {}
+    return;
+  }
+  session.authorized = true;
+  clearAuthGrace(session);
   session.streamSid = start.streamSid || message.streamSid;
   session.engine = 'gemini-live';
   session.greetingSpoken = String(custom.greetingSpoken || '') === '1';
@@ -1461,7 +1471,9 @@ function handleSocket(ws) {
     outLeftover: new Int16Array(0),
     userPartial: '',
     assistantPartial: '',
+    authorized: false,
   };
+  armAuthGrace(ws, session);
   ws.on('message', async (raw) => {
     let message;
     try {
@@ -1497,20 +1509,42 @@ function getWss() {
   return wss;
 }
 
-// Секрет из адреса стрима (index.js relayUrlWithKey). Twilio не подписывает
-// upgrade-запрос, а инстанс тут 2GiB на час — без ключа его может занять любой.
-function relayKeyOk(incoming) {
+// Проверка секрета. Ключ приходит НЕ в адресе: Twilio выбрасывает query-строку
+// из <Stream url>, и проверка на upgrade отбивала настоящие звонки — разговор
+// уходил в медленный резервный Gather. Ключ лежит в <Parameter name="k">, то
+// есть виден только в событии start. Поэтому апгрейд пускаем, а сокет без
+// подтверждённого ключа закрываем: сам по себе он ничего не стоит, сессию
+// Gemini поднимает только onLiveStart.
+const RELAY_AUTH_GRACE_MS = 15000;
+
+function relayKeyOk(custom) {
   const expected = process.env.VOICE_RELAY_KEY;
   if (!expected) {
-    console.warn('voiceRelay: VOICE_RELAY_KEY not set, upgrade left open');
+    console.warn('voiceRelay: VOICE_RELAY_KEY not set, stream left open');
     return true;
   }
-  const raw = String(incoming.url || '');
-  const qs = raw.includes('?') ? raw.slice(raw.indexOf('?') + 1) : '';
-  const got = new URLSearchParams(qs).get('k') || '';
+  const got = String((custom && (custom.k || custom.key)) || '');
   if (got === expected) return true;
-  console.warn('voiceRelay: rejected upgrade, bad or missing k');
+  console.warn('voiceRelay: bad or missing k in stream parameters');
   return false;
+}
+
+function armAuthGrace(ws, session) {
+  session.authGrace = setTimeout(() => {
+    session.authGrace = null;
+    if (session.authorized || session.closed) return;
+    console.warn('voiceRelay: closing socket, no valid k within grace');
+    try {
+      ws.close(1008, 'unauthorized');
+    } catch (_) {}
+  }, RELAY_AUTH_GRACE_MS);
+}
+
+function clearAuthGrace(session) {
+  if (session.authGrace) {
+    clearTimeout(session.authGrace);
+    session.authGrace = null;
+  }
 }
 
 function handleRequest(req, res) {
@@ -1520,13 +1554,6 @@ function handleRequest(req, res) {
   const host = String((req.get && req.get('host')) || headers.host || '');
   if (host.includes('run.app') && deps && deps.saveRelayHost) {
     deps.saveRelayHost(`wss://${host.split(',')[0].trim()}`).catch(() => {});
-  }
-  if (upgrade === 'websocket' && !relayKeyOk(incoming)) {
-    if (incoming.socket && !incoming.socket.destroyed) {
-      incoming.socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
-      incoming.socket.destroy();
-    }
-    return;
   }
   if (upgrade === 'websocket') {
     const server = getWss();

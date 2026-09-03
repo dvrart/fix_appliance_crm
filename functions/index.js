@@ -2382,13 +2382,13 @@ async function resolveConversationRelayWss() {
 
 // aiVoiceRelay — публичный WebSocket (Twilio не подписывает upgrade-запрос),
 // поэтому пускаем внутрь только по секрету в адресе стрима.
-function relayUrlWithKey(wss) {
-  let url = String(wss || '');
-  const key = process.env.VOICE_RELAY_KEY;
-  if (!url || !key) return url;
-  // Без пути некоторые клиенты теряют query, поэтому доводим до wss://host/?k=...
-  if (!url.includes('?') && !/^wss:\/\/[^/]+\//i.test(url)) url = `${url}/`;
-  return `${url}${url.includes('?') ? '&' : '?'}k=${encodeURIComponent(key)}`;
+// Twilio НЕ передаёт query-строку в адресе <Stream> — параметры он отдаёт
+// отдельными тегами <Parameter> уже внутри события start. Ключ в адресе
+// приводил к тому, что релей отбивал настоящие звонки Twilio, и разговор
+// уходил в медленный резервный режим Gather. Поэтому адрес оставляем чистым,
+// а ключ кладём параметром рядом с callSid.
+function relayStreamKey() {
+  return String(process.env.VOICE_RELAY_KEY || '');
 }
 
 function twimlGatherSpeech(req, { say, language }) {
@@ -2487,8 +2487,10 @@ function twimlConversationRelay(req, { url, greeting, callSid }) {
     speechTimeout: 400,
     hints: VOICE_HINTS,
   });
-  if (callSid && typeof relay.parameter === 'function') {
-    relay.parameter({ name: 'callSid', value: callSid });
+  if (typeof relay.parameter === 'function') {
+    const key = relayStreamKey();
+    if (key) relay.parameter({ name: 'k', value: key });
+    if (callSid) relay.parameter({ name: 'callSid', value: callSid });
   }
   relay.language({
     code: 'en-US',
@@ -2516,10 +2518,14 @@ function twimlGeminiLiveStream(req, { url, callSid, greeting }) {
     name: 'gemini-live',
     timeLimit: 3600,
   });
-  if (callSid && typeof stream.parameter === 'function') {
-    stream.parameter({ name: 'callSid', value: callSid });
-    stream.parameter({ name: 'greetingSpoken', value: '0' });
-    stream.parameter({ name: 'greeting', value: spoken });
+  if (typeof stream.parameter === 'function') {
+    const key = relayStreamKey();
+    if (key) stream.parameter({ name: 'k', value: key });
+    if (callSid) {
+      stream.parameter({ name: 'callSid', value: callSid });
+      stream.parameter({ name: 'greetingSpoken', value: '0' });
+      stream.parameter({ name: 'greeting', value: spoken });
+    }
   }
   return twiml;
 }
@@ -2564,13 +2570,13 @@ async function startAiReception(req, res, callSid, options = {}) {
 
   const wss = forceGather ? '' : await resolveConversationRelayWss();
   if (wss) {
-    const streamUrl = relayUrlWithKey(wss);
+    const keyed = relayStreamKey() ? 'key=yes' : 'key=MISSING';
     if (process.env.USE_CONVERSATION_RELAY === '1') {
-      console.log(`startAiReception relay ${callSid} ${wss}`);
-      sendTwiml(res, twimlConversationRelay(req, { url: streamUrl, greeting, callSid }));
+      console.log(`startAiReception relay ${callSid} ${wss} ${keyed}`);
+      sendTwiml(res, twimlConversationRelay(req, { url: wss, greeting, callSid }));
     } else {
-      console.log(`startAiReception live ${callSid} ${wss}`);
-      sendTwiml(res, twimlGeminiLiveStream(req, { url: streamUrl, callSid, greeting }));
+      console.log(`startAiReception live ${callSid} ${wss} ${keyed}`);
+      sendTwiml(res, twimlGeminiLiveStream(req, { url: wss, callSid, greeting }));
     }
     scheduleCallRecording(callSid, req);
     completeAiPickup(callSid, data, greeting).catch((error) => {
