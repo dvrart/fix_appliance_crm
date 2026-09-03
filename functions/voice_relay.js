@@ -73,6 +73,15 @@ const END_SENSITIVITY =
     ? 'END_SENSITIVITY_LOW'
     : 'END_SENSITIVITY_HIGH';
 
+// Страховка на случай, когда модель молчит после реплики клиента: её толкают
+// заговорить. Было 3500 мс — это и слышалось как «пауза три с половиной
+// секунды». Модель отвечает сама за ~540 мс, так что ждать дольше секунды
+// незачем.
+const STALL_MS = (() => {
+  const raw = Number(process.env.VOICE_STALL_MS);
+  return Number.isFinite(raw) && raw >= 600 && raw <= 5000 ? Math.round(raw) : 1100;
+})();
+
 /// 2.5 Live думает по умолчанию (секунды тишины). 3.1 — через thinkingLevel.
 function thinkingConfigFor(model) {
   const name = String(model || '').toLowerCase();
@@ -589,7 +598,7 @@ function armReplyWatchdog(session) {
     console.warn(`voiceLive stall ${session.callSid} n=${session.stallNudge}`);
     if (session.stallNudge > 1) return;
     nudgeKeepTalking(session, lastUser);
-  }, 3500);
+  }, STALL_MS);
 }
 
 function clearReplyWatchdog(session) {
@@ -1066,12 +1075,15 @@ function handleGeminiMessage(session, raw) {
   }
   const output = pick(content, 'outputTranscription', 'output_transcription');
   if (output && output.text) {
-    clearReplyWatchdog(session);
     // Ответ модели приходит отдельным потоком и часто завершается раньше, чем
     // расшифровка клиента. Без этого в стенограмме реплика секретаря
     // оказывалась ВЫШЕ вопроса, на который она отвечает, и разбор звонка
     // потом винил секретаря в том, чего не было.
+    // Порядок важен: flushPartial('userPartial') снова взводит сторожевой
+    // таймер, поэтому снимать его надо ПОСЛЕ сброса, иначе он срабатывает на
+    // каждый ответ и добавляет к разговору лишние секунды.
     if (session.userPartial) flushPartial(session, 'userPartial');
+    clearReplyWatchdog(session);
     setPartial(session, 'assistantPartial', output.text, output.finished === true);
   }
   const turn = pick(content, 'modelTurn', 'model_turn') || {};
