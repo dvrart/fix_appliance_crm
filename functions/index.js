@@ -2504,7 +2504,10 @@ function twimlGeminiLiveStream(req, { url, callSid, greeting }) {
   const twiml = new twilio.twiml.VoiceResponse();
   startCallRecordingNoun(twiml, req);
   const spoken = englishGreetingOnly(greeting) || DEFAULT_VOICE_GREETING;
-  twiml.say(sayAttrs('en'), spoken);
+  // Приветствие говорит сама модель, своим голосом, уже внутри потока.
+  // Раньше здесь был <Say>: поток подключался только после того, как Twilio
+  // договорит, и всё сказанное звонящим в это время пропадало. Установка
+  // сессии Gemini измеренно занимает ~250 мс, так что тишины почти нет.
   const connect = twiml.connect({
     action: functionUrl(req, 'aiRelayComplete'),
   });
@@ -2515,7 +2518,7 @@ function twimlGeminiLiveStream(req, { url, callSid, greeting }) {
   });
   if (callSid && typeof stream.parameter === 'function') {
     stream.parameter({ name: 'callSid', value: callSid });
-    stream.parameter({ name: 'greetingSpoken', value: '1' });
+    stream.parameter({ name: 'greetingSpoken', value: '0' });
     stream.parameter({ name: 'greeting', value: spoken });
   }
   return twiml;

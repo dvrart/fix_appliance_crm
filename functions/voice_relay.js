@@ -59,7 +59,9 @@ function uniqueModels() {
 // Скорость реакции. Меняется переменными окружения, деплой функций без правки кода.
 const SILENCE_MS = (() => {
   const raw = Number(process.env.VOICE_SILENCE_MS);
-  return Number.isFinite(raw) && raw >= 200 && raw <= 1200 ? Math.round(raw) : 420;
+  // Замер: сама модель отвечает ~640 мс. Плюс это ожидание — столько клиент
+  // и слышит как паузу. 320 мс даёт около секунды в сумме, ближе к живой речи.
+  return Number.isFinite(raw) && raw >= 200 && raw <= 1200 ? Math.round(raw) : 320;
 })();
 const END_SENSITIVITY =
   String(process.env.VOICE_END_SENSITIVITY || '').toUpperCase() === 'LOW'
@@ -168,9 +170,12 @@ function liveSystemPrompt(profile, session) {
   const visitDays = profile.workDaysLabel || 'Monday–Friday';
   const closedDays = profile.closedDaysLabel || '';
   const area = String((profile && profile.serviceArea) || '').trim();
+  const opening = session.greetingSpoken
+    ? 'Hello already played. Do not greet again. Wait.'
+    : 'You pick up the phone. Say the greeting once, warmly and briskly, then stop and wait.';
   return `You are a real woman answering the shop phone for FixApplianceCA. Not a script. Not a form.
 
-Hello already played. Do not greet again. Wait. When they speak, first words are ordinary — a real reaction, then one easy follow-up. If they say the dryer is broken: "Oh no — what's it doing?" not their name, not the address.
+${opening} When they speak, first words are ordinary — a real reaction, then one easy follow-up. If they say the dryer is broken: "Oh no — what's it doing?" not their name, not the address.
 
 Caller phone (do not ask): ${session.fromNumber || 'unknown'}
 Today (Toronto): ${today}
