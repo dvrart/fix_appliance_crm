@@ -672,16 +672,27 @@ function sendTwilioClear(session) {
   session.outLeftover = new Int16Array(0);
 }
 
+// Twilio ждёт кадры по 20 мс — это 160 байт mulaw при 8 кГц. Gemini присылает
+// куски по несколько сотен миллисекунд, и мы отправляли их одним сообщением:
+// один кадр «на полсекунды» вместо двадцати пяти. Twilio такие пачки принимает
+// плохо и рвёт соединение без закрытия (в журнале это код 1006).
+const TWILIO_FRAME_BYTES = 160;
+
 function sendTwilioAudio(session, pcm, sampleRate) {
   if (!session.streamSid || session.closed) return;
   const { pcm8, leftover } = downsampleTo8k(pcm, sampleRate, session.outLeftover);
   session.outLeftover = leftover;
   if (!pcm8.length) return;
-  sendJson(session.twilioWs, {
-    event: 'media',
-    streamSid: session.streamSid,
-    media: { payload: pcm16ToMulaw(pcm8).toString('base64') },
-  });
+  const mulaw = pcm16ToMulaw(pcm8);
+  for (let at = 0; at < mulaw.length; at += TWILIO_FRAME_BYTES) {
+    const frame = mulaw.subarray(at, at + TWILIO_FRAME_BYTES);
+    if (!frame.length) break;
+    sendJson(session.twilioWs, {
+      event: 'media',
+      streamSid: session.streamSid,
+      media: { payload: Buffer.from(frame).toString('base64') },
+    });
+  }
 }
 
 function forwardMulawToGemini(session, payload) {
