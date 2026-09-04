@@ -1661,6 +1661,16 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
   if (kind === 'confirmed' && (compactReply === '1' || compactReply === 'yes' || compactReply === 'да' || compactReply === 'ok' || compactReply === 'ок')) {
     const pending = await findPendingJob(from, clientId);
     if (pending) return confirmVisitMatch(pending, from, clientId);
+    // Клиент подтвердил, а подходящего визита нет: заявку удалили, закрыли или
+    // визит уже прошёл. Раньше «1» в этом случае просто исчезала — владелец
+    // ждал, что статус сменится, и не понимал, почему ничего не происходит.
+    console.warn(`visitSms: «${text}» от ${from} не к чему привязать`);
+    await notifyMaster(
+      'Клиент подтвердил, но заявка не найдена',
+      `${from} прислал «${String(text || '').trim().slice(0, 20)}» — открытого визита нет`,
+      { type: 'visit_confirm', peer: from || '', unmatched: '1' }
+    );
+    return true;
   }
 
   const dialogMatch = await findDialogJob(from, clientId);
