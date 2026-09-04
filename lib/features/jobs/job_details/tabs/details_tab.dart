@@ -18,6 +18,7 @@ import '../editors/call_recording_page.dart';
 import '../editors/source_email_page.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/utils/formatters.dart';
+import '../../../../shared/widgets/app_bar_save.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
 import '../../../../shared/widgets/visit_confirm_badge.dart';
 import '../../../../shared/widgets/appliance_picture.dart';
@@ -1024,6 +1025,9 @@ class _DetailsTabState extends State<DetailsTab> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (sheetContext) {
+        // Подсказка внутри окна: ScaffoldMessenger рисует её ПОД модальным
+        // окном, поэтому нажатие выглядело как «кнопка не работает».
+        var siteError = '';
         return KeyboardAvoidingSheet(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
           child: StatefulBuilder(
@@ -1141,9 +1145,26 @@ class _DetailsTabState extends State<DetailsTab> {
                       ),
                     ),
                   ),
+                  if (siteError.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.error_outline,
+                              color: Colors.red, size: 18),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              siteError,
+                              style: const TextStyle(color: Colors.red),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   Center(
                     child: RoundActionButton(
-                      color: const Color(0xFF22C55E),
+                      color: kConfirmGreen,
                       icon: Icons.check_rounded,
                       tooltip: 'OK'.tr,
                       onTap: () {
@@ -1153,16 +1174,10 @@ class _DetailsTabState extends State<DetailsTab> {
                           cityCtrl.text.trim(),
                           postalCtrl.text.trim(),
                         ].where((p) => p.isNotEmpty).join(', ');
-                        if (nameCtrl.text.trim().isEmpty ||
-                            phoneCtrl.text.trim().isEmpty ||
-                            address.isEmpty) {
-                          ScaffoldMessenger.of(sheetContext).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                'Укажите имя, телефон и адрес работы'.tr,
-                              ),
-                            ),
-                          );
+                        // Держит только адрес — ехать надо по нему. Имя и
+                        // телефон на месте часто неизвестны заранее.
+                        if (address.isEmpty) {
+                          setSheet(() => siteError = 'Укажите адрес работы'.tr);
                           return;
                         }
                         ctrl.updateJobSite(

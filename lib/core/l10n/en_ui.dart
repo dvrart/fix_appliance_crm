@@ -145,6 +145,8 @@ const Map<String, String> kEnglishUi = {
   'Другой адрес работы': 'Different job-site address',
   'Адрес работы (куда ехать)...': 'Job-site address (where to go)...',
   'Укажите имя, телефон и адрес работы': 'Enter name, phone and job-site address',
+  'Укажите адрес работы': 'Enter the job-site address',
+  'Укажите адрес, куда ехать': 'Enter the address to drive to',
   'Убрать': 'Remove',
   'Сохранение…': 'Saving…',
   'Сохранение...': 'Saving...',

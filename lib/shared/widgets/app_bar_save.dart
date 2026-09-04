@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import '../../core/app_commands.dart';
 import '../../core/l10n/app_locale.dart';
 
-const _saveGreen = Color(0xFF22C55E);
+/// Зелёный «подтвердить». Один и тот же во всём приложении — и в нижней
+/// кнопке страницы, и в кнопках «OK» внутри всплывающих окон.
+const Color kConfirmGreen = Color(0xFF22C55E);
+const _saveGreen = kConfirmGreen;
 
 /// Rectangular green check at the bottom of a page.
 class BottomConfirmButton extends StatelessWidget {

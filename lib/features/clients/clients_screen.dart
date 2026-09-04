@@ -516,7 +516,10 @@ class _ClientsScreenState extends State<ClientsScreen> {
                           RoundActionButton(
                             color: const Color(0xFFE53935),
                             icon: Icons.close_rounded,
-                            tooltip: 'Удалить'.tr,
+                            // Кнопка закрывает окно и ничего не удаляет.
+                            // Подпись «Удалить» пугала: казалось, что нажатие
+                            // сотрёт карточку клиента.
+                            tooltip: 'Закрыть'.tr,
                             size: 72,
                             onTap: requestClose,
                           ),

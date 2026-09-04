@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/api_keys.dart';
 import '../core/constants.dart';
 import '../core/l10n/app_locale.dart';
+import '../shared/widgets/app_bar_save.dart';
 import '../shared/widgets/dirty_leave_scope.dart';
 import '../shared/widgets/keyboard_safe.dart';
 
@@ -185,20 +186,6 @@ void showSmartAddressPicker({
                                     ),
                                   ),
                               ],
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: () async {
-                              if (await persist() && sheetContext.mounted) {
-                                Navigator.pop(sheetContext);
-                              }
-                            },
-                            child: Text(
-                              'Готово'.tr,
-                              style: TextStyle(
-                                color: AppColors.accent,
-                                fontWeight: FontWeight.bold,
-                              ),
                             ),
                           ),
                           IconButton(
@@ -438,6 +425,38 @@ void showSmartAddressPicker({
                       ),
                       const SizedBox(height: 16),
                       ],
+                      // Подтверждение внизу, зелёной кнопкой, как на остальных
+                      // экранах. Раньше это было «Готово» в правом верхнем углу
+                      // — мелкой ссылкой рядом с крестиком закрытия.
+                      SafeArea(
+                        minimum: const EdgeInsets.only(bottom: 10),
+                        child: SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: kConfirmGreen,
+                              foregroundColor: Colors.white,
+                              minimumSize: const Size.fromHeight(52),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            onPressed: () async {
+                              if (await persist() && sheetContext.mounted) {
+                                Navigator.pop(sheetContext);
+                              }
+                            },
+                            icon: const Icon(Icons.check_rounded, size: 26),
+                            label: Text(
+                              'Готово'.tr,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                     );

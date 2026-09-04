@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app_commands.dart';
-import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../unsaved_navigation_gate.dart';
 
@@ -95,7 +94,9 @@ Future<UnsavedChangesAction> showConfirmActionSheet(
                   _LabeledAction(
                     color: const Color(0xFFE53935),
                     icon: Icons.close_rounded,
-                    label: discardLabel ?? 'Отменить'.tr,
+                    // «Отменить» читалось как «удалить запись». Здесь речь
+                    // только о том, сохранять правки или нет.
+                    label: discardLabel ?? 'Не сохранять'.tr,
                     onTap: () {
                       HapticFeedback.selectionClick();
                       Navigator.pop(context, UnsavedChangesAction.discard);

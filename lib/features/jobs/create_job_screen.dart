@@ -531,6 +531,8 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
   Future<void> _editOwner() async {
     List<Client> suggestions = [];
     var searching = false;
+    // Подсказка внутри окна: через ScaffoldMessenger она рисуется под ним.
+    var ownerError = '';
 
     await showModalBottomSheet<void>(
       context: context,
@@ -725,15 +727,38 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                       ),
                     ),
                   ),
+                  if (ownerError.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.error_outline,
+                              color: Colors.red, size: 18),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              ownerError,
+                              style: const TextStyle(color: Colors.red),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: kConfirmGreen,
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size.fromHeight(52),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
                       onPressed: () async {
                         if (_phoneController.text.trim().isEmpty ||
                             _nameController.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(sheetContext).showSnackBar(
-                            SnackBar(content: Text('Укажите имя и телефон'.tr)),
-                          );
+                          setSheet(() => ownerError = 'Укажите имя и телефон'.tr);
                           return;
                         }
                         final found = await ClientService.findExisting(
@@ -748,7 +773,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                         if (sheetContext.mounted) Navigator.pop(sheetContext);
                         if (mounted) setState(() {});
                       },
-                      child: Text('OK'.tr),
+                      child: Text('Сохранить'.tr),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -905,6 +930,10 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (sheetContext) {
+        // Подсказка живёт внутри окна. Раньше её показывали через
+        // ScaffoldMessenger — она рисовалась ПОД модальным окном, и нажатие
+        // на «OK» выглядело так, будто кнопка не работает.
+        String siteError = '';
         return KeyboardAvoidingSheet(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
           child: StatefulBuilder(
@@ -1006,15 +1035,41 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                       ),
                     ),
                   ),
+                  if (siteError.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.error_outline,
+                              color: Colors.red, size: 18),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              siteError,
+                              style: const TextStyle(color: Colors.red),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: kConfirmGreen,
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size.fromHeight(52),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
                       onPressed: () {
-                        if (_siteNameController.text.trim().isEmpty ||
-                            _sitePhoneController.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(sheetContext).showSnackBar(
-                            SnackBar(content: Text('Укажите имя и телефон'.tr)),
-                          );
+                        // Место работы нужно ради адреса, куда ехать. Имя и
+                        // телефон на месте бывают неизвестны — они больше не
+                        // держат кнопку.
+                        if (_siteStreetCtrl.text.trim().isEmpty &&
+                            _siteCityCtrl.text.trim().isEmpty) {
+                          setSheet(() => siteError = 'Укажите адрес, куда ехать'.tr);
                           return;
                         }
                         _hasDifferentJobSite = true;
@@ -1022,7 +1077,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                         setState(() {});
                         _markDirty();
                       },
-                      child: Text('OK'.tr),
+                      child: Text('Сохранить'.tr),
                     ),
                   ),
                   const SizedBox(height: 12),
