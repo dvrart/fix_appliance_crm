@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Кастомный вид входящего звонка в шторке.
+  Используется как setCustomBigContentView / setCustomHeadsUpContentView
+  в IncomingCallNotifier — даёт зелёную кнопку «Ответить» и красную «Отклонить».
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="4dp"
+    android:paddingEnd="4dp"
+    android:paddingTop="4dp"
+    android:paddingBottom="10dp">
+
+    <!-- Строка: иконка + имя звонящего -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="10dp">
+
+        <ImageView
+            android:id="@+id/call_type_icon"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:padding="6dp"
+            android:src="@drawable/ic_notify_call"
+            android:contentDescription="@null" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:layout_marginStart="8dp">
+
+            <TextView
+                android:id="@+id/call_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Входящий звонок"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/call_caller"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="13sp"
+                android:alpha="0.7" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Кнопки: Отклонить (красная) и Ответить (зелёная) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/btn_decline"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:layout_marginEnd="5dp"
+            android:text="Отклонить"
+            android:textColor="#FFFFFFFF"
+            android:gravity="center"
+            android:textStyle="bold"
+            android:textSize="13sp"
+            android:background="@drawable/bg_btn_decline" />
+
+        <TextView
+            android:id="@+id/btn_answer"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:layout_marginStart="5dp"
+            android:text="Ответить"
+            android:textColor="#FFFFFFFF"
+            android:gravity="center"
+            android:textStyle="bold"
+            android:textSize="13sp"
+            android:background="@drawable/bg_btn_answer" />
+    </LinearLayout>
+</LinearLayout>

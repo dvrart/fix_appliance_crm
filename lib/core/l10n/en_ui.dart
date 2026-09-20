@@ -553,6 +553,12 @@ const Map<String, String> kEnglishUi = {
   'СКАНИРОВАНИЕ...': 'SCANNING...',
   'Сканер этикетки': 'Label scanner',
   'Сканирую…': 'Scanning…',
+  'Сканер ИИ': 'AI scanner',
+  'ИИ читает…': 'AI is reading…',
+  'ИИ разобрал этикетку ✨': 'AI read the label ✨',
+  'Сфотографировать этикетку или деталь': 'Photograph the label or the part',
+  'ИИ сам заполнит номер, название, категорию и назначение':
+      'AI fills in the number, name, category and purpose',
   'Б/у': 'Used',
   'Взаимозаменяемо': 'Interchangeable',
   'Определяю категорию…': 'Finding the category…',

@@ -55,8 +55,9 @@ class TVCallInviteConnection(
     }
 
     override fun onAnswer() {
+        if (state == STATE_ACTIVE || state == STATE_DISCONNECTED) return
         Log.d(TAG, "onAnswer: onAnswer")
-        IncomingCallNotifier.cancel(context)
+        IncomingCallNotifier.cancel(context, getCallParameters()?.callSid)
         super.onAnswer()
         setActive()
         twilioCall = callInvite.accept(context, this)
@@ -76,9 +77,21 @@ class TVCallInviteConnection(
         onReject()
     }
 
+    fun rejectFromNotification() {
+        val complete = Runnable { if (state == STATE_RINGING) rejectInvite() }
+        try {
+            Class.forName("${context.packageName}.CrmCallActions")
+                .getMethod("decline", String::class.java, Runnable::class.java)
+                .invoke(null, callInvite.customParameters["parentCallSid"].orEmpty(), complete)
+        } catch (error: Exception) {
+            Log.w(TAG, "Decline disposition unavailable: ${error.javaClass.simpleName}")
+            complete.run()
+        }
+    }
+
     override fun onReject() {
         Log.d(TAG, "onReject: onReject")
-        IncomingCallNotifier.cancel(context)
+        IncomingCallNotifier.cancel(context, getCallParameters()?.callSid)
         super.onReject()
         callInvite.reject(context)
         // if the call was answered, then immediately rejected/ended, we need to disconnect the call also
@@ -103,7 +116,7 @@ class TVCallInviteConnection(
      */
     fun reportMissedCall() {
         Log.i(TAG, "reportMissedCall: incoming invite cancelled by remote party before answer")
-        IncomingCallNotifier.cancel(context)
+        IncomingCallNotifier.cancel(context, getCallParameters()?.callSid)
         twilioCall?.disconnect()
         // Always emit EVENT_MISSED -> CallEvent.missedCall (parity with iOS, which always sends
         // "Missed Call" and gates only the OS notification). The showNotifications setting controls
@@ -334,7 +347,7 @@ open class TVCallConnection(
     override fun onDisconnected(call: Call, reason: CallException?) {
         // TODO run below only if we did NOT ended call i.e. remove disconnect from other client
         Log.d(TAG, "onDisconnected: onDisconnected, reason: ${reason?.message}.\nException: ${reason.toString()}")
-        IncomingCallNotifier.cancel(context)
+        IncomingCallNotifier.cancel(context, getCallParameters()?.callSid)
         twilioCall = null
         onCallStateListener?.withValue(call.state)
         onEvent?.onChange(TVNativeCallEvents.EVENT_DISCONNECTED_REMOTE, Bundle().apply {
@@ -349,7 +362,7 @@ open class TVCallConnection(
     override fun onAbort() {
         super.onAbort()
         Log.i(TAG, "onAbort: onAbort")
-        IncomingCallNotifier.cancel(context)
+        IncomingCallNotifier.cancel(context, getCallParameters()?.callSid)
         twilioCall?.disconnect()
         setDisconnected(DisconnectCause(DisconnectCause.CANCELED))
         onAction?.onChange(TVNativeCallActions.ACTION_ABORT, null)
@@ -360,7 +373,7 @@ open class TVCallConnection(
     override fun onDisconnect() {
         super.onDisconnect()
         Log.i(TAG, "onDisconnect: onDisconnect")
-        IncomingCallNotifier.cancel(context)
+        IncomingCallNotifier.cancel(context, getCallParameters()?.callSid)
         twilioCall?.disconnect()
         setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
         this.onDisconnected?.withValue(DisconnectCause(DisconnectCause.LOCAL))

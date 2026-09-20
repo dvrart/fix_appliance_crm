@@ -20,10 +20,12 @@ import '../jobs/job_details/job_details_screen.dart';
 import '../jobs/create_job_screen.dart';
 import '../jobs/delivery_van_button.dart';
 import '../jobs/jobs_screen.dart';
+import '../jobs/basket_screen.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/widgets/animated_app_logo.dart';
 import '../../shared/widgets/appliance_logo.dart';
 import '../../shared/widgets/calendar_hatch.dart';
+import '../../shared/widgets/confirm_action_sheet.dart';
 import '../../shared/widgets/visit_confirm_badge.dart';
 import 'visit_link_overlay.dart';
 import 'calendar_event_sheet.dart';
@@ -61,6 +63,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
 
   DateTime? _lastTapTime;
   DateTime? _lastTapDate;
+  DateTime? _lastDragSnap;
   DateTime _focusDate = DateTime.now();
   final ValueNotifier<double> _slotHeight = ValueNotifier<double>(-1);
   final ValueNotifier<bool> _pinching = ValueNotifier<bool>(false);
@@ -163,8 +166,13 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
 
   bool get _visitLinksViewOk {
     final view = _calendarController.view;
+    // Месяц нужен для пункта 10: связанные заявки через неделю, две или три
+    // месяца в режиме недели просто не попадают на экран вместе, и линию
+    // между ними нарисовать физически нельзя. В месяце обе карточки видны.
     return !_showList &&
-        (view == CalendarView.week || view == CalendarView.workWeek);
+        (view == CalendarView.week ||
+            view == CalendarView.workWeek ||
+            view == CalendarView.month);
   }
 
   bool get _visitLinksEnabled => _visitLinksViewOk && _showVisitLinks;
@@ -290,6 +298,49 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   }
 
   bool _showJobOnCalendar(Job job) => !job.isDeleted;
+
+  /// Пункт 1: перетаскивание прилипает к четверти часа — 7:00, 7:15, 7:30…
+  /// Календарь отдаёт произвольную минуту, зависящую от пикселя, куда попал
+  /// палец, поэтому округляем сами.
+  static const int kDragSnapMinutes = 15;
+
+  static DateTime _snapToQuarterHour(DateTime time) {
+    final base = DateTime(time.year, time.month, time.day);
+    final minutes = time.difference(base).inMinutes;
+    final snapped =
+        ((minutes / kDragSnapMinutes).round()) * kDragSnapMinutes;
+    return base.add(Duration(minutes: snapped));
+  }
+
+  /// Пункт 19: «Готово» и «Отменено» двигать нельзя — работа уже закрыта.
+  /// Заявки в работе тащить можно, но с подтверждением переноса.
+  bool _visitDragLocked(Job? job, JobVisit? visit) {
+    if (visit != null && (visit.isDone || visit.isCancelled)) return true;
+    final status = (job?.status ?? '').trim();
+    if (status.isEmpty) return false;
+    return JobStatuses.isCompletedStatus(status) ||
+        JobStatuses.isCancelledStatus(status);
+  }
+
+  void _warnDragLocked() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Закрытую заявку нельзя перенести'.tr),
+        backgroundColor: Colors.orange.shade800,
+      ),
+    );
+  }
+
+  /// Отказ от переноса: Syncfusion уже сдвинул карточку внутри себя, поэтому
+  /// перерисовываем список из снапшота, чтобы она вернулась на место.
+  void _snapCardBack() {
+    if (!mounted) return;
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _visitLinksEnabled) _visitLinkHub.bump();
+    });
+  }
 
   IconData get _viewChipIcon {
     switch (_currentViewMode) {
@@ -612,7 +663,9 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
               }
 
               List<Appointment> appointments = [];
+              final activeAppointmentIds = <String>{};
               final docsById = <String, QueryDocumentSnapshot>{};
+              var unscheduledCount = 0;
               for (final doc in snapshot.data!.docs) {
                 docsById[doc.id] = doc;
                 final data = doc.data() as Map<String, dynamic>;
@@ -625,6 +678,15 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                 if (!_showJobOnCalendar(job)) {
                   continue;
                 }
+                if (job.isUnscheduled) {
+                  unscheduledCount++;
+                  continue;
+                }
+                activeAppointmentIds.addAll(
+                  job.activeVisits.map(
+                    (visit) => JobVisit.appointmentId(doc.id, visit.id),
+                  ),
+                );
                 for (final visit in job.coalescedVisits) {
                   final minutes = visit.durationMinutes > 0
                       ? visit.durationMinutes
@@ -643,6 +705,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                 }
               }
               for (final event in _events) {
+                activeAppointmentIds.add(CalendarEvent.appointmentIdOf(event.id));
                 appointments.add(
                   Appointment(
                     startTime: event.startAt,
@@ -669,7 +732,49 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                 visibleDays: calendarVisibleDayCount(_calendarController.view),
               );
 
-              return LayoutBuilder(
+              return Column(
+                children: [
+                  if (unscheduledCount > 0)
+                    Material(
+                      color: const Color(0xFFE3F2FD),
+                      child: InkWell(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const UnscheduledJobsScreen(),
+                            ),
+                          );
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 10,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.event_busy,
+                                  color: Colors.blue.shade800, size: 20),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  '$unscheduledCount ${'без даты визита'.tr}',
+                                  style: TextStyle(
+                                    color: Colors.blue.shade900,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                              Icon(Icons.chevron_right,
+                                  color: Colors.blue.shade800, size: 20),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  Expanded(
+                    child: LayoutBuilder(
                 builder: (context, constraints) {
                   _calendarViewHeight = constraints.maxHeight;
                   return Listener(
@@ -730,10 +835,28 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                   allowScroll: true,
                   showTimeIndicator: true,
                 ),
+                // Пункт 19: заявка «взялась» — короткая вибрация, чтобы палец
+                // понимал, что дальше карточка едет за ним.
+                onDragStart: (AppointmentDragStartDetails details) {
+                  _lastDragSnap = null;
+                  AppFeedback.haptic();
+                },
+                onDragUpdate: (AppointmentDragUpdateDetails details) {
+                  final draggingTime = details.draggingTime;
+                  if (draggingTime == null) return;
+                  final snapped = _snapToQuarterHour(draggingTime);
+                  if (_lastDragSnap != null &&
+                      _lastDragSnap!.isAtSameMomentAs(snapped)) {
+                    return;
+                  }
+                  _lastDragSnap = snapped;
+                  AppFeedback.haptic();
+                },
                 onDragEnd: (AppointmentDragEndDetails details) async {
                   final appointment = details.appointment;
-                  final newTime = details.droppingTime;
-                  if (appointment is! Appointment || newTime == null) return;
+                  final dropped = details.droppingTime;
+                  if (appointment is! Appointment || dropped == null) return;
+                  final newTime = _snapToQuarterHour(dropped);
 
                   if (CalendarEvent.isAppointmentId(appointment.id)) {
                     final eventId =
@@ -764,10 +887,37 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
 
                   final jobId = JobVisit.jobIdFromAppointment(appointment.id);
                   final visitId = JobVisit.visitIdFromAppointment(appointment.id);
+
+                  // Пункт 19: выполненную работу не переносим.
+                  final lockDoc = docsById[jobId];
+                  if (lockDoc != null) {
+                    Job? lockJob;
+                    try {
+                      lockJob = Job.fromMap(
+                        lockDoc.data() as Map<String, dynamic>,
+                        jobId,
+                      );
+                    } catch (_) {}
+                    final lockVisit = lockJob == null
+                        ? null
+                        : JobVisit.matchForAppointment(
+                            lockJob.coalescedVisits,
+                            visitId,
+                            appointment.startTime,
+                          );
+                    if (_visitDragLocked(lockJob, lockVisit)) {
+                      _warnDragLocked();
+                      return;
+                    }
+                  }
+
                   final duration = appointment.endTime.difference(appointment.startTime);
                   final newEnd = newTime.add(duration);
                   final overlaps = appointments.any((other) {
                     if (other.id.toString() == appointment.id.toString()) return false;
+                    if (!activeAppointmentIds.contains(other.id.toString())) {
+                      return false;
+                    }
                     return newTime.isBefore(other.endTime) &&
                         newEnd.isAfter(other.startTime);
                   });
@@ -782,6 +932,46 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                         ),
                       );
                     }
+                    _snapCardBack();
+                    return;
+                  }
+
+                  // Пункт 19: перенос сохраняем только после подтверждения.
+                  if (!mounted) return;
+                  final approved = await showConfirmCancelSheet(
+                    context,
+                    title: 'Перенести заявку?'.tr,
+                    message:
+                        '${DateFormat('EEEE, d MMMM', AppLocale.instance.dateLocale).format(appointment.startTime)}'
+                        ' · ${DateFormat('HH:mm').format(appointment.startTime)}'
+                        '\n↓\n'
+                        '${DateFormat('EEEE, d MMMM', AppLocale.instance.dateLocale).format(newTime)}'
+                        ' · ${DateFormat('HH:mm').format(newTime)}',
+                    confirmLabel: 'Перенести'.tr,
+                  );
+                  if (!approved) {
+                    _snapCardBack();
+                    return;
+                  }
+
+                  // Load config for working hours validation
+                  final config = await SettingsService.loadConfig();
+                  final workStart = SettingsService.readWorkStartMinutes(config);
+                  final workEnd = SettingsService.readWorkEndMinutes(config);
+                  final durationMins = duration.inMinutes.clamp(15, 8 * 60);
+                  final newTimeInToronto = AppTimeService.bookingWallClock(newTime);
+                  final newMinutes = newTimeInToronto.hour * 60 + newTimeInToronto.minute;
+                  final isWorkDay = SettingsService.isVisitDay(config, newTime);
+                  if (!isWorkDay || newMinutes < workStart || newMinutes + durationMins > workEnd) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Это время за пределами рабочего расписания'.tr),
+                          backgroundColor: Colors.orange.shade800,
+                        ),
+                      );
+                    }
+                    _snapCardBack();
                     return;
                   }
 
@@ -1002,6 +1192,16 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                         ),
                       );
                     },
+                    // Пункт 19: перехватываем долгое нажатие на выполненной
+                    // работе, иначе календарь поднимет карточку и начнёт
+                    // перенос. onDragEnd такой перенос всё равно отклонит, но
+                    // карточка не должна даже отрываться.
+                    onLongPress: _visitDragLocked(parsedJob, visit)
+                        ? () {
+                            AppFeedback.haptic();
+                            _warnDragLocked();
+                          }
+                        : null,
                     child: HatchedCalendarCard(
                       color: app.color,
                       borderRadius: radius,
@@ -1087,6 +1287,11 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                               hub: _visitLinkHub,
                                               overlayKey: _visitLinkOverlayKey,
                                               catalog: linkCatalog,
+                                              timeRulerWidth:
+                                                  _calendarController.view ==
+                                                          CalendarView.month
+                                                      ? 0
+                                                      : 52,
                                             ),
                                           ),
                                         ),
@@ -1109,6 +1314,9 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                     ),
                   );
                 },
+                    ),
+                  ),
+                ],
               );
             },
           );

@@ -149,6 +149,7 @@ class ClientsDuplicatesScreen extends StatefulWidget {
 class _ClientsDuplicatesScreenState extends State<ClientsDuplicatesScreen> {
   late final List<ClientMatchGroup> _groups;
   final Set<String> _selectedIds = {};
+  bool _merging = false;
 
   @override
   void initState() {
@@ -227,6 +228,69 @@ class _ClientsDuplicatesScreenState extends State<ClientsDuplicatesScreen> {
     }
   }
 
+  Future<void> _mergeGroup(List<Map<String, dynamic>> clients) async {
+    if (clients.isEmpty) return;
+    // First client in the group is the "keep" (sorted by completeness already)
+    final keepId = (clients.first['id'] ?? '').toString();
+    if (keepId.isEmpty) return;
+
+    final mergeIds = clients.skip(1)
+        .map((c) => (c['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty && _selectedIds.contains(id))
+        .toList();
+    if (mergeIds.isEmpty) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      useRootNavigator: true,
+      builder: (context) => AlertDialog(
+        title: Text('Объединить клиентов?'.tr),
+        content: Text(
+          '${mergeIds.length + 1} ${'карточек будут объединены в одну.'.tr}\n'
+          '${'Заявки, адреса и заметки перейдут к основной карточке.'.tr}\n'
+          '${'История звонков и SMS останется в приложении (по номеру телефона).'.tr}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Отмена'.tr),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+            ),
+            child: Text('Объединить'.tr),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+
+    setState(() => _merging = true);
+    var moved = 0;
+    for (final mergeId in mergeIds) {
+      final result = await ClientService.mergeInto(keepId: keepId, mergeId: mergeId);
+      if (result.success) moved += result.jobsMoved;
+    }
+    if (!mounted) return;
+    setState(() => _merging = false);
+    Navigator.pop(context);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            moved > 0
+                ? '${'Объединено'.tr}. ${'Заявок перенесено'.tr}: $moved'
+                : 'Объединено'.tr,
+          ),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -240,6 +304,29 @@ class _ClientsDuplicatesScreenState extends State<ClientsDuplicatesScreen> {
               : '${'Совпадения'.tr} · ${_selectedIds.length}',
         ),
         actions: [
+          if (_merging)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: SizedBox(
+                width: 20, height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              ),
+            )
+          else
+            IconButton(
+              tooltip: 'Объединить'.tr,
+              onPressed: _selectedIds.isEmpty ? null : () async {
+                // Find the group that contains selected ids
+                for (final group in _groups) {
+                  final groupIds = group.clients.map((c) => (c['id'] ?? '').toString()).toSet();
+                  if (_selectedIds.any(groupIds.contains)) {
+                    await _mergeGroup(group.clients);
+                    return;
+                  }
+                }
+              },
+              icon: const Icon(Icons.merge_type),
+            ),
           IconButton(
             tooltip: 'Удалить'.tr,
             onPressed: _selectedIds.isEmpty ? null : _deleteSelected,
@@ -294,41 +381,52 @@ class _ClientsDuplicatesScreenState extends State<ClientsDuplicatesScreen> {
     final email = ((data['email'] ?? '') as String).trim();
     final selected = _selectedIds.contains(id);
 
-    return ListTile(
-      dense: true,
-      leading: Checkbox(
-        value: selected,
-        activeColor: AppColors.primary,
-        onChanged: (value) {
-          setState(() {
-            if (value == true) {
-              _selectedIds.add(id);
-            } else {
-              _selectedIds.remove(id);
-            }
-          });
+    return Container(
+      decoration: keep
+          ? BoxDecoration(
+              border: Border(left: BorderSide(color: AppColors.primary, width: 3)),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(4),
+                bottomLeft: Radius.circular(4),
+              ),
+            )
+          : null,
+      child: ListTile(
+        dense: true,
+        leading: Checkbox(
+          value: selected,
+          activeColor: AppColors.primary,
+          onChanged: (value) {
+            setState(() {
+              if (value == true) {
+                _selectedIds.add(id);
+              } else {
+                _selectedIds.remove(id);
+              }
+            });
+          },
+        ),
+        title: Text(
+          name == 'Без имени' ? 'Без имени'.tr : name,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        subtitle: Text(
+          [if (keep) 'Оставить этого'.tr, phone, email]
+              .where((e) => e.toString().trim().isNotEmpty)
+              .join(' · '),
+        ),
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ClientDetailsScreen(
+                clientId: id,
+                clientData: data,
+              ),
+            ),
+          );
         },
       ),
-      title: Text(
-        name == 'Без имени' ? 'Без имени'.tr : name,
-        style: const TextStyle(fontWeight: FontWeight.w600),
-      ),
-      subtitle: Text(
-        [if (keep) 'Оставить этого'.tr, phone, email]
-            .where((e) => e.toString().trim().isNotEmpty)
-            .join(' · '),
-      ),
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => ClientDetailsScreen(
-              clientId: id,
-              clientData: data,
-            ),
-          ),
-        );
-      },
     );
   }
 }

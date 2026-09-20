@@ -70,4 +70,8 @@ class FirestoreService {
   /// Сообщения заявки
   static CollectionReference jobMessagesRef(String jobId) =>
       jobsRef.doc(jobId).collection('messages');
+
+  /// Отложенные SMS / письма (ожидают отправки)
+  static CollectionReference get scheduledMessagesRef =>
+      companyRef.collection('scheduled_messages');
 }

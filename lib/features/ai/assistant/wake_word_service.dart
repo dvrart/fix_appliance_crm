@@ -21,8 +21,12 @@ class WakeWordService extends ChangeNotifier {
     'gemini-2.0-flash',
   ];
 
-  final _recorder = AudioRecorder();
-  final _stt = stt.SpeechToText();
+  WakeWordService({AudioRecorder? recorder, stt.SpeechToText? speech})
+      : _recorder = recorder ?? AudioRecorder(),
+        _stt = speech ?? stt.SpeechToText();
+
+  final AudioRecorder _recorder;
+  final stt.SpeechToText _stt;
 
   bool _enabled = false;
   bool _starting = false;
@@ -32,9 +36,12 @@ class WakeWordService extends ChangeNotifier {
   bool _sttListening = false;
   bool _useStt = true;
   bool isArmed = false;
+  bool _disposed = false;
   int _epoch = 0;
+  Future<void> _transition = Future<void>.value();
   StreamSubscription<Uint8List>? _micSub;
   Timer? _reconnectTimer;
+  Timer? _wakeTimer;
   DateTime _nextProbeAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   final List<int> _preRoll = [];
@@ -246,71 +253,119 @@ class WakeWordService extends ChangeNotifier {
     return math.sqrt(sum / count) / 32768.0;
   }
 
-  Future<void> start() async {
-    if (_waking || _starting) return;
-    if (_enabled && isArmed) return;
-    _enabled = true;
-    if (_useStt) {
-      await _listenStt();
-    } else {
-      await _listenPcm();
-    }
+  bool get isRunning =>
+      !_disposed && (_enabled || _starting || isArmed || _waking);
+
+  bool _isCurrent(int epoch) =>
+      !_disposed && _enabled && !_waking && epoch == _epoch;
+
+  bool _canStart(int epoch) =>
+      _isCurrent(epoch) && !AssistantAudioService.playback.isActive;
+
+  Future<void> _serialize(Future<void> Function() action) {
+    final next = _transition.then((_) => action());
+    _transition = next.catchError((Object error) {
+      debugPrint('WakeWord transition failed: $error');
+    });
+    return next;
   }
 
-  Future<void> stop() async {
+  Future<void> start() {
+    if (_disposed || _waking || (_enabled && (_starting || isArmed))) {
+      return _transition;
+    }
+    _enabled = true;
+    return _listen(_epoch);
+  }
+
+  Future<void> stop() {
     _epoch++;
     _enabled = false;
     _waking = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _wakeTimer?.cancel();
+    _wakeTimer = null;
     _capturing = false;
     _loudChunks = 0;
     _quietChunks = 0;
     _preRoll.clear();
     _utterance.clear();
+    return _disposed ? _transition : _serialize(_stopNative);
+  }
+
+  Future<void> _stopNative() async {
     await _stopStt();
     await _tearDown();
-    _starting = false;
     _setArmed(false);
   }
 
   Future<void> _stopStt() async {
     _sttListening = false;
     try {
-      if (_stt.isListening) await _stt.stop();
+      await _stt.cancel();
     } catch (_) {}
     await AssistantAudioService.muteRecognitionBeeps(false);
   }
 
   Future<void> _tearDown() async {
-    await _micSub?.cancel();
+    final sub = _micSub;
     _micSub = null;
     try {
-      if (await _recorder.isRecording()) {
-        await _recorder.stop();
-      }
+      await sub?.cancel();
+    } catch (_) {}
+    try {
+      await _recorder.stop();
     } catch (_) {}
   }
 
   void _setArmed(bool value) {
     if (isArmed == value) return;
     isArmed = value;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
-  Future<void> _listenStt() async {
-    if (!_enabled || _starting || _waking) return;
-    _starting = true;
-    final epoch = _epoch;
+  Future<bool> _allowListening(int epoch) async {
+    if (!_isCurrent(epoch)) return false;
+    final allowed = await AssistantAudioService.canListenForWake();
+    if (!_isCurrent(epoch)) return false;
+    if (allowed && !AssistantAudioService.playback.isActive) return true;
+    await _stopNative();
+    if (_isCurrent(epoch)) _scheduleReconnect(epoch);
+    return false;
+  }
+
+  Future<void> _listen(int epoch) => _serialize(() async {
+        if (!_isCurrent(epoch)) return;
+        if (_useStt && (_sttListening || _stt.isListening)) return;
+        if (!_useStt && _micSub != null) return;
+        _starting = true;
+        try {
+          if (!await _allowListening(epoch) || !_canStart(epoch)) return;
+          if (_useStt) {
+            await _listenStt(epoch);
+          } else {
+            await _listenPcm(epoch);
+          }
+        } finally {
+          _starting = false;
+          if (!_canStart(epoch)) {
+            await _stopNative();
+            if (_isCurrent(epoch)) _scheduleReconnect(epoch);
+          }
+        }
+      });
+
+  Future<void> _listenStt(int epoch) async {
+    if (!_canStart(epoch)) return;
     try {
       final mic = await Permission.microphone.request();
-      if (!mic.isGranted || !_enabled || epoch != _epoch) {
-        if (!mic.isGranted && _enabled && epoch == _epoch) {
-          onBlocked?.call(
-            'Нет доступа к микрофону — слово «$_wakeWord» не услышит. '
-            'Разрешите микрофон для приложения.',
-          );
-        }
+      if (!_canStart(epoch)) return;
+      if (!mic.isGranted) {
+        onBlocked?.call(
+          'Нет доступа к микрофону — слово «$_wakeWord» не услышит. '
+          'Разрешите микрофон для приложения.',
+        );
         return;
       }
 
@@ -318,29 +373,32 @@ class WakeWordService extends ChangeNotifier {
         _sttReady = await _stt.initialize(
           onStatus: _onSttStatus,
           onError: (error) {
+            if (!_isCurrent(_epoch) || !_useStt || !_sttListening) return;
             debugPrint('WakeWord STT error: ${error.errorMsg}');
             _sttListening = false;
-            _scheduleSttReconnect();
+            _setArmed(false);
+            _scheduleReconnect(_epoch);
           },
         );
+        if (!_canStart(epoch)) return;
       }
-      if (!_sttReady || !_enabled || epoch != _epoch) {
+      if (!_sttReady) {
         debugPrint('WakeWord: STT недоступен, PCM fallback');
         _useStt = false;
-        await _listenPcm();
+        await _stopStt();
+        if (!_canStart(epoch)) return;
+        await _listenPcm(epoch);
         return;
       }
 
-      await AssistantAudioService.muteRecognitionBeeps(true);
-      _setArmed(true);
-      debugPrint('WakeWord: STT слушаю «$_wakeWord»');
       await _startSttSession(epoch);
     } catch (e) {
       debugPrint('WakeWord STT start failed: $e');
+      if (!_canStart(epoch)) return;
       _useStt = false;
-      await _listenPcm();
-    } finally {
-      _starting = false;
+      await _stopStt();
+      if (!_canStart(epoch)) return;
+      await _listenPcm(epoch);
     }
   }
 
@@ -356,14 +414,18 @@ class WakeWordService extends ChangeNotifier {
   }
 
   Future<void> _startSttSession(int epoch) async {
-    if (!_enabled || _waking || epoch != _epoch) return;
-    if (_sttListening || _stt.isListening) return;
-    _sttListening = true;
+    if (!_canStart(epoch) || _sttListening || _stt.isListening) return;
     final localeId = await _pickSttLocale();
+    if (!_canStart(epoch)) return;
+    await AssistantAudioService.muteRecognitionBeeps(true);
+    if (!_canStart(epoch)) return;
+    if (!await _allowListening(epoch) || !_canStart(epoch)) return;
+    _sttListening = true;
+    debugPrint('WakeWord: STT слушаю «$_wakeWord»');
     try {
       await _stt.listen(
         onResult: (result) {
-          if (!_enabled || _waking || epoch != _epoch) return;
+          if (!_canStart(epoch)) return;
           final words = result.recognizedWords.trim();
           if (words.isEmpty) return;
           debugPrint(
@@ -382,49 +444,52 @@ class WakeWordService extends ChangeNotifier {
           localeId: localeId,
         ),
       );
+      if (!_canStart(epoch)) return;
+      if (!await _allowListening(epoch) || !_canStart(epoch)) return;
+      _setArmed(_sttListening);
+      if (!_sttListening) _scheduleReconnect(epoch);
     } catch (e) {
       debugPrint('WakeWord STT listen failed: $e');
-      _sttListening = false;
-      _scheduleSttReconnect();
+      await _stopStt();
+      _setArmed(false);
+      if (_isCurrent(epoch)) _scheduleReconnect(epoch);
     }
   }
 
   void _onSttStatus(String status) {
-    if (!_enabled || _waking) return;
+    if (!_isCurrent(_epoch) || !_useStt || !_sttListening) return;
     debugPrint('WakeWord STT status: $status');
     if (status == 'done' || status == 'notListening') {
       _sttListening = false;
-      _scheduleSttReconnect();
+      _setArmed(false);
+      _scheduleReconnect(_epoch);
     }
   }
 
-  void _scheduleSttReconnect() {
-    if (!_enabled || _waking || _starting) return;
+  void _scheduleReconnect(int epoch) {
+    if (!_isCurrent(epoch)) return;
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(milliseconds: 450), () {
-      if (_enabled && !_waking && !_sttListening) {
-        unawaited(_startSttSession(_epoch));
-      }
-    });
+    _reconnectTimer = Timer(
+      _useStt
+          ? const Duration(milliseconds: 450)
+          : const Duration(seconds: 8),
+      () {
+        _reconnectTimer = null;
+        if (_isCurrent(epoch)) unawaited(_listen(epoch));
+      },
+    );
   }
 
-  Future<void> _listenPcm() async {
-    if (!_enabled || _starting || _waking) return;
-    if (_micSub != null) {
-      _setArmed(true);
-      return;
-    }
-    _starting = true;
-    final epoch = _epoch;
+  Future<void> _listenPcm(int epoch) async {
+    if (!_canStart(epoch)) return;
     try {
       final mic = await Permission.microphone.request();
-      if (!mic.isGranted || !_enabled || epoch != _epoch) {
-        if (!mic.isGranted && _enabled && epoch == _epoch) {
-          onBlocked?.call(
-            'Нет доступа к микрофону — слово «$_wakeWord» не услышит. '
-            'Разрешите микрофон для приложения.',
-          );
-        }
+      if (!_canStart(epoch)) return;
+      if (!mic.isGranted) {
+        onBlocked?.call(
+          'Нет доступа к микрофону — слово «$_wakeWord» не услышит. '
+          'Разрешите микрофон для приложения.',
+        );
         return;
       }
       if (kGeminiApiKey.isEmpty || kGeminiApiKey == 'YOUR_GEMINI_API_KEY') {
@@ -432,6 +497,7 @@ class WakeWordService extends ChangeNotifier {
         onBlocked?.call('Не настроен ключ Gemini — wake-слово не работает.');
         return;
       }
+      if (!await _allowListening(epoch) || !_canStart(epoch)) return;
 
       final stream = await _recorder.startStream(
         const RecordConfig(
@@ -450,57 +516,45 @@ class WakeWordService extends ChangeNotifier {
           ),
         ),
       );
-      if (!_enabled || epoch != _epoch) {
-        await _recorder.stop();
-        return;
-      }
+      if (!_canStart(epoch)) return;
+      if (!await _allowListening(epoch) || !_canStart(epoch)) return;
       _loudChunks = 0;
       _quietChunks = 0;
       _capturing = false;
       _preRoll.clear();
       _utterance.clear();
-      _micSub = stream.listen(
+      late final StreamSubscription<Uint8List> sub;
+      sub = stream.listen(
         (chunk) {
-          if (!_enabled || epoch != _epoch || _waking) return;
+          if (!_canStart(epoch)) return;
           _onPcm(chunk);
         },
         onError: (error) {
           debugPrint('WakeWord: mic error $error');
-          unawaited(_onStreamDead());
+          unawaited(_onStreamDead(epoch, sub));
         },
-        onDone: () => unawaited(_onStreamDead()),
+        onDone: () => unawaited(_onStreamDead(epoch, sub)),
       );
+      _micSub = sub;
       _setArmed(true);
       debugPrint('WakeWord: PCM слушаю «$_wakeWord» (fallback)');
     } catch (e) {
       debugPrint('WakeWord: start failed $e');
+      await _tearDown();
       _setArmed(false);
-      _schedulePcmReconnect();
-    } finally {
-      _starting = false;
+      if (_isCurrent(epoch)) _scheduleReconnect(epoch);
     }
   }
 
-  Future<void> _onStreamDead() async {
-    _micSub = null;
-    try {
-      if (await _recorder.isRecording()) {
-        await _recorder.stop();
-      }
-    } catch (_) {}
-    _setArmed(false);
-    _schedulePcmReconnect();
-  }
-
-  void _schedulePcmReconnect() {
-    if (!_enabled || _waking || _starting) return;
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 8), () {
-      if (_enabled && !_waking && _micSub == null) {
-        unawaited(_listenPcm());
-      }
-    });
-  }
+  Future<void> _onStreamDead(
+    int epoch,
+    StreamSubscription<Uint8List> sub,
+  ) => _serialize(() async {
+        if (!_isCurrent(epoch) || _micSub != sub) return;
+        await _tearDown();
+        _setArmed(false);
+        if (_isCurrent(epoch)) _scheduleReconnect(epoch);
+      });
 
   void _onPcm(Uint8List chunk) {
     if (_waking) return;
@@ -636,16 +690,24 @@ class WakeWordService extends ChangeNotifier {
   }
 
   Future<void> _fireWake() async {
-    if (!_enabled || _waking) return;
+    if (!_canStart(_epoch)) return;
+    final cleanup = stop();
+    final epoch = _epoch;
     _waking = true;
     debugPrint('WakeWord: FIRE');
-    _enabled = false;
-    _reconnectTimer?.cancel();
-    await _stopStt();
-    await _tearDown();
-    _setArmed(false);
-    await Future<void>.delayed(const Duration(milliseconds: 280));
-    onWake?.call();
+    await cleanup;
+    if (_disposed || !_waking || epoch != _epoch) return;
+    _wakeTimer = Timer(const Duration(milliseconds: 280), () async {
+      _wakeTimer = null;
+      if (_disposed || !_waking || epoch != _epoch) return;
+      final allowed = await AssistantAudioService.canListenForWake();
+      if (_disposed || !_waking || epoch != _epoch) return;
+      if (!allowed || AssistantAudioService.playback.isActive) {
+        _waking = false;
+        return;
+      }
+      onWake?.call();
+    });
   }
 
   static Uint8List _pcm16ToWav(Uint8List pcm, int sampleRate) {
@@ -672,8 +734,10 @@ class WakeWordService extends ChangeNotifier {
 
   @override
   void dispose() {
-    stop();
-    _recorder.dispose();
+    if (_disposed) return;
+    unawaited(stop());
+    _disposed = true;
+    unawaited(_serialize(_recorder.dispose));
     super.dispose();
   }
 }

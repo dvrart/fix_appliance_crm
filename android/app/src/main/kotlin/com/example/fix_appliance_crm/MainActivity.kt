@@ -8,15 +8,19 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
 import android.media.AudioTrack
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import kotlin.math.max
@@ -26,6 +30,7 @@ import com.twilio.twilio_voice.service.IncomingCallNotifier
 import com.twilio.twilio_voice.service.TVConnectionService
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
 // FlutterFragmentActivity, а не FlutterActivity: androidx BiometricPrompt
@@ -33,12 +38,43 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterFragmentActivity() {
     private val savedBeepVolumes = SparseIntArray()
     private var deviceChannel: MethodChannel? = null
+    private var notificationEventsReady = false
+    private var pendingNotificationTap: Map<String, String>? = null
+    private var pendingResumeActiveCall = false
     @Volatile private var ringbackPlaying = false
     private var ringbackTrack: AudioTrack? = null
     private var ringbackThread: Thread? = null
 
     private var assistantFocusRequest: AudioFocusRequest? = null
     private var assistantFocusListener: AudioManager.OnAudioFocusChangeListener? = null
+    private var assistantOwnsAudioFocus = false
+    private var assistantOwnsAudioMode = false
+
+    private var audioStateChannel: EventChannel? = null
+    private var audioStateSink: EventChannel.EventSink? = null
+    private var lastAudioState: Map<String, Boolean>? = null
+    private val audioStateHandler = Handler(Looper.getMainLooper())
+    private val audioPlaybackCallback = object : AudioManager.AudioPlaybackCallback() {
+        override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>) {
+            emitAssistantAudioState()
+        }
+    }
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            emitAssistantAudioState()
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            emitAssistantAudioState()
+        }
+    }
+    private val audioStatePoll = object : Runnable {
+        override fun run() {
+            if (audioStateSink == null) return
+            emitAssistantAudioState()
+            audioStateHandler.postDelayed(this, 1000)
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -46,8 +82,14 @@ class MainActivity : FlutterFragmentActivity() {
             .also { deviceChannel = it }
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "notificationEventsReady" -> {
+                        notificationEventsReady = true
+                        deliverPendingDeviceEvents()
+                        result.success(null)
+                    }
                     "isBluetoothOn" -> result.success(bluetoothAdapter()?.isEnabled == true)
                     "hasCarAudio" -> result.success(hasCarAudio())
+                    "assistantAudioState" -> result.success(assistantAudioState())
                     "playOutgoingRingback" -> {
                         playOutgoingRingback()
                         result.success(true)
@@ -97,7 +139,35 @@ class MainActivity : FlutterFragmentActivity() {
                                 data[key.toString()] = value?.toString() ?: ""
                             }
                         }
-                        CrmShadeNotifier.show(this, data)
+                        result.success(CrmShadeNotifier.show(this, data))
+                    }
+                    "typeBadgeBytes" -> {
+                        // PNG круглого значка типа для fallback-уведомлений
+                        // flutter_local_notifications и запланированных.
+                        val a = call.arguments as? Map<*, *>
+                        val bytes = CrmShadeNotifier.badgePng(
+                            this,
+                            a?.get("type")?.toString() ?: "",
+                            a?.get("source")?.toString() ?: "",
+                            a?.get("spam")?.toString().let {
+                                it == "1" || it == "true"
+                            },
+                        )
+                        result.success(bytes)
+                    }
+                    "testIncomingCallNotification" -> {
+                        // Тестовый входящий звонок: показывает шторку с кнопками
+                        // «Ответить»/«Отклонить». Нажатие безопасно — сервис
+                        // просто гасит уведомление для неизвестного callSid.
+                        IncomingCallNotifier.show(
+                            this,
+                            "Amelia · +1 (416) 555-0199",
+                            "test_call_${System.currentTimeMillis()}",
+                        )
+                        window.decorView.postDelayed(
+                            { IncomingCallNotifier.cancel(this) },
+                            15_000,
+                        )
                         result.success(true)
                     }
                     "isIgnoringBatteryOptimizations" -> {
@@ -117,60 +187,150 @@ class MainActivity : FlutterFragmentActivity() {
                     else -> result.notImplemented()
                 }
             }
+        stopAudioStateObservation()
+        audioStateChannel?.setStreamHandler(null)
+        audioStateChannel = EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "fix_appliance/audio_state",
+        ).also { channel ->
+            channel.setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    startAudioStateObservation(events)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    stopAudioStateObservation()
+                }
+            })
+        }
         notifyNotificationTap(intent)
+    }
+
+    private fun hasActiveCall(am: AudioManager): Boolean {
+        val mode = am.mode
+        return TVConnectionService.hasActiveCalls() ||
+            TVConnectionService.getIncomingCallHandle() != null ||
+            mode == AudioManager.MODE_IN_CALL ||
+            mode == AudioManager.MODE_RINGTONE ||
+            (mode == AudioManager.MODE_IN_COMMUNICATION && !assistantOwnsAudioMode)
+    }
+
+    private fun assistantAudioState(): Map<String, Boolean> {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return mapOf(
+            "mediaPlaying" to am.isMusicActive,
+            "carConnected" to hasCarAudio(),
+            "callActive" to hasActiveCall(am),
+        )
+    }
+
+    private fun emitAssistantAudioState() {
+        val sink = audioStateSink ?: return
+        val state = assistantAudioState()
+        if (state == lastAudioState) return
+        lastAudioState = state
+        sink.success(state)
+    }
+
+    private fun startAudioStateObservation(sink: EventChannel.EventSink) {
+        stopAudioStateObservation()
+        audioStateSink = sink
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        try {
+            am.registerAudioPlaybackCallback(audioPlaybackCallback, audioStateHandler)
+        } catch (_: Exception) {
+        }
+        try {
+            am.registerAudioDeviceCallback(audioDeviceCallback, audioStateHandler)
+        } catch (_: Exception) {
+        }
+        audioStatePoll.run()
+    }
+
+    private fun stopAudioStateObservation() {
+        audioStateHandler.removeCallbacks(audioStatePoll)
+        lastAudioState = null
+        if (audioStateSink == null) return
+        audioStateSink = null
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        try {
+            am.unregisterAudioPlaybackCallback(audioPlaybackCallback)
+        } catch (_: Exception) {
+        }
+        try {
+            am.unregisterAudioDeviceCallback(audioDeviceCallback)
+        } catch (_: Exception) {
+        }
     }
 
     private fun requestAssistantAudioFocus(): Boolean {
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         return try {
-            val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val listener = AudioManager.OnAudioFocusChangeListener { }
-                assistantFocusListener = listener
-                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build(),
-                    )
-                    .setOnAudioFocusChangeListener(listener)
-                    .setWillPauseWhenDucked(true)
-                    .build()
-                assistantFocusRequest = req
-                am.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-            } else {
-                @Suppress("DEPRECATION")
-                val listener = AudioManager.OnAudioFocusChangeListener { }
-                assistantFocusListener = listener
-                am.requestAudioFocus(
-                    listener,
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT,
-                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            if (hasActiveCall(am)) {
+                releaseAssistantAudioFocus()
+                return false
             }
-            if (granted) {
-                am.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (assistantOwnsAudioFocus) return true
+            val listener = object : AudioManager.OnAudioFocusChangeListener {
+                override fun onAudioFocusChange(focusChange: Int) {
+                    if (assistantFocusListener === this &&
+                        focusChange == AudioManager.AUDIOFOCUS_LOSS
+                    ) {
+                        releaseAssistantAudioFocus()
+                    }
+                }
             }
-            granted
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                )
+                .setOnAudioFocusChangeListener(listener, audioStateHandler)
+                .setWillPauseWhenDucked(true)
+                .build()
+            if (am.requestAudioFocus(request) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                return false
+            }
+            assistantFocusRequest = request
+            assistantFocusListener = listener
+            assistantOwnsAudioFocus = true
+            if (hasActiveCall(am)) {
+                releaseAssistantAudioFocus()
+                return false
+            }
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            assistantOwnsAudioMode = true
+            true
         } catch (_: Exception) {
+            releaseAssistantAudioFocus()
             false
         }
     }
 
     private fun releaseAssistantAudioFocus() {
-        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val ownedFocus = assistantOwnsAudioFocus
+        val request = assistantFocusRequest
+        assistantOwnsAudioFocus = false
+        assistantFocusRequest = null
+        assistantFocusListener = null
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                assistantFocusRequest?.let { am.abandonAudioFocusRequest(it) }
-                assistantFocusRequest = null
-            } else {
-                assistantFocusListener?.let {
-                    @Suppress("DEPRECATION")
-                    am.abandonAudioFocus(it)
-                }
+            if (!ownedFocus) return
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            try {
+                request?.let { am.abandonAudioFocusRequest(it) }
+            } catch (_: Exception) {
             }
-            am.mode = AudioManager.MODE_NORMAL
+            if (assistantOwnsAudioMode &&
+                am.mode == AudioManager.MODE_IN_COMMUNICATION &&
+                !hasActiveCall(am)
+            ) {
+                am.mode = AudioManager.MODE_NORMAL
+            }
         } catch (_: Exception) {
+        } finally {
+            assistantOwnsAudioMode = false
         }
     }
 
@@ -182,7 +342,9 @@ class MainActivity : FlutterFragmentActivity() {
         )
         for (stream in streams) {
             try {
+                val saved = savedBeepVolumes.get(stream, -1)
                 if (mute) {
+                    if (saved >= 0) continue
                     savedBeepVolumes.put(stream, am.getStreamVolume(stream))
                     if (Build.VERSION.SDK_INT >= 23) {
                         am.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, 0)
@@ -191,16 +353,15 @@ class MainActivity : FlutterFragmentActivity() {
                         am.setStreamMute(stream, true)
                     }
                 } else {
+                    if (saved < 0) continue
                     if (Build.VERSION.SDK_INT >= 23) {
                         am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
                     } else {
                         @Suppress("DEPRECATION")
                         am.setStreamMute(stream, false)
                     }
-                    val saved = savedBeepVolumes.get(stream, -1)
-                    if (saved >= 0) {
-                        am.setStreamVolume(stream, saved, 0)
-                    }
+                    am.setStreamVolume(stream, saved, 0)
+                    savedBeepVolumes.delete(stream)
                 }
             } catch (_: Exception) {
             }
@@ -230,12 +391,21 @@ class MainActivity : FlutterFragmentActivity() {
         val want = intent?.getBooleanExtra("resume_active_call", false) == true
         if (!want) return
         intent?.removeExtra("resume_active_call")
-        fun send() {
-            deviceChannel?.invokeMethod("resumeActiveCall", null)
+        pendingResumeActiveCall = true
+        deliverPendingDeviceEvents()
+    }
+
+    private fun deliverPendingDeviceEvents() {
+        val channel = deviceChannel ?: return
+        if (!notificationEventsReady) return
+        pendingNotificationTap?.let { data ->
+            pendingNotificationTap = null
+            channel.invokeMethod("notificationTap", data)
         }
-        send()
-        window.decorView.postDelayed({ send() }, 600)
-        window.decorView.postDelayed({ send() }, 1600)
+        if (pendingResumeActiveCall) {
+            pendingResumeActiveCall = false
+            channel.invokeMethod("resumeActiveCall", null)
+        }
     }
 
     private fun playOutgoingRingback() {
@@ -311,6 +481,11 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        stopAudioStateObservation()
+        audioStateChannel?.setStreamHandler(null)
+        audioStateChannel = null
+        releaseAssistantAudioFocus()
+        muteRecognitionBeeps(false)
         stopOutgoingRingback()
         super.onDestroy()
     }
@@ -426,18 +601,14 @@ class MainActivity : FlutterFragmentActivity() {
         val data = HashMap<String, String>()
         val extras = source?.extras ?: return
         for (key in extras.keySet()) {
-            val value = extras.getString(key) ?: continue
+            val value = extras.get(key) as? String ?: continue
             if (value.isNotEmpty()) data[key] = value
         }
-        if (data["type"].isNullOrEmpty() && data["jobId"].isNullOrEmpty() && data["from"].isNullOrEmpty()) {
-            return
-        }
-        fun send() {
-            deviceChannel?.invokeMethod("notificationTap", data)
-        }
-        send()
-        window.decorView.postDelayed({ send() }, 600)
-        window.decorView.postDelayed({ send() }, 1600)
+        if (data["type"].isNullOrEmpty() && data["jobId"].isNullOrEmpty() &&
+            data["from"].isNullOrEmpty() && data["peer"].isNullOrEmpty()) return
+        pendingNotificationTap = data
+        for (key in data.keys) source.removeExtra(key)
+        deliverPendingDeviceEvents()
     }
 
     @Deprecated("Deprecated in Java")

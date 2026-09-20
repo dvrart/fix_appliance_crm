@@ -103,8 +103,7 @@ class VoiceFirebaseMessagingService : FirebaseMessagingService() {
         val wakeLock = acquireWakeLock()
         try {
             Log.d(TAG, "Received onMessageReceived()")
-            Log.d(TAG, "Bundle data: " + remoteMessage.data)
-            Log.d(TAG, "From: " + remoteMessage.from)
+            Log.d(TAG, "Message type: " + (remoteMessage.data["type"] ?: "voice"))
             val handled = TwilioVoiceFcm.handleMessage(applicationContext, remoteMessage.data)
             if (!handled) {
                 if (!showCrmShade(remoteMessage)) {
@@ -149,8 +148,7 @@ class VoiceFirebaseMessagingService : FirebaseMessagingService() {
                 remoteMessage.data,
                 remoteMessage.notification?.title,
                 remoteMessage.notification?.body,
-            )
-            true
+            ) as? Boolean ?: true
         } catch (error: Exception) {
             Log.w(TAG, "CRM shade: ${error.message}")
             false
@@ -159,7 +157,8 @@ class VoiceFirebaseMessagingService : FirebaseMessagingService() {
 
     private fun showSmsNotification(remoteMessage: RemoteMessage) {
         ensureSmsChannel(this)
-        val data = remoteMessage.data
+        val data = remoteMessage.data.toMutableMap()
+        if (data["from"].isNullOrBlank() && !data["peer"].isNullOrBlank()) data["from"] = data["peer"].orEmpty()
         val type = data["type"] ?: ""
         val source = data["source"] ?: ""
         val channelId = data["channelId"]?.takeIf { it.isNotBlank() } ?: when {
@@ -170,7 +169,7 @@ class VoiceFirebaseMessagingService : FirebaseMessagingService() {
             type == "visit_soon" -> VISIT_SOON_CHANNEL_ID
             type == "on_the_way" || type == "leave_status" -> ON_WAY_CHANNEL_ID
             type == "morning" || type == "evening" -> MORNING_CHANNEL_ID
-            type == "call" || type == "job" -> CALL_CHANNEL_ID
+            type == "call" || (type == "job" && source != "sms") -> CALL_CHANNEL_ID
             else -> SMS_CHANNEL_ID
         }
         val title = remoteMessage.notification?.title
@@ -204,7 +203,7 @@ class VoiceFirebaseMessagingService : FirebaseMessagingService() {
         )
 
         val iconId = resources.getIdentifier("ic_stat_notify", "drawable", packageName)
-        val notification = NotificationCompat.Builder(this, channelId)
+        val builder = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(if (iconId != 0) iconId else android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(body)
@@ -219,7 +218,27 @@ class VoiceFirebaseMessagingService : FirebaseMessagingService() {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setNumber(1)
             .setContentIntent(pending)
-            .build()
+
+        // Тот же эмодзи-значок типа, что и в CrmShadeNotifier — по имени,
+        // чтобы не тянуть compile-зависимость на классы приложения.
+        try {
+            val clazz = Class.forName("com.example.fix_appliance_crm.CrmShadeNotifier")
+            val badge = clazz.getMethod(
+                "badgePng",
+                Context::class.java,
+                String::class.java,
+                String::class.java,
+                Boolean::class.javaPrimitiveType!!,
+            ).invoke(null, this, type, source, data["spam"] == "1") as? ByteArray
+            if (badge != null) {
+                android.graphics.BitmapFactory.decodeByteArray(badge, 0, badge.size)
+                    ?.let { builder.setLargeIcon(it) }
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "type badge: ${error.message}")
+        }
+
+        val notification = builder.build()
 
         try {
             NotificationManagerCompat.from(this).notify(tag, 0, notification)

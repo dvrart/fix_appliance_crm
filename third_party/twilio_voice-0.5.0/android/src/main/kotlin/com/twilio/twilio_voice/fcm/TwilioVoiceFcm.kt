@@ -93,6 +93,7 @@ internal class VoiceMessageListener(private val context: Context) : MessageListe
                     "Parameters: ${callInvite.customParameters.entries.joinToString { "${it.key}:${it.value}" }},\n\t" +
                     "}"
         )
+        if (TVConnectionService.hasCallHandle(callInvite.callSid)) return
         val storage = StorageImpl(context)
 
         // Reject the invite when already on a call and the app opted out of concurrent calls.

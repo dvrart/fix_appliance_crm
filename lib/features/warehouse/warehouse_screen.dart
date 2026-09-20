@@ -298,12 +298,20 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     Timer? categoryDebounce;
     bool formDirty = false;
 
+    // Флаг: диалог закрыт — async-колбэки не должны вызывать setDialogState
+    // на уже деактивированном StatefulBuilder (→ «inactive element» error).
+    bool _gone = false;
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) {
         return StatefulBuilder(
-          builder: (context, setDialogState) {
+          builder: (context, _rawSetState) {
+            // Безопасная замена: игнорирует вызов, если диалог уже закрыт.
+            void setDialogState(VoidCallback fn) {
+              if (!_gone && context.mounted) _rawSetState(fn);
+            }
             void markDirty() {
               if (formDirty) return;
               setDialogState(() => formDirty = true);
@@ -555,19 +563,12 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               });
             }
 
-            /// Снять или выбрать картинку и залить её в Storage.
-            Future<void> attachPhoto(ImageSource source) async {
-              final picker = ImagePicker();
-              final pickedFile = await picker.pickImage(
-                source: source,
-                maxWidth: 1600,
-                maxHeight: 1600,
-                imageQuality: 70,
-              );
-              if (pickedFile == null) return;
+            /// Залить готовый файл в Storage и поставить его фото детали.
+            /// [quiet] — не ругаться, если не вышло (фото со сканера
+            /// необязательное).
+            Future<void> uploadPhotoFile(File file, {bool quiet = false}) async {
               setDialogState(() => isUploadingPhoto = true);
               try {
-                final file = File(pickedFile.path);
                 final fileName =
                     'part_${DateTime.now().millisecondsSinceEpoch}.jpg';
                 final ref = FirebaseStorage.instance
@@ -587,8 +588,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 });
               } catch (e, stack) {
                 ErrorLogService.record(e, stack, kind: 'фото детали');
-                setDialogState(() => isUploadingPhoto = false);
                 if (!context.mounted) return;
+                setDialogState(() => isUploadingPhoto = false);
+                if (quiet) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
@@ -599,6 +601,86 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   ),
                 );
               }
+            }
+
+            /// Снять или выбрать картинку и залить её в Storage.
+            Future<void> attachPhoto(ImageSource source) async {
+              final picker = ImagePicker();
+              final pickedFile = await picker.pickImage(
+                source: source,
+                maxWidth: 1600,
+                maxHeight: 1600,
+                imageQuality: 70,
+              );
+              if (pickedFile == null) return;
+              await uploadPhotoFile(File(pickedFile.path));
+            }
+
+            /// Что ИИ прочитал со стикера — в поля карточки. Возвращает
+            /// false, если ИИ ничего не понял и надо звать офлайн-OCR.
+            bool applyAiScan(PartStickerScan scan) {
+              if (scan.isEmpty) return false;
+              setDialogState(() {
+                final name = scan.displayName;
+                if (name != null) nameController.text = name;
+                if (scan.partNumber != null) {
+                  partNumController.text = scan.partNumber!;
+                }
+                if (scan.modelNumber != null) {
+                  modelController.text = scan.modelNumber!;
+                }
+                if (scan.barcode != null) barcodeController.text = scan.barcode!;
+                if (scan.purpose != null &&
+                    otherController.text.trim().isEmpty) {
+                  otherController.text = scan.purpose!;
+                }
+                if (!interchangeTouched && scan.interchange.isNotEmpty) {
+                  writeInterchange(
+                    scan.interchange,
+                    partNumController.text,
+                  );
+                }
+                formDirty = true;
+              });
+              if (scan.category != null && !categoryTouched) {
+                setCategory(scan.category!, auto: true);
+                // ИИ уже назвал технику — второй раз по артикулу не спрашиваем.
+                categoryAskedFor = partNumController.text.trim().toUpperCase();
+              } else {
+                guessCategory();
+              }
+              return true;
+            }
+
+            /// Откуда брать снимок для сканера: камера или готовое фото.
+            Future<ImageSource?> pickScanSource() {
+              return showModalBottomSheet<ImageSource>(
+                context: context,
+                builder: (sheet) => SafeArea(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        leading: const Icon(
+                          Icons.auto_awesome,
+                          color: Color(0xFF8A6100),
+                        ),
+                        title: Text('Сфотографировать этикетку или деталь'.tr),
+                        subtitle: Text(
+                          'ИИ сам заполнит номер, название, категорию и назначение'
+                              .tr,
+                        ),
+                        onTap: () => Navigator.pop(sheet, ImageSource.camera),
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.photo_library_outlined),
+                        title: Text('Выбрать из галереи'.tr),
+                        onTap: () => Navigator.pop(sheet, ImageSource.gallery),
+                      ),
+                    ],
+                  ),
+                ),
+              );
             }
 
             Future<void> pickPhotoSource() async {
@@ -816,6 +898,19 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
             return DirtyLeaveScope(
               dirty: formDirty,
               onSave: () => saveItem(pop: false),
+              onDispose: () {
+                _gone = true;
+                debounce?.cancel();
+                categoryDebounce?.cancel();
+                nameController.dispose();
+                partNumController.dispose();
+                modelController.dispose();
+                barcodeController.dispose();
+                priceController.dispose();
+                quantityController.dispose();
+                otherController.dispose();
+                interchangeController.dispose();
+              },
               child: Scaffold(
                 backgroundColor: Colors.grey.shade100,
                 appBar: AppBar(
@@ -1078,22 +1173,24 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                         const SizedBox(width: 10),
                         Expanded(
                           child: _actionTile(
-                            icon: Icons.document_scanner,
+                            icon: Icons.auto_awesome,
                             label: isAiThinking
-                                ? 'Сканирую…'.tr
-                                : 'Сканер этикетки'.tr,
+                                ? 'ИИ читает…'.tr
+                                : 'Сканер ИИ'.tr,
                             color: Colors.green.shade600,
                             busy: isAiThinking,
                             onTap: isAiThinking
                             ? null
                             : () async {
                                 try {
+                                  final source = await pickScanSource();
+                                  if (source == null) return;
                                   final picker = ImagePicker();
                                   // Полный кадр Samsung — это десятки мегабайт
                                   // в памяти. ML Kit на таком снимке валил всё
                                   // приложение. 1600 px хватает для этикетки.
                                   final pickedFile = await picker.pickImage(
-                                    source: ImageSource.camera,
+                                    source: source,
                                     maxWidth: 1600,
                                     maxHeight: 1600,
                                     imageQuality: 90,
@@ -1101,6 +1198,44 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
 
                                   if (pickedFile != null) {
                                     setDialogState(() => isAiThinking = true);
+                                    final file = File(pickedFile.path);
+
+                                    // Сначала ИИ: он понимает, что за деталь,
+                                    // для чего и к какой технике. OCR ниже —
+                                    // запасной ход без сети.
+                                    final aiScan = await AiService.readPartSticker(
+                                      imageBytes: await file.readAsBytes(),
+                                      categories: _categories
+                                          .where((c) => c['name'] != 'Все')
+                                          .map((c) => c['name']!)
+                                          .toList(),
+                                    );
+                                    if (!context.mounted) return;
+                                    if (aiScan != null && applyAiScan(aiScan)) {
+                                      setDialogState(() => isAiThinking = false);
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            aiScan.purpose ??
+                                                'ИИ разобрал этикетку ✨'.tr,
+                                          ),
+                                          backgroundColor: Colors.green,
+                                        ),
+                                      );
+                                      // Снимок годится и как фото детали —
+                                      // грузим фоном, не держим кнопку.
+                                      if (localImageUrl == null &&
+                                          !isUploadingPhoto) {
+                                        unawaited(
+                                          uploadPhotoFile(file, quiet: true),
+                                        );
+                                      }
+                                      await checkDuplicate(
+                                        partNumController.text,
+                                      );
+                                      await suggestReplacements();
+                                      return;
+                                    }
 
                                     final inputImage = InputImage.fromFilePath(
                                       pickedFile.path,
@@ -1384,17 +1519,11 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
         );
       },
     ).whenComplete(() {
+      // Диалог закрыт — блокируем все async setDialogState до отмены таймеров.
+      _gone = true;
       // Отложенный поиск дубля не должен стрелять по закрытому окну.
       debounce?.cancel();
       categoryDebounce?.cancel();
-      nameController.dispose();
-      partNumController.dispose();
-      modelController.dispose();
-      barcodeController.dispose();
-      priceController.dispose();
-      quantityController.dispose();
-      otherController.dispose();
-      interchangeController.dispose();
     });
   }
 

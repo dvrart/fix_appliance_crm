@@ -278,9 +278,16 @@ class ImportExportService {
     var clientsUpdated = 0;
     var jobsCreated = 0;
     var skipped = 0;
-    final clients = decoded['clients'];
-    if (clients is List) {
-      for (final raw in clients) {
+    // Support both old format (jobs at root) and cloud backup format (collections.jobs)
+    final collections = decoded['collections'];
+    final rawClients = (collections is Map ? collections['clients'] : decoded['clients']) ?? decoded['clients'];
+    final rawJobs = (collections is Map ? collections['jobs'] : decoded['jobs']) ?? decoded['jobs'];
+    final isPartial = decoded['partial'] == true;
+    final failedCollections = (decoded['failedCollections'] as List?)
+        ?.map((e) => e.toString())
+        .toList() ?? [];
+    if (rawClients is List) {
+      for (final raw in rawClients) {
         if (raw is! Map) {
           skipped += 1;
           continue;
@@ -291,9 +298,8 @@ class ImportExportService {
         if (result == _Upsert.updated) clientsUpdated += 1;
       }
     }
-    final jobs = decoded['jobs'];
-    if (jobs is List) {
-      for (final raw in jobs) {
+    if (rawJobs is List) {
+      for (final raw in rawJobs) {
         if (raw is! Map) {
           skipped += 1;
           continue;
@@ -307,6 +313,9 @@ class ImportExportService {
       clientsUpdated: clientsUpdated,
       jobsCreated: jobsCreated,
       skipped: skipped,
+      error: isPartial
+          ? 'Внимание: копия была неполной (${failedCollections.join(', ')}). Клиенты: +$clientsCreated. Заявки: +$jobsCreated.'
+          : null,
     );
   }
 

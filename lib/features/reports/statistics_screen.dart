@@ -359,9 +359,67 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     );
   }
 
+  _SecretaryStats get _secretaryStats {
+    var callsAi = 0;
+    var callsHuman = 0;
+    var callsMissed = 0;
+    var totalSecs = 0;
+    var aiSecs = 0;
+
+    for (final call in _calls) {
+      if (!_inPeriod(call.startTime)) continue;
+      final by = call.answeredBy.toLowerCase();
+      final dur = call.durationSeconds ?? 0;
+      final status = call.status.toLowerCase();
+      final missed = status == 'no-answer' || status == 'busy' || status == 'failed';
+
+      if (missed) {
+        callsMissed++;
+      } else if (by == 'ai' || by == 'secretary') {
+        callsAi++;
+        aiSecs += dur;
+        totalSecs += dur;
+      } else {
+        callsHuman++;
+        totalSecs += dur;
+      }
+    }
+
+    var outSms = 0;
+    var inSms = 0;
+    for (final msg in _messages) {
+      if (msg.isEmail) continue;
+      if (!_inPeriod(msg.createdAt)) continue;
+      if (msg.direction == 'outbound') {
+        outSms++;
+      } else {
+        inSms++;
+      }
+    }
+
+    // Cost estimate (rough Twilio + Gemini Live)
+    final inboundCallMin = totalSecs / 60.0;
+    final aiMin = aiSecs / 60.0;
+    // Twilio: $0.0085/min inbound + $0.0079/sms outbound
+    // Gemini Live: ~$0.008/min of AI call
+    final cost = (inboundCallMin * 0.0085) + (outSms * 0.0079) + (inSms * 0.0079) + (aiMin * 0.008);
+
+    return _SecretaryStats(
+      callsAnsweredByAi: callsAi,
+      callsAnsweredByHuman: callsHuman,
+      callsMissed: callsMissed,
+      totalCallMinutes: totalSecs ~/ 60,
+      aiCallMinutes: aiSecs ~/ 60,
+      outboundSms: outSms,
+      inboundSms: inSms,
+      estimatedCost: cost,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final stats = _stats;
+    final secretaryStats = _secretaryStats;
     final money = NumberFormat.currency(symbol: '\$', decimalDigits: 0);
     return Scaffold(
       backgroundColor: const Color(0xFFF4F6F8),
@@ -521,6 +579,8 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 16),
+                _buildSecretarySection(stats, secretaryStats),
               ],
             ),
           ),
@@ -606,6 +666,71 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       ),
     );
   }
+
+  Widget _buildSecretarySection(_ShopStats stats, _SecretaryStats sec) {
+    final money = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+    final pct = (stats.calls + sec.callsMissed) == 0
+        ? 0.0
+        : sec.callsAnsweredByAi / (stats.calls + sec.callsMissed);
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Секретарь'.tr,
+              style: const TextStyle(
+                fontWeight: FontWeight.w700,
+                fontSize: 14,
+                color: Colors.black54,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _statRow('Взял трубку (секретарь)'.tr, '${sec.callsAnsweredByAi}', Colors.indigo),
+            _statRow('Взял трубку (вы)'.tr, '${sec.callsAnsweredByHuman}', Colors.blue),
+            _statRow('Пропущено'.tr, '${sec.callsMissed}', Colors.red),
+            _statRow('Всего минут разговора'.tr, '${sec.totalCallMinutes}', Colors.grey.shade700),
+            _statRow('Из них секретарь'.tr, '${sec.aiCallMinutes} мин'.tr, Colors.indigo),
+            _statRow('SMS исходящих'.tr, '${sec.outboundSms}', Colors.teal),
+            _statRow('SMS входящих'.tr, '${sec.inboundSms}', Colors.teal),
+            const Divider(height: 20),
+            _statRow('Доля ответов секретаря'.tr, '${(pct * 100).round()}%', Colors.indigo),
+            _statRow('Оценка расходов (Twilio+Gemini)'.tr, money.format(sec.estimatedCost), Colors.orange),
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                'Грубая оценка: \$0.0085/мин звонок, \$0.008/мин Gemini Live, \$0.0079/SMS'.tr,
+                style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statRow(String label, String value, Color color) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: const TextStyle(fontSize: 13))),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _ShopStats {
@@ -633,5 +758,27 @@ class _ShopStats {
     required this.emails,
     required this.sms,
     required this.expenses,
+  });
+}
+
+class _SecretaryStats {
+  final int callsAnsweredByAi;
+  final int callsAnsweredByHuman;
+  final int callsMissed;
+  final int totalCallMinutes;
+  final int aiCallMinutes;
+  final int outboundSms;
+  final int inboundSms;
+  final double estimatedCost; // USD
+
+  const _SecretaryStats({
+    required this.callsAnsweredByAi,
+    required this.callsAnsweredByHuman,
+    required this.callsMissed,
+    required this.totalCallMinutes,
+    required this.aiCallMinutes,
+    required this.outboundSms,
+    required this.inboundSms,
+    required this.estimatedCost,
   });
 }

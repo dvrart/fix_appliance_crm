@@ -371,200 +371,17 @@ class JobService {
     return best;
   }
 
-  /// If the secretary took a repair order but no job card exists, create it.
+  /// Auto-job creation from calls is disabled — owner creates jobs manually
+  /// from the call review screen after listening to the recording.
+  /// If the call already has a linked job (manually created or legacy), return it.
   static Future<String?> ensureDraftFromCall(CallRecord call) async {
-    if (call.aiBlocked) return null;
-    if (!_looksLikeRepairCall(call)) return null;
-    if (!_creatingFromCall.add(call.id)) return call.createdJobId;
-    try {
-      final linked = (call.createdJobId ?? '').trim();
-      if (linked.isNotEmpty) {
-        final existing = await getById(linked);
-        if (existing != null) {
-          if (existing.isDeleted || JobStatuses.isClosed(existing.status)) {
-            await TwilioService.blockJobCreate(call.id);
-            return null;
-          }
-          return existing.id;
-        }
-        await TwilioService.blockJobCreate(call.id);
-        return null;
-      }
-      final bySource = await _ref
-          .where('sourceCallId', isEqualTo: call.id)
-          .limit(8)
-          .get();
-      if (bySource.docs.isNotEmpty) {
-        for (final doc in bySource.docs) {
-          final job = Job.fromMap(doc.data() as Map<String, dynamic>, doc.id);
-          if (job.isDeleted || JobStatuses.isClosed(job.status)) continue;
-          await TwilioService.attachJob(
-            callId: call.id,
-            jobId: job.id,
-            clientId: job.clientId,
-          );
-          return job.id;
-        }
-        await TwilioService.blockJobCreate(call.id);
-        return null;
-      }
-      final started = call.startTime;
-      if (started == null || DateTime.now().difference(started).inHours > 48) {
-        return null;
-      }
-
-      final extracted = {
-        ...?call.extractedData,
-        if (call.aiReception?['extracted'] is Map)
-          ...Map<String, dynamic>.from(call.aiReception!['extracted'] as Map),
-      };
-      final phone = ClientService.normalizePhone(
-        _textOf(extracted, const ['client_phone', 'clientPhone']).isNotEmpty
-            ? _textOf(extracted, const ['client_phone', 'clientPhone'])
-            : (call.isIncoming ? call.fromNumber : call.toNumber),
-      );
-      var name = _textOf(extracted, const [
-        'client_name',
-        'clientName',
-        'name',
-      ]);
-      if (name.isEmpty ||
-          name.toLowerCase().startsWith('client') ||
-          name.startsWith('Клиент')) {
-        final named = RegExp(
-          r"(?:my name is|this is|i'm|i am|меня зовут)\s+([A-Za-zА-Яа-яЁё']+)",
-          caseSensitive: false,
-        ).firstMatch(_callText(call));
-        if (named != null) name = named.group(1) ?? '';
-      }
-      if (name.isEmpty) {
-        name = phone.isEmpty ? 'Клиент' : 'Клиент $phone';
-      }
-      final transcript = _callText(call);
-      var appliance = _textOf(extracted, const [
-        'appliance_type',
-        'applianceType',
-      ]);
-      if (appliance.isEmpty) appliance = _inferAppliance(transcript);
-      if (appliance.isEmpty) appliance = 'Техника';
-      final issue = _textOf(extracted, const [
-        'problem_description',
-        'problem',
-      ]);
-      final address = _textOf(extracted, const ['address', 'client_address']);
-      final city = _textOf(extracted, const ['city']);
-      final brand = _textOf(extracted, const ['brand']);
-      final model = _textOf(extracted, const ['model']);
-      final visitAt = _visitFromExtracted(extracted);
-
-      var client = await ClientService.findByPhone(phone);
-      client ??= await ClientService.findExisting(phone: phone);
-      final existingName = (client?.fullName ?? '').trim();
-      final placeholder =
-          existingName.isEmpty ||
-          existingName.toLowerCase().startsWith('client') ||
-          existingName.startsWith('Клиент');
-      final clientId =
-          client?.id ??
-          await ClientService.createOrUpdate(
-            fullName: name,
-            phone: phone,
-            address: address,
-            source: 'phone',
-            createdByAi: true,
-          );
-      if (placeholder && name.isNotEmpty && !name.startsWith('Клиент')) {
-        final keepAddress = (client?.address ?? '').trim().isNotEmpty
-            ? client!.address
-            : address;
-        await ClientService.update(clientId, {
-          'fullName': name,
-          'phone': client?.phone ?? phone,
-          if (keepAddress.trim().isNotEmpty) 'address': keepAddress,
-          'source': 'phone',
-        });
-      }
-
-      final reusable = await findReusableOpen(
-        clientId: clientId,
-        phone: phone,
-        appliance: appliance,
-      );
-      if (reusable != null) {
-        await TwilioService.attachJob(
-          callId: call.id,
-          jobId: reusable.id,
-          clientId: clientId,
-        );
-        return reusable.id;
-      }
-
-      final visits = visitAt == null
-          ? <JobVisit>[]
-          : [
-              JobVisit(
-                id: 'v1',
-                startAt: visitAt,
-                durationMinutes: 120,
-                outcome: 'scheduled',
-              ),
-            ];
-      final jobId = await create(
-        Job(
-          id: '',
-          clientId: clientId,
-          clientName: name,
-          clientPhone: phone,
-          clientAddress: address,
-          appliances: [
-            JobAppliance(
-              type: appliance,
-              brand: brand,
-              model: model,
-              issue: issue,
-            ),
-          ],
-          description: issue,
-          status: JobStatuses.call,
-          createdAt: DateTime.now(),
-          scheduledAt: visitAt,
-          visits: visits,
-          city: city,
-          needsReview: true,
-          createdByAi: true,
-          sourceCallId: call.id,
-          source: 'phone',
-          durationMinutes: 120,
-        ),
-      );
-      await TwilioService.attachJob(
-        callId: call.id,
-        jobId: jobId,
-        clientId: clientId,
-      );
-      return jobId;
-    } catch (error) {
-      debugPrint('ensureDraftFromCall: $error');
-      return null;
-    } finally {
-      _creatingFromCall.remove(call.id);
-    }
+    final linked = (call.createdJobId ?? '').trim();
+    return linked.isEmpty ? null : linked;
   }
 
+  /// Auto-recovery of missing call jobs is disabled — no longer auto-creating.
   static Future<void> recoverMissingCallJobs() async {
-    try {
-      final calls = await TwilioService.recentCalls(limit: 12);
-      final cutoff = DateTime.now().subtract(const Duration(hours: 48));
-      for (final call in calls) {
-        if (call.aiBlocked) continue;
-        if (!call.answeredByAi && call.answeredBy != 'ai') continue;
-        if (call.startTime != null && call.startTime!.isBefore(cutoff))
-          continue;
-        await ensureDraftFromCall(call);
-      }
-    } catch (error) {
-      debugPrint('recoverMissingCallJobs: $error');
-    }
+    // No-op: auto-creation from calls is disabled.
   }
 
   /// Создать заявку. Id берём сами, а не у `add()`: без сети `add()` ждёт
@@ -812,15 +629,6 @@ class JobService {
         'updatedAt': FieldValue.serverTimestamp(),
       }),
     );
-    if (job != null) {
-      unawaited(
-        ClientService.trashOrphanAutoClient(
-          clientId: job.clientId,
-          discardedJobId: id,
-          jobWasUnconfirmedAuto: job.isUnconfirmedAuto,
-        ),
-      );
-    }
   }
 
   static Future<void> restore(String id) async {
@@ -849,15 +657,6 @@ class JobService {
       await doc.reference.delete();
     }
     await _ref.doc(id).delete();
-    if (job != null) {
-      unawaited(
-        ClientService.trashOrphanAutoClient(
-          clientId: job.clientId,
-          discardedJobId: id,
-          jobWasUnconfirmedAuto: job.isUnconfirmedAuto,
-        ),
-      );
-    }
   }
 
   static Future<void> purgeExpiredTrash() async {

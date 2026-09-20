@@ -34,9 +34,46 @@ class LocalNotificationService {
   static const activeCallChannelId = 'active_voice_call';
 
   static bool _ready = false;
+  static Future<void>? _initializing;
 
-  static Future<void> initialize() async {
-    if (_ready) return;
+  /// PNG круглого значка типа, отрисованного нативным CrmShadeNotifier.
+  /// Кэш, чтобы не дёргать MethodChannel на каждое уведомление; null —
+  /// «спрашивали, не вышло», повторно не дёргаем.
+  static final Map<String, AndroidBitmap<Object>?> _badgeCache = {};
+
+  /// Большой круглый значок типа (тот же, что в нативной шторке):
+  /// 📞 call, 💬 sms, ✉ email, 🔔 напоминания. Вернёт null вне Android.
+  static Future<AndroidBitmap<Object>?> _badgeFor(
+    String type, [
+    String source = '',
+  ]) async {
+    final key = '$type|$source';
+    if (_badgeCache.containsKey(key)) return _badgeCache[key];
+    AndroidBitmap<Object>? bitmap;
+    try {
+      final bytes = await const MethodChannel('fix_appliance/device')
+          .invokeMethod<Uint8List>('typeBadgeBytes', {
+            'type': type,
+            'source': source,
+          });
+      if (bytes != null && bytes.isNotEmpty) {
+        bitmap = ByteArrayAndroidBitmap(bytes);
+      }
+    } catch (e) {
+      debugPrint('LocalNotificationService: badge: $e');
+    }
+    _badgeCache[key] = bitmap;
+    return bitmap;
+  }
+
+  static Future<void> initialize() {
+    if (_ready) return Future.value();
+    return _initializing ??= _initialize().whenComplete(
+      () => _initializing = null,
+    );
+  }
+
+  static Future<void> _initialize() async {
     tzdata.initializeTimeZones();
     tz.setLocalLocation(tz.getLocation(_location));
 
@@ -49,8 +86,10 @@ class LocalNotificationService {
       },
     );
 
-    final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
+    final androidPlugin = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
     await androidPlugin?.requestNotificationsPermission();
     await androidPlugin?.requestExactAlarmsPermission();
     await androidPlugin?.requestFullScreenIntentPermission();
@@ -68,8 +107,10 @@ class LocalNotificationService {
 
   static Future<void> ensureInboxChannels() async {
     await initialize();
-    final android = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
     await android?.createNotificationChannel(
       const AndroidNotificationChannel(
         callChannelId,
@@ -162,8 +203,7 @@ class LocalNotificationService {
     );
   }
 
-  static int inboxIdForTag(String tag) =>
-      7400 + ((tag).hashCode.abs() % 180);
+  static int inboxIdForTag(String tag) => 7400 + ((tag).hashCode.abs() % 180);
 
   static Future<void> dismissInboxPayload(Map<String, dynamic> data) async {
     final tags = <String>{};
@@ -203,8 +243,10 @@ class LocalNotificationService {
         if (tag.trim().isNotEmpty) tag.trim(),
     };
     if (want.isEmpty) return;
-    final android = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
     for (final tag in want) {
       await _plugin.cancel(inboxIdForTag(tag), tag: tag);
       await android?.cancel(0, tag: tag);
@@ -215,7 +257,8 @@ class LocalNotificationService {
       for (final item in active) {
         final tag = (item.tag ?? '').trim();
         final payload = item.payload ?? '';
-        final hit = want.contains(tag) ||
+        final hit =
+            want.contains(tag) ||
             want.any((value) => value.isNotEmpty && payload.contains(value));
         if (!hit) continue;
         await _plugin.cancel(item.id ?? 0, tag: item.tag);
@@ -341,6 +384,7 @@ class LocalNotificationService {
         channelDescription: 'В 7:00 список заявок и что взять с собой'.tr,
         title: title,
         body: body,
+        largeIcon: await _badgeFor('morning'),
       ),
       payloadValue: payload({'type': 'morning'}),
     );
@@ -371,6 +415,7 @@ class LocalNotificationService {
         channelDescription: 'Вечером в 19:00 заявки на завтра и что взять'.tr,
         title: title,
         body: body,
+        largeIcon: await _badgeFor('evening'),
       ),
       payloadValue: payload({'type': 'evening'}),
     );
@@ -380,6 +425,7 @@ class LocalNotificationService {
     required String title,
     required String body,
     String? tag,
+    Map<String, String> data = const {},
   }) async {
     await initialize();
     if (await _showShadeNative(
@@ -387,7 +433,7 @@ class LocalNotificationService {
       body: body,
       tag: tag ?? '',
       channelId: secretaryLearnChannelId,
-      extras: {'type': 'secretary_lesson'},
+      extras: {...data, 'type': 'secretary_lesson'},
     )) {
       return;
     }
@@ -399,13 +445,15 @@ class LocalNotificationService {
         channelId: secretaryLearnChannelId,
         channelName: 'Разбор секретаря'.tr,
         channelDescription:
-            'Полный отчёт ошибки секретаря — вы пишете, как действовать дальше'.tr,
+            'Полный отчёт ошибки секретаря — вы пишете, как действовать дальше'
+                .tr,
         title: title,
         body: body,
         tag: tag,
         persist: true,
+        largeIcon: await _badgeFor('secretary_lesson'),
       ),
-      payload: payload({'type': 'secretary_lesson'}),
+      payload: payload({...data, 'type': 'secretary_lesson'}),
     );
   }
 
@@ -415,17 +463,18 @@ class LocalNotificationService {
     String? tag,
     String? jobId,
     String? from,
+    Map<String, String> data = const {},
   }) async {
     await initialize();
-    final id =
-        (tag != null && tag.isNotEmpty) ? 0 : visitConfirmNotificationId;
+    final id = (tag != null && tag.isNotEmpty) ? 0 : visitConfirmNotificationId;
     if (await _showShadeNative(
       title: title,
       body: body,
       tag: tag ?? '',
       channelId: visitConfirmChannelId,
       extras: {
-        'type': 'visit_confirm',
+        ...data,
+        'type': data['type'] ?? 'visit_confirm',
         if (jobId != null && jobId.isNotEmpty) 'jobId': jobId,
         if (from != null && from.isNotEmpty) 'from': from,
       },
@@ -444,9 +493,11 @@ class LocalNotificationService {
         body: body,
         tag: tag,
         persist: true,
+        largeIcon: await _badgeFor('visit_confirm'),
       ),
       payload: payload({
-        'type': 'visit_confirm',
+        ...data,
+        'type': data['type'] ?? 'visit_confirm',
         if (jobId != null && jobId.isNotEmpty) 'jobId': jobId,
         if (from != null && from.isNotEmpty) 'from': from,
       }),
@@ -469,6 +520,7 @@ class LocalNotificationService {
         channelDescription: 'Предложение отправить SMS следующему клиенту'.tr,
         title: title,
         body: body,
+        largeIcon: await _badgeFor('on_the_way'),
       ),
       payload: payload({
         'type': 'on_the_way',
@@ -493,6 +545,7 @@ class LocalNotificationService {
         channelDescription: 'Спросить статус заявки после отъезда'.tr,
         title: title,
         body: body,
+        largeIcon: await _badgeFor('leave_status'),
       ),
       payload: payload({
         'type': 'leave_status',
@@ -514,7 +567,9 @@ class LocalNotificationService {
     String city = '',
   }) async {
     await initialize();
-    final id = (tag != null && tag.isNotEmpty) ? 0 : inboxIdForTag(tag ?? title);
+    final id = (tag != null && tag.isNotEmpty)
+        ? 0
+        : inboxIdForTag(tag ?? title);
     if (await _showShadeNative(
       title: title,
       body: body,
@@ -539,6 +594,7 @@ class LocalNotificationService {
         body: body,
         tag: tag,
         persist: true,
+        largeIcon: await _badgeFor(data['type'] ?? '', data['source'] ?? ''),
       ),
       payload: payload({
         ...data,
@@ -548,15 +604,17 @@ class LocalNotificationService {
   }
 
   static Future<void> showActiveCall({String phone = ''}) async {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      await cancelActiveCall();
+      return;
+    }
     await initialize();
     await ensureInboxChannels();
     final who = phone.trim();
     await _plugin.show(
       activeCallNotificationId,
       'Разговор'.tr,
-      who.isEmpty
-          ? 'Нажмите, чтобы вернуться. Можно положить трубку.'.tr
-          : who,
+      who.isEmpty ? 'Нажмите, чтобы вернуться. Можно положить трубку.'.tr : who,
       NotificationDetails(
         android: AndroidNotificationDetails(
           activeCallChannelId,
@@ -572,6 +630,7 @@ class LocalNotificationService {
           color: NotificationLook.instance.color,
           visibility: NotificationVisibility.public,
           category: AndroidNotificationCategory.call,
+          largeIcon: await _badgeFor('call'),
           ticker: 'Разговор'.tr,
         ),
         iOS: const DarwinNotificationDetails(
@@ -612,20 +671,18 @@ class LocalNotificationService {
   }) async {
     if (defaultTargetPlatform != TargetPlatform.android) return false;
     try {
-      await const MethodChannel('fix_appliance/device').invokeMethod(
-        'showShadeNotification',
-        {
-          'title': title,
-          'body': body,
-          'tag': tag,
-          'channelId': channelId,
-          'applianceType': applianceType,
-          'clientName': clientName,
-          'city': city,
-          ...extras,
-        },
-      );
-      return true;
+      final shown = await const MethodChannel('fix_appliance/device')
+          .invokeMethod<bool>('showShadeNotification', {
+            'title': title,
+            'body': body,
+            'tag': tag,
+            'channelId': channelId,
+            'applianceType': applianceType,
+            'clientName': clientName,
+            'city': city,
+            ...extras,
+          });
+      return shown == true;
     } catch (e) {
       debugPrint('LocalNotificationService: shade: $e');
       return false;
@@ -642,6 +699,7 @@ class LocalNotificationService {
     bool sticky = false,
     bool persist = false,
     String? tag,
+    AndroidBitmap<Object>? largeIcon,
   }) {
     final look = NotificationLook.instance;
     final keep = sticky || ongoing;
@@ -673,8 +731,8 @@ class LocalNotificationService {
         ticker: title,
         tag: tag,
         number: persist ? 1 : null,
-        styleInformation:
-            look.largeText ? BigTextStyleInformation(body) : null,
+        largeIcon: largeIcon,
+        styleInformation: look.largeText ? BigTextStyleInformation(body) : null,
       ),
       iOS: const DarwinNotificationDetails(
         presentAlert: true,
@@ -691,8 +749,10 @@ class LocalNotificationService {
     final prefs = await SharedPreferences.getInstance();
     final old = prefs.getStringList('visit_alert_ids') ?? const [];
 
-    final android = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
     var activeIds = <int>{};
     try {
       final active = await android?.getActiveNotifications() ?? const [];
@@ -705,6 +765,7 @@ class LocalNotificationService {
     }
 
     final now = tz.TZDateTime.now(tz.local);
+    final visitBadge = await _badgeFor('visit_soon');
     final ids = <String>[];
     var n = 0;
     final keepIds = <int>{};
@@ -737,11 +798,9 @@ class LocalNotificationService {
           channelDescription: 'Напоминание за 1.5 часа до визита'.tr,
           title: title,
           body: body,
+          largeIcon: visitBadge,
         );
-        final visitPayload = payload({
-          'type': 'visit_soon',
-          'jobId': job.id,
-        });
+        final visitPayload = payload({'type': 'visit_soon', 'jobId': job.id});
         if (!when.isAfter(now)) {
           if (!activeIds.contains(id)) {
             if (!await _showShadeNative(
@@ -752,10 +811,7 @@ class LocalNotificationService {
               applianceType: job.applianceType,
               clientName: who,
               city: job.displayCity,
-              extras: {
-                'type': 'visit_soon',
-                'jobId': job.id,
-              },
+              extras: {'type': 'visit_soon', 'jobId': job.id},
             )) {
               await _plugin.show(
                 id,

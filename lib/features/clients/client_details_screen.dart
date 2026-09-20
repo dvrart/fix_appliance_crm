@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../services/services.dart';
 import '../jobs/job_details/job_details_screen.dart';
@@ -207,7 +208,9 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot>(
-      stream: FirestoreService.clientsRef.doc(widget.clientId).snapshots(),
+      stream: widget.clientId.isNotEmpty
+          ? FirestoreService.clientsRef.doc(widget.clientId).snapshots()
+          : null,
       builder: (context, snapshot) {
         final data = snapshot.data?.data() as Map<String, dynamic>? ?? widget.clientData;
         final name = _extractClientName(data);
@@ -294,6 +297,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                             label: 'Позвонить'.tr,
                             color: const Color(0xFF25D366),
                             onTap: () => _makeCall(phone, name),
+                            onLongPress: phone.isNotEmpty ? () => AppFeedback.copy(context, phone) : null,
                           ),
                           const SizedBox(width: 16),
                           _buildActionButton(
@@ -301,6 +305,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                             label: 'Написать'.tr,
                             color: const Color(0xFF1E88E5),
                             onTap: () => _sendSms(phone, name, email: email),
+                            onLongPress: phone.isNotEmpty ? () => AppFeedback.copy(context, phone) : (email.isNotEmpty ? () => AppFeedback.copy(context, email) : null),
                           ),
                           const SizedBox(width: 16),
                           _buildActionButton(
@@ -308,6 +313,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                             label: 'Маршрут'.tr,
                             color: const Color(0xFFFF9800),
                             onTap: () => MapsService.openNavigator(address),
+                            onLongPress: address.isNotEmpty ? () => AppFeedback.copy(context, address) : null,
                           ),
                         ],
                       ),
@@ -408,9 +414,12 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     required String label,
     required Color color,
     required VoidCallback onTap,
+    VoidCallback? onLongPress,
   }) {
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Column(
         children: [
           Container(
@@ -440,6 +449,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
   }) {
     return InkWell(
       onTap: onTap,
+      onLongPress: () => AppFeedback.copy(context, value),
       borderRadius: BorderRadius.circular(12),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),

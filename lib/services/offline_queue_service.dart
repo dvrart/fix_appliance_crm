@@ -6,6 +6,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'error_log_service.dart';
 import 'firestore_service.dart';
 
 /// Очередь изменений заявок и фото, если в поле нет сети.
@@ -42,10 +43,26 @@ class OfflineQueueService {
     _flushing = true;
     try {
       final prefs = await SharedPreferences.getInstance();
+      final snapshot = List<Map<String, dynamic>>.from(_read(prefs));
+      if (snapshot.isEmpty) return;
+      final processed = <int>{}; // indices of snapshot that succeeded
+      for (var i = 0; i < snapshot.length; i++) {
+        final ok = await _run(snapshot[i]);
+        if (ok) processed.add(i);
+      }
+      // Re-read to include ops added during flush, then remove succeeded ones
+      final current = _read(prefs);
       final remaining = <Map<String, dynamic>>[];
-      for (final op in _read(prefs)) {
-        final ok = await _run(op);
-        if (!ok) remaining.add(op);
+      // Keep ops that were NOT in our snapshot (added during flush) 
+      // plus snapshot ops that failed
+      final snapshotJson = snapshot.map(jsonEncode).toSet();
+      for (final op in current) {
+        if (!snapshotJson.contains(jsonEncode(op))) {
+          remaining.add(op); // added during flush, keep
+        }
+      }
+      for (var i = 0; i < snapshot.length; i++) {
+        if (!processed.contains(i)) remaining.add(snapshot[i]);
       }
       await prefs.setString(_key, jsonEncode(remaining));
     } finally {
@@ -91,7 +108,15 @@ class OfflineQueueService {
         final localPath = op['localPath'] as String;
         final fileName = op['fileName'] as String;
         final file = File(localPath);
-        if (!file.existsSync()) return true;
+        if (!file.existsSync()) {
+          debugPrint('OfflineQueue: фото удалено с телефона, операция пропущена: $localPath');
+          ErrorLogService.record(
+            'Фото из офлайн-очереди не найдено — файл удалён: $fileName',
+            null,
+            kind: 'offline_queue',
+          );
+          return true; // unrecoverable, remove from queue
+        }
         final storageRef = FirebaseStorage.instance
             .ref()
             .child('jobs/$jobId/attachments/$fileName');

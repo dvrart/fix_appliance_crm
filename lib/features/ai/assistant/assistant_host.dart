@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../core/l10n/app_locale.dart';
+import '../../../services/assistant_audio_service.dart';
 import '../../../services/settings_service.dart';
 import 'assistant_controller.dart';
 import 'assistant_actions.dart';
@@ -18,11 +19,15 @@ class AssistantHost extends StatefulWidget {
   }
 
   static Future<void> open(BuildContext context) async {
-    await context.findAncestorStateOfType<_AssistantHostState>()?.openAssistant();
+    await context
+        .findAncestorStateOfType<_AssistantHostState>()
+        ?.openAssistant();
   }
 
   static Future<void> close(BuildContext context) async {
-    await context.findAncestorStateOfType<_AssistantHostState>()?.closeAssistant();
+    await context
+        .findAncestorStateOfType<_AssistantHostState>()
+        ?.closeAssistant();
   }
 
   /// Сохраняет ссылку на хост до закрытия drawer — контекст после pop уже мёртв.
@@ -36,10 +41,18 @@ class AssistantHost extends StatefulWidget {
   State<AssistantHost> createState() => _AssistantHostState();
 }
 
-class _AssistantHostState extends State<AssistantHost> with WidgetsBindingObserver {
+class _AssistantHostState extends State<AssistantHost>
+    with WidgetsBindingObserver {
   final controller = AssistantController();
   final _wake = WakeWordService();
   StreamSubscription? _configSub;
+  StreamSubscription<AssistantAudioState>? _audioSub;
+  AssistantAudioState _audioState = const AssistantAudioState(available: false);
+  AppLifecycleState? _lifecycleState;
+  Future<void> _wakeSync = Future.value();
+  Future<void>? _closingAssistant;
+  int _audioWatchEpoch = 0;
+  bool _openingAssistant = false;
   bool _assistantEnabled = true;
   bool _wakeEnabled = true;
   String? _lastWakeHint;
@@ -47,7 +60,11 @@ class _AssistantHostState extends State<AssistantHost> with WidgetsBindingObserv
   @override
   void initState() {
     super.initState();
+    _lifecycleState = WidgetsBinding.instance.lifecycleState;
     WidgetsBinding.instance.addObserver(this);
+    AssistantAudioService.playback.addListener(_onAssistantChanged);
+    AssistantAudioService.playback.suspendMicrophone = _suspendForPlayback;
+    unawaited(_watchAudio());
     _wake.onBlocked = _onWakeBlocked;
     _wake.applyPhrases(
       word: SettingsService.defaultAssistantWakeWord,
@@ -58,12 +75,13 @@ class _AssistantHostState extends State<AssistantHost> with WidgetsBindingObserv
           .toList(),
     );
     _wake.onWake = () {
-      unawaited(openAssistant());
+      if (!_audioState.blocksWake && !AssistantAudioService.playback.isActive) {
+        unawaited(openAssistant());
+      }
     };
     controller.addListener(_onAssistantChanged);
-    controller.onToolsFinished = () => AssistantActions.flush(
-          closeOverlay: closeAssistant,
-        );
+    controller.onToolsFinished = () =>
+        AssistantActions.flush(closeOverlay: closeAssistant);
     controller.onCloseRequested = closeAssistant;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Future<void>.delayed(const Duration(milliseconds: 700), () {
@@ -87,81 +105,143 @@ class _AssistantHostState extends State<AssistantHost> with WidgetsBindingObserv
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleState = state;
+    unawaited(_watchAudio());
     unawaited(_syncWake());
   }
 
-  bool get _appResumed {
-    final state = WidgetsBinding.instance.lifecycleState;
-    return state == null || state == AppLifecycleState.resumed;
+  bool get _appResumed =>
+      _lifecycleState == null || _lifecycleState == AppLifecycleState.resumed;
+
+  Future<void> _watchAudio() async {
+    final epoch = ++_audioWatchEpoch;
+    final previous = _audioSub;
+    _audioSub = null;
+    _audioState = const AssistantAudioState(available: false);
+    await previous?.cancel();
+    if (!mounted || epoch != _audioWatchEpoch || !_appResumed) return;
+    _audioSub = AssistantAudioService.watchState().listen(
+      (state) {
+        if (!mounted || epoch != _audioWatchEpoch) return;
+        _audioState = state;
+        unawaited(_syncWake());
+      },
+      onError: (Object error) {
+        if (!mounted || epoch != _audioWatchEpoch) return;
+        _audioState = const AssistantAudioState(available: false);
+        unawaited(_syncWake());
+        debugPrint('Assistant audio state: $error');
+      },
+    );
   }
 
   void _onWakeBlocked(String reason) {
     if (!mounted || reason.trim().isEmpty) return;
     if (_lastWakeHint == reason) return;
     _lastWakeHint = reason;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(reason)),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(reason)));
   }
 
-  Future<void> _syncWake() async {
-    final want = _assistantEnabled &&
-        _wakeEnabled &&
-        !controller.isOpen &&
-        _appResumed;
-    if (want) {
-      if (!_wake.isArmed) await _wake.start();
-    } else if (_wake.isArmed) {
-      await _wake.stop();
+  Future<void> _syncWake() {
+    final next = _wakeSync.then((_) async {
+      if (!mounted) return;
+      final want =
+          _assistantEnabled &&
+          _wakeEnabled &&
+          !controller.isOpen &&
+          !_openingAssistant &&
+          _closingAssistant == null &&
+          !AssistantAudioService.playback.isActive &&
+          !_audioState.blocksWake &&
+          _appResumed;
+      if (want) {
+        if (!_wake.isArmed) await _wake.start();
+      } else if (_wake.isRunning) {
+        await _wake.stop();
+      }
+    });
+    _wakeSync = next.catchError((Object error) {
+      debugPrint('Assistant microphone: $error');
+    });
+    return next;
+  }
+
+  Future<void> _suspendForPlayback() async {
+    await _syncWake();
+    if (controller.isOpen || _openingAssistant || _closingAssistant != null) {
+      await closeAssistant();
     }
   }
 
   Future<void> openAssistant() async {
-    if (!_assistantEnabled) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              context.tr(
-                'Ассистент выключен в настройках',
-                'Assistant is turned off in Settings',
-              ),
-            ),
-          ),
-        );
-      }
+    if (!mounted ||
+        !_appResumed ||
+        _openingAssistant ||
+        _closingAssistant != null) {
       return;
     }
-    await _wake.stop();
-    await Future<void>.delayed(const Duration(milliseconds: 350));
-    if (!mounted) return;
-    await controller.open();
-    if (!controller.isOpen) {
-      final err = (controller.errorText ?? '').trim();
-      if (mounted && err.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(err)),
-        );
-      }
-      await _syncWake();
+    if (!_assistantEnabled || AssistantAudioService.playback.isActive) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            AssistantAudioService.playback.isActive
+                ? context.tr(
+                    'Сначала остановите запись',
+                    'Pause the recording first',
+                  )
+                : context.tr(
+                    'Ассистент выключен в настройках',
+                    'Assistant is turned off in Settings',
+                  ),
+          ),
+        ),
+      );
       return;
+    }
+    _openingAssistant = true;
+    try {
+      await _syncWake();
+      final audio = await AssistantAudioService.readState();
+      if (!mounted || !_appResumed || AssistantAudioService.playback.isActive) {
+        return;
+      }
+      if (audio.callActive || !audio.available) return;
+      await controller.open();
+      final err = (controller.errorText ?? '').trim();
+      if (mounted && !controller.isOpen && err.isNotEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(err)));
+      }
+    } finally {
+      _openingAssistant = false;
+      await _syncWake();
     }
   }
 
   Future<void> closeAssistant() async {
-    await controller.close();
-    await _syncWake();
+    if (_closingAssistant != null) return _closingAssistant;
+    final closing = Future<void>.sync(controller.close);
+    _closingAssistant = closing;
+    try {
+      await closing;
+    } finally {
+      _closingAssistant = null;
+      await _syncWake();
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _audioWatchEpoch++;
+    _audioSub?.cancel();
     _configSub?.cancel();
+    AssistantAudioService.playback.removeListener(_onAssistantChanged);
+    AssistantAudioService.playback.suspendMicrophone = null;
     controller.removeListener(_onAssistantChanged);
-    unawaited(_wake.stop());
     _wake.dispose();
-    controller.close();
-    controller.dispose();
+    unawaited(controller.close().whenComplete(controller.dispose));
     super.dispose();
   }
 

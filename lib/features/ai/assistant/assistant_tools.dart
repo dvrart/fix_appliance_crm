@@ -13,7 +13,14 @@ import '../../../services/sms_service.dart';
 import 'assistant_actions.dart';
 
 class AssistantTools {
-  static Map<String, dynamic> _jobSummary(Job job, {bool detailed = false}) {
+  static Map<String, dynamic> _jobSummary(
+    Job job, {
+    bool detailed = false,
+    JobVisit? visit,
+    DateTime? now,
+  }) {
+    final instant = (now ?? DateTime.now()).toUtc();
+    final scheduledVisit = visit ?? job.nextActiveVisit(now: instant);
     final summary = <String, dynamic>{
       'id': job.id,
       'client_id': job.clientId,
@@ -25,10 +32,16 @@ class AssistantTools {
       'problem': job.description,
       'status': job.status,
       'priority': job.priority,
-      'scheduled_at': job.scheduledAt?.toIso8601String(),
+      'scheduled_at': scheduledVisit?.startAt.toUtc().toIso8601String(),
+      'scheduled_visit_is_upcoming':
+          scheduledVisit != null && scheduledVisit.endAt.toUtc().isAfter(instant),
       'needs_review': job.needsReview,
     };
     if (!detailed) return summary;
+    final upcomingVisitIds = job.activeVisits
+        .where((visit) => visit.endAt.toUtc().isAfter(instant))
+        .map((visit) => visit.id)
+        .toSet();
     return {
       ...summary,
       'contact_name': job.contactName,
@@ -49,10 +62,11 @@ class AssistantTools {
             },
           )
           .toList(),
-      'visits': job.coalescedVisits
+      'visit_history': job.coalescedVisits
           .map(
             (visit) => {
-              'start': visit.startAt.toIso8601String(),
+              'start': visit.startAt.toUtc().toIso8601String(),
+              'is_upcoming': upcomingVisitIds.contains(visit.id),
               'outcome': visit.outcome,
               'confirm': visit.smsConfirmStatus,
               'note': visit.note,
@@ -81,29 +95,18 @@ class AssistantTools {
         q.contains('следующ') ||
         q.contains('ближайш') ||
         q == 'next') {
-      final now = DateTime.now();
-      final upcoming = pool
-          .where((j) => j.scheduledAt != null && !j.scheduledAt!.isBefore(now))
-          .toList()
-        ..sort((a, b) => a.scheduledAt!.compareTo(b.scheduledAt!));
-      if (upcoming.isNotEmpty) return upcoming.first;
-
-      final today = pool.where((j) {
-        final d = j.scheduledAt;
-        return d != null &&
-            d.year == now.year &&
-            d.month == now.month &&
-            d.day == now.day;
-      }).toList()
-        ..sort((a, b) => (a.scheduledAt ?? a.createdAt)
-            .compareTo(b.scheduledAt ?? b.createdAt));
-      if (today.isNotEmpty) return today.first;
-      if (pool.isNotEmpty) {
-        pool.sort((a, b) => (a.scheduledAt ?? a.createdAt)
-            .compareTo(b.scheduledAt ?? b.createdAt));
-        return pool.first;
+      final now = DateTime.now().toUtc();
+      Job? nextJob;
+      JobVisit? nextVisit;
+      for (final job in pool) {
+        final visit = job.nextActiveVisit(now: now);
+        if (visit != null &&
+            (nextVisit == null || visit.startAt.isBefore(nextVisit.startAt))) {
+          nextJob = job;
+          nextVisit = visit;
+        }
       }
-      return null;
+      return nextJob;
     }
 
     final digits = q.replaceAll(RegExp(r'\D'), '');
@@ -177,36 +180,59 @@ class AssistantTools {
 
   static Future<Map<String, dynamic>> _listJobs(Map<String, dynamic> args) async {
     final jobs = await JobService.loadAllOnce();
-    final now = DateTime.now();
+    final now = DateTime.now().toUtc();
+    final today = AppTimeService.bookingWallClock(now);
     final when = (args['when'] as String?)?.toLowerCase() ?? '';
     final includeClosed = when == 'all' || when == 'closed';
     var list = includeClosed
         ? [...jobs]
         : jobs.where((j) => !JobStatuses.isClosed(j.status)).toList();
-
-    if (when == 'today') {
-      list = list.where((j) {
-        final d = j.scheduledAt;
-        return d != null &&
-            d.year == now.year &&
-            d.month == now.month &&
-            d.day == now.day;
-      }).toList();
-    } else if (when == 'upcoming') {
-      list = list
-          .where((j) => j.scheduledAt != null && !j.scheduledAt!.isBefore(now))
-          .toList();
-    } else if (when == 'closed') {
-      list = jobs.where((j) => JobStatuses.isClosed(j.status)).toList();
+    final selectedVisits = <String, JobVisit>{};
+    for (final job in list) {
+      JobVisit? selected;
+      if (when == 'today') {
+        for (final visit in job.activeVisits) {
+          if (!JobVisit.isSameDay(
+            AppTimeService.bookingWallClock(visit.startAt),
+            today,
+          )) {
+            continue;
+          }
+          selected ??= visit;
+          if (visit.endAt.toUtc().isAfter(now)) {
+            selected = visit;
+            break;
+          }
+        }
+      } else {
+        selected = job.nextActiveVisit(now: now);
+      }
+      if (selected != null) selectedVisits[job.id] = selected;
     }
 
-    list.sort((a, b) => (a.scheduledAt ?? a.createdAt)
-        .compareTo(b.scheduledAt ?? b.createdAt));
-    final limited = list.take(24).map(_jobSummary).toList();
+    if (when == 'today' || when == 'upcoming') {
+      list = list.where((job) => selectedVisits.containsKey(job.id)).toList();
+    } else if (when == 'closed') {
+      list = list.where((j) => JobStatuses.isClosed(j.status)).toList();
+    }
+
+    list.sort((a, b) => (selectedVisits[a.id]?.startAt ??
+            (includeClosed ? a.scheduledAt : null) ??
+            a.createdAt)
+        .compareTo(selectedVisits[b.id]?.startAt ??
+            (includeClosed ? b.scheduledAt : null) ??
+            b.createdAt));
+    final limited = list
+        .take(24)
+        .map(
+          (job) => _jobSummary(job, visit: selectedVisits[job.id], now: now),
+        )
+        .toList();
     return {
       'count': limited.length,
       'jobs': limited,
-      'now': DateFormat('yyyy-MM-dd HH:mm').format(now),
+      'now': DateFormat('yyyy-MM-dd HH:mm').format(today),
+      'time_zone': AppTimeService.defaultLocation,
     };
   }
 

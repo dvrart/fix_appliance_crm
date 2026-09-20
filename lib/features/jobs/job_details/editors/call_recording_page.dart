@@ -1,4 +1,5 @@
-﻿import 'dart:io';
+﻿import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
@@ -11,6 +12,7 @@ import '../../../../core/constants.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../services/auth_service.dart';
+import '../../../../services/assistant_audio_service.dart';
 import '../../../../services/job_service.dart';
 import '../../../../services/twilio_service.dart';
 import '../../../../services/message_translate_service.dart';
@@ -464,10 +466,14 @@ class CallAudioPlayer extends StatefulWidget {
 
 class _CallAudioPlayerState extends State<CallAudioPlayer> {
   final AudioPlayer _player = AudioPlayer();
+  final List<StreamSubscription<dynamic>> _subscriptions = [];
   Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
+  Duration? _resumePosition;
   PlayerState _state = PlayerState.stopped;
+  Future<void>? _playTask;
   bool _loading = true;
+  bool _disposed = false;
   String? _error;
   Uint8List? _bytes;
   String? _filePath;
@@ -478,24 +484,45 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
   @override
   void initState() {
     super.initState();
-    _player.onDurationChanged.listen((value) {
-      if (!mounted) return;
-      setState(() => _duration = value);
-    });
-    _player.onPositionChanged.listen((value) {
-      if (!mounted) return;
-      setState(() => _position = value);
-    });
-    _player.onPlayerStateChanged.listen((value) {
-      if (!mounted) return;
-      setState(() {
-        _state = value;
-        if (value == PlayerState.playing || value == PlayerState.paused) {
-          _loading = false;
+    _subscriptions.addAll([
+      _player.onDurationChanged.listen((value) {
+        if (!mounted || _disposed) return;
+        setState(() => _duration = value);
+      }, onError: _onPlayerError),
+      _player.onPositionChanged.listen((value) {
+        if (!mounted || _disposed || _resumePosition != null) return;
+        setState(() => _position = value);
+      }, onError: _onPlayerError),
+      _player.onPlayerStateChanged.listen((value) {
+        if (_disposed) return;
+        if (value != PlayerState.playing && _playTask == null) {
+          AssistantAudioService.playback.release(_player);
         }
-      });
-    });
+        if (!mounted) return;
+        setState(() => _state = value);
+      }, onError: _onPlayerError),
+    ]);
     _prepare();
+  }
+
+  void _onPlayerError(Object error) {
+    if (_disposed) return;
+    unawaited(_stopAfterError(error));
+  }
+
+  Future<void> _stopAfterError(Object error) async {
+    try {
+      await _player.stop();
+    } catch (_) {
+    } finally {
+      AssistantAudioService.playback.release(_player);
+    }
+    if (!mounted || _disposed) return;
+    setState(() {
+      _loading = false;
+      _error = 'Не удалось включить запись'.tr;
+    });
+    debugPrint('Call player playback: $error');
   }
 
   Future<void> _prepare() async {
@@ -508,13 +535,17 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
           _error = null;
         });
       }
+      if (!mounted || _disposed) return;
       final bytes = await _downloadWithRetry();
+      if (!mounted || _disposed) return;
       _bytes = bytes;
       _mime = _audioMime(bytes);
       _filePath = await _writeTemp(bytes, _mime);
+      if (!mounted || _disposed) return;
       try {
         await _player.setSource(DeviceFileSource(_filePath!));
       } catch (sourceError) {
+        if (!mounted || _disposed) return;
         debugPrint('Call player setSource file: $sourceError');
         await _player.setSource(BytesSource(bytes, mimeType: _mime));
       }
@@ -608,60 +639,77 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
     return file.path;
   }
 
-  Future<void> _toggle() async {
-    if (_error != null) {
-      setState(() {
-        _error = null;
-        _loading = true;
-      });
-      await _prepare();
-      if (_error != null) return;
-    }
-    if (_playing) {
-      await _player.pause();
-      return;
-    }
+  Future<void> _toggle() {
+    if (_loading || _disposed || _playTask != null) return Future.value();
+    final task = _togglePlayback();
+    _playTask = task;
+    return task.whenComplete(() {
+      _playTask = null;
+      if (_disposed) return;
+      if (_player.state != PlayerState.playing) {
+        AssistantAudioService.playback.release(_player);
+      }
+      if (mounted) setState(() => _loading = false);
+    });
+  }
+
+  Future<void> _togglePlayback() async {
     setState(() => _loading = true);
     try {
-      if (_filePath != null) {
-        await _player.play(DeviceFileSource(_filePath!));
-      } else if (_bytes != null) {
-        await _player.play(BytesSource(_bytes!));
-      } else {
-        final urls = _audioCandidates();
-        var played = false;
-        for (final url in urls) {
-          try {
-            await _player.play(UrlSource(url));
-            played = true;
-            break;
-          } catch (error) {
-            debugPrint('Call player play url: $error');
-          }
-        }
-        if (!played) {
-          final bytes = await _download();
-          _bytes = bytes;
-          _mime = _audioMime(bytes);
-          _filePath = await _writeTemp(bytes, _mime);
-          await _player.play(DeviceFileSource(_filePath!));
-        }
+      if (_error != null) {
+        await _prepare();
+        if (!mounted || _disposed || _error != null) return;
+        setState(() => _loading = true);
       }
-    } catch (playError) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = 'Не удалось включить запись'.tr;
-      });
-      debugPrint('Call player play: $playError');
-      return;
+      if (_playing) {
+        _resumePosition = await _player.getCurrentPosition() ?? _position;
+        await _player.stop();
+        if (!mounted || _disposed) return;
+        setState(() {
+          _state = PlayerState.paused;
+          _position = _resumePosition!;
+        });
+        return;
+      }
+      await AssistantAudioService.playback.acquire(_player);
+      if (!mounted || _disposed) return;
+      final audio = await AssistantAudioService.readState();
+      if (!mounted || _disposed) return;
+      if (audio.callActive || !audio.available) {
+        throw StateError('Audio is unavailable during a call');
+      }
+      await _player.setAudioContext(AudioContext(
+        android: const AudioContextAndroid(
+          contentType: AndroidContentType.speech,
+          usageType: AndroidUsageType.media,
+          audioFocus: AndroidAudioFocus.gainTransient,
+        ),
+      ));
+      if (!mounted || _disposed) return;
+      final resumePosition = _resumePosition;
+      if (resumePosition != null) await _player.seek(resumePosition);
+      if (!mounted || _disposed) return;
+      _resumePosition = null;
+      await _player.resume();
+    } catch (error) {
+      await _stopAfterError(error);
     }
-    if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _seek(double value) async {
-    final millis = value.round().clamp(0, _maxMillis);
-    await _player.seek(Duration(milliseconds: millis));
+    final target = Duration(milliseconds: value.round().clamp(0, _maxMillis));
+    if (!_playing) {
+      setState(() {
+        _resumePosition = target;
+        _position = target;
+      });
+      return;
+    }
+    try {
+      await _player.seek(target);
+    } catch (error) {
+      await _stopAfterError(error);
+    }
   }
 
   int get _maxMillis {
@@ -679,9 +727,22 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
     return '$m:$s';
   }
 
+  Future<void> _disposePlayer() async {
+    try {
+      await _playTask;
+      await _player.dispose();
+    } finally {
+      AssistantAudioService.playback.release(_player);
+    }
+  }
+
   @override
   void dispose() {
-    _player.dispose();
+    _disposed = true;
+    for (final subscription in _subscriptions) {
+      unawaited(subscription.cancel());
+    }
+    unawaited(_disposePlayer());
     super.dispose();
   }
 
@@ -701,7 +762,7 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
           Row(
             children: [
               IconButton.filled(
-                onPressed: _toggle,
+                onPressed: _loading ? null : _toggle,
                 style: IconButton.styleFrom(
                   backgroundColor: AppColors.primary,
                   foregroundColor: Colors.white,
@@ -722,7 +783,7 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
                 child: Slider(
                   value: pos,
                   max: max,
-                  onChanged: _duration.inMilliseconds <= 0 ? null : _seek,
+                  onChanged: _loading || _duration.inMilliseconds <= 0 ? null : _seek,
                 ),
               ),
               Text(

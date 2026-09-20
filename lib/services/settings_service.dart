@@ -302,6 +302,10 @@ class SettingsService {
     return boolFlag(config, 'reminderSmsEnabled');
   }
 
+  static bool readManualSmsApproval(Map<String, dynamic> config) {
+    return boolFlag(config, 'manualSmsApproval');
+  }
+
   static const reminderOffsetKeys = ['48h', '24h', 'morning', '2h'];
 
   static List<String> readReminderOffsets(Map<String, dynamic> config) {
@@ -884,6 +888,30 @@ class SettingsService {
 
   static const String assistantLanguageRu = 'ru';
   static const String assistantLanguageEn = 'en';
+
+  static const String defaultAssistantVoice = 'Kore';
+  static const List<String> assistantVoicesMale = [
+    'Charon',
+    'Orus',
+    'Puck',
+    'Fenrir',
+  ];
+  static const List<String> assistantVoicesFemale = [
+    'Aoede',
+    'Kore',
+    'Zephyr',
+    'Leda',
+  ];
+
+  static String readAssistantVoice(Map<String, dynamic> config) {
+    final value = (config['assistantVoice'] as String?)?.trim();
+    if (value != null &&
+        (assistantVoicesMale.contains(value) ||
+            assistantVoicesFemale.contains(value))) {
+      return value;
+    }
+    return defaultAssistantVoice;
+  }
 
   static String readAssistantLanguage(Map<String, dynamic> config) {
     final value = (config['assistantLanguage'] as String?)?.trim().toLowerCase();

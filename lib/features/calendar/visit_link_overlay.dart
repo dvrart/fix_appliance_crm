@@ -38,7 +38,9 @@ class VisitLinkCatalog {
     for (final app in appointments) {
       if (app.id == null) continue;
       final jobId = JobVisit.jobIdFromAppointment(app.id);
-      byJob.putIfAbsent(jobId, () => []).add(
+      byJob
+          .putIfAbsent(jobId, () => [])
+          .add(
             VisitLinkNode(
               appointmentId: app.id.toString(),
               jobId: jobId,
@@ -100,6 +102,7 @@ class VisitLinkSegment {
 /// Реестр видимых визитов для цветных связок между днями одной заявки.
 class VisitLinkHub extends ChangeNotifier {
   final Map<String, GlobalKey> _keys = {};
+  final Map<String, RenderBox> _boxes = {};
   final Map<String, VisitLinkNode> _nodes = {};
 
   void register({
@@ -109,9 +112,15 @@ class VisitLinkHub extends ChangeNotifier {
     required Color color,
     required GlobalKey key,
   }) {
+    final box = key.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.attached) return;
     final prev = _nodes[appointmentId];
-    final sameKey = identical(_keys[appointmentId], key);
-    final sameMeta = prev != null &&
+    final sameKey =
+        identical(_keys[appointmentId], key) &&
+        identical(_boxes[appointmentId], box);
+    _boxes[appointmentId] = box;
+    final sameMeta =
+        prev != null &&
         prev.jobId == jobId &&
         prev.startAt == startAt &&
         prev.color == color;
@@ -127,8 +136,10 @@ class VisitLinkHub extends ChangeNotifier {
     }
   }
 
-  void unregister(String appointmentId) {
+  void unregister(String appointmentId, {GlobalKey? key}) {
+    if (key != null && !identical(_keys[appointmentId], key)) return;
     if (_keys.remove(appointmentId) == null) return;
+    _boxes.remove(appointmentId);
     _nodes.remove(appointmentId);
     notifyListeners();
   }
@@ -138,6 +149,7 @@ class VisitLinkHub extends ChangeNotifier {
   void clear() {
     if (_keys.isEmpty && _nodes.isEmpty) return;
     _keys.clear();
+    _boxes.clear();
     _nodes.clear();
     notifyListeners();
   }
@@ -145,13 +157,13 @@ class VisitLinkHub extends ChangeNotifier {
   Map<String, Rect> visibleRects(GlobalKey overlayKey) {
     final overlayCtx = overlayKey.currentContext;
     final overlayBox = overlayCtx?.findRenderObject() as RenderBox?;
-    if (overlayBox == null || !overlayBox.hasSize) return const {};
+    if (overlayBox == null || !overlayBox.attached || !overlayBox.hasSize) {
+      return const {};
+    }
 
     final rects = <String, Rect>{};
     for (final entry in _nodes.entries) {
-      final key = _keys[entry.key];
-      final ctx = key?.currentContext;
-      final box = ctx?.findRenderObject() as RenderBox?;
+      final box = _boxes[entry.key];
       if (box == null || !box.attached || !box.hasSize) continue;
       if (box.size.width < 2 || box.size.height < 2) continue;
 
@@ -175,7 +187,9 @@ class VisitLinkHub extends ChangeNotifier {
   }) {
     final overlayCtx = overlayKey.currentContext;
     final overlayBox = overlayCtx?.findRenderObject() as RenderBox?;
-    if (overlayBox == null || !overlayBox.hasSize) return const [];
+    if (overlayBox == null || !overlayBox.attached || !overlayBox.hasSize) {
+      return const [];
+    }
 
     final width = overlayBox.size.width;
     final rects = visibleRects(overlayKey);
@@ -195,8 +209,6 @@ class VisitLinkHub extends ChangeNotifier {
         final rectA = rects[a.appointmentId];
         final rectB = rects[b.appointmentId];
         final aBefore = catalog.isBeforeVisible(a.startAt);
-        final aAfter = catalog.isAfterVisible(a.startAt);
-        final bBefore = catalog.isBeforeVisible(b.startAt);
         final bAfter = catalog.isAfterVisible(b.startAt);
 
         if (rectA != null && rectB != null) {
@@ -243,12 +255,7 @@ class VisitLinkHub extends ChangeNotifier {
 
   static const double _edgeStub = 14;
 
-  VisitLinkSegment _cardToCard(
-    Rect a,
-    Rect b,
-    Color colorA,
-    Color colorB,
-  ) {
+  VisitLinkSegment _cardToCard(Rect a, Rect b, Color colorA, Color colorB) {
     final bBelow = b.center.dy >= a.center.dy;
     final fromEdge = bBelow ? VisitLinkEdge.bottom : VisitLinkEdge.top;
     final toEdge = bBelow ? VisitLinkEdge.top : VisitLinkEdge.bottom;
@@ -257,10 +264,7 @@ class VisitLinkHub extends ChangeNotifier {
         a.center.dx,
         fromEdge == VisitLinkEdge.bottom ? a.bottom : a.top,
       ),
-      to: Offset(
-        b.center.dx,
-        toEdge == VisitLinkEdge.top ? b.top : b.bottom,
-      ),
+      to: Offset(b.center.dx, toEdge == VisitLinkEdge.top ? b.top : b.bottom),
       fromColor: colorA,
       toColor: colorB,
       fromEdge: fromEdge,
@@ -295,6 +299,7 @@ class VisitLinkReporter extends StatefulWidget {
 
 class _VisitLinkReporterState extends State<VisitLinkReporter> {
   final GlobalKey _key = GlobalKey();
+  bool _active = true;
 
   @override
   void initState() {
@@ -306,22 +311,37 @@ class _VisitLinkReporterState extends State<VisitLinkReporter> {
   void didUpdateWidget(covariant VisitLinkReporter oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.appointmentId != widget.appointmentId ||
+        oldWidget.hub != widget.hub ||
         oldWidget.enabled != widget.enabled) {
-      oldWidget.hub.unregister(oldWidget.appointmentId);
+      oldWidget.hub.unregister(oldWidget.appointmentId, key: _key);
     }
     WidgetsBinding.instance.addPostFrameCallback((_) => _sync());
   }
 
   @override
+  void deactivate() {
+    _active = false;
+    widget.hub.unregister(widget.appointmentId, key: _key);
+    super.deactivate();
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    _active = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _sync());
+  }
+
+  @override
   void dispose() {
-    widget.hub.unregister(widget.appointmentId);
+    widget.hub.unregister(widget.appointmentId, key: _key);
     super.dispose();
   }
 
   void _sync() {
-    if (!mounted) return;
+    if (!mounted || !_active) return;
     if (!widget.enabled) {
-      widget.hub.unregister(widget.appointmentId);
+      widget.hub.unregister(widget.appointmentId, key: _key);
       return;
     }
     widget.hub.register(
@@ -335,10 +355,7 @@ class _VisitLinkReporterState extends State<VisitLinkReporter> {
 
   @override
   Widget build(BuildContext context) {
-    return KeyedSubtree(
-      key: _key,
-      child: widget.child,
-    );
+    return KeyedSubtree(key: _key, child: widget.child);
   }
 }
 
@@ -347,17 +364,22 @@ class VisitLinkPainter extends CustomPainter {
     required this.hub,
     required this.overlayKey,
     required this.catalog,
+    this.timeRulerWidth = 52,
   }) : super(repaint: hub);
 
   final VisitLinkHub hub;
   final GlobalKey overlayKey;
   final VisitLinkCatalog catalog;
 
+  /// В месяце линейки времени нет, слева рисовать можно от самого края.
+  final double timeRulerWidth;
+
   @override
   void paint(Canvas canvas, Size size) {
     final segments = hub.segments(
       overlayKey: overlayKey,
       catalog: catalog,
+      timeRulerWidth: timeRulerWidth,
     );
     if (segments.isEmpty) return;
 
@@ -449,7 +471,8 @@ class VisitLinkPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant VisitLinkPainter oldDelegate) {
-    return oldDelegate.catalog != catalog;
+    return oldDelegate.catalog != catalog ||
+        oldDelegate.timeRulerWidth != timeRulerWidth;
   }
 }
 
@@ -460,14 +483,18 @@ DateTime calendarVisibleStart({
 }) {
   final anchor = displayDate ?? DateTime.now();
   final day = DateTime(anchor.year, anchor.month, anchor.day);
-  if (view == CalendarView.workWeek) {
-    final offset = (day.weekday - firstDayOfWeek + 7) % 7;
-    return day.subtract(Duration(days: offset));
+  // Месяц: сетка начинается с недели, в которую попало первое число.
+  if (view == CalendarView.month) {
+    final first = DateTime(day.year, day.month, 1);
+    final offset = (first.weekday - firstDayOfWeek + 7) % 7;
+    return first.subtract(Duration(days: offset));
   }
   final offset = (day.weekday - firstDayOfWeek + 7) % 7;
   return day.subtract(Duration(days: offset));
 }
 
 int calendarVisibleDayCount(CalendarView? view) {
+  // Месяц по умолчанию рисуется шестью неделями.
+  if (view == CalendarView.month) return 42;
   return view == CalendarView.workWeek ? 5 : 7;
 }

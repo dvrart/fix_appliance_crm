@@ -13,7 +13,6 @@ const { notifyMaster } = require('./notify');
 const COMPANY_ID = 'fix_appliance_ca';
 const STATUS_CALLBACK =
   'https://us-central1-fix-appliance-crm.cloudfunctions.net/smsStatusCallback';
-const CLOSED = new Set(['Завершено', 'Отменено']);
 const DEFAULTS = {
   booking_confirm:
     'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day',
@@ -22,7 +21,7 @@ const DEFAULTS = {
   job_done:
     'Repair complete! ✅\nThank you for choosing us.\n⭐ Please leave a review:\n{review}',
   cancel_save:
-    'Sorry you need to cancel, {name}. 😔\nWe can keep the visit with 10% off, or even 25% off, or move it to another day.\n\nReply:\n• a new day and time (example: Friday 11:00)\n• 1 — keep {date} at {time} with 10% off\n• 2 — keep it with 25% off\n• 0 — cancel',
+    'Sorry to hear that, {name}. Would you like to reschedule instead?\n\nReply:\n• A new day and time (example: Friday 11:00)\n• 0 — confirm cancellation',
   reschedule_ask:
     'No problem, {name}. 🔁\nWhat day and time should the technician come?\nExample: Thursday at 14:00',
   confirm_rescheduled:
@@ -127,6 +126,17 @@ function visitSlotKey(value) {
   const time = formatVisit(value, 'time');
   if (!day || !time) return '';
   return `${day}T${time}`;
+}
+
+function normalizeSlotKey(value) {
+  return String(value || '').trim().replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})$/, '$1T$2');
+}
+
+function bookingStateFor(visit) {
+  const booking = visit.smsBooking || {};
+  return normalizeSlotKey(booking.slotKey) === visitSlotKey(visit.startAt)
+    ? String(booking.state || '')
+    : '';
 }
 
 function formatVisit(value, kind) {
@@ -283,8 +293,10 @@ function visitSentSms(visit, viaEmail) {
   const via = String((visit && visit.smsBookingVia) || '').toLowerCase();
   if (via === 'sms' || via === 'both') return true;
   if (visit && visit.smsBookingSentSms === true) return true;
-  // Old phone-job confirms went out as SMS only.
-  if (!viaEmail && visit && visit.smsBookingSentAt && !via) return true;
+  // Any booking confirmation already sent at this slot counts as sent.
+  // When the owner manually sends from the app the via flag may be empty,
+  // so we default to SMS unless the channel was explicitly email only.
+  if (visit && visit.smsBookingSentAt && !via) return true;
   return false;
 }
 
@@ -403,36 +415,11 @@ async function sendVisitEmail() {
 }
 
 function coalesceVisits(job) {
-  const raw = Array.isArray(job.visits) ? job.visits : [];
-  if (raw.length) return raw.map((visit) => ({ ...visit }));
-  const scheduled = job.scheduledAt || job.scheduledDate;
-  if (!scheduled) return [];
-  return [
-    {
-      id: 'legacy',
-      startAt: scheduled,
-      durationMinutes: job.durationMinutes || 120,
-      outcome: 'scheduled',
-    },
-  ];
+  return schedule.coalesceVisits(job);
 }
 
 function isClosedJob(job) {
-  if (!job) return false;
-  if (job.deletedAt) return true;
-  const status = String(job.status || '').trim();
-  if (CLOSED.has(status)) return true;
-  const n = status.toLowerCase();
-  return (
-    n.includes('отмен') ||
-    n === 'cancelled' ||
-    n === 'canceled' ||
-    n === 'cancel' ||
-    n.includes('заверш') ||
-    n === 'completed' ||
-    n === 'готово' ||
-    n === 'готов'
-  );
+  return schedule.isClosedJob(job);
 }
 
 function isCompletedStatus(status) {
@@ -448,10 +435,7 @@ function isCompletedStatus(status) {
 }
 
 function isScheduledVisit(visit) {
-  const outcome = String(visit.outcome || 'scheduled');
-  if (outcome === 'done' || outcome === 'cancelled') return false;
-  if (String(visit.smsConfirmStatus || '') === 'cancelled') return false;
-  return true;
+  return schedule.visitBlocks(visit);
 }
 
 async function loadConfig() {
@@ -568,6 +552,327 @@ function visitVars(job, visit, reviewUrl) {
   };
 }
 
+function bookingError(message, statusCode = 409) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
+function bookingRequestRef(requestId) {
+  if (!/^[A-Za-z0-9_-]{16,80}$/.test(String(requestId || ''))) {
+    throw bookingError('Некорректный идентификатор отправки', 400);
+  }
+  return messagesRef().doc(`booking_${requestId}`);
+}
+
+function bookingVisit(job, visitId, slotKey, to) {
+  if (!job || isClosedJob(job) || job.needsReview === true) {
+    throw bookingError('Сначала проверьте открытую заявку');
+  }
+  const visits = coalesceVisits(job);
+  const index = visits.findIndex((visit) => String(visit.id) === visitId);
+  if (index < 0 || !isScheduledVisit(visits[index]) || visitSlotKey(visits[index].startAt) !== slotKey) {
+    throw bookingError('Время визита изменилось. Откройте его заново');
+  }
+  if (normalizePhone(jobPhone(job)) !== normalizePhone(to)) {
+    throw bookingError('Телефон клиента изменился. Откройте визит заново');
+  }
+  return { visits, index, visit: visits[index] };
+}
+
+function withBookingReceipt(message) {
+  const receipt = message.bookingReceipt;
+  if (!receipt || !['approved', 'sending'].includes(message.bookingState)) return message;
+  const failed = ['failed', 'undelivered', 'canceled', 'unknown'].includes(receipt.status);
+  return {
+    ...message, sid: receipt.sid || message.sid || '', status: receipt.status,
+    bookingState: failed ? 'error' : 'sent',
+    bookingError: failed ? receipt.error || 'SMS не доставлено' : '',
+    bookingRetryAllowed: failed && receipt.retryAllowed !== false,
+  };
+}
+
+function bookingSendResult(message, id) {
+  message = withBookingReceipt(message);
+  return {
+    success: message.bookingState === 'sent',
+    state: message.bookingState,
+    sid: message.sid || '',
+    id,
+    error: message.bookingState === 'sent' ? '' : message.bookingError || 'SMS уже отправляется. Дождитесь статуса в карточке',
+  };
+}
+
+async function recordBookingDelivery(requestId, { sid = '', status, errorCode = '', error = '', retryAllowed = true }) {
+  const messageRef = bookingRequestRef(requestId);
+  return db().runTransaction(async (tx) => {
+    const snapshot = await tx.get(messageRef);
+    if (!snapshot.exists) return null;
+    const message = snapshot.data();
+    const meta = message.bookingSms;
+    if (!meta || (message.sid && sid && message.sid !== sid)) return null;
+    const jobRef = jobsRef().doc(meta.jobId);
+    const jobSnap = await tx.get(jobRef);
+    const ranks = { queued: 1, accepted: 1, sending: 2, sent: 3, delivered: 4, read: 5, undelivered: 5, failed: 5, canceled: 5 };
+    if (message.sid && ['delivered', 'read'].includes(message.status) && !['delivered', 'read'].includes(status)) return message;
+    if (message.sid && (ranks[message.status] || 0) > (ranks[status] || 0)) return message;
+    if (sid && message.sid === sid && message.status === status && String(message.errorCode || '') === errorCode) return message;
+    const failed = ['failed', 'undelivered', 'canceled', 'unknown'].includes(status);
+    const state = failed ? 'error' : 'sent';
+    const now = admin.firestore.Timestamp.now();
+    const next = {
+      ...message,
+      sid: sid || message.sid || '',
+      status,
+      bookingState: state,
+      bookingError: failed ? error || `SMS не доставлено${errorCode ? ` (${errorCode})` : ''}` : '',
+      bookingRetryAllowed: failed && retryAllowed,
+      updatedAt: now,
+    };
+    tx.update(messageRef, {
+      sid: next.sid, status, bookingState: state, bookingError: next.bookingError,
+      bookingRetryAllowed: next.bookingRetryAllowed, errorCode, updatedAt: now,
+    });
+    if (jobSnap.exists) {
+      const visits = coalesceVisits(jobSnap.data());
+      const visit = visits.find((item) => String(item.id) === meta.visitId);
+      if (visit && visitSlotKey(visit.startAt) === meta.slotKey && visit.smsBooking?.requestId === requestId) {
+        visit.smsBooking = {
+          ...visit.smsBooking, state, messageSid: next.sid, error: next.bookingError,
+          retryAllowed: next.bookingRetryAllowed, updatedAt: now,
+        };
+        visit.smsBookingPending = false;
+        delete visit.smsBookingPendingAt;
+        if (!failed) {
+          visit.smsBookingSlotKey = meta.slotKey;
+          visit.smsBookingDayKey = meta.slotKey.slice(0, 10);
+          visit.smsBookingSentAt = message.createdAt || now;
+          visit.smsBookingSentSms = true;
+          visit.smsBookingVia = 'sms';
+          if (!visit.smsConfirmStatus) visit.smsConfirmStatus = 'pending';
+        }
+        tx.update(jobRef, { visits, updatedAt: now });
+      }
+    }
+    return next;
+  });
+}
+
+async function persistBookingDelivery(requestId, result) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await recordBookingDelivery(requestId, result);
+    } catch (error) {
+      if (attempt === 1) {
+        await bookingRequestRef(requestId).set({
+          bookingReceipt: { ...result, recordedAt: admin.firestore.Timestamp.now() },
+        }, { merge: true });
+        console.warn('booking SMS result saved for reconciliation', requestId);
+      }
+    }
+  }
+  return null;
+}
+
+async function sendApprovedBookingSms({ jobId, visitId, slotKey, requestId, to, messageData, send }) {
+  if (typeof jobId !== 'string' || !jobId || jobId.includes('/') || typeof visitId !== 'string' || !visitId) {
+    throw bookingError('Нужны заявка и визит для отправки', 400);
+  }
+  slotKey = normalizeSlotKey(slotKey);
+  const messageRef = bookingRequestRef(requestId);
+  const jobRef = jobsRef().doc(jobId);
+  await db().runTransaction(async (tx) => {
+    const saved = await tx.get(messageRef);
+    if (saved.exists) {
+      const prior = saved.data();
+      if (prior.bookingSms?.jobId !== jobId || prior.bookingSms?.visitId !== visitId ||
+          prior.bookingSms?.slotKey !== slotKey || prior.to !== to || prior.body !== messageData.body) {
+        throw bookingError('Эта отправка уже относится к другому сообщению');
+      }
+      return;
+    }
+    const snapshot = await tx.get(jobRef);
+    const job = snapshot.exists ? snapshot.data() : null;
+    const { visits, visit } = bookingVisit(job, visitId, slotKey, to);
+    const state = bookingStateFor(visit);
+    if (state === 'approved' || state === 'sending' || (state === 'error' && visit.smsBooking.retryAllowed === false)) {
+      throw bookingError('Предыдущая отправка ещё не подтверждена. Проверьте переписку, чтобы не отправить SMS дважды');
+    }
+    const now = admin.firestore.Timestamp.now();
+    visit.smsBooking = { state: 'approved', slotKey, requestId, approvedAt: now };
+    visit.smsBookingPending = false;
+    delete visit.smsBookingPendingAt;
+    tx.update(jobRef, { visits, updatedAt: now });
+    tx.create(messageRef, {
+      ...messageData, to, sid: '', direction: 'outbound', status: 'queued', channel: 'sms',
+      kind: 'booking_confirm', clientId: job.clientId || null, jobId, read: true, mediaUrls: [],
+      bookingSms: { jobId, visitId, slotKey, requestId }, bookingState: 'approved', createdAt: now,
+    });
+  });
+  const claimed = await db().runTransaction(async (tx) => {
+    const snapshot = await tx.get(messageRef);
+    const message = snapshot.data();
+    if (message.bookingState !== 'approved') return false;
+    const jobSnap = await tx.get(jobRef);
+    let selected;
+    try {
+      selected = bookingVisit(jobSnap.exists ? jobSnap.data() : null, visitId, slotKey, to);
+      if (selected.visit.smsBooking?.requestId !== requestId || selected.visit.smsBooking.state !== 'approved') {
+        throw bookingError('Решение об отправке изменилось');
+      }
+    } catch (error) {
+      tx.update(messageRef, { bookingState: 'error', bookingError: error.message, bookingRetryAllowed: true, status: 'failed' });
+      if (jobSnap.exists) {
+        const visits = coalesceVisits(jobSnap.data());
+        const visit = visits.find((item) => String(item.id) === visitId);
+        if (visit?.smsBooking?.requestId === requestId && visit.smsBooking.state === 'approved') {
+          visit.smsBooking = { ...visit.smsBooking, state: 'error', error: error.message, retryAllowed: true };
+          tx.update(jobRef, { visits });
+        }
+      }
+      return false;
+    }
+    const now = admin.firestore.Timestamp.now();
+    selected.visit.smsBooking = { ...selected.visit.smsBooking, state: 'sending', startedAt: now };
+    tx.update(jobRef, { visits: selected.visits, updatedAt: now });
+    tx.update(messageRef, { bookingState: 'sending', status: 'sending', updatedAt: now });
+    return true;
+  });
+  if (claimed) {
+    let message;
+    let persisted;
+    try {
+      message = await send();
+    } catch (error) {
+      const definite = Number(error.status) >= 400 && Number(error.status) < 500;
+      persisted = await persistBookingDelivery(requestId, {
+        status: definite ? 'failed' : 'unknown', errorCode: String(error.code || ''),
+        error: definite ? 'Провайдер отклонил SMS. Можно повторить отправку' : 'Результат отправки неизвестен. Проверьте переписку перед повтором',
+        retryAllowed: definite,
+      });
+    }
+    if (message) {
+      persisted = await persistBookingDelivery(requestId, { sid: message.sid, status: message.status || 'queued' });
+    }
+    if (!persisted) {
+      await queueManualBooking(jobId, null, { reconcileOnly: true });
+    }
+  }
+  const latest = await messageRef.get();
+  return bookingSendResult(latest.data(), messageRef.id);
+}
+
+async function queueManualBooking(jobId, before, { reconcileOnly = false } = {}) {
+  const jobRef = jobsRef().doc(jobId);
+  const queued = await db().runTransaction(async (tx) => {
+    const snapshot = await tx.get(jobRef);
+    const job = snapshot.exists ? snapshot.data() : null;
+    if (!job || job.needsReview === true || isClosedJob(job)) return null;
+    const phone = jobPhone(job);
+    if (!normalizePhone(phone)) return null;
+    const previous = new Map(coalesceVisits(before || {}).map((visit) => [String(visit.id), visit]));
+    const visits = coalesceVisits(job);
+    const messageUpdates = [];
+    let changed = false;
+    let manualPendingCount = 0;
+    for (const visit of visits) {
+      if (!isScheduledVisit(visit) || String(visit.note || '').toLowerCase().includes('уточнить')) continue;
+      const start = toDate(visit.startAt);
+      if (!start || (start.getTime() < Date.now() - 2 * 36e5 && !job.createdByAi)) continue;
+      const slotKey = visitSlotKey(start);
+      const dayKey = torontoDayKey(start);
+      const booking = visit.smsBooking || {};
+      let state = bookingStateFor(visit);
+      if (['approved', 'sending', 'error'].includes(state) && /^[A-Za-z0-9_-]{16,80}$/.test(booking.requestId || '')) {
+        const requestRef = bookingRequestRef(booking.requestId);
+        const saved = await tx.get(requestRef);
+        const message = saved.exists ? withBookingReceipt(saved.data()) : null;
+        if (message?.bookingSms?.jobId === jobId && message.bookingSms.visitId === String(visit.id) &&
+            message.bookingSms.slotKey === slotKey && ['sent', 'error'].includes(message.bookingState) &&
+            (state !== message.bookingState || booking.messageSid !== message.sid || booking.error !== message.bookingError)) {
+          state = message.bookingState;
+          visit.smsBooking = {
+            ...booking, state, messageSid: message.sid || '', error: message.bookingError || '',
+            retryAllowed: message.bookingRetryAllowed === true,
+          };
+          if (state === 'sent') {
+            visit.smsBookingSlotKey = slotKey;
+            visit.smsBookingDayKey = dayKey;
+            visit.smsBookingSentAt = message.createdAt || admin.firestore.Timestamp.now();
+            visit.smsBookingSentSms = true;
+            visit.smsBookingVia = 'sms';
+          }
+          if (saved.data().bookingReceipt) {
+            messageUpdates.push([requestRef, {
+              sid: message.sid || '', status: message.status, bookingState: state,
+              bookingError: message.bookingError || '', bookingRetryAllowed: message.bookingRetryAllowed === true,
+            }]);
+          }
+          changed = true;
+        }
+      }
+      if (['pending', 'approved', 'rejected', 'sending', 'sent', 'error'].includes(state)) {
+        const pending = state === 'pending';
+        if (Boolean(visit.smsBookingPending) !== pending || (!pending && visit.smsBookingPendingAt)) {
+          visit.smsBookingPending = pending;
+          if (!pending) delete visit.smsBookingPendingAt;
+          changed = true;
+        }
+        continue;
+      }
+      if (reconcileOnly) continue;
+      const prev = previous.get(String(visit.id));
+      const storedSlot = normalizeSlotKey(visit.smsBookingSlotKey);
+      const stateSlot = normalizeSlotKey(booking.slotKey);
+      const slotMoved = Boolean(
+        (storedSlot && storedSlot !== slotKey) ||
+        (stateSlot && stateSlot !== slotKey) ||
+        (prev && visitSlotKey(prev.startAt) !== slotKey) ||
+        (visit.smsBookingDayKey && visit.smsBookingDayKey !== dayKey)
+      );
+      if (visit.smsConfirmStatus === 'confirmed' && !slotMoved) continue;
+      const alreadyPending = visit.smsBookingPending === true && !slotMoved;
+      const alreadySent = Boolean(visit.smsBookingSentAt) && visitSentSms(visit, false) &&
+        (storedSlot === slotKey || (!storedSlot && !slotMoved));
+      const now = admin.firestore.Timestamp.now();
+      visit.smsBookingSlotKey = slotKey;
+      visit.smsBookingDayKey = dayKey;
+      if (alreadySent) {
+        visit.smsBooking = { state: 'sent', slotKey, sentAt: visit.smsBookingSentAt };
+        visit.smsBookingPending = false;
+        delete visit.smsBookingPendingAt;
+      } else {
+        // Manual approval mode: mark the visit as pending an owner-sent SMS.
+        visit.smsBooking = { state: 'pending', slotKey, requestedAt: alreadyPending ? visit.smsBookingPendingAt || now : now };
+        visit.smsBookingPending = true;
+        visit.smsBookingPendingAt = visit.smsBooking.requestedAt;
+        if (slotMoved) {
+          visit.smsBookingSentAt = null;
+          visit.smsBookingSentSms = false;
+          visit.smsBookingSentEmail = false;
+          visit.smsBookingVia = '';
+          visit.smsReminderSentAt = null;
+          visit.smsConfirmNotifiedStatus = '';
+        }
+        visit.smsConfirmStatus = 'pending';
+        if (!alreadyPending) manualPendingCount += 1;
+      }
+      changed = true;
+    }
+    for (const [requestRef, patch] of messageUpdates) tx.update(requestRef, patch);
+    if (changed) {
+      tx.update(jobRef, { visits, scheduleUnconfirmed: false, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    }
+    return manualPendingCount ? { job, phone } : null;
+  });
+  if (!queued) return;
+  // type visit_confirm: тап ведёт в карточку заявки, где кнопка «Отправить»,
+  // и уведомление не выглядит как входящее SMS от клиента.
+  await notifyMaster(
+    'SMS ждёт отправки',
+    `${jobName(queued.job)} — подтверждение визита не отправлено клиенту`,
+    { type: 'visit_confirm', jobId, clientId: queued.job.clientId || '', from: queued.phone }
+  );
+}
+
 async function sendBookingIfNeeded(jobId, before, after, config, templates) {
   if (!after || after.deletedAt) return;
   if (after.needsReview === true) return;
@@ -588,6 +893,10 @@ async function sendBookingIfNeeded(jobId, before, after, config, templates) {
     return;
   }
 
+  if (boolFlag(config, 'manualSmsApproval')) {
+    await queueManualBooking(jobId, before);
+    return;
+  }
   const beforeById = new Map(
     coalesceVisits(before || {}).map((visit) => [String(visit.id || ''), visit])
   );
@@ -614,9 +923,36 @@ async function sendBookingIfNeeded(jobId, before, after, config, templates) {
     const prev = beforeById.get(String(visit.id || ''));
     const slotKey = visitSlotKey(start);
     const prevSlot = prev ? visitSlotKey(prev.startAt) : '';
-    const storedSlot = String(visit.smsBookingSlotKey || '').trim();
+    const storedSlot = normalizeSlotKey(visit.smsBookingSlotKey);
+    if (['pending', 'approved', 'rejected', 'sending', 'sent', 'error'].includes(bookingStateFor(visit))) continue;
+
+    // If the owner manually sent the confirmation, clear the pending flag.
+    if (visit.smsBookingPending && visit.smsBookingSentAt) {
+      const pendingSlot = String(visit.smsBookingSlotKey || '').trim();
+      if (pendingSlot && pendingSlot === slotKey) {
+        visit.smsBookingPending = false;
+        delete visit.smsBookingPendingAt;
+        changed = true;
+      }
+    }
+
+    // Слот реально переехал на другое время: прежнее «да» клиента относилось
+    // к старому времени, поэтому подтверждение больше не действует.
+    const slotMoved = Boolean(
+      (prev && prevSlot && prevSlot !== slotKey) ||
+        (storedSlot && storedSlot !== slotKey) ||
+        (visit.smsBookingDayKey && visit.smsBookingDayKey !== dayKey)
+    );
+
+    // Пункт 18: заказ, который клиент уже подтвердил, трогать нельзя. Любая
+    // запись в заявку (например, ответ клиента в переписке) дёргает этот
+    // триггер, и раньше подтверждённый визит сбрасывался в «не подтверждено».
+    if (String(visit.smsConfirmStatus || '') === 'confirmed' && !slotMoved) {
+      continue;
+    }
+
     const alreadyThisSlot =
-      Boolean(visit.smsBookingSentAt) &&
+      (Boolean(visit.smsBookingSentAt) || Boolean(visit.smsBookingPending)) &&
       ((storedSlot && storedSlot === slotKey) ||
         (!storedSlot && prev && prevSlot === slotKey) ||
         (!storedSlot && !prev && visit.smsBookingDayKey === dayKey && !prevSlot));
@@ -624,11 +960,7 @@ async function sendBookingIfNeeded(jobId, before, after, config, templates) {
     if (alreadyThisSlot && (texted || !hasPhone)) {
       continue;
     }
-    const moved =
-      Boolean(visit.smsBookingSentAt) &&
-      ((prev && prevSlot && prevSlot !== slotKey) ||
-        (storedSlot && storedSlot !== slotKey) ||
-        (visit.smsBookingDayKey && visit.smsBookingDayKey !== dayKey));
+    const moved = Boolean(visit.smsBookingSentAt) && slotMoved;
     const kind = moved ? 'confirm_rescheduled' : 'booking_confirm';
     const body = applyTemplate(
       moved ? templates.confirm_rescheduled : templates.booking_confirm,
@@ -652,10 +984,12 @@ async function sendBookingIfNeeded(jobId, before, after, config, templates) {
     );
     visit.smsBookingDayKey = dayKey;
     visit.smsBookingSlotKey = slotKey;
-    visit.smsBookingSentAt = visit.smsBookingSentAt || admin.firestore.Timestamp.now();
+    visit.smsBookingSentAt = admin.firestore.Timestamp.now();
     visit.smsBookingSentSms = texted;
     visit.smsBookingSentEmail = false;
     visit.smsBookingVia = 'sms';
+    visit.smsBookingPending = false;
+    delete visit.smsBookingPendingAt;
     if (!alreadyThisSlot) {
       visit.smsReminderSentAt = moved ? null : visit.smsReminderSentAt || null;
       visit.smsConfirmStatus = 'pending';
@@ -792,6 +1126,7 @@ async function processJobWrite(before, after, jobId) {
       const templates = await loadTemplates();
       await sendReviewIfNeeded(jobId, before, after, config, templates);
     }
+    await recordJobChanges(before, after, jobId);
     return;
   }
   const config = await loadConfig();
@@ -799,9 +1134,116 @@ async function processJobWrite(before, after, jobId) {
   await sendReviewIfNeeded(jobId, before, after, config, templates);
   await sendBookingIfNeeded(jobId, before, after, config, templates);
   await sendManualConfirmAckIfNeeded(jobId, before, after, templates);
+  await recordJobChanges(before, after, jobId);
+}
+
+async function recordJobChanges(before, after, jobId) {
+  if (!after || !jobId) return;
+  const changesRef = companyRef().collection('jobs').doc(jobId).collection('changes');
+  const now = admin.firestore.Timestamp.now();
+  const changes = [];
+
+  // Determine who made the change
+  const by = (() => {
+    if (after.suggestComplete || after.suggestCancel) return 'stripe';
+    if (after.source === 'email' && !before) return 'email';
+    if (after.sourceCallId && !before) return 'secretary';
+    if (after.source === 'sms' && !before) return 'sms';
+    if (!before) return 'owner';
+    // Look for clues about who modified
+    const prevStatus = String((before || {}).status || '');
+    const nextStatus = String(after.status || '');
+    if (prevStatus !== nextStatus && after.suggestComplete) return 'stripe';
+    if (prevStatus !== nextStatus && (nextStatus === 'Перенос' || nextStatus === 'Вызов') &&
+        coalesceVisits(after).some(v => String(v.smsConfirmStatus || '') === 'confirmed' &&
+        coalesceVisits(before || {}).find(b => b.id === v.id && b.smsConfirmStatus !== 'confirmed'))) {
+      return 'client';
+    }
+    return 'owner';
+  })();
+
+  // Job created
+  if (!before && after) {
+    const src = after.source || (after.sourceCallId ? 'secretary' : after.sourceEmailId ? 'email' : 'owner');
+    changes.push({ at: now, by: src === 'phone' ? 'secretary' : src === 'email' ? 'email' : src === 'sms' ? 'sms' : src === 'website' ? 'email' : 'owner', event: 'created', detail: String(after.status || '') });
+  }
+
+  if (before) {
+    // Status changed
+    const prevStatus = String((before || {}).status || '');
+    const nextStatus = String(after.status || '');
+    if (prevStatus && nextStatus && prevStatus !== nextStatus) {
+      changes.push({ at: now, by, event: 'status_changed', from: prevStatus, to: nextStatus });
+    }
+
+    // Client name changed (not placeholder)
+    const prevName = String((before || {}).clientName || '').trim();
+    const nextName = String(after.clientName || '').trim();
+    if (prevName !== nextName && nextName && nextName !== prevName &&
+        !/^(клиент|client)/i.test(nextName)) {
+      changes.push({ at: now, by, event: 'client_name_set', value: nextName });
+    }
+
+    // Visit scheduled or moved
+    const prevVisits = coalesceVisits(before || {});
+    const nextVisits = coalesceVisits(after);
+    for (const visit of nextVisits) {
+      const prev = prevVisits.find(v => v.id === visit.id);
+      const slot = visitSlotKey(visit.startAt);
+      if (!prev) {
+        if (visit.startAt) changes.push({ at: now, by, event: 'visit_added', slot });
+      } else {
+        const prevSlot = visitSlotKey(prev.startAt);
+        if (prevSlot && slot && prevSlot !== slot) {
+          changes.push({ at: now, by, event: 'visit_moved', from: prevSlot, to: slot });
+        }
+        // Client confirmed via SMS
+        if (String(prev.smsConfirmStatus || '') !== 'confirmed' && String(visit.smsConfirmStatus || '') === 'confirmed') {
+          changes.push({ at: now, by: 'client', event: 'visit_confirmed', slot });
+        }
+        // Client cancelled via SMS
+        if (String(prev.smsConfirmStatus || '') !== 'cancelled' && String(visit.smsConfirmStatus || '') === 'cancelled') {
+          changes.push({ at: now, by: 'client', event: 'visit_cancelled', slot });
+        }
+      }
+    }
+
+    // Invoice paid / payment recorded
+    const prevDocs = Array.isArray(before.documents) ? before.documents : [];
+    const nextDocs = Array.isArray(after.documents) ? after.documents : [];
+    for (let i = 0; i < nextDocs.length; i++) {
+      const nextDoc = nextDocs[i];
+      const prevDoc = prevDocs[i] || {};
+      if (!nextDoc || nextDoc.type === 'Estimate') continue;
+      const nextPayments = Array.isArray(nextDoc.payments) ? nextDoc.payments : [];
+      const prevPayments = Array.isArray(prevDoc.payments) ? prevDoc.payments : [];
+      if (nextPayments.length > prevPayments.length) {
+        const newPay = nextPayments[nextPayments.length - 1];
+        const amount = Number(newPay && newPay.amount) || 0;
+        const isTip = String((newPay && newPay.method) || '').includes('Чаевые');
+        if (!isTip && Math.abs(amount) > 0.009) {
+          const event = amount < 0 ? 'refund_recorded' : 'payment_recorded';
+          changes.push({ at: now, by: 'stripe', event, amount: Math.abs(amount), method: String((newPay && newPay.method) || '') });
+        }
+      }
+    }
+
+    // suggestComplete flag set
+    if (!before.suggestComplete && after.suggestComplete) {
+      changes.push({ at: now, by: 'stripe', event: 'invoice_fully_paid' });
+    }
+  }
+
+  if (!changes.length) return;
+  // Write each change as a separate doc so they can be queried individually.
+  // Using individual set() calls avoids a batched-write dependency in the test harness.
+  await Promise.all(changes.map((change) => changesRef.doc().set(change)));
 }
 
 async function sendManualConfirmAckIfNeeded(jobId, before, after, templates) {
+  if (!after || after.needsReview === true || isClosedJob(after)) return;
+  const latest = await jobsRef().doc(jobId).get();
+  after = latest.exists ? latest.data() : null;
   if (!after || after.needsReview === true || isClosedJob(after)) return;
   const phone = jobPhone(after);
   if (!normalizePhone(phone)) return;
@@ -809,7 +1251,7 @@ async function sendManualConfirmAckIfNeeded(jobId, before, after, templates) {
     coalesceVisits(before || {}).map((visit) => [String(visit.id || ''), visit])
   );
   const visits = coalesceVisits(after);
-  let changed = false;
+  const acknowledged = [];
   for (let i = 0; i < visits.length; i += 1) {
     const visit = visits[i];
     const prev = beforeById.get(String(visit.id || ''));
@@ -837,17 +1279,28 @@ async function sendManualConfirmAckIfNeeded(jobId, before, after, templates) {
       kind,
     });
     if (!sent) continue;
-    visits[i] = {
+    acknowledged.push({
       ...visit,
       smsConfirmNotifiedStatus: nextStatus,
       smsDialog: nextStatus === 'reschedule' ? 'ask_slot' : '',
-    };
-    changed = true;
+    });
   }
-  if (changed) {
-    await jobsRef().doc(jobId).update({
-      visits,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  if (acknowledged.length) {
+    const jobRef = jobsRef().doc(jobId);
+    await db().runTransaction(async (tx) => {
+      const snapshot = await tx.get(jobRef);
+      if (!snapshot.exists) return;
+      const current = coalesceVisits(snapshot.data());
+      let changed = false;
+      for (const sent of acknowledged) {
+        const visit = current.find((item) => String(item.id) === String(sent.id));
+        if (!visit || visitSlotKey(visit.startAt) !== visitSlotKey(sent.startAt) ||
+            visit.smsConfirmStatus !== sent.smsConfirmNotifiedStatus) continue;
+        visit.smsConfirmNotifiedStatus = sent.smsConfirmNotifiedStatus;
+        visit.smsDialog = sent.smsDialog;
+        changed = true;
+      }
+      if (changed) tx.update(jobRef, { visits: current, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     });
   }
 }
@@ -855,6 +1308,10 @@ async function sendManualConfirmAckIfNeeded(jobId, before, after, templates) {
 async function sendDayBeforeReminders() {
   const config = await loadConfig();
   if (!boolFlag(config, 'reminderSmsEnabled')) return;
+  if (boolFlag(config, 'manualSmsApproval')) {
+    console.log('sendDayBeforeReminders skip: manualSmsApproval=true');
+    return;
+  }
   const offsets = reminderOffsets(config);
   if (!offsets.length) return;
   const templates = await loadTemplates();
@@ -1029,39 +1486,27 @@ function lastVisitSmsMs(visit) {
 }
 
 async function jobsForContact(from, clientId) {
-  if (clientId) {
-    const snap = await jobsRef().where('clientId', '==', clientId).get();
-    return snap.docs;
-  }
+  const email = String(from || '').includes('@') ? String(from).trim().toLowerCase() : '';
+  const phone = email ? '' : normalizePhone(from);
+  if (!clientId && !email && !phone) return [];
   const snap = await jobsRef().get();
-  if (String(from || '').includes('@')) {
-    const email = String(from).trim().toLowerCase();
-    return snap.docs.filter((doc) => emailsOfJob(doc.data() || {}).includes(email));
-  }
-  const phone = normalizePhone(from);
-  if (!phone) return [];
   return snap.docs.filter((doc) => {
     const data = doc.data() || {};
-    return (
-      normalizePhone(data.clientPhone) === phone ||
-      normalizePhone(data.jobSitePhone) === phone
-    );
+    return (clientId && data.clientId === clientId) ||
+      (email && emailsOfJob(data).includes(email)) ||
+      (phone && [data.clientPhone, data.jobSitePhone].some((value) => normalizePhone(value) === phone));
   });
 }
 
 async function findPendingJob(from, clientId) {
   const docs = await jobsForContact(from, clientId);
 
-  const now = Date.now() - 2 * 36e5;
+  const now = Date.now();
   let best = null;
   for (const doc of docs) {
     const job = doc.data() || {};
-    if (isClosedJob(job)) continue;
-    const visits = coalesceVisits(job);
-    for (const visit of visits) {
-      if (!isScheduledVisit(visit)) continue;
+    for (const visit of schedule.upcomingVisits(job, now)) {
       const start = toDate(visit.startAt);
-      if (!start || start.getTime() < now) continue;
       const status = String(visit.smsConfirmStatus || '').trim();
       // Already done — ignore. «Перенос» / empty still accept «1».
       if (status === 'confirmed' || status === 'cancelled') continue;
@@ -1105,18 +1550,12 @@ function looksLikeTwentyFiveOff(body) {
 
 async function listUpcomingVisits(from, clientId) {
   const docs = await jobsForContact(from, clientId);
-  const now = Date.now() - 2 * 36e5;
+  const now = Date.now();
   const out = [];
   for (const doc of docs) {
     const job = doc.data() || {};
-    if (isClosedJob(job)) continue;
-    const visits = coalesceVisits(job);
-    for (const visit of visits) {
-      if (!isScheduledVisit(visit)) continue;
-      if (visit.smsConfirmStatus === 'cancelled') continue;
-      const start = toDate(visit.startAt);
-      if (!start || start.getTime() < now) continue;
-      out.push({ doc, job, visit, start });
+    for (const visit of schedule.upcomingVisits(job, now)) {
+      out.push({ doc, job, visit, start: toDate(visit.startAt) });
     }
   }
   out.sort((a, b) => a.start.getTime() - b.start.getTime());
@@ -1350,7 +1789,7 @@ async function beginCancelSave(match, from, clientId) {
     job: match.job,
   });
   await notifyMaster(
-    'Клиент просит отмену — ИИ предлагает скидку или перенос',
+    'Клиент просит отмену',
     `${jobName(match.job)} — ${vars.date} ${vars.time}`,
     { type: 'visit_confirm', from: from || '', jobId: match.doc.id }
   );
@@ -1376,8 +1815,7 @@ async function findDialogJob(from, clientId) {
   let best = null;
   for (const doc of docs) {
     const job = doc.data() || {};
-    const visits = coalesceVisits(job);
-    for (const visit of visits) {
+    for (const visit of schedule.upcomingVisits(job)) {
       const dialog = String(visit.smsDialog || '');
       if (dialog !== 'save_offer' && dialog !== 'ask_slot' && dialog !== 'pick_job') continue;
       const start = toDate(visit.startAt) || new Date();
@@ -1467,6 +1905,10 @@ async function tryMoveVisit(match, slot, from, clientId, notifyTitle, opts = {})
     return false;
   }
   const nextVisit = await applyVisitSlot(match, slot);
+  if (!nextVisit) {
+    await sendVisitChangeConflict(match, from, clientId);
+    return false;
+  }
   const nextVars = visitVars(match.job, { ...match.visit, startAt: slot });
   const lead =
     String(opts.acceptLead || '').trim() ||
@@ -1491,31 +1933,46 @@ async function freeTimesHint(_match) {
   return '';
 }
 
-async function applyVisitSlot(match, nextDate, extra = {}) {
-  const visits = coalesceVisits(match.job);
-  const idx = visits.findIndex(
-    (visit) => String(visit.id || '') === String(match.visit.id || '')
-  );
-  if (idx < 0) return null;
-  visits[idx] = {
-    ...visits[idx],
-    startAt: admin.firestore.Timestamp.fromDate(nextDate),
-    durationMinutes: schedule.BOOKING_MINUTES,
-    smsDialog: '',
-    smsConfirmStatus: 'confirmed',
-    smsBookingDayKey: torontoDayKey(nextDate),
-    smsBookingSlotKey: visitSlotKey(nextDate),
-    smsBookingSentAt: admin.firestore.Timestamp.now(),
-    ...extra,
-  };
-  await match.doc.ref.update({
-    visits,
-    scheduledAt: admin.firestore.Timestamp.fromDate(nextDate),
-    durationMinutes: schedule.BOOKING_MINUTES,
-    status: 'Вызов',
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+async function sendVisitChangeConflict(match, from, clientId) {
+  await sendSms({
+    to: from,
+    body: 'That visit has changed since our last message. No change was made from this reply. Please check the current booking with the technician.',
+    clientId: match.job.clientId || clientId,
+    jobId: match.doc.id,
+    kind: 'confirm_visit_changed',
+    job: match.job,
   });
-  return visits[idx];
+}
+
+async function applyVisitSlot(match, nextDate, extra = {}) {
+  return admin.firestore().runTransaction(async (tx) => {
+    const snapshot = await tx.get(match.doc.ref);
+    if (!snapshot.exists || isClosedJob(snapshot.data())) return null;
+    const visits = coalesceVisits(snapshot.data());
+    const idx = visits.findIndex((visit) => String(visit.id || '') === String(match.visit.id || ''));
+    if (idx < 0 || !isScheduledVisit(visits[idx]) ||
+        toDate(visits[idx].startAt)?.getTime() !== toDate(match.visit.startAt)?.getTime()) return null;
+    visits[idx] = {
+      ...visits[idx],
+      startAt: admin.firestore.Timestamp.fromDate(nextDate),
+      durationMinutes: schedule.BOOKING_MINUTES,
+      smsDialog: '',
+      smsConfirmStatus: 'confirmed',
+      smsBookingDayKey: torontoDayKey(nextDate),
+      smsBookingSlotKey: visitSlotKey(nextDate),
+      smsBookingSentAt: admin.firestore.Timestamp.now(),
+      ...extra,
+    };
+    tx.update(match.doc.ref, {
+      visits,
+      scheduledAt: admin.firestore.Timestamp.fromDate(nextDate),
+      scheduledDate: admin.firestore.Timestamp.fromDate(nextDate),
+      durationMinutes: schedule.BOOKING_MINUTES,
+      status: 'Вызов',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return visits[idx];
+  });
 }
 
 async function handleDialogReply(match, body, from, clientId) {
@@ -1563,23 +2020,19 @@ async function handleDialogReply(match, body, from, clientId) {
   });
 
   if (dialog === 'save_offer' && kind === 'cancelled') {
-    const visits = coalesceVisits(match.job);
-    const idx = visits.findIndex(
-      (visit) => String(visit.id || '') === String(match.visit.id || '')
-    );
-    if (idx >= 0) {
-      visits[idx] = {
-        ...visits[idx],
-        smsDialog: '',
-        smsConfirmStatus: 'cancelled',
-        outcome: 'cancelled',
-      };
-      await match.doc.ref.update({
-        visits,
-        status: 'Отменено',
-        needsReview: false,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+    const cancelled = await admin.firestore().runTransaction(async (tx) => {
+      const snapshot = await tx.get(match.doc.ref);
+      if (!snapshot.exists || isClosedJob(snapshot.data())) return false;
+      const current = snapshot.data();
+      const visit = coalesceVisits(current).find((item) => String(item.id || '') === String(match.visit.id || ''));
+      if (!isScheduledVisit(visit) || visit.smsDialog !== 'save_offer' ||
+          toDate(visit.startAt)?.getTime() !== toDate(match.visit.startAt)?.getTime()) return false;
+      tx.update(match.doc.ref, schedule.cancelVisitFields(current, String(visit.id || '')));
+      return true;
+    });
+    if (!cancelled) {
+      await sendVisitChangeConflict(match, from, clientId);
+      return true;
     }
     await sendSms({
       to: from,
@@ -1589,7 +2042,7 @@ async function handleDialogReply(match, body, from, clientId) {
       kind: 'confirm_cancelled',
       job: match.job,
     });
-    await notifyMaster('Клиент отменил заявку', `${jobName(match.job)} — отмена после предложения скидки`, {
+    await notifyMaster('Клиент отменил заявку', `${jobName(match.job)} — отмена после предложения переноса`, {
       type: 'visit_confirm',
       from: from || '',
       jobId: match.doc.id,
@@ -1598,11 +2051,11 @@ async function handleDialogReply(match, body, from, clientId) {
   }
 
   if (dialog === 'save_offer' && looksLikeTwentyFiveOff(body)) {
-    return keepVisitWithDiscount(match, from, clientId, 25);
+    return keepVisit(match, from, clientId);
   }
 
   if (dialog === 'save_offer' && (kind === 'confirmed' || looksLikeTenOff(body) || /\b(keep|discount)\b/i.test(body))) {
-    return keepVisitWithDiscount(match, from, clientId, 10);
+    return keepVisit(match, from, clientId);
   }
 
   if (dialog === 'save_offer' && (kind === 'reschedule' || looksLikeRescheduleIntent(body))) {
@@ -1638,7 +2091,7 @@ async function handleDialogReply(match, body, from, clientId) {
     body:
       dialog === 'ask_slot'
         ? `Please send a day and time, like Friday 11:00.`
-        : `Reply with a new day and time (Friday 11:00), 1 for 10% off, 2 for 25% off, or 0 to cancel.`,
+        : `Reply with a new day and time (example: Friday 11:00) or 0 to confirm cancellation.`,
     clientId: match.job.clientId || clientId,
     jobId: match.doc.id,
     kind: 'confirm_clarify',
@@ -1708,7 +2161,7 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
             job: match.job,
           });
           await notifyMaster(
-            'Клиент нажал 0 — ИИ предлагает скидку или перенос',
+            'Клиент просит отмену',
             `${jobName(match.job)} — ${vars.date} ${vars.time}`,
             { type: 'visit_confirm', from: from || '', jobId: match.doc.id }
           );
@@ -1744,7 +2197,7 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
   return tryHandleFreeCancel({ from, body: text, clientId });
 }
 
-async function keepVisitWithDiscount(match, from, clientId, percent) {
+async function keepVisit(match, from, clientId) {
   const vars = visitVars(match.job, match.visit);
   const visits = coalesceVisits(match.job);
   const idx = visits.findIndex(
@@ -1755,9 +2208,6 @@ async function keepVisitWithDiscount(match, from, clientId, percent) {
       ...visits[idx],
       smsDialog: '',
       smsConfirmStatus: 'confirmed',
-      note: [visits[idx].note, `${percent}% off (kept after cancel SMS)`]
-        .filter(Boolean)
-        .join(' · '),
     };
     await match.doc.ref.update({
       visits,
@@ -1767,14 +2217,14 @@ async function keepVisitWithDiscount(match, from, clientId, percent) {
   }
   await sendSms({
     to: from,
-    body: `Great, ${vars.name}! We'll keep ${vars.date} at ${vars.time}, with ${percent}% off. See you then. ✅`,
+    body: `Great, we'll keep your visit on ${vars.date} at ${vars.time}. ✅`,
     clientId: match.job.clientId || clientId,
     jobId: match.doc.id,
     kind: 'confirm_kept',
     job: match.job,
   });
   await notifyMaster(
-    `Клиент оставил заявку со скидкой ${percent}%`,
+    'Клиент оставил заявку',
     `${jobName(match.job)} — ${vars.date} ${vars.time}`,
     {
       type: 'visit_confirm',
@@ -1825,3 +2275,5 @@ exports.sendVisitReminders = onSchedule(
 );
 
 exports.tryHandleConfirmReply = tryHandleConfirmReply;
+exports.sendApprovedBookingSms = sendApprovedBookingSms;
+exports.recordBookingDelivery = recordBookingDelivery;

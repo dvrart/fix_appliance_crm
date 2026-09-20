@@ -118,7 +118,11 @@ async function main() {
   console.log(`\nвсего записей: ${rows.length} (за ${minutes} мин)`);
 }
 
-main().catch((e) => {
-  console.error('сбой: ' + e.message);
-  process.exitCode = 1;
-});
+module.exports = { accessToken };
+
+if (require.main === module) {
+  main().catch((e) => {
+    console.error('сбой: ' + e.message);
+    process.exitCode = 1;
+  });
+}

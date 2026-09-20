@@ -44,13 +44,16 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
     super.dispose();
   }
 
-  void _open(_AreaSection section) {
-    Navigator.push(
+  /// Вложенная страница — отдельный экземпляр со своим списком точек.
+  /// После возврата перечитываем базу, иначе хаб показывает старое.
+  Future<void> _open(_AreaSection section) async {
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => ServiceAreaSettingsPage._at(section.index),
       ),
     );
+    if (mounted) await _load();
   }
 
   Future<void> _load() async {
@@ -175,6 +178,57 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
     });
   }
 
+  void _movePoint(int index, LatLng point) {
+    if (index < 0 || index >= _points.length) return;
+    setState(() {
+      _points[index] = point;
+      _dirty = true;
+    });
+  }
+
+  void _removePoint(int index) {
+    if (index < 0 || index >= _points.length) return;
+    setState(() {
+      _points.removeAt(index);
+      _dirty = true;
+    });
+  }
+
+  Future<void> _onMarkerTap(int index) async {
+    final remove = await showModalBottomSheet<bool>(
+      context: context,
+      useRootNavigator: true,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text(
+                '${context.tr('Точка', 'Point')} ${index + 1}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: Text(
+                context.tr(
+                  'Чтобы сдвинуть — зажмите маркер и тяните.',
+                  'Long-press the marker and drag to move it.',
+                ),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: Colors.red),
+              title: Text(
+                context.tr('Удалить точку', 'Delete point'),
+                style: const TextStyle(color: Colors.red),
+              ),
+              onTap: () => Navigator.pop(sheet, true),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (remove == true && mounted) _removePoint(index);
+  }
+
   Set<Polygon> get _polygons {
     if (_points.length < 3) return {};
     return {
@@ -194,7 +248,9 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
         Marker(
           markerId: MarkerId('p$i'),
           position: _points[i],
-          infoWindow: InfoWindow(title: '${i + 1}'),
+          draggable: true,
+          onDragEnd: (point) => _movePoint(i, point),
+          onTap: () => _onMarkerTap(i),
         ),
     };
   }
@@ -255,20 +311,6 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
                 active: _points.length >= 3,
                 onTap: () => _open(_AreaSection.map),
               ),
-              SettingsHubTile(
-                title: context.tr('Отменить', 'Undo'),
-                subtitle: context.tr('Точку', 'Point'),
-                icon: Icons.undo,
-                color: Colors.blueGrey,
-                onTap: _points.isEmpty ? () {} : _undo,
-              ),
-              SettingsHubTile(
-                title: context.tr('Очистить', 'Clear'),
-                subtitle: '',
-                icon: Icons.delete_outline,
-                color: Colors.red,
-                onTap: _points.isEmpty ? () {} : _clear,
-              ),
             ],
           ),
         ],
@@ -314,8 +356,10 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             child: Text(
               context.tr(
-                'Нажимайте по карте, чтобы поставить точки.',
-                'Tap the map to drop points.',
+                'Тап по карте — новая точка. Зажмите маркер и тяните, чтобы '
+                    'сдвинуть. Тап по маркеру — удалить.',
+                'Tap the map to add a point. Long-press a marker and drag to '
+                    'move it. Tap a marker to delete it.',
               ),
               style: const TextStyle(color: Colors.black54),
             ),
@@ -342,11 +386,29 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
           ),
           Padding(
             padding: const EdgeInsets.all(16),
-            child: Text(
-              _points.isEmpty
-                  ? context.tr('Район ещё не отмечен', 'No area marked yet')
-                  : '${'Точек'.tr}: ${_points.length}',
-              style: const TextStyle(color: Colors.black54),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _points.isEmpty
+                        ? context.tr('Район ещё не отмечен', 'No area marked yet')
+                        : '${'Точек'.tr}: ${_points.length}',
+                    style: const TextStyle(color: Colors.black54),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: _points.isEmpty ? null : _undo,
+                  icon: const Icon(Icons.undo, size: 18),
+                  label: Text(context.tr('Отменить', 'Undo')),
+                  style: TextButton.styleFrom(foregroundColor: Colors.blueGrey),
+                ),
+                TextButton.icon(
+                  onPressed: _points.isEmpty ? null : _clear,
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: Text(context.tr('Очистить', 'Clear')),
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                ),
+              ],
             ),
           ),
         ],

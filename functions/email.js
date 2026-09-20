@@ -625,6 +625,95 @@ module.exports = function createEmailModule({
     }
   }
 
+  /**
+   * Отправить письмо напрямую (без HTTP req/res) — для отложенной отправки.
+   * @param {{ to: string, body: string, bodyRu?: string, clientId?: string,
+   *           subject?: string, mediaUrls?: string[], phone?: string }} opts
+   */
+  async function sendEmailDirect(opts) {
+    const to = String(opts.to || '').trim().toLowerCase();
+    const body = String(opts.body || '').trim();
+    const subject = String(opts.subject || '').trim();
+    const clientId = opts.clientId || null;
+    const phone = opts.phone || null;
+    const bodyRu = String(opts.bodyRu || '').trim();
+    const mediaUrls = Array.isArray(opts.mediaUrls)
+      ? opts.mediaUrls
+          .map((url) => String(url || '').trim())
+          .filter((url) => /^https?:\/\//i.test(url))
+          .slice(0, 10)
+      : [];
+
+    if (!to.includes('@') || (!body && !mediaUrls.length)) {
+      throw new Error('Нужны to и body');
+    }
+
+    const auth = await getGmailAuth();
+    if (!auth) throw new Error('Подключите Gmail в настройках связи');
+
+    const companyName = await getCompanyName();
+    let sendBody = body;
+    let storedRu = bodyRu;
+    if (typeof translateChat === 'function' && /[А-Яа-яЁё]/.test(body)) {
+      storedRu = storedRu || body;
+      sendBody = await translateChat(body, 'en');
+    }
+    const mailSubject = subject || companyName;
+    const messageId = `<crm-${crypto.randomUUID()}@${String(auth.user).split('@')[1] || 'gmail.com'}>`;
+    const transporter = nodemailer.createTransport({ service: 'gmail', auth });
+    const attachments = [];
+    for (const url of mediaUrls) {
+      try {
+        const fileRes = await fetch(url, { signal: AbortSignal.timeout(20000) });
+        if (!fileRes.ok) continue;
+        const buf = Buffer.from(await fileRes.arrayBuffer());
+        const contentType = (fileRes.headers.get('content-type') || 'application/octet-stream').split(';')[0];
+        const rawName = decodeURIComponent((url.split('?')[0].split('/').pop() || 'file').replace(/^\d+_/, ''));
+        attachments.push({ filename: rawName || 'file', content: buf, contentType });
+      } catch (e) {
+        console.warn('sendEmailDirect attachment:', e.message);
+      }
+    }
+
+    const info = await transporter.sendMail({
+      from: `"${companyName}" <${auth.user}>`,
+      to,
+      subject: mailSubject,
+      text: sendBody || (attachments.length ? ' ' : ''),
+      attachments,
+      messageId,
+      headers: { 'X-Fix-CRM': '1' },
+    });
+    const storedId = normalizeMessageId(info.messageId || messageId);
+
+    let resolvedClientId = clientId;
+    if (!resolvedClientId) {
+      const matched = await findClientByEmail(to);
+      resolvedClientId = matched ? matched.id : null;
+    }
+
+    await refs().messagesRef.add({
+      sid: storedId || `email-${Date.now()}`,
+      from: auth.user,
+      to,
+      fromEmail: auth.user,
+      toEmail: to,
+      body: sendBody,
+      bodyRu: storedRu || '',
+      subject: mailSubject,
+      direction: 'outbound',
+      channel: 'email',
+      status: 'sent',
+      clientId: resolvedClientId,
+      phone,
+      mediaUrls,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      read: true,
+      emailMessageId: storedId,
+      crmThread: true,
+    });
+  }
+
   async function ingestShipmentMail(parsed, uid) {
     const fromEmail = extractAddress(parsed.from);
     const subject = String(parsed.subject || '').trim();
@@ -1090,7 +1179,10 @@ module.exports = function createEmailModule({
     }
 
     const isFresh = Date.now() - created.getTime() < 24 * 60 * 60 * 1000;
-    if (isFresh && notifyMaster && !confirmHandled) {
+    // Письма с сайта сначала проверяет ИИ (processInboundAi): push о реальной
+    // заявке придёт из ветки создания заявки, а спам вообще не уведомляет.
+    const aiWillDecidePush = isWebsite && runAi;
+    if (isFresh && notifyMaster && !confirmHandled && !aiWillDecidePush) {
       const who = isWebsite
         ? 'веб-сайт'
         : matched
@@ -1213,7 +1305,7 @@ module.exports = function createEmailModule({
     }
   }
 
-  return { sendEmail, syncGmailInbox };
+  return { sendEmail, syncGmailInbox, sendEmailDirect };
 };
 
 module.exports.sendCrmEmail = sendCrmEmail;

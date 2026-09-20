@@ -9,12 +9,14 @@ import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
 import '../../models/secretary_lesson.dart';
+import '../../services/ai_service.dart';
 import '../../services/firestore_service.dart';
 import '../../services/job_service.dart';
 import '../../services/message_translate_service.dart';
 import '../../services/secretary_learn_service.dart';
 import '../../services/twilio_service.dart';
 import '../../shared/widgets/call_transcript_chat.dart';
+import '../ai/job_preview_screen.dart';
 import '../jobs/job_details/editors/call_recording_page.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import 'call_screen.dart';
@@ -39,14 +41,6 @@ class CallReviewPage extends StatelessWidget {
     AppFeedback.pleasant();
     final id = callId.trim().isNotEmpty ? callId : (call?.id ?? '');
     if (id.isEmpty) return Future.value();
-    if (call != null) {
-      unawaited(JobService.ensureDraftFromCall(call));
-    } else {
-      unawaited(() async {
-        final found = await TwilioService.getById(id);
-        if (found != null) await JobService.ensureDraftFromCall(found);
-      }());
-    }
     return Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute(
         builder: (_) => CallReviewPage(
@@ -146,7 +140,6 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
     super.initState();
     _hydrate(widget.call);
     _ensureLanguages();
-    unawaited(JobService.ensureDraftFromCall(widget.call));
   }
 
   @override
@@ -164,7 +157,6 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
     if (next.id != prev.id || grew) {
       _hydrate(next);
       _ensureLanguages();
-      unawaited(JobService.ensureDraftFromCall(next));
     }
   }
 
@@ -301,6 +293,32 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
     );
   }
 
+  Future<void> _convertToJob(BuildContext context) async {
+    final call = widget.call;
+    final extracted = {
+      ...?call.extractedData,
+      if (call.aiReception?['extracted'] is Map)
+        ...Map<String, dynamic>.from(call.aiReception!['extracted'] as Map),
+    };
+    final data = ExtractedJobData.fromJson(extracted);
+    final phone = call.isIncoming ? call.fromNumber : call.toNumber;
+    if (!context.mounted) return;
+    final result = await Navigator.of(context, rootNavigator: true).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => JobPreviewScreen(
+          extractedData: data,
+          originalText: call.transcriptionRu ?? call.transcription ?? '',
+          fallbackPhone: phone.isNotEmpty ? phone : null,
+          existingClientId: call.clientId,
+          sourceCallId: call.id,
+        ),
+      ),
+    );
+    if (result == true && context.mounted) {
+      unawaited(TwilioService.markReviewed(call.id));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final call = widget.call;
@@ -312,13 +330,44 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
         (call.aiError ?? '').trim().isNotEmpty ||
         call.liveFailed ||
         call.liveError.isNotEmpty;
+    final hasLinkedJob = (call.createdJobId ?? '').trim().isNotEmpty;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
       children: [
-        _HowItWorks(),
-        const SizedBox(height: 16),
+        // Главная кнопка: «Преобразовать в заявку» или «Открыть заявку»
+        if (hasLinkedJob)
+          ElevatedButton.icon(
+            onPressed: () => _openJob(context, call.createdJobId!),
+            icon: const Icon(Icons.assignment),
+            label: Text(context.tr('Открыть заявку', 'Open the job')),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.accent,
+              foregroundColor: Colors.black,
+              minimumSize: const Size.fromHeight(52),
+            ),
+          )
+        else
+          ElevatedButton.icon(
+            onPressed: () => _convertToJob(context),
+            icon: const Icon(Icons.add_task),
+            label: Text(context.tr('Преобразовать в заявку', 'Convert to job')),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF16A34A),
+              foregroundColor: Colors.white,
+              minimumSize: const Size.fromHeight(52),
+            ),
+          ),
+        const SizedBox(height: 12),
         _HeaderCard(call: call, name: name, phone: phone),
+        // Краткое изложение — над аудио
+        if (_summary.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          _SectionCard(
+            title: context.tr('Коротко о звонке', 'Call summary'),
+            child: Text(_summary, style: const TextStyle(height: 1.45)),
+          ),
+        ],
         const SizedBox(height: 12),
         _SectionCard(
           title: context.tr('Запись разговора', 'Call recording'),
@@ -342,19 +391,6 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (_summary.isNotEmpty) ...[
-                Text(
-                  context.tr('Коротко', 'Summary'),
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 12,
-                    color: Colors.black54,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(_summary, style: const TextStyle(height: 1.35)),
-                const SizedBox(height: 12),
-              ],
               Row(
                 children: [
                   ChoiceChip(
@@ -402,19 +438,6 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
           icon: const Icon(Icons.call),
           label: Text(context.tr('Перезвонить', 'Call back')),
         ),
-        if ((call.createdJobId ?? '').trim().isNotEmpty) ...[
-          const SizedBox(height: 8),
-          ElevatedButton.icon(
-            onPressed: () => _openJob(context, call.createdJobId!),
-            icon: const Icon(Icons.assignment),
-            label: Text(context.tr('Открыть заявку', 'Open the job')),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.accent,
-              foregroundColor: Colors.black,
-              minimumSize: const Size.fromHeight(48),
-            ),
-          ),
-        ],
       ],
     );
   }
@@ -432,75 +455,6 @@ Future<void> _openJob(BuildContext context, String jobId) async {
       ),
     ),
   );
-}
-
-class _HowItWorks extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFFEEF4FF),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFB6C9EA)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            context.tr('Как это читать', 'How to read this'),
-            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
-          ),
-          const SizedBox(height: 10),
-          _step(
-            '1',
-            context.tr(
-              'Сверху запись. Можно послушать весь разговор.',
-              'The recording is at the top. You can listen to the whole call.',
-            ),
-          ),
-          _step(
-            '2',
-            context.tr(
-              'Дальше текст: кнопка «По-русски» и «По-английски».',
-              'Then the text: tap Russian or English.',
-            ),
-          ),
-          _step(
-            '3',
-            context.tr(
-              'Если секретарь ошибся — красный блок. Скопируйте его и пришлите в чат, чтобы исправить.',
-              'If the secretary was wrong — a red box. Copy it and send it in chat to get a fix.',
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _step(String number, String text) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          CircleAvatar(
-            radius: 12,
-            backgroundColor: AppColors.primary,
-            foregroundColor: Colors.white,
-            child: Text(
-              number,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(text, style: const TextStyle(height: 1.35)),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 class _HeaderCard extends StatelessWidget {

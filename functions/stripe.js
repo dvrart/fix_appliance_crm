@@ -33,6 +33,7 @@ const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 
 const { withSmsHeader, sanitizeSmsHeader } = require('./sms_header');
 const { shortenPayUrl } = require('./short_links');
+const { notifyMaster } = require('./notify');
 
 const db = admin.firestore();
 const jobsRef = db.collection('companies').doc(COMPANY_ID).collection('jobs');
@@ -1054,7 +1055,7 @@ async function recordDocumentRefund({
   const index = Number(documentIndex);
   const jobRef = jobsRef.doc(jobId);
   let recorded = false;
-  let jobCancelled = false;
+  let shouldSuggestCancel = false;
   let netPaid = 0;
 
   await db.runTransaction(async (tx) => {
@@ -1101,19 +1102,27 @@ async function recordDocumentRefund({
       paid <= 0.009 &&
       isCompletedJobStatus(job.status)
     ) {
-      updates.status = 'Отменено';
-      updates.needsReview = false;
-      updates.requestReviewSms = false;
-      const visits = markJobVisitsCancelled(job);
-      if (visits) updates.visits = visits;
-      jobCancelled = true;
+      updates.suggestCancel = true;
+      updates.suggestCancelAt = admin.firestore.FieldValue.serverTimestamp();
+      shouldSuggestCancel = true;
     }
 
     tx.update(jobRef, updates);
     recorded = true;
   });
 
-  return { recorded, refunded: refundAmount, jobCancelled, netPaid };
+  if (recorded && shouldSuggestCancel) {
+    try {
+      await notifyMaster(
+        'Полный возврат',
+        `Пометить заявку как отменённую? Нажмите, чтобы открыть.`,
+        { type: 'job', jobId }
+      );
+    } catch (error) {
+      console.warn('recordDocumentRefund notify:', error.message);
+    }
+  }
+  return { recorded, refunded: refundAmount, jobCancelled: false, netPaid };
 }
 
 async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLabel, tip = 0 }) {
@@ -1124,6 +1133,7 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
   const index = Number(documentIndex);
   const jobRef = jobsRef.doc(jobId);
   let recorded = false;
+  let shouldSuggestComplete = false;
 
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(jobRef);
@@ -1167,15 +1177,25 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
     if (isInvoiceFullyPaid(doc) && !isCompletedJobStatus(job.status)) {
-      updates.status = 'Завершено';
-      updates.completedAt = admin.firestore.FieldValue.serverTimestamp();
-      const visits = markJobVisitsDone(job);
-      if (visits) updates.visits = visits;
+      updates.suggestComplete = true;
+      updates.suggestCompleteAt = admin.firestore.FieldValue.serverTimestamp();
+      shouldSuggestComplete = true;
     }
     tx.update(jobRef, updates);
     recorded = true;
   });
 
+  if (recorded && shouldSuggestComplete) {
+    try {
+      await notifyMaster(
+        'Счёт оплачен',
+        `Пометить заявку как завершённую? Нажмите, чтобы открыть.`,
+        { type: 'job', jobId }
+      );
+    } catch (error) {
+      console.warn('recordStripePayment notify:', error.message);
+    }
+  }
   return recorded;
 }
 

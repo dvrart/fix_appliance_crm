@@ -105,6 +105,8 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    testImplementation("junit:junit:4.13.2")
+    implementation("com.google.firebase:firebase-firestore:26.5.0")
 }
 
 configurations.all {

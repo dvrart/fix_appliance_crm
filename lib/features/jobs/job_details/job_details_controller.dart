@@ -109,6 +109,9 @@ class JobDetailsController extends ChangeNotifier {
 
   bool get financeTabRequested => _financeTabRequested;
 
+  bool pendingSuggestComplete = false;
+  bool pendingSuggestCancel = false;
+
   List<Map<String, dynamic>> attachments = [];
   bool isUploadingImage = false;
 
@@ -298,6 +301,12 @@ class JobDetailsController extends ChangeNotifier {
         }
         jobData['hasJobSite'] = hasJobSite;
         jobData['jobSiteAddress'] = jobSiteAddress;
+      }
+      if (data['suggestComplete'] == true && !JobStatuses.isCompletedStatus(currentStatus)) {
+        pendingSuggestComplete = true;
+      }
+      if (data['suggestCancel'] == true && !JobStatuses.isCancelledStatus(currentStatus)) {
+        pendingSuggestCancel = true;
       }
       if (!_disposed) notifyListeners();
     });
@@ -1115,17 +1124,38 @@ class JobDetailsController extends ChangeNotifier {
         Job.documentPayMark(doc) == 'paid';
   }
 
-  /// Полная оплата инвойса → статус «Готово». Просьбу об отзыве спрашивает экран.
+  /// Полная оплата инвойса → предлагаем пометить «Готово», не переводим автоматически.
   Future<void> completeAfterInvoicePaid() async {
     openFinanceMainList();
     if (JobStatuses.isCompletedStatus(currentStatus) ||
         JobStatuses.isCancelledStatus(currentStatus)) {
       return;
     }
-    await updateStatus(
-      JobStatuses.completed,
-      persistNow: true,
-    );
+    // Предлагаем пометить заявку завершённой вместо автоматического перевода.
+    pendingSuggestComplete = true;
+    notifyListeners();
+  }
+
+  void dismissSuggestComplete() {
+    pendingSuggestComplete = false;
+    notifyListeners();
+  }
+
+  void dismissSuggestCancel() {
+    pendingSuggestCancel = false;
+    notifyListeners();
+  }
+
+  Future<void> confirmSuggestComplete() async {
+    pendingSuggestComplete = false;
+    if (JobStatuses.isCompletedStatus(currentStatus)) return;
+    await updateStatus(JobStatuses.completed, persistNow: true);
+  }
+
+  Future<void> confirmSuggestCancel() async {
+    pendingSuggestCancel = false;
+    if (JobStatuses.isCancelledStatus(currentStatus)) return;
+    await updateStatus(JobStatuses.cancelled, persistNow: true);
   }
 
   void notifyBuilderChanged() {

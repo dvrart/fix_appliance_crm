@@ -25,7 +25,7 @@ class CommunicationSettingsPage extends StatefulWidget {
 
   const CommunicationSettingsPage.gmail({super.key}) : _sectionIndex = 4;
 
-  const CommunicationSettingsPage._at(this._sectionIndex, {super.key});
+  const CommunicationSettingsPage._at(this._sectionIndex);
 
   final int _sectionIndex;
 
@@ -36,7 +36,8 @@ class CommunicationSettingsPage extends StatefulWidget {
       _CommunicationSettingsPageState();
 }
 
-class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
+class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
+    with WidgetsBindingObserver {
   bool? _phoneAccountEnabled;
   bool _savingGmail = false;
   String _smsHeader = 'fix-appliance.ca';
@@ -44,6 +45,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   bool _onWayGeo = true;
   bool _bookingSms = true;
   bool _reminderSms = true;
+  bool _manualSms = true;
   bool _autoReview = true;
   List<String> _reminderOffsets = const ['24h'];
   int _morningHour = 7;
@@ -67,6 +69,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   bool _savedOnWayGeo = true;
   bool _savedBookingSms = true;
   bool _savedReminderSms = true;
+  bool _savedManualSms = true;
   bool _savedAutoReview = true;
   List<String> _savedReminderOffsets = const ['24h'];
   int _savedMorningHour = 7;
@@ -78,6 +81,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     switch (widget._section) {
       case _CommSection.hub:
         _checkPhone();
@@ -119,7 +123,15 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    _checkPhone();
+    _loadNotificationAccess();
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _gmailUserCtrl.dispose();
     _gmailPassCtrl.dispose();
     _watchCtrl.dispose();
@@ -167,6 +179,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       _onWayGeo = SettingsService.boolFlag(config, 'onTheWayPromptEnabled');
       _bookingSms = SettingsService.readBookingSmsEnabled(config);
       _reminderSms = SettingsService.readReminderSmsEnabled(config);
+      _manualSms = SettingsService.readManualSmsApproval(config);
       _autoReview = SettingsService.readAutoReviewSmsEnabled(config);
       _reminderOffsets = SettingsService.readReminderOffsets(config);
       _morningHour = SettingsService.readMorningBriefingHour(config);
@@ -180,6 +193,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       _savedOnWayGeo = _onWayGeo;
       _savedBookingSms = _bookingSms;
       _savedReminderSms = _reminderSms;
+      _savedManualSms = _manualSms;
       _savedAutoReview = _autoReview;
       _savedReminderOffsets = List<String>.from(_reminderOffsets);
       _savedMorningHour = _morningHour;
@@ -199,6 +213,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       _smsHeader != _savedSmsHeader ||
       _bookingSms != _savedBookingSms ||
       _reminderSms != _savedReminderSms ||
+      _manualSms != _savedManualSms ||
       _autoReview != _savedAutoReview ||
       _onWayMeters != _savedOnWayMeters ||
       _onWayText != _savedOnWayText ||
@@ -226,6 +241,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
     await SettingsService.updateConfigMap({
       'bookingSmsEnabled': _bookingSms,
       'reminderSmsEnabled': _reminderSms,
+      'manualSmsApproval': _manualSms,
       'autoReviewSmsEnabled': _autoReview,
       'reminderOffsets': _reminderOffsets,
       'reminderMorningHour': _reminderMorningHour,
@@ -237,6 +253,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
       _savedSmsHeader = _smsHeader;
       _savedBookingSms = _bookingSms;
       _savedReminderSms = _reminderSms;
+      _savedManualSms = _manualSms;
       _savedAutoReview = _autoReview;
       _savedReminderOffsets = List<String>.from(_reminderOffsets);
       _savedReminderMorningHour = _reminderMorningHour;
@@ -675,6 +692,11 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                 active: _phoneAccountEnabled == true,
                 onTap: _checkPhone,
               ),
+              _registrationTile(
+                title: context.tr('Регистрация звонков', 'Voice registration'),
+                state: TwilioService.registrationState,
+                onRetry: () => TwilioService.refreshRegistration(),
+              ),
               SettingsHubTile(
                 title: 'Android'.tr,
                 subtitle: 'Разрешения'.tr,
@@ -725,6 +747,16 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                 onTap: () => setState(() => _bookingSms = !_bookingSms),
               ),
               SettingsHubTile(
+                title: 'Ручное подтверждение SMS'.tr,
+                subtitle: _manualSms
+                    ? 'Автоотправка отключена'
+                    : 'SMS уходит автоматически',
+                icon: Icons.handshake_outlined,
+                color: Colors.orange.shade800,
+                active: _manualSms,
+                onTap: () => setState(() => _manualSms = !_manualSms),
+              ),
+              SettingsHubTile(
                 title: 'Напоминание'.tr,
                 subtitle: _reminderSms ? _reminderSubtitle : 'Выкл'.tr,
                 icon: Icons.notifications_active_outlined,
@@ -743,6 +775,28 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _registrationTile({
+    required String title,
+    required ValueNotifier<String> state,
+    required VoidCallback onRetry,
+  }) {
+    return ValueListenableBuilder<String>(
+      valueListenable: state,
+      builder: (context, value, _) => SettingsHubTile(
+        title: title,
+        subtitle: value == 'registered'
+            ? context.tr('Устройство зарегистрировано', 'Device registered')
+            : value == 'signed_out'
+                ? context.tr('Нужно войти в приложение', 'Sign in to the app')
+                : context.tr('Регистрация: повторю автоматически', 'Registration: retrying automatically'),
+        icon: value == 'registered' ? Icons.cloud_done_outlined : Icons.cloud_off_outlined,
+        color: value == 'registered' ? Colors.green : Colors.orange,
+        active: value == 'registered',
+        onTap: onRetry,
       ),
     );
   }
@@ -779,6 +833,11 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                   await _loadNotificationAccess();
                 },
               ),
+              _registrationTile(
+                title: context.tr('Регистрация уведомлений', 'Push registration'),
+                state: NotificationService.registrationState,
+                onRetry: () => NotificationService.refreshRegistration(),
+              ),
               SettingsHubTile(
                 title: 'Батарея'.tr,
                 subtitle: 'Чтобы SMS приходили, когда приложение закрыто'.tr,
@@ -812,6 +871,73 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage> {
                 color: Colors.orange,
                 active: _morning,
                 onTap: () => _setMorning(!_morning),
+              ),
+            ],
+          ),
+          // ─── Тест уведомлений ────────────────────────────────────────────
+          SettingsTileSection(
+            title: 'Тест',
+            tiles: [
+              SettingsHubTile(
+                title: 'Звонок (шторка)',
+                subtitle: 'Картинка + бейдж 📞 в углу',
+                icon: Icons.call,
+                color: const Color(0xFF14557F),
+                onTap: () => NotificationService.showRemoteData({
+                  'type': 'call',
+                  'from': '+14165550199',
+                  'title': 'Входящий звонок',
+                  'body': '+1 (416) 555-0199',
+                  'clientName': 'Amelia',
+                  'applianceType': 'Washer',
+                }),
+              ),
+              SettingsHubTile(
+                title: 'Звонок (полный экран)',
+                subtitle: 'Кнопки Ответить / Отклонить',
+                icon: Icons.phone_in_talk,
+                color: const Color(0xFF2E7D32),
+                onTap: () => NotificationService.testIncomingCall(),
+              ),
+              SettingsHubTile(
+                title: 'SMS',
+                subtitle: 'Картинка + бейдж 💬 в углу',
+                icon: Icons.sms,
+                color: const Color(0xFF1565C0),
+                onTap: () => NotificationService.showRemoteData({
+                  'type': 'sms',
+                  'from': '+14165550199',
+                  'title': 'SMS от +1 (416) 555-0199',
+                  'body': 'My washer is not spinning. When can you come?',
+                  'clientName': 'James',
+                  'applianceType': 'Washer',
+                }),
+              ),
+              SettingsHubTile(
+                title: 'Email',
+                subtitle: 'Картинка + бейдж ✉ в углу',
+                icon: Icons.email,
+                color: const Color(0xFF6A1B9A),
+                onTap: () => NotificationService.showRemoteData({
+                  'type': 'email_offer',
+                  'from': 'client@gmail.com',
+                  'title': 'Письмо о ремонте',
+                  'body': 'Re: Dishwasher repair — LG LDT5678SS',
+                  'clientName': 'Sarah',
+                  'applianceType': 'Dishwasher',
+                }),
+              ),
+              SettingsHubTile(
+                title: 'Напоминание',
+                subtitle: 'Картинка + бейдж 🔔 в углу',
+                icon: Icons.notifications,
+                color: const Color(0xFF1B5E20),
+                onTap: () => NotificationService.showRemoteData({
+                  'type': 'visit_soon',
+                  'title': 'Через 1.5 часа заявка',
+                  'body': '14:00 — Amelia · Washer',
+                  'applianceType': 'Washer',
+                }),
               ),
             ],
           ),

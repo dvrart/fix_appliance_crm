@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Компактный (свёрнутый) вид входящего звонка в шторке:
+  [📞] Входящий звонок / caller  [красный круг ✕] [зелёный круг 📞]
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:paddingStart="2dp"
+    android:paddingEnd="2dp">
+
+    <ImageView
+        android:id="@+id/call_type_icon"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:padding="6dp"
+        android:src="@drawable/ic_notify_call"
+        android:contentDescription="@null" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:layout_marginStart="6dp">
+
+        <TextView
+            android:id="@+id/call_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Входящий звонок"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <TextView
+            android:id="@+id/call_caller"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:alpha="0.7"
+            android:maxLines="1"
+            android:ellipsize="end" />
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/btn_decline"
+        android:layout_width="38dp"
+        android:layout_height="38dp"
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="3dp"
+        android:padding="9dp"
+        android:background="@drawable/bg_circle_red"
+        android:src="@drawable/ic_call_end"
+        android:contentDescription="Отклонить" />
+
+    <ImageView
+        android:id="@+id/btn_answer"
+        android:layout_width="38dp"
+        android:layout_height="38dp"
+        android:padding="9dp"
+        android:background="@drawable/bg_circle_green"
+        android:src="@drawable/ic_notify_call"
+        android:contentDescription="Ответить" />
+</LinearLayout>

@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/constants.dart';
 import '../models/job.dart';
+import 'auth_service.dart';
 import 'job_service.dart';
 import 'notification_service.dart';
 import 'sms_service.dart';
@@ -19,20 +21,52 @@ class InboxPushMirror {
   static bool _ready = false;
   static final Set<String> _shown = {};
   static final Set<String> _primed = {};
+  static final List<StreamSubscription<dynamic>> _subscriptions = [];
+  static int _generation = 0;
+  static Timer? _retry;
 
   static Future<void> start() async {
-    if (_started) return;
+    if (_started || !AuthService.signedIn) return;
     _started = true;
-    final prefs = await SharedPreferences.getInstance();
-    _shown.addAll(prefs.getStringList(_prefKey) ?? const []);
-    _ready = true;
-    SmsService.streamEmailOffers().listen((items) => _onEmails(items));
-    SmsService.streamAll().listen((items) => _onSms(items));
-    TwilioService.getPendingReviewCalls()
-        .listen((items) => _onCalls(items, 'calls_review'));
-    TwilioService.getAiProcessingCalls()
-        .listen((items) => _onCalls(items, 'calls_ai'));
-    JobService.streamNeedsReview().listen(_onJobs);
+    final generation = ++_generation;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!_started || generation != _generation) return;
+      _shown.addAll(prefs.getStringList(_prefKey) ?? const []);
+      _ready = true;
+      _subscriptions.addAll([
+        SmsService.streamEmailOffers().listen(_onEmails, onError: _onError),
+        SmsService.streamAll().listen(_onSms, onError: _onError),
+        SmsService.streamSmsOffers().listen(_onSmsOffers, onError: _onError),
+        TwilioService.getPendingReviewCalls().listen(
+          (items) => _onCalls(items, 'calls_review'),
+          onError: _onError,
+        ),
+        JobService.streamNeedsReview().listen(_onJobs, onError: _onError),
+      ]);
+    } catch (error) {
+      _onError(error);
+    }
+  }
+
+  static void stop() {
+    _generation++;
+    _started = false;
+    _ready = false;
+    _primed.clear();
+    _retry?.cancel();
+    for (final subscription in _subscriptions) {
+      unawaited(subscription.cancel());
+    }
+    _subscriptions.clear();
+  }
+
+  static void _onError(Object error) {
+    debugPrint('InboxPushMirror: $error');
+    stop();
+    if (AuthService.signedIn) {
+      _retry = Timer(const Duration(seconds: 15), () => unawaited(start()));
+    }
   }
 
   static Future<void> markShown(String key) async {
@@ -63,8 +97,12 @@ class InboxPushMirror {
     _emitNew(
       streamId: 'sms',
       items: items.where((item) {
-        if (item.isOutbound || item.isEmail) return false;
-        if (item.aiStatus == 'skipped_confirm') return false;
+        if (item.isOutbound || item.isEmail || item.read || item.isDeleted) {
+          return false;
+        }
+        if (item.aiStatus == 'skipped_confirm' || item.aiStatus == 'processing') {
+          return false;
+        }
         return true;
       }),
       keyOf: (item) => 'sms:${item.id}',
@@ -73,10 +111,31 @@ class InboxPushMirror {
     );
   }
 
+  static void _onSmsOffers(List<SmsMessage> items) {
+    _emitNew(
+      streamId: 'sms_offers',
+      items: items,
+      keyOf: (item) => 'sms:${item.id}',
+      createdOf: (item) => item.createdAt,
+      notify: _notifySmsOffer,
+    );
+  }
+
   static void _onCalls(List<CallRecord> items, String streamId) {
     _emitNew(
       streamId: streamId,
-      items: items.where((item) => !item.reviewed && !item.isDeleted),
+      items: items.where(
+        (item) =>
+            item.isIncoming &&
+            !item.reviewed &&
+            !item.isDeleted &&
+            ![
+              'ringing',
+              'in-progress',
+              'queued',
+              'initiated',
+            ].contains(item.status),
+      ),
       keyOf: (item) => 'call:${item.id}',
       createdOf: (item) => item.startTime,
       notify: _notifyCall,
@@ -106,7 +165,6 @@ class InboxPushMirror {
     // при каждом открытии приложения сыпятся шторки за последние 6 часов,
     // хотя push уже должен был прийти в фоне.
     if (!_primed.contains(streamId)) {
-      if (list.isEmpty) return;
       _primed.add(streamId);
       for (final item in list) {
         unawaited(markShown(keyOf(item)));
@@ -166,6 +224,31 @@ class InboxPushMirror {
     );
   }
 
+  static void _notifySmsOffer(SmsMessage message) {
+    final extracted = message.extractedData;
+    final appliance = extracted != null
+        ? (extracted['appliance_type'] ?? '').toString().trim()
+        : '';
+    final body = [
+      message.from,
+      if (appliance.isNotEmpty) appliance,
+      if (appliance.isEmpty)
+        message.displayBody.trim().isNotEmpty
+            ? message.displayBody.trim()
+            : 'SMS о ремонте',
+    ].where((s) => s.isNotEmpty).join(' · ');
+    unawaited(
+      NotificationService.showRemoteData({
+        'type': 'sms',
+        'source': 'sms',
+        'from': message.from,
+        'messageId': message.id,
+        'title': 'SMS: ждёт заявку',
+        'body': body,
+      }),
+    );
+  }
+
   static void _notifyCall(CallRecord call) {
     if ((call.createdJobId ?? '').trim().isNotEmpty) return;
     final phone = call.isIncoming ? call.fromNumber : call.toNumber;
@@ -189,14 +272,16 @@ class InboxPushMirror {
     final from = source == 'email'
         ? job.sourceEmailFrom
         : (job.clientPhone.trim().isNotEmpty
-            ? job.clientPhone
-            : job.contactName);
+              ? job.clientPhone
+              : job.contactName);
     unawaited(
       NotificationService.showRemoteData({
         'type': 'job',
-        'source': source == 'email' || source == 'website' ? 'email' : 'phone',
+        'source': source == 'email' || source == 'website' ? 'email' : source,
         'from': from,
         'jobId': job.id,
+        'callSid': job.sourceCallId ?? '',
+        'messageId': job.sourceEmailId ?? '',
         'title': source == 'email' || source == 'website'
             ? 'Заявка с почты'
             : (source == 'sms' ? 'Заявка из SMS' : 'Заявка с телефона'),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/ui_scale.dart';
@@ -33,7 +34,7 @@ class JobAgendaCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: AppUiSettings.instance,
-      builder: (context, _) {
+      builder: (ctx, _) {
         final ui = AppUiSettings.instance;
         final displayStatus = job.displayStatusForVisit(visit);
         final statusColor = StatusService.colorOf(displayStatus);
@@ -45,6 +46,7 @@ class JobAgendaCard extends StatelessWidget {
 
         return compact
             ? _compactCard(
+                context: ctx,
                 ui: ui,
                 displayStatus: displayStatus,
                 statusColor: statusColor,
@@ -52,6 +54,7 @@ class JobAgendaCard extends StatelessWidget {
                 name: name,
               )
             : _fullCard(
+                context: ctx,
                 ui: ui,
                 displayStatus: displayStatus,
                 statusColor: statusColor,
@@ -63,6 +66,7 @@ class JobAgendaCard extends StatelessWidget {
   }
 
   Widget _fullCard({
+    required BuildContext context,
     required AppUiSettings ui,
     required String displayStatus,
     required Color statusColor,
@@ -80,6 +84,9 @@ class JobAgendaCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         onTap: onTap,
+        onLongPress: address.isNotEmpty
+            ? () => AppFeedback.copy(context, address)
+            : (name != '—' ? () => AppFeedback.copy(context, name) : null),
         borderRadius: BorderRadius.circular(10),
         child: IntrinsicHeight(
           child: Stack(
@@ -270,6 +277,7 @@ class JobAgendaCard extends StatelessWidget {
   }
 
   Widget _compactCard({
+    required BuildContext context,
     required AppUiSettings ui,
     required String displayStatus,
     required Color statusColor,
@@ -283,6 +291,7 @@ class JobAgendaCard extends StatelessWidget {
       statusColor.withValues(alpha: 0.22),
       ui.paperColor,
     );
+    final address = job.workAddress.trim();
 
     return Material(
       color: fill,
@@ -290,6 +299,9 @@ class JobAgendaCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         onTap: onTap,
+        onLongPress: address.isNotEmpty
+            ? () => AppFeedback.copy(context, address)
+            : (name != '—' ? () => AppFeedback.copy(context, name) : null),
         borderRadius: BorderRadius.circular(10),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),

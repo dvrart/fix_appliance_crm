@@ -12,6 +12,7 @@ import 'error_log_service.dart';
 import 'firestore_service.dart';
 import 'notification_service.dart';
 import 'auth_service.dart';
+import 'network_status_service.dart';
 
 DateTime? _asDate(dynamic value) {
   if (value == null) return null;
@@ -53,6 +54,8 @@ class SmsMessage {
   final String replyToEmail;
   final bool emailIntake;
   final bool applianceRepair;
+  /// Входящее SMS, которое ИИ определил как заявку на ремонт — ждёт ручного создания.
+  final bool smsOfferPending;
   /// Русский текст для мастера. Клиенту уходит [body] на английском.
   final String bodyRu;
   final DateTime? deletedAt;
@@ -88,6 +91,7 @@ class SmsMessage {
     this.replyToEmail = '',
     this.emailIntake = false,
     this.applianceRepair = false,
+    this.smsOfferPending = false,
     this.bodyRu = '',
     this.deletedAt,
   });
@@ -214,6 +218,7 @@ class SmsMessage {
       replyToEmail: (map['replyToEmail'] ?? '').toString(),
       emailIntake: map['emailIntake'] == true,
       applianceRepair: map['applianceRepair'] == true,
+      smsOfferPending: map['smsOfferPending'] == true,
       bodyRu: (map['bodyRu'] ?? '').toString(),
       deletedAt: map['deletedAt'] is Timestamp
           ? (map['deletedAt'] as Timestamp).toDate()
@@ -395,6 +400,70 @@ class SmsService {
     );
   }
 
+  /// Входящие SMS, которые ИИ пометил как заявку на ремонт.
+  /// Мастер сам решает, создавать ли заявку.
+  static Stream<List<SmsMessage>> streamSmsOffers() {
+    return _ref
+        .where('channel', isEqualTo: 'sms')
+        .where('smsOfferPending', isEqualTo: true)
+        .snapshots()
+        .map((snapshot) {
+      final now = DateTime.now();
+      final cutoff = now.subtract(const Duration(days: 7));
+      final items = snapshot.docs
+          .map(
+            (doc) => SmsMessage.fromMap(
+              doc.data() as Map<String, dynamic>,
+              doc.id,
+            ),
+          )
+          .where((message) {
+            if (message.direction != 'inbound') return false;
+            if (message.isDeleted) return false;
+            final when = message.createdAt;
+            if (when != null && when.isBefore(cutoff)) return false;
+            return true;
+          })
+          .toList();
+      items.sort(
+        (a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)),
+      );
+      return items;
+    });
+  }
+
+  static Future<void> dismissSmsOffer(String messageId) async {
+    final id = messageId.trim();
+    if (id.isEmpty) return;
+    await _ref.doc(id).set(
+      {
+        'smsOfferPending': false,
+        'read': true,
+        'aiStatus': 'dismissed',
+      },
+      SetOptions(merge: true),
+    );
+  }
+
+  static Future<void> acceptSmsOffer(
+    String messageId, {
+    required String jobId,
+    required String clientId,
+  }) async {
+    final id = messageId.trim();
+    if (id.isEmpty) return;
+    await _ref.doc(id).set(
+      {
+        'smsOfferPending': false,
+        'jobId': jobId,
+        'clientId': clientId,
+        'aiStatus': 'done',
+        'read': true,
+      },
+      SetOptions(merge: true),
+    );
+  }
+
   /// Почему не ушло последнее SMS. Раньше причина уходила в debugPrint,
   /// которого в релизе не видно, и владелец получал бесполезное
   /// «Не удалось отправить SMS» без единой подсказки.
@@ -433,11 +502,18 @@ class SmsService {
     List<String> mediaUrls = const [],
     String? bodyRu,
     String? fallbackBody,
+    Map<String, String>? visitBooking,
   }) async {
     try {
       final urls = mediaUrls.where((url) => url.startsWith('http')).toList();
       if (body.trim().isEmpty && urls.isEmpty) return false;
       final fallback = (fallbackBody ?? '').trim();
+      if (visitBooking != null && !await waitForWriteAcknowledgement(
+        FirebaseFirestore.instance.waitForPendingWrites(),
+      )) {
+        lastError = 'Изменения визита ещё не синхронизированы. SMS не отправлено — повторите после восстановления связи';
+        return false;
+      }
       final response = await http
           .post(
         Uri.parse('$kFirebaseFunctionsUrl/sendSms'),
@@ -449,6 +525,7 @@ class SmsService {
           if (urls.isNotEmpty) 'mediaUrls': urls,
           if (bodyRu != null && bodyRu.trim().isNotEmpty) 'bodyRu': bodyRu.trim(),
           if (fallback.isNotEmpty) 'fallbackBody': SmsText.formatSentences(fallback),
+          if (visitBooking != null) 'visitBooking': visitBooking,
         }),
       )
           .timeout(const Duration(seconds: 40));
@@ -469,6 +546,7 @@ class SmsService {
         return true;
       }
       lastError = _describeSendError(response.statusCode, response.body);
+      if (response.statusCode == 202 && visitBooking != null) return false;
       // В журнал ошибок, иначе причину видно только в отладочной сборке.
       ErrorLogService.record(
         'SMS не ушло (${response.statusCode}): ${response.body.trim()}',
@@ -729,6 +807,7 @@ class SmsService {
     String phoneNumber, {
     String? email,
     String? clientId,
+    bool websiteInbox = false,
   }) async {
     final normalized = normalizePhone(phoneNumber);
     final emailKey = normalizeEmail(email ?? '');
@@ -741,6 +820,13 @@ class SmsService {
     var hasUpdates = false;
     for (final doc in snapshot.docs) {
       final data = doc.data() as Map<String, dynamic>;
+      if (websiteInbox) {
+        if (SmsMessage.fromMap(data, doc.id).isWebsiteFormMail) {
+          batch.update(doc.reference, {'read': true});
+          hasUpdates = true;
+        }
+        continue;
+      }
       final from = (data['from'] ?? '').toString();
       final to = (data['to'] ?? '').toString();
       final fromEmail = (data['fromEmail'] ?? from).toString();

@@ -340,6 +340,82 @@ class ClientService {
     invalidateCache();
   }
 
+  /// Объединить клиентов: перенести все заявки от [mergeId] к [keepId],
+  /// скопировать уникальные адреса, затем отправить [mergeId] в корзину.
+  /// Не трогает историю звонков и SMS (она привязана к номеру телефона).
+  static Future<MergeResult> mergeInto({
+    required String keepId,
+    required String mergeId,
+  }) async {
+    if (keepId == mergeId) return const MergeResult(jobsMoved: 0);
+    final keep = await getById(keepId);
+    final merge = await getById(mergeId);
+    if (keep == null || merge == null) {
+      return const MergeResult(jobsMoved: 0, error: 'Один из клиентов не найден');
+    }
+
+    // 1. Перенести заявки
+    final jobsSnap = await FirestoreService.jobsRef
+        .where('clientId', isEqualTo: mergeId)
+        .get();
+    var jobsMoved = 0;
+    for (final doc in jobsSnap.docs) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) continue;
+      final isDeleted = data['deletedAt'] != null;
+      if (isDeleted) continue;
+      await settleWrite(
+        doc.reference.update({
+          'clientId': keepId,
+          'clientName': keep.fullName,
+          'clientPhone': keep.phone,
+          'clientAddress': keep.address,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }),
+      );
+      jobsMoved++;
+    }
+
+    // 2. Скопировать уникальные адреса от дубля к основному
+    final keepAddresses = keep.locations
+        .map((l) => l.street.trim().toLowerCase())
+        .where((s) => s.isNotEmpty)
+        .toSet();
+    final toAdd = merge.locations.where((l) {
+      final key = l.street.trim().toLowerCase();
+      return key.isNotEmpty && !keepAddresses.contains(key);
+    }).toList();
+    if (toAdd.isNotEmpty) {
+      final merged = [...keep.locations, ...toAdd];
+      await settleWrite(
+        _ref.doc(keepId).update({
+          'locations': merged.map((l) => l.toMap()).toList(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }),
+      );
+    }
+
+    // 3. Скопировать email и заметки если у основного нет
+    final updates = <String, dynamic>{};
+    if ((keep.email == null || keep.email!.isEmpty) &&
+        merge.email != null && merge.email!.isNotEmpty) {
+      updates['email'] = merge.email;
+    }
+    if ((keep.notes == null || keep.notes!.isEmpty) &&
+        merge.notes != null && merge.notes!.isNotEmpty) {
+      updates['notes'] = merge.notes;
+    }
+    if (updates.isNotEmpty) {
+      updates['updatedAt'] = FieldValue.serverTimestamp();
+      await settleWrite(_ref.doc(keepId).update(updates));
+    }
+
+    // 4. Отправить дубль в корзину
+    await delete(mergeId, react: false);
+    invalidateCache();
+    return MergeResult(jobsMoved: jobsMoved);
+  }
+
   /// Создать или обновить клиента (для формы создания заявки)
   static Future<String> createOrUpdate({
     String? existingId,
@@ -493,4 +569,11 @@ class ClientService {
     }
     return matches;
   }
+}
+
+class MergeResult {
+  final int jobsMoved;
+  final String? error;
+  const MergeResult({required this.jobsMoved, this.error});
+  bool get success => error == null;
 }

@@ -215,34 +215,114 @@ class _FinanceTabState extends State<FinanceTab> {
   Widget _buildMainView() {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: ctrl.documents.where((doc) => !Job.isDocumentTrashed(doc)).isEmpty
-            ? Center(
-                child: Text(
-                  'Нет счетов.\nНажмите (+) и создайте Invoice или Estimate.'.tr,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Color(0xFF3D3D3D),
-                    fontWeight: FontWeight.w600,
-                    fontSize: 16,
-                  ),
-                ),
-              )
-            : ListView.builder(
-                itemCount: ctrl.documents.length,
-                itemBuilder: (context, index) {
-                  if (Job.isDocumentTrashed(ctrl.documents[index])) {
-                    return const SizedBox.shrink();
-                  }
-                  return _buildDocumentCard(index);
-                },
-              ),
+      body: Column(
+        children: [
+          if (ctrl.pendingSuggestComplete)
+            _buildSuggestCompleteBanner(),
+          if (ctrl.pendingSuggestCancel)
+            _buildSuggestCancelBanner(),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: ctrl.documents.where((doc) => !Job.isDocumentTrashed(doc)).isEmpty
+                  ? Center(
+                      child: Text(
+                        'Нет счетов.\nНажмите (+) и создайте Invoice или Estimate.'.tr,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Color(0xFF3D3D3D),
+                          fontWeight: FontWeight.w600,
+                          fontSize: 16,
+                        ),
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: ctrl.documents.length,
+                      itemBuilder: (context, index) {
+                        if (Job.isDocumentTrashed(ctrl.documents[index])) {
+                          return const SizedBox.shrink();
+                        }
+                        return _buildDocumentCard(index);
+                      },
+                    ),
+            ),
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showCreateDocumentMenu(),
         backgroundColor: AppColors.accent,
         child: const Icon(Icons.add, color: Colors.black),
+      ),
+    );
+  }
+
+  Widget _buildSuggestCompleteBanner() {
+    return Material(
+      color: Colors.orange.shade800,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Счёт оплачен. Пометить заявку как завершённую?'.tr,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => ctrl.confirmSuggestComplete(),
+              style: TextButton.styleFrom(foregroundColor: Colors.white),
+              child: Text(
+                'Завершить'.tr,
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+            ),
+            TextButton(
+              onPressed: () => ctrl.dismissSuggestComplete(),
+              style: TextButton.styleFrom(foregroundColor: Colors.white70),
+              child: Text('Потом'.tr),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSuggestCancelBanner() {
+    return Material(
+      color: Colors.red.shade700,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Полный возврат. Пометить заявку как отменённую?'.tr,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => ctrl.confirmSuggestCancel(),
+              style: TextButton.styleFrom(foregroundColor: Colors.white),
+              child: Text(
+                'Отменить заявку'.tr,
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+            ),
+            TextButton(
+              onPressed: () => ctrl.dismissSuggestCancel(),
+              style: TextButton.styleFrom(foregroundColor: Colors.white70),
+              child: Text('Оставить'.tr),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1940,6 +2020,10 @@ class _FinanceTabState extends State<FinanceTab> {
     int documentIndex, {
     double? paidAmount,
   }) async {
+    // Пункт 13: при ручном режиме чек сам не уходит. Владелец отправляет его
+    // кнопкой отправки документа, когда сочтёт нужным.
+    final config = await SettingsService.loadConfig();
+    if (SettingsService.readManualSmsApproval(config)) return;
     for (var i = 0; i < 15; i++) {
       if (documentIndex >= 0 && documentIndex < ctrl.documents.length) {
         final paid = ctrl.calcPaid(

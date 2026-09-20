@@ -53,15 +53,21 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
       valueListenable: AppLockService.locked,
       builder: (context, locked, child) {
         return ListenableBuilder(
-          listenable: AuthService.user,
+          listenable: Listenable.merge([AuthService.user, AuthService.autoSigningIn]),
           builder: (context, _) {
             final signedIn = AuthService.user.value != null;
+            final autoSigningIn = AuthService.autoSigningIn.value;
             // До входа приложение не строим вообще. Если построить его под
             // экраном входа, все подписки на базу уйдут без токена, получат
             // «доступа нет» и после входа заново не переподпишутся — экраны
             // останутся пустыми. На свежей установке это выглядело так, будто
             // пропали клиенты, календарь и переписка.
-            if (!signedIn) return const SignInScreen();
+            if (!signedIn) {
+              // Идёт тихое восстановление сессии — показываем заставку,
+              // а не форму входа, чтобы не пугать полями email/пароль.
+              if (autoSigningIn) return const _AutoSignInSplash();
+              return const SignInScreen();
+            }
             return Stack(
               children: [
                 child!,
@@ -75,6 +81,22 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
         );
       },
       child: widget.child,
+    );
+  }
+}
+
+/// Заставка-индикатор пока идёт тихое восстановление Firebase-сессии.
+/// Не показываем экран входа, чтобы не пугать полями email/пароль.
+class _AutoSignInSplash extends StatelessWidget {
+  const _AutoSignInSplash();
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.primary,
+      child: const Center(
+        child: CircularProgressIndicator(color: Colors.white),
+      ),
     );
   }
 }

@@ -3,8 +3,9 @@ const crypto = require('crypto');
 /// Еженедельная копия базы в Storage. Работает на сервере, поэтому не зависит
 /// от того, включён ли телефон и есть ли на нём интернет.
 
-/// Что кладём в копию. Звонки и SMS тянут за собой мегабайты текста, но их
-/// проще потерять, чем клиентов и заявки, поэтому берём разумный минимум.
+/// Что кладём в копию.
+/// Звонки и SMS хранятся в Firestore (уже в облаке), но в JSON-копии они
+/// тоже нужны — на случай случайного удаления или повреждения данных.
 const COLLECTIONS = [
   'clients',
   'jobs',
@@ -14,6 +15,8 @@ const COLLECTIONS = [
   'warehouse',
   'expenses',
   'calendar_events',
+  'calls',
+  'messages',
 ];
 
 /// Сколько копий храним. Раз в неделю — это примерно три месяца истории.
@@ -79,6 +82,7 @@ async function buildBackupPayload(db, companyId) {
     collections: {},
   };
   const counts = {};
+  const failed = [];
   for (const name of COLLECTIONS) {
     try {
       const snapshot = await root.collection(name).get();
@@ -91,9 +95,12 @@ async function buildBackupPayload(db, companyId) {
       console.warn(`backup: коллекция ${name} пропущена: ${error.message}`);
       payload.collections[name] = [];
       counts[name] = 0;
+      failed.push(name);
     }
   }
   payload.counts = counts;
+  payload.failedCollections = failed;
+  payload.partial = failed.length > 0;
   return payload;
 }
 
@@ -115,9 +122,13 @@ async function prune(bucket, prefix) {
 /// Делает копию и возвращает { url, path, bytes, counts } либо null.
 async function runCloudBackup({ admin, db, companyId }) {
   const payload = await buildBackupPayload(db, companyId);
+  const isPartial = payload.partial === true;
   const body = Buffer.from(JSON.stringify(payload), 'utf8');
   const prefix = `companies/${companyId}/backups/`;
-  const path = `${prefix}fix-backup-${ymd(new Date())}.json`;
+  const today = ymd(new Date());
+  const path = isPartial
+    ? `${prefix}fix-backup-${today}-partial.json`
+    : `${prefix}fix-backup-${today}.json`;
   const token = crypto.randomUUID();
 
   for (const bucket of resolveBuckets(admin)) {
@@ -132,7 +143,8 @@ async function runCloudBackup({ admin, db, companyId }) {
       });
       const encoded = encodeURIComponent(path);
       const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encoded}?alt=media&token=${token}`;
-      await prune(bucket, prefix);
+      // Не удаляем старые копии, если текущая частичная — не затираем хорошие резервные.
+      if (!isPartial) await prune(bucket, prefix);
 
       const total = Object.values(payload.counts).reduce((sum, n) => sum + n, 0);
       const record = {
@@ -143,16 +155,21 @@ async function runCloudBackup({ admin, db, companyId }) {
         bytes: body.length,
         counts: payload.counts,
         totalDocs: total,
+        ...(isPartial && {
+          partial: true,
+          failedCollections: payload.failedCollections || [],
+        }),
       };
       await db
         .collection('companies')
         .doc(companyId)
         .collection('backups')
-        .doc(ymd(new Date()))
+        .doc(isPartial ? `${today}-partial` : today)
         .set(record, { merge: true });
 
       console.log(
-        `backup: ${path} (${body.length} байт, ${total} документов) → ${bucket.name}`
+        `backup: ${path} (${body.length} байт, ${total} документов) → ${bucket.name}` +
+          (isPartial ? ` [частичная: ${(payload.failedCollections || []).join(', ')}]` : '')
       );
       return record;
     } catch (error) {

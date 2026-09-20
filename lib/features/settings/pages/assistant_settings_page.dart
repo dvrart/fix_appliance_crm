@@ -4,6 +4,7 @@ import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../services/settings_service.dart';
 import '../widgets/settings_ui.dart';
+import 'voice_test_dialog.dart';
 
 class AssistantSettingsPage extends StatefulWidget {
   const AssistantSettingsPage({super.key});
@@ -19,9 +20,11 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
   bool _enabled = true;
   bool _wakeEnabled = false;
   String _language = SettingsService.assistantLanguageRu;
+  String _voice = SettingsService.defaultAssistantVoice;
   bool _savedEnabled = true;
   bool _savedWakeEnabled = false;
   String _savedLanguage = SettingsService.assistantLanguageRu;
+  String _savedVoice = SettingsService.defaultAssistantVoice;
   String _savedWakeWord = SettingsService.defaultAssistantWakeWord;
   String _savedAliases = SettingsService.defaultAssistantWakeAliases;
 
@@ -41,6 +44,7 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
     return _enabled != _savedEnabled ||
         _wakeEnabled != _savedWakeEnabled ||
         _language != _savedLanguage ||
+        _voice != _savedVoice ||
         word != _savedWakeWord ||
         aliases != _savedAliases;
   }
@@ -67,9 +71,11 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
       _enabled = SettingsService.readAssistantEnabled(config);
       _wakeEnabled = SettingsService.readAssistantWakeEnabled(config);
       _language = SettingsService.readAssistantLanguage(config);
+      _voice = SettingsService.readAssistantVoice(config);
       _savedEnabled = _enabled;
       _savedWakeEnabled = _wakeEnabled;
       _savedLanguage = _language;
+      _savedVoice = _voice;
       _savedWakeWord = _wakeWordCtrl.text.trim();
       _savedAliases = _aliasesCtrl.text.trim();
       _loading = false;
@@ -86,6 +92,7 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
       'assistantEnabled': _enabled,
       'assistantWakeEnabled': _wakeEnabled,
       'assistantLanguage': _language,
+      'assistantVoice': _voice,
       'assistantWakeWord': word,
       'assistantWakeAliases': aliases.isEmpty
           ? SettingsService.defaultAssistantWakeAliases
@@ -96,6 +103,7 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
       _savedEnabled = _enabled;
       _savedWakeEnabled = _wakeEnabled;
       _savedLanguage = _language;
+      _savedVoice = _voice;
       _savedWakeWord = word;
       _savedAliases = aliases.isEmpty
           ? SettingsService.defaultAssistantWakeAliases
@@ -112,7 +120,7 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
         content: Text(
           context.tr(
             'Большой микрофон в шапке или слово «$_wakeWord». Кружок — пауза, тап в сторону — закрыть.',
-            'Big microphone in the app bar, or say “$_wakeWord”. Tap the circle to pause, tap outside to close.',
+            'Big microphone in the app bar, or say "$_wakeWord". Tap the circle to pause, tap outside to close.',
           ),
         ),
         actions: [
@@ -122,6 +130,27 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
           ),
         ],
       ),
+    );
+  }
+
+  void _testVoice() {
+    VoiceTestDialog.show(context, _voice);
+  }
+
+  Widget _voiceTile(
+    String name,
+    Color color,
+    IconData icon, {
+    bool isMale = true,
+  }) {
+    final selected = _voice == name;
+    return SettingsHubTile(
+      title: name,
+      icon: icon,
+      color: color,
+      selected: selected,
+      active: selected,
+      onTap: () => setState(() => _voice = name),
     );
   }
 
@@ -140,6 +169,7 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
       body: ListView(
         padding: const EdgeInsets.only(top: 12, bottom: 32),
         children: [
+          // ── Enable / wake / how-to ────────────────────────────────────────
           SettingsTileSection(
             title: context.tr('Ассистент', 'Assistant'),
             tiles: [
@@ -173,6 +203,7 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
               ),
             ],
           ),
+          // ── Wake word / aliases text fields ───────────────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
             child: Column(
@@ -213,6 +244,7 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
               ],
             ),
           ),
+          // ── Language ──────────────────────────────────────────────────────
           SettingsTileSection(
             title: context.tr('Язык ассистента', 'Assistant language'),
             tiles: [
@@ -238,12 +270,63 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
               ),
             ],
           ),
+          // ── Male voices ───────────────────────────────────────────────────
+          SettingsTileSection(
+            title: context.tr('Мужские голоса', 'Male voices'),
+            tiles: SettingsService.assistantVoicesMale
+                .map(
+                  (name) => _voiceTile(
+                    name,
+                    Colors.indigo,
+                    Icons.record_voice_over,
+                    isMale: true,
+                  ),
+                )
+                .toList(),
+          ),
+          // ── Female voices ─────────────────────────────────────────────────
+          SettingsTileSection(
+            title: context.tr('Женские голоса', 'Female voices'),
+            tiles: SettingsService.assistantVoicesFemale
+                .map(
+                  (name) => _voiceTile(
+                    name,
+                    Colors.purple,
+                    Icons.record_voice_over,
+                    isMale: false,
+                  ),
+                )
+                .toList(),
+          ),
+          // ── Test voice button ─────────────────────────────────────────────
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+            child: FilledButton.icon(
+              onPressed: _testVoice,
+              icon: const Icon(Icons.phone),
+              label: Text(
+                context.tr(
+                  'Позвонить — тест голоса «$_voice»',
+                  'Call test — voice "$_voice"',
+                ),
+              ),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(double.infinity, 50),
+                backgroundColor: Colors.green.shade700,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+            ),
+          ),
+          // ── Hint ─────────────────────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
             child: Text(
               context.tr(
                 'Пока приложение открыто, скажите «$_wakeWord». Жёлтый — слушает. «конец» / «end» — выключить.',
-                'While the app is open, say “$_wakeWord”. Yellow means listening. Say “конец” or “end” to stop.',
+                'While the app is open, say "$_wakeWord". Yellow means listening. Say "конец" or "end" to stop.',
               ),
               style: const TextStyle(color: Colors.black54, fontSize: 13),
             ),

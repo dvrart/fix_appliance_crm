@@ -106,6 +106,22 @@ class AppTimeService {
     );
   }
 
+  static DateTime bookingWallClock(DateTime value) {
+    _ensureTz();
+    final zoned = tz.TZDateTime.from(value, tz.getLocation(defaultLocation));
+    return DateTime(
+      zoned.year,
+      zoned.month,
+      zoned.day,
+      zoned.hour,
+      zoned.minute,
+      zoned.second,
+    );
+  }
+
+  static String bookingSlotKey(DateTime value) =>
+      DateFormat("yyyy-MM-dd'T'HH:mm").format(bookingWallClock(value));
+
   static String format(
     DateTime value,
     String pattern, {

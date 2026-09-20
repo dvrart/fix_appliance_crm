@@ -1018,6 +1018,29 @@ function workHoursSpeech(startMinutes, endMinutes) {
   return `${formatHour12(start)} to ${formatHour12(end)}`;
 }
 
+function hasNewRepairRequest(history) {
+  return (Array.isArray(history) ? history : []).some((item) => {
+    if (!item || item.role !== 'user') return false;
+    const text = String(item.text || '');
+    if (/\b(cancel(?:led|ed|lation)?|reschedule|move|keep|don't|do not|check|whether|already)\b|отмен|перенес|перенос|не нужно|провер/i.test(text)) return false;
+    return /\b(new|another|different|additional)\s+(appointment|repair|booking|appliance|job)\b/i.test(text) ||
+      /\b(need|want|looking|like)\b.{0,60}\b(repair|fix|book|schedule)\b/i.test(text) ||
+      /нов\w* (заявк|ремонт|встреч)|нуж\w*.{0,30}(ремонт|починить)|сломал|не работает/i.test(text) ||
+      (Boolean(inferApplianceFromText(text)) && /broken|broke|won't|isn't|not working|leaking|not (heating|cooling|draining|spinning)/i.test(text));
+  });
+}
+
+function isAppointmentOnly(extracted, callData) {
+  const data = extracted || {};
+  const reception = (callData && callData.aiReception) || {};
+  const intent = String(data.appointment_intent || '').toLowerCase();
+  if (intent === 'new_repair') return false;
+  const appointmentContext = data.appointment_only === true || reception.appointmentOnly === true ||
+    ['lookup', 'cancel', 'reschedule'].includes(intent) ||
+    Boolean(callData && Array.isArray(callData.calendarActions) && callData.calendarActions.length);
+  return appointmentContext && !hasNewRepairRequest(reception.history);
+}
+
 function isServiceDeclined(extracted, callData) {
   const data = extracted && typeof extracted === 'object' ? extracted : {};
   if (data.service_declined === true) return true;
@@ -1026,7 +1049,19 @@ function isServiceDeclined(extracted, callData) {
   return rec.serviceDeclined === true;
 }
 
+function settledCallStatus(current, incoming) {
+  const before = String(current || '').toLowerCase();
+  const next = String(incoming || '').toLowerCase();
+  const terminal = new Set(['completed', 'busy', 'failed', 'no-answer', 'canceled', 'cancelled']);
+  if (before === 'completed' || next === 'completed') return 'completed';
+  if (terminal.has(before)) return before;
+  if (terminal.has(next)) return next;
+  const rank = { queued: 0, initiated: 0, ringing: 1, 'in-progress': 2 };
+  return (rank[next] ?? -1) >= (rank[before] ?? -1) ? next || before : before;
+}
+
 module.exports = {
+  settledCallStatus,
   TORONTO,
   VOICE_CALL_FLOW,
   VOICE_LIVE_FLOW,
@@ -1041,6 +1076,7 @@ module.exports = {
   looksLikePersonName,
   isPlaceholderClientName,
   usableClientName,
+  editDistance,
   snapCity,
   citiesFromClient,
   titleCaseName,
@@ -1050,6 +1086,8 @@ module.exports = {
   inferApplianceFromText,
   looksLikeRepairConversation,
   isServiceDeclined,
+  isAppointmentOnly,
+  hasNewRepairRequest,
   parseScheduledAtDate,
   pickClientName,
   isStaleVoiceGreeting,

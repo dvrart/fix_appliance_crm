@@ -11,6 +11,8 @@ import '../features/jobs/email_offer_page.dart';
 import '../features/jobs/job_details/job_details_screen.dart';
 import '../features/messages/conversation_screen.dart';
 import '../models/client.dart';
+import 'app_lock_service.dart';
+import 'auth_service.dart';
 import 'client_service.dart';
 import 'job_service.dart';
 import 'local_notification_service.dart';
@@ -22,6 +24,39 @@ import 'twilio_service.dart';
 class NotificationRouter {
   static String? _lastKey;
   static DateTime? _lastAt;
+  static Map<String, dynamic>? _pending;
+  static Timer? _readyRetry;
+  static bool _watchingAccess = false;
+
+  static bool get _canOpen =>
+      AuthService.signedIn &&
+      !AppLockService.locked.value &&
+      rootNavigatorKey.currentState?.mounted == true;
+
+  static void _waitForAccess(Map<String, dynamic> data) {
+    _pending = Map.of(data);
+    if (!_watchingAccess) {
+      _watchingAccess = true;
+      AuthService.user.addListener(_flushPending);
+      AppLockService.locked.addListener(_flushPending);
+    }
+    _readyRetry?.cancel();
+    if (AuthService.signedIn && !AppLockService.locked.value) {
+      _readyRetry = Timer(const Duration(milliseconds: 200), _flushPending);
+    }
+  }
+
+  static void _flushPending() {
+    final data = _pending;
+    if (data == null) return;
+    if (!_canOpen) {
+      _waitForAccess(data);
+      return;
+    }
+    _pending = null;
+    _readyRetry?.cancel();
+    unawaited(open(data));
+  }
 
   static Future<void> handlePayload(String? raw) async {
     final text = (raw ?? '').trim();
@@ -36,13 +71,25 @@ class NotificationRouter {
 
   static Future<void> open(Map<String, dynamic> data) async {
     if (data.isEmpty) return;
+    if (!_canOpen) {
+      _waitForAccess(data);
+      return;
+    }
     final type = (data['type'] ?? '').toString();
     final jobId = (data['jobId'] ?? data['job_id'] ?? '').toString().trim();
-    final clientId = (data['clientId'] ?? data['client_id'] ?? '').toString().trim();
-    final from = (data['from'] ?? data['to'] ?? '').toString().trim();
-    final messageId =
-        (data['messageId'] ?? data['message_id'] ?? '').toString().trim();
-    final key = '$type|$jobId|$from|$messageId';
+    final clientId = (data['clientId'] ?? data['client_id'] ?? '')
+        .toString()
+        .trim();
+    final from = ['peer', 'from', 'to']
+        .map((key) => '${data[key] ?? ''}'.trim())
+        .firstWhere((value) => value.isNotEmpty, orElse: () => '');
+    final messageId = (data['messageId'] ?? data['message_id'] ?? '')
+        .toString()
+        .trim();
+    final callId = (data['callSid'] ?? data['callId'] ?? data['call_id'] ?? '')
+        .toString()
+        .trim();
+    final key = '$type|$jobId|$clientId|$from|$messageId|$callId';
     final now = DateTime.now();
     if (_lastKey == key &&
         _lastAt != null &&
@@ -54,7 +101,9 @@ class NotificationRouter {
 
     unawaited(LocalNotificationService.dismissInboxPayload(data));
 
-    if (type == 'active_call' || type == 'leave_status' || type == 'on_the_way') {
+    if (type == 'active_call' ||
+        type == 'leave_status' ||
+        type == 'on_the_way') {
       return;
     }
 
@@ -66,16 +115,15 @@ class NotificationRouter {
       return;
     }
 
-    if (type == 'secretary_lesson' || type == 'secretary_learn' || type == 'call') {
-      var callSid = (data['callSid'] ?? data['callId'] ?? data['call_id'] ?? '')
-          .toString()
-          .trim();
+    if (type == 'secretary_lesson' ||
+        type == 'secretary_learn' ||
+        type == 'call') {
+      var callSid = callId;
       if (callSid.isEmpty && type == 'call') {
-        callSid = await TwilioService.latestInboxCallId(
-          from: (data['from'] ?? '').toString(),
-        );
+        callSid = await TwilioService.latestInboxCallId(from: from);
       }
       if (callSid.isNotEmpty) {
+        if (!nav.mounted) return;
         unawaited(TwilioService.markReviewed(callSid));
         await CallReviewPage.open(nav.context, callId: callSid);
         return;
@@ -84,6 +132,7 @@ class NotificationRouter {
     }
 
     if (type == 'email_offer' && messageId.isNotEmpty) {
+      if (!nav.mounted) return;
       await EmailOfferPage.open(nav.context, messageId: messageId);
       return;
     }
@@ -91,6 +140,7 @@ class NotificationRouter {
     if (jobId.isNotEmpty) {
       final job = await JobService.getById(jobId);
       if (job != null) {
+        if (!nav.mounted) return;
         await nav.push(
           MaterialPageRoute(
             builder: (_) => JobDetailsScreen(
@@ -107,6 +157,7 @@ class NotificationRouter {
     if (type == 'email' || from.contains('@')) {
       final website = SmsMessage.looksLikeWebsiteForm(fromEmail: from);
       if (website) {
+        if (!nav.mounted) return;
         await ConversationScreen.open(
           nav.context,
           contactName: kWebsiteInboxTitle,
@@ -115,7 +166,12 @@ class NotificationRouter {
         );
         return;
       }
-      final client = await _clientFor(from: from, email: from, clientId: clientId);
+      final client = await _clientFor(
+        from: from,
+        email: from,
+        clientId: clientId,
+      );
+      if (!nav.mounted) return;
       await ConversationScreen.open(
         nav.context,
         phoneNumber: client?.phone ?? '',
@@ -129,7 +185,9 @@ class NotificationRouter {
 
     if (from.isNotEmpty) {
       final client = await _clientFor(from: from, clientId: clientId);
-      if (client != null && (type == 'client' || type.isEmpty && jobId.isEmpty)) {
+      if (!nav.mounted) return;
+      if (client != null &&
+          (type == 'client' || type.isEmpty && jobId.isEmpty)) {
         await nav.push(
           MaterialPageRoute(
             builder: (_) => ClientDetailsScreen(

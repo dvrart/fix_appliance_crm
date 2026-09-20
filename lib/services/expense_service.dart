@@ -191,6 +191,7 @@ class ExpenseService {
       source: source,
       imageQuality: 72,
       maxWidth: 1600,
+      maxHeight: 1600,
     );
   }
 

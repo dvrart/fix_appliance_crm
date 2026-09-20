@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../core/constants.dart';
@@ -6,6 +8,7 @@ import '../../services/ai_service.dart';
 import '../../services/client_service.dart';
 import '../../services/job_service.dart';
 import '../../services/sms_service.dart';
+import '../../services/twilio_service.dart';
 import '../../models/client.dart';
 import '../../models/job.dart';
 import '../../widgets/smart_address_picker.dart';
@@ -25,6 +28,10 @@ class JobPreviewScreen extends StatefulWidget {
   final String? sourceMessageId;
   final String sourceEmailFrom;
   final String sourceEmailSubject;
+  /// Если задан — после создания заявки звонок будет привязан к ней.
+  final String? sourceCallId;
+  /// Если задан — после создания заявки SMS будет помечена как принятая.
+  final String? sourceSmsId;
 
   const JobPreviewScreen({
     super.key,
@@ -36,6 +43,8 @@ class JobPreviewScreen extends StatefulWidget {
     this.sourceMessageId,
     this.sourceEmailFrom = '',
     this.sourceEmailSubject = '',
+    this.sourceCallId,
+    this.sourceSmsId,
   });
 
   @override
@@ -275,7 +284,16 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         createdAt: DateTime.now(),
         city: _cityController.text.trim(),
         needsReview: false,
-        source: _isEmailOffer ? 'email' : '',
+        source: _isEmailOffer
+            ? 'email'
+            : (widget.sourceCallId ?? '').isNotEmpty
+                ? 'phone'
+                : (widget.sourceSmsId ?? '').isNotEmpty
+                    ? 'sms'
+                    : '',
+        sourceCallId: (widget.sourceCallId ?? '').trim().isNotEmpty
+            ? widget.sourceCallId
+            : null,
         sourceEmailId: widget.sourceMessageId,
         sourceEmailFrom: widget.sourceEmailFrom,
         sourceEmailSubject: widget.sourceEmailSubject,
@@ -290,6 +308,22 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
           jobId: jobId,
           clientId: clientId,
         );
+      }
+      final callId = (widget.sourceCallId ?? '').trim();
+      if (callId.isNotEmpty) {
+        unawaited(TwilioService.attachJob(
+          callId: callId,
+          jobId: jobId,
+          clientId: clientId,
+        ));
+      }
+      final smsId = (widget.sourceSmsId ?? '').trim();
+      if (smsId.isNotEmpty) {
+        unawaited(SmsService.acceptSmsOffer(
+          smsId,
+          jobId: jobId,
+          clientId: clientId,
+        ));
       }
 
       if (!mounted) return false;

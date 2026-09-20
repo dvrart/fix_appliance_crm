@@ -4,18 +4,207 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../core/utils/app_time_picker.dart';
+import '../../services/ai_service.dart';
 import '../../services/client_service.dart';
 import '../../services/email_service.dart';
 import '../../services/job_service.dart';
 import '../../services/message_translate_service.dart';
 import '../../services/outbound_media_service.dart';
+import '../../services/scheduled_message_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/sms_service.dart';
 import '../../models/client.dart';
 import '../calls/call_screen.dart';
 import '../clients/client_details_screen.dart';
+import '../clients/edit_client_sheet.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/widgets/selection_action_bar.dart';
+
+/// Выбор даты и времени в стиле приложения (как при добавлении визита):
+/// лист с двумя строками — дата и время. Возвращает null при отмене.
+Future<DateTime?> showScheduleDateTimePicker(BuildContext context) {
+  final now = DateTime.now();
+  // Дефолт: +1 час, минуты 00 или 30 — ближайший интервал,
+  // без пересечения полуночи (иначе дата незаметно прыгает на завтра).
+  var candidate = now.add(const Duration(hours: 1));
+  final roundMinute = candidate.minute < 30 ? 30 : 0;
+  final roundHour = candidate.hour + (candidate.minute >= 30 ? 1 : 0);
+  DateTime picked;
+  if (roundHour >= 24) {
+    // Переходим полночь → просто +1 час без округления, дата остаётся сегодняшней
+    picked = candidate;
+  } else {
+    picked = DateTime(candidate.year, candidate.month, candidate.day, roundHour, roundMinute);
+  }
+
+  return showModalBottomSheet<DateTime>(
+    context: context,
+    useRootNavigator: true,
+    isScrollControlled: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+    ),
+    builder: (ctx) => _ScheduleDateTimeSheet(initial: picked),
+  );
+}
+
+class _ScheduleDateTimeSheet extends StatefulWidget {
+  final DateTime initial;
+  const _ScheduleDateTimeSheet({required this.initial});
+  @override
+  State<_ScheduleDateTimeSheet> createState() => _ScheduleDateTimeSheetState();
+}
+
+class _ScheduleDateTimeSheetState extends State<_ScheduleDateTimeSheet> {
+  late DateTime _dt;
+
+  @override
+  void initState() {
+    super.initState();
+    _dt = widget.initial;
+  }
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final d = await showDatePicker(
+      context: context,
+      initialDate: _dt.isBefore(now) ? now : _dt,
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365)),
+    );
+    if (d == null || !mounted) return;
+    setState(() {
+      _dt = DateTime(d.year, d.month, d.day, _dt.hour, _dt.minute);
+    });
+  }
+
+  Future<void> _pickTime() async {
+    final t = await showAppTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_dt),
+      helpText: 'Время отправки'.tr,
+    );
+    if (t == null || !mounted) return;
+    setState(() {
+      _dt = DateTime(_dt.year, _dt.month, _dt.day, t.hour, t.minute);
+    });
+  }
+
+  String _relativeLabel(DateTime dt) {
+    final diff = dt.difference(DateTime.now());
+    if (diff.isNegative) return 'в прошлом'.tr;
+    final h = diff.inHours;
+    final m = diff.inMinutes % 60;
+    if (h == 0) return 'через $m мин'.tr;
+    if (m == 0) return 'через $h ч'.tr;
+    return 'через ${h} ч $m мин'.tr;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = const Color(0xFF14557F);
+    final dateStr = DateFormat('d MMM yyyy', AppLocale.instance.dateLocale).format(_dt);
+    final timeStr = DateFormat('HH:mm').format(_dt);
+    final tooSoon = _dt.isBefore(DateTime.now().add(const Duration(minutes: 1)));
+    final relLabel = _relativeLabel(_dt);
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Запланировать отправку'.tr,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              tooSoon
+                  ? 'Выберите время хотя бы на минуту вперёд'.tr
+                  : relLabel,
+              style: TextStyle(
+                fontSize: 14,
+                color: tooSoon ? Colors.red : Colors.grey.shade600,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.calendar_month, color: accent),
+              title: Text(dateStr, style: const TextStyle(fontSize: 16)),
+              trailing: const Icon(Icons.edit, size: 18, color: Colors.grey),
+              onTap: _pickDate,
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.schedule, color: accent),
+              title: Text(timeStr, style: const TextStyle(fontSize: 16)),
+              trailing: const Icon(Icons.edit, size: 18, color: Colors.grey),
+              onTap: _pickTime,
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 48,
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: TextButton.styleFrom(
+                        backgroundColor: const Color(0xFFE8E8E8),
+                        foregroundColor: Colors.black,
+                        shape: const StadiumBorder(),
+                      ),
+                      child: Text('Отмена'.tr,
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SizedBox(
+                    height: 48,
+                    child: TextButton(
+                      onPressed: tooSoon ? null : () => Navigator.pop(context, _dt),
+                      style: TextButton.styleFrom(
+                        backgroundColor: tooSoon ? Colors.grey.shade300 : Colors.black,
+                        foregroundColor: Colors.white,
+                        shape: const StadiumBorder(),
+                        disabledForegroundColor: Colors.grey,
+                      ),
+                      child: Text('Запланировать'.tr,
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 enum ConversationChannel { sms, email }
 
@@ -201,6 +390,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   bool _isSending = false;
+  bool _extracting = false;
   late ConversationChannel _channel;
   final List<OutboundAttachment> _attachments = [];
   late String _phone;
@@ -332,6 +522,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _phone,
       email: _hasEmail ? _email : null,
       clientId: widget.clientId,
+      websiteInbox: widget.websiteInbox,
     );
   }
 
@@ -341,6 +532,84 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  /// Пикер даты+времени в стиле приложения — лист с двумя строками.
+  /// Возвращает null если пользователь отменил.
+  Future<DateTime?> _pickScheduleTime() =>
+      showScheduleDateTimePicker(context);
+
+  /// Запланировать текущий черновик на [sendAt].
+  Future<void> _scheduleMessage(DateTime sendAt) async {
+    final text = _textController.text.trim();
+    if (text.isEmpty && _attachments.isEmpty) return;
+
+    if (_channel == ConversationChannel.email && !_hasEmail) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Нет email у клиента'.tr), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    if (_channel == ConversationChannel.sms && !_hasPhone) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Нет телефона у клиента'.tr), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    setState(() => _isSending = true);
+    final pending = List<OutboundAttachment>.from(_attachments);
+    _textController.clear();
+    setState(() => _attachments.clear());
+
+    try {
+      final uploaded = <String>[];
+      for (final file in pending) {
+        uploaded.add(await OutboundMediaService.upload(file));
+      }
+
+      var englishBody = text;
+      var russianBody = text;
+      if (text.isNotEmpty && MessageTranslateService.looksRussian(text)) {
+        englishBody = await MessageTranslateService.toEnglish(text);
+        if (MessageTranslateService.failedEnglish(text, englishBody)) englishBody = text;
+        russianBody = text;
+      }
+
+      await ScheduledMessageService.schedule(
+        channel: _channel == ConversationChannel.email ? 'email' : 'sms',
+        to: _phone,
+        toEmail: _email,
+        body: englishBody,
+        bodyRu: russianBody != englishBody ? russianBody : '',
+        clientId: widget.clientId,
+        mediaUrls: uploaded,
+        sendAt: sendAt,
+      );
+
+      if (!mounted) return;
+      setState(() => _isSending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${'Запланировано на'.tr} ${DateFormat('d MMM · HH:mm', 'ru').format(sendAt)}',
+          ),
+          backgroundColor: Colors.green.shade700,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSending = false;
+        _textController.text = text;
+        _attachments
+          ..clear()
+          ..addAll(pending);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось запланировать'.tr), backgroundColor: Colors.red),
+      );
+    }
   }
 
   Future<void> _send() async {
@@ -555,6 +824,115 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ),
       ),
     );
+  }
+
+  /// Извлекает имя и адрес из входящих сообщений через Gemini
+  /// и открывает карточку клиента с предзаполненными полями для подтверждения.
+  Future<void> _extractAndApplyToClient() async {
+    // Найти клиента — по id, потом по телефону, потом по email
+    Client? client;
+    final cid = (widget.clientId ?? '').trim();
+    if (cid.isNotEmpty) {
+      client = await ClientService.getById(cid);
+    }
+    client ??= await ClientService.findByPhone(_phone);
+    if (client == null && _email.contains('@')) {
+      client = await ClientService.findByEmail(_email);
+    }
+    if (!mounted) return;
+    if (client == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Нет карточки клиента'.tr)),
+      );
+      return;
+    }
+
+    // Собрать входящие сообщения из кэша
+    final cacheKey = '$_channel|$_phone|$_email';
+    final allMessages = _threadCache[cacheKey] ?? [];
+    final inbound = allMessages.where((m) => !m.isOutbound).toList();
+    if (inbound.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Нет входящих сообщений'.tr)),
+      );
+      return;
+    }
+
+    setState(() => _extracting = true);
+    try {
+      // Сформировать текст для Gemini из входящих сообщений
+      final conversationText = inbound.map((m) {
+        final parts = <String>[];
+        if (m.subject.trim().isNotEmpty) parts.add(m.subject.trim());
+        if (m.body.trim().isNotEmpty) parts.add(m.body.trim());
+        return parts.join('\n');
+      }).join('\n---\n');
+
+      final extracted = await AiService.extractJobData(conversationText);
+      if (!mounted) return;
+
+      if (extracted.clientName == null && extracted.address == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Имя и адрес не найдены в переписке'.tr),
+          ),
+        );
+        return;
+      }
+
+      // Смержить с текущими данными клиента
+      final mergedData = Map<String, dynamic>.from(client.toUiMap());
+      if (extracted.clientName != null) {
+        mergedData['fullName'] = extracted.clientName!;
+        mergedData['name'] = extracted.clientName!;
+      }
+      if (extracted.address != null) {
+        final addrParts = <String>[extracted.address!];
+        if ((extracted.city ?? '').isNotEmpty) addrParts.add(extracted.city!);
+        if ((extracted.postalCode ?? '').isNotEmpty) addrParts.add(extracted.postalCode!);
+        mergedData['address'] = addrParts.join(', ');
+      }
+
+      // Открыть EditClientSheet с предзаполненными данными
+      if (!mounted) return;
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        useRootNavigator: true,
+        isDismissible: false,
+        enableDrag: false,
+        backgroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        builder: (_) => EditClientSheet(
+          clientId: client!.id,
+          currentData: mergedData,
+          extractName: (data) {
+            for (final k in ['fullName', 'name', 'clientName']) {
+              final v = data[k]?.toString().trim() ?? '';
+              if (v.isNotEmpty) return v;
+            }
+            return 'Без имени'.tr;
+          },
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            AiService.isBusyError(e)
+                ? 'ИИ перегружен, попробуйте позже'.tr
+                : 'Ошибка ИИ'.tr,
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _extracting = false);
+    }
   }
 
   void _openPhoto(String url) {
@@ -951,6 +1329,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             },
           ),
         ),
+        if (!widget.websiteInbox) _buildScheduledBanner(),
         if (!widget.websiteInbox) _buildInputBar(),
       ],
     );
@@ -1040,6 +1419,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       icon: const Icon(Icons.person_outline),
                       tooltip: 'Карточка клиента'.tr,
                       onPressed: _openClientCard,
+                    ),
+                  if (!widget.websiteInbox)
+                    IconButton(
+                      icon: _extracting
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.auto_fix_high),
+                      tooltip: 'Сохранить имя и адрес в карточку'.tr,
+                      onPressed: _extracting ? null : _extractAndApplyToClient,
                     ),
                   if (!widget.websiteInbox && _hasPhone)
                     IconButton(
@@ -1304,6 +1698,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
             Navigator.pop(sheetContext);
             await _send();
           },
+          onSchedule: (sendAt) async {
+            Navigator.pop(sheetContext);
+            await _scheduleMessage(sendAt);
+          },
         );
       },
     );
@@ -1352,6 +1750,110 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 },
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScheduledBanner() {
+    return StreamBuilder<List<ScheduledMessage>>(
+      stream: ScheduledMessageService.streamPendingForConversation(
+        _phone,
+        email: _hasEmail ? _email : null,
+        clientId: widget.clientId,
+      ),
+      builder: (context, snapshot) {
+        final items = (snapshot.data ?? [])
+            .where((m) => m.isPending)
+            .toList();
+        if (items.isEmpty) return const SizedBox.shrink();
+        return Container(
+          width: double.infinity,
+          margin: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFF8E1),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFFFCC02), width: 1),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.schedule, size: 16, color: Color(0xFF856404)),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Запланировано: ${items.length}'.tr,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF856404),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              for (final msg in items) _buildScheduledItem(msg),
+              const SizedBox(height: 4),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildScheduledItem(ScheduledMessage msg) {
+    final isEmail = msg.channel == 'email';
+    final displayBody = msg.bodyRu.isNotEmpty ? msg.bodyRu : msg.body;
+    final failed = msg.status == 'failed';
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Icon(
+              isEmail ? Icons.mail_outline : Icons.sms_outlined,
+              size: 16,
+              color: failed ? Colors.red : const Color(0xFF856404),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  displayBody,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF333300)),
+                ),
+                Text(
+                  failed
+                      ? '${'Ошибка'.tr}: ${msg.errorMsg ?? ''}'
+                      : DateFormat('d MMM · HH:mm', 'ru').format(msg.sendAt.toLocal()),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: failed ? Colors.red : Colors.grey.shade700,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            icon: const Icon(Icons.cancel_outlined, size: 18, color: Color(0xFF856404)),
+            tooltip: 'Отменить'.tr,
+            onPressed: () async {
+              await ScheduledMessageService.cancel(msg.id);
+            },
           ),
         ],
       ),
@@ -1509,15 +2011,24 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       padding: EdgeInsets.all(12),
                       child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
                     )
-                  : IconButton(
-                      onPressed: _send,
-                      icon: Icon(_channel == ConversationChannel.email ? Icons.email : Icons.send),
-                      style: IconButton.styleFrom(
-                        backgroundColor: _channel == ConversationChannel.email
-                            ? const Color(0xFFEA4335)
-                            : AppColors.primary,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.all(12),
+                  : GestureDetector(
+                      onLongPress: () async {
+                        final text = _textController.text.trim();
+                        if (text.isEmpty && _attachments.isEmpty) return;
+                        final dt = await _pickScheduleTime();
+                        if (dt != null) await _scheduleMessage(dt);
+                      },
+                      child: IconButton(
+                        onPressed: _send,
+                        icon: Icon(_channel == ConversationChannel.email ? Icons.email : Icons.send),
+                        tooltip: 'Отправить (удержать — запланировать)'.tr,
+                        style: IconButton.styleFrom(
+                          backgroundColor: _channel == ConversationChannel.email
+                              ? const Color(0xFFEA4335)
+                              : AppColors.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.all(12),
+                        ),
                       ),
                     ),
             ],
@@ -1534,6 +2045,7 @@ class _ComposeMessageSheet extends StatefulWidget {
   final bool sending;
   final ValueChanged<String> onChanged;
   final Future<void> Function() onSend;
+  final Future<void> Function(DateTime sendAt)? onSchedule;
 
   const _ComposeMessageSheet({
     required this.initialText,
@@ -1541,6 +2053,7 @@ class _ComposeMessageSheet extends StatefulWidget {
     required this.sending,
     required this.onChanged,
     required this.onSend,
+    this.onSchedule,
   });
 
   @override
@@ -1602,6 +2115,15 @@ class _ComposeMessageSheetState extends State<_ComposeMessageSheet> {
       await Future<void>.delayed(const Duration(milliseconds: 160));
       if (mounted) await _openPolishMenu();
     }
+  }
+
+  Future<void> _scheduleFromSheet() async {
+    if (widget.onSchedule == null) return;
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+    final dt = await showScheduleDateTimePicker(context);
+    if (dt == null || !mounted) return;
+    await widget.onSchedule!(dt);
   }
 
   Future<void> _openPolishMenu() async {
@@ -1737,6 +2259,21 @@ class _ComposeMessageSheetState extends State<_ComposeMessageSheet> {
                   ),
                 ),
                 const SizedBox(width: 10),
+                if (widget.onSchedule != null)
+                  Tooltip(
+                    message: 'Запланировать'.tr,
+                    child: OutlinedButton(
+                      onPressed: widget.sending ? null : _scheduleFromSheet,
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(44, 44),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        side: BorderSide(color: AppColors.primary),
+                        foregroundColor: AppColors.primary,
+                      ),
+                      child: const Icon(Icons.schedule, size: 22),
+                    ),
+                  ),
+                const SizedBox(width: 6),
                 FilledButton.icon(
                   onPressed: widget.sending ? null : widget.onSend,
                   style: FilledButton.styleFrom(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import '../../../../core/app_feedback.dart';
 import '../../../../core/constants.dart';
 import '../../../../core/utils/app_time_picker.dart';
 import '../../../../core/utils/thumb_image.dart';
+import '../../../../models/client.dart';
 import '../../../../models/job.dart';
 import '../../../../services/services.dart';
 import '../../../clients/client_details_screen.dart';
@@ -39,17 +41,31 @@ class _DetailsTabState extends State<DetailsTab> {
   JobDetailsController get ctrl => widget.controller;
   List<Job> _relatedJobs = const [];
   Job? _originalJob;
+  bool _bookingBusy = false;
+  final Map<String, String> _bookingRequestIds = {};
+  StreamSubscription<List<JobChangeEvent>>? _changesSub;
+  List<JobChangeEvent> _changes = [];
+
+  String get _bookingPhone {
+    final site = ctrl.jobSitePhone.trim();
+    final owner = (ctrl.jobData['clientPhone'] ?? '').toString().trim();
+    return ctrl.hasJobSite && site.isNotEmpty ? site : owner.isNotEmpty ? owner : site;
+  }
 
   @override
   void initState() {
     super.initState();
     ctrl.addListener(_onControllerChange);
     _loadRelatedJobs();
+    _changesSub = ChangeLogService.streamChanges(ctrl.jobId).listen((events) {
+      if (mounted) setState(() => _changes = events);
+    });
   }
 
   @override
   void dispose() {
     ctrl.removeListener(_onControllerChange);
+    _changesSub?.cancel();
     super.dispose();
   }
 
@@ -452,7 +468,7 @@ class _DetailsTabState extends State<DetailsTab> {
                             onPressed: () => _resendVisitBookingSms(existing),
                             icon: const Icon(Icons.sms_outlined, size: 20),
                             label: Text(
-                              'Отправить повторное уведомление смс'.tr,
+                              'Отправить SMS с подтверждением визита'.tr,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
@@ -697,6 +713,7 @@ class _DetailsTabState extends State<DetailsTab> {
       icon: Icons.local_shipping_outlined,
       title: 'Отслеживание'.tr,
       value: tracking.isEmpty ? '—' : tracking,
+      copyValue: ctrl.trackingNumber.isNotEmpty ? ctrl.trackingNumber : null,
       muted: tracking.isEmpty,
       onTap: _editTracking,
     );
@@ -795,13 +812,17 @@ class _DetailsTabState extends State<DetailsTab> {
     Map<String, dynamic>? thumbnail,
     Widget? graphic,
     double height = 118,
+    String? copyValue,
   }) {
     final thumb = _tileImage(thumbnail);
+    final valueToCopy = copyValue ?? value;
+    final canCopy = valueToCopy.isNotEmpty && valueToCopy != '—';
     return Material(
       color: Colors.white,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: onTap,
+        onLongPress: canCopy ? () => AppFeedback.copy(context, valueToCopy) : null,
         borderRadius: BorderRadius.circular(12),
         child: Container(
           width: double.infinity,
@@ -1481,6 +1502,7 @@ class _DetailsTabState extends State<DetailsTab> {
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           onTap: _openClientCard,
+          onLongPress: name.isNotEmpty ? () => AppFeedback.copy(context, name) : null,
           borderRadius: BorderRadius.circular(12),
           child: Container(
             width: double.infinity,
@@ -1529,16 +1551,53 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  void _openClientCard() {
+  Future<void> _openClientCard() async {
+    var clientId = ctrl.clientId.trim();
+    final name    = (ctrl.jobData['clientName']    ?? '').toString().trim();
+    final phone   = (ctrl.jobData['clientPhone']   ?? '').toString().trim();
+    final address = (ctrl.jobData['clientAddress'] ?? '').toString().trim();
+    final email   = ctrl.clientEmail.trim();
+
+    // Если заявка не привязана к карточке клиента — найти по телефону
+    // или создать новую карточку и сразу привязать к заявке.
+    if (clientId.isEmpty) {
+      Client? found;
+      if (phone.isNotEmpty) {
+        found = await ClientService.findByPhone(phone);
+      }
+      if (!mounted) return;
+
+      if (found != null) {
+        // Нашли существующего клиента (в т.ч. из корзины) — привязываем
+        clientId = found.id;
+      } else if (name.isNotEmpty || phone.isNotEmpty) {
+        // Создаём новую карточку из данных заявки
+        clientId = await ClientService.createOrUpdate(
+          fullName: name.isNotEmpty ? name : phone,
+          phone: phone,
+          address: address,
+          email: email.isEmpty ? null : email,
+        );
+      }
+      if (!mounted) return;
+
+      // Записываем clientId в заявку фоном
+      if (clientId.isNotEmpty) {
+        unawaited(JobService.update(ctrl.jobId, {'clientId': clientId}));
+      }
+    }
+
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => ClientDetailsScreen(
-          clientId: ctrl.clientId,
+          clientId: clientId,
           clientData: {
-            'name': ctrl.jobData['clientName'] ?? '',
-            'phone': ctrl.jobData['clientPhone'] ?? '',
-            'address': ctrl.jobData['clientAddress'] ?? '',
+            'name':    name,
+            'fullName': name,
+            'phone':   phone,
+            'address': address,
+            'email':   email,
           },
         ),
       ),
@@ -1770,6 +1829,154 @@ class _DetailsTabState extends State<DetailsTab> {
     });
   }
 
+  /// Визит, для которого сервер отложил SMS до подтверждения владельца.
+  JobVisit? get _pendingSmsVisit {
+    for (final visit in ctrl.visits) {
+      if (visit.isActiveSlot &&
+          ['pending', 'approved', 'sending', 'error'].contains(visit.bookingSmsState)) {
+        return visit;
+      }
+    }
+    return null;
+  }
+
+  /// «SMS ждёт отправки»: сервер только пометил визит, отправляет владелец.
+  Widget _pendingSmsBanner(JobVisit visit) {
+    final clock = AppTimeService.bookingWallClock(visit.startAt);
+    final when =
+        '${DateFormat('d MMM', AppLocale.instance.dateLocale).format(clock)}'
+        ' · ${DateFormat('HH:mm').format(clock)}';
+    final sending = visit.bookingSmsState == 'sending';
+    final approved = visit.bookingSmsState == 'approved';
+    final busy = _bookingBusy || sending;
+    final failed = visit.bookingSmsState == 'error';
+    final unknown = failed && visit.smsBooking['retryAllowed'] == false;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.orange.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.sms_outlined, size: 20, color: Colors.orange.shade800),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  sending
+                      ? 'SMS отправляется'.tr
+                      : approved
+                      ? 'SMS одобрено'.tr
+                      : failed
+                      ? 'Проверьте отправку SMS'.tr
+                      : 'SMS ждёт отправки'.tr,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 15,
+                    color: Colors.orange.shade900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            sending
+                ? '${'Ожидаем результат отправки'.tr}: $when'
+                : approved
+                ? '${'Нажмите «Продолжить», чтобы завершить отправку'.tr}: $when'
+                : failed
+                ? (visit.smsBooking['error'] ?? 'Не удалось отправить SMS'.tr).toString()
+                : '${'Подтверждение визита ещё не отправлено'.tr}: $when',
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: busy || unknown ? null : () => _resendVisitBookingSms(visit),
+                  icon: const Icon(Icons.send_rounded, size: 20),
+                  label: Text(approved ? 'Продолжить'.tr : failed ? 'Повторить'.tr : 'Отправить'.tr),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF22C55E),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: busy || unknown || approved ? null : () => _dismissPendingSms(visit),
+                  icon: const Icon(Icons.close_rounded, size: 20),
+                  label: Text('Не отправлять'.tr),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFE53935),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  JobVisit? _currentBookingVisit(JobVisit expected) {
+    for (final visit in ctrl.visits) {
+      if (visit.id == expected.id && visit.isActiveSlot &&
+          AppTimeService.bookingSlotKey(visit.startAt) == AppTimeService.bookingSlotKey(expected.startAt)) {
+        return visit;
+      }
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Визит изменился. Откройте его заново.'.tr)),
+      );
+    }
+    return null;
+  }
+
+  Future<void> _dismissPendingSms(JobVisit visit) async {
+    if (_bookingBusy || visit.bookingSmsInProgress) return;
+    setState(() => _bookingBusy = true);
+    try {
+      AppFeedback.haptic();
+      final ok = await showConfirmCancelSheet(
+        context,
+        title: 'Не отправлять SMS?'.tr,
+        message: 'Подтверждение для этого времени визита не будет отправлено.'.tr,
+        confirmLabel: 'Не отправлять'.tr,
+      );
+      if (!ok || !mounted) return;
+      final current = _currentBookingVisit(visit);
+      if (current == null || current.bookingSmsInProgress) return;
+      visit = current;
+      final slotKey = AppTimeService.bookingSlotKey(visit.startAt);
+      // copyWith не умеет обнулять smsBookingPendingAt, но сервер смотрит на флаг.
+      await ctrl.updateVisit(visit.copyWith(
+        smsBookingPending: false,
+        smsBookingSlotKey: slotKey,
+        smsBooking: {
+          'state': 'rejected',
+          'slotKey': slotKey,
+          'decidedAt': DateTime.now(),
+        },
+      ));
+      await ctrl.commitChanges();
+    } finally {
+      if (mounted) setState(() => _bookingBusy = false);
+    }
+  }
+
   Widget _buildPreviousVisitChip(JobVisit visit) {
     final label =
         '${DateFormat('d MMM', AppLocale.instance.dateLocale).format(visit.startAt)} · ${DateFormat('HH:mm').format(visit.startAt)}';
@@ -1792,81 +1999,95 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 
   Future<void> _resendVisitBookingSms(JobVisit visit) async {
-    AppFeedback.haptic();
-    final phone = ctrl.contactPhone.trim();
-    if (phone.isEmpty) {
-      if (!mounted) return;
+    if (_bookingBusy || visit.bookingSmsState == 'sending') return;
+    if (visit.bookingSmsState == 'error' && visit.smsBooking['retryAllowed'] == false) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Нет телефона для SMS'.tr),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text('Результат отправки неизвестен — сначала проверьте переписку.'.tr)),
       );
       return;
     }
-    if (ctrl.needsReview) {
-      if (!mounted) return;
+    AppFeedback.haptic();
+    final phone = _bookingPhone;
+    if (phone.isEmpty || ctrl.needsReview) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Сначала нажмите «Проверено» — потом можно слать SMS.'.tr,
-          ),
+          content: Text(phone.isEmpty
+              ? 'Нет телефона для SMS'.tr
+              : 'Сначала нажмите «Проверено» — потом можно слать SMS.'.tr),
           backgroundColor: Colors.orange.shade800,
         ),
       );
       return;
     }
+    setState(() => _bookingBusy = true);
+    try {
+      final templates = await SettingsService.loadSmsTemplates();
+      final name = ctrl.contactName.trim().isEmpty ? 'there' : ctrl.contactName.trim();
+      final clock = AppTimeService.bookingWallClock(visit.startAt);
+      final date = DateFormat('MMMM d', 'en_US').format(clock);
+      final time = DateFormat('HH:mm').format(clock);
+      final slotKey = AppTimeService.bookingSlotKey(visit.startAt);
+      final template = templates['booking_confirm'] ?? SettingsService.defaultBookingConfirmSms;
+      final body = template
+          .replaceAll('{name}', name)
+          .replaceAll('{date}', date)
+          .replaceAll('{time}', time)
+          .replaceAll('{address}', ctrl.workAddress.trim())
+          .replaceAll('{review}', '')
+          .replaceAll('{appliance}', '')
+          .trim();
 
-    final templates = await SettingsService.loadSmsTemplates();
-    final name = ctrl.contactName.trim().isEmpty
-        ? 'there'
-        : ctrl.contactName.trim();
-    final address = ctrl.workAddress.trim();
-    final date = DateFormat('MMMM d', 'en_US').format(visit.startAt);
-    final time = DateFormat('HH:mm').format(visit.startAt);
-    final template =
-        templates['booking_confirm'] ??
-        SettingsService.defaultBookingConfirmSms;
-    final body = template
-        .replaceAll('{name}', name)
-        .replaceAll('{date}', date)
-        .replaceAll('{time}', time)
-        .replaceAll('{address}', address)
-        .replaceAll('{review}', '')
-        .replaceAll('{appliance}', '')
-        .trim();
-
-    final ok = await SmsService.sendSms(
-      to: phone,
-      body: body,
-      clientId: ctrl.clientId,
-    );
-    if (ok) {
-      final dayKey = DateFormat('yyyy-MM-dd').format(visit.startAt);
-      final slotKey =
-          '${DateFormat('yyyy-MM-dd').format(visit.startAt)} ${time}';
-      await ctrl.updateVisit(
-        visit.copyWith(
-          smsConfirmStatus: JobVisit.confirmPending,
-          smsBookingDayKey: dayKey,
-          smsBookingSlotKey: slotKey,
-          smsBookingSentAt: DateTime.now(),
-          clearSmsDialog: true,
+      // Пункт 13: SMS уходит только после явного подтверждения владельца,
+      // и владелец видит текст до отправки.
+      if (!mounted) return;
+      final confirmed = await showConfirmCancelSheet(
+        context,
+        title: visit.bookingSmsState == 'sent'
+            ? 'SMS уже отправлено. Отправить повторно?'.tr
+            : 'Отправить SMS клиенту?'.tr,
+        message: '$phone\n\n$body',
+        confirmLabel: 'Отправить'.tr,
+      );
+      if (!confirmed || !mounted) return;
+      final current = _currentBookingVisit(visit);
+      if (current == null || current.bookingSmsState == 'sending') return;
+      visit = current;
+      if (ctrl.isCommitting || !await ctrl.commitChanges()) return;
+      final key = '${visit.id}|$slotKey';
+      if (visit.bookingSmsState == 'approved' && visit.smsBooking['requestId'] is String) {
+        _bookingRequestIds[key] = visit.smsBooking['requestId'] as String;
+      } else if (visit.bookingSmsState == 'sent' ||
+          (visit.bookingSmsState == 'error' && visit.smsBooking['retryAllowed'] == true)) {
+        _bookingRequestIds.remove(key);
+      }
+      final requestId = _bookingRequestIds.putIfAbsent(key, () => FirebaseFirestore.instance
+          .collection('companies').doc(kCompanyId).collection('messages').doc().id);
+      // Пункт 18: если клиент уже подтвердил заказ, отправка SMS не должна
+      // сбрасывать статус обратно в «Заказ не принят».
+      final ok = await SmsService.sendSms(
+        to: phone,
+        body: body,
+        clientId: ctrl.clientId,
+        visitBooking: {
+          'jobId': ctrl.jobId,
+          'visitId': visit.id,
+          'slotKey': slotKey,
+          'requestId': requestId,
+        },
+      );
+      if (ok) _bookingRequestIds.remove(key);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ok
+              ? 'SMS с подтверждением визита отправлено'.tr
+              : SmsService.failureText()),
+          backgroundColor: ok ? Colors.green : Colors.orange.shade800,
         ),
       );
-      await ctrl.commitChanges();
+    } finally {
+      if (mounted) setState(() => _bookingBusy = false);
     }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          ok
-              ? 'SMS с подтверждением визита отправлено'.tr
-              : SmsService.failureText(),
-        ),
-        backgroundColor: ok ? Colors.green : Colors.red,
-      ),
-    );
   }
 
   String _visitDurationLabel(int minutes) {
@@ -1913,6 +2134,10 @@ class _DetailsTabState extends State<DetailsTab> {
           _buildJobSiteAndCallsRow(),
           const SizedBox(height: 12),
           _buildVisitsCard(),
+          if (!ctrl.needsReview && _pendingSmsVisit != null) ...[
+            const SizedBox(height: 12),
+            _pendingSmsBanner(_pendingSmsVisit!),
+          ],
           const SizedBox(height: 12),
           _buildContactActions(),
           const SizedBox(height: 12),
@@ -1924,6 +2149,10 @@ class _DetailsTabState extends State<DetailsTab> {
           if (_relatedJobs.isNotEmpty) ...[
             const SizedBox(height: 16),
             _buildRelatedJobs(),
+          ],
+          if (_changes.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            _buildChangeHistory(),
           ],
         ],
       ),
@@ -1986,12 +2215,14 @@ class _DetailsTabState extends State<DetailsTab> {
     final travelHint = ctrl.travelTime.trim();
     final showTravelHint =
         travelHint.isNotEmpty && travelHint != 'GO' && travelHint != '...';
+    final address = ctrl.workAddress.trim();
     return Tooltip(
       message: showTravelHint
           ? '${'Проложить маршрут'.tr} · $travelHint'
           : 'Проложить маршрут'.tr,
       child: _contactActionButton(
-        onPressed: () => MapsService.openNavigator(ctrl.workAddress),
+        onPressed: () => MapsService.openNavigator(address),
+        onLongPress: address.isNotEmpty ? () => AppFeedback.copy(context, address) : null,
         background: AppColors.accent,
         foreground: Colors.black,
         child: Row(
@@ -2030,9 +2261,21 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
+  /// Лучший доступный телефон: сначала contactPhone, затем первый из chatContacts.
+  String _bestContactPhone() {
+    final direct = ctrl.contactPhone.trim();
+    if (direct.isNotEmpty) return direct;
+    for (final c in ctrl.chatContacts) {
+      if (c.normalizedPhone.length >= 10) return c.phone.trim();
+    }
+    return '';
+  }
+
   Widget _callButton() {
+    final phone = _bestContactPhone();
     return _contactActionButton(
       onPressed: _callSelected,
+      onLongPress: phone.isNotEmpty ? () => AppFeedback.copy(context, phone) : null,
       background: const Color(0xFF008F3B),
       foreground: Colors.white,
       child: const Icon(Icons.phone, size: 28, color: Colors.white),
@@ -2040,8 +2283,10 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 
   Widget _smsButton() {
+    final phone = _bestContactPhone();
     return _contactActionButton(
       onPressed: _smsSelected,
+      onLongPress: phone.isNotEmpty ? () => AppFeedback.copy(context, phone) : null,
       background: const Color(0xFF1E88E5),
       foreground: Colors.white,
       child: const Icon(Icons.sms, size: 28, color: Colors.white),
@@ -2078,21 +2323,32 @@ class _DetailsTabState extends State<DetailsTab> {
     required Widget child,
     required Color background,
     required Color foreground,
+    VoidCallback? onLongPress,
   }) {
     return SizedBox(
       height: 56,
-      child: ElevatedButton(
-        onPressed: onPressed,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: background,
-          foregroundColor: foreground,
-          elevation: 0,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+      child: Material(
+        color: background,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onPressed,
+          onLongPress: onLongPress,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Align(
+              alignment: Alignment.center,
+              child: DefaultTextStyle.merge(
+                style: TextStyle(
+                  color: foreground,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 14,
+                ),
+                child: child,
+              ),
+            ),
           ),
         ),
-        child: child,
       ),
     );
   }
@@ -2270,11 +2526,13 @@ class _DetailsTabState extends State<DetailsTab> {
     required String name,
     VoidCallback? onTap,
   }) {
+    final canCopy = name.isNotEmpty && name != 'Клиент'.tr && name != 'Контакт на адресе'.tr;
     return Material(
       color: Colors.white,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: onTap,
+        onLongPress: canCopy ? () => AppFeedback.copy(context, name) : null,
         borderRadius: BorderRadius.circular(12),
         child: Container(
           width: double.infinity,
@@ -2489,6 +2747,102 @@ class _DetailsTabState extends State<DetailsTab> {
               );
             },
           ),
+      ],
+    );
+  }
+
+  Widget _buildChangeHistory() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            'История'.tr,
+            style: const TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 14,
+              color: Colors.black54,
+            ),
+          ),
+        ),
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: const [
+              BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2)),
+            ],
+          ),
+          child: Column(
+            children: [
+              for (var i = 0; i < _changes.length; i++)
+                _buildChangeRow(_changes[i], showDivider: i < _changes.length - 1),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _changeLabel(JobChangeEvent e) {
+    switch (e.event) {
+      case 'created': return '${'Создана'.tr}: ${e.data['detail'] ?? ''}';
+      case 'status_changed': return '${e.data['from'] ?? ''} → ${e.data['to'] ?? ''}';
+      case 'client_name_set': return '${'Имя'.tr}: ${e.data['value'] ?? ''}';
+      case 'visit_added': return '${'Визит добавлен'.tr}: ${e.data['slot'] ?? ''}';
+      case 'visit_moved': return '${'Визит перенесён'.tr}: ${e.data['from'] ?? ''} → ${e.data['to'] ?? ''}';
+      case 'visit_confirmed': return '${'Клиент подтвердил'.tr}: ${e.data['slot'] ?? ''}';
+      case 'visit_cancelled': return '${'Клиент отменил'.tr}: ${e.data['slot'] ?? ''}';
+      case 'payment_recorded': return '${'Оплата'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''} (${e.data['method'] ?? ''})';
+      case 'refund_recorded': return '${'Возврат'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''}';
+      case 'invoice_fully_paid': return 'Счёт полностью оплачен'.tr;
+      default: return e.event;
+    }
+  }
+
+  String _byLabel(String by) {
+    switch (by) {
+      case 'secretary': return 'Секретарь'.tr;
+      case 'sms': return 'SMS'.tr;
+      case 'email': return 'Почта'.tr;
+      case 'stripe': return 'Stripe';
+      case 'client': return 'Клиент'.tr;
+      default: return 'Вы'.tr;
+    }
+  }
+
+  Widget _buildChangeRow(JobChangeEvent e, {required bool showDivider}) {
+    final label = _changeLabel(e);
+    final by = _byLabel(e.by);
+    final time = DateFormat('d MMM HH:mm', AppLocale.instance.dateLocale).format(e.at);
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                by,
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                time,
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+              ),
+            ],
+          ),
+        ),
+        if (showDivider)
+          const Divider(height: 1, indent: 16, color: Colors.black12),
       ],
     );
   }

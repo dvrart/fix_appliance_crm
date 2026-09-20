@@ -9,6 +9,7 @@ class DirtyLeaveScope extends StatefulWidget {
   final bool dirty;
   final Future<bool> Function() onSave;
   final VoidCallback? onDiscard;
+  final VoidCallback? onDispose;
   final Widget child;
   final bool registerGate;
   final String? title;
@@ -19,6 +20,7 @@ class DirtyLeaveScope extends StatefulWidget {
     required this.onSave,
     required this.child,
     this.onDiscard,
+    this.onDispose,
     this.registerGate = true,
     this.title,
   });
@@ -45,13 +47,11 @@ class DirtyLeaveScopeState extends State<DirtyLeaveScope> {
     if (widget.registerGate) {
       UnsavedNavigationGate.pop(_allowLeave);
     }
+    widget.onDispose?.call();
     super.dispose();
   }
 
-  Future<bool> _apply(
-    UnsavedChangesAction action, {
-    required bool pop,
-  }) async {
+  Future<bool> _apply(UnsavedChangesAction action, {required bool pop}) async {
     if (action == UnsavedChangesAction.cancel) return false;
     if (action == UnsavedChangesAction.save) {
       final route = ModalRoute.of(context);

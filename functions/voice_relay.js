@@ -1,4 +1,5 @@
 const { WebSocket, WebSocketServer } = require('ws');
+const { STATUS_CODES } = require('node:http');
 const {
   mulawToPcm16,
   pcm16ToMulaw,
@@ -111,6 +112,9 @@ function outsideAreaRule(profile, thenWhat) {
 }
 
 function compactKnown(session) {
+  if (session && appointmentOnly(session)) {
+    return `This call concerns an existing appointment, not a new repair. Recheck the current caller schedule; do not collect a new order. ${session.openJobBrief || ''}`;
+  }
   const extracted = (session && session.extracted) || {};
   const have = [];
   if (extracted.client_name) have.push(`name ${extracted.client_name}`);
@@ -195,6 +199,7 @@ Caller phone (do not ask): ${session.fromNumber || 'unknown'}
 Today (Toronto): ${today}
 Known client: ${session.clientName || 'new'}
 Known address: ${session.knownAddress || 'none'}
+${session.openJobBrief || 'Caller schedule is not loaded. Do not guess whether there is a booking.'}
 Visits: ${visitDays}, ${hours} Toronto. ${closedDays}
 ${session.calendarBrief || ''}
 ${profile.priceLine || ''}
@@ -203,10 +208,20 @@ ${profile.awayLine || ''}
 
 ${profile.instructions}
 
+LIVE CALENDAR — server facts take priority over any transcript or earlier snapshot:
+- Before saying whether THIS caller has a visit, call get_caller_appointments and answer from its latest result. Shop-wide Taken/Open times are NOT this caller's bookings.
+- Read the full date including the year. Cancelled, completed, deleted and past visits are not upcoming appointments. A provisional visit still needs technician review; do not call it confirmed.
+- A lookup or cancellation is not a new repair order. Do not collect repair details or create a new job unless the caller explicitly asks for a separate repair.
+- For cancellation, call cancel_appointment, ask its exact confirmation question, wait for the caller's explicit yes, then call it again with confirmed=true. Say it is cancelled ONLY after status=cancelled. On an error say you could not verify the change; never pretend it was saved.
+- If there is more than one visit, ask which one. Never cancel another visit or every visit by guessing.
+- Before accepting a proposed NEW time call check_availability. This checks availability, not a saved booking. Existing-visit rescheduling must be agreed with the technician or handled by SMS; do not claim it has already been moved.
+- Do not read internal job IDs or visit IDs aloud. Keep personal calendar event details private.
+
 HOW YOU SOUND — you are on a phone, not reading:
-- Answer straight away. Do not leave a gap before you start talking.
-- Start with the short human bit while you think: "oh no", "right", "mm-hm, okay", "gotcha". Then the actual sentence.
-- Ordinary speed of a busy office, not slow and not rushed. Contractions always: what's, that's, you're, I'll, we've.
+- Start your answer promptly when the caller finishes; do not add a silent thinking beat.
+- Keep the short human reaction and the answer in one flowing phrase. Never say "right" or "mm-hm" and then pause to plan the rest.
+- Speak at a brisk, efficient pace — slightly quicker than ordinary conversation. Contractions always: what's, that's, you're, I'll, we've.
+- Keep the flow moving: short pauses at punctuation only, no dead air between phrases. Clip the gaps between sentences, not the words themselves.
 - One thought per turn. If it needs two sentences, make the second one short.
 - Never spell things out or read a list aloud. Never repeat back the whole thing they just told you.
 - If they pause to look something up, wait quietly. Do not fill the silence with chatter.
@@ -224,7 +239,7 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
       speechConfig: {
         languageCode: 'en-US',
         voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: 'Aoede' },
+          prebuiltVoiceConfig: { voiceName: 'Zephyr' },
         },
       },
     },
@@ -259,11 +274,59 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
   if (isGemini25Live(model)) {
     setup.enableAffectiveDialog = true;
   }
+  if (withTools) {
+    setup.tools = [{ functionDeclarations: [
+      {
+        name: 'get_caller_appointments',
+        description: 'Read this caller\'s CURRENT appointments from the CRM. Always use before answering an appointment question; replaces all earlier snapshots. No other caller identity can be supplied.',
+      },
+      {
+        name: 'cancel_appointment',
+        description: 'Cancel one existing appointment. First call stages the exact visit and asks for confirmation. Only call again with confirmed=true AFTER a new, explicit yes from the caller. Never claim cancellation until the tool returns status=cancelled.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            job_id: { type: 'STRING', description: 'jobId from get_caller_appointments; do not invent.' },
+            visit_id: { type: 'STRING', description: 'visitId from get_caller_appointments; do not invent.' },
+            confirmed: { type: 'BOOLEAN', description: 'True only after the caller confirmed the staged cancellation in a separate turn.' },
+          },
+        },
+      },
+      {
+        name: 'check_availability',
+        description: 'Check a proposed NEW visit time against the current CRM jobs and personal calendar events. Checks only; does not book a visit.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            date: { type: 'STRING', description: 'YYYY-MM-DD in Toronto.' },
+            time: { type: 'STRING', description: 'HH:mm, 24-hour Toronto time.' },
+          },
+          required: ['date', 'time'],
+        },
+      },
+    ] }];
+  }
   return { setup };
 }
 
 async function streamSpokenReply(ws, session, userText) {
   const { generateVoiceTextStream, spokenText, getAiAnswerSettings } = deps;
+  if (deps.nextAiVoiceTurn && (session.pendingCancellation || /\b(cancel|cancelled|canceled|reschedule|appointment|booking)\b|отмен|встреч|перенос/i.test(userText))) {
+    const reply = await deps.nextAiVoiceTurn(session.callSid, {
+      fromNumber: session.fromNumber, clientId: session.clientId,
+      aiReception: {
+        history: session.history, extracted: session.extracted,
+        appointmentOnly: session.appointmentOnly, pendingCancellation: session.pendingCancellation,
+      },
+    }, userText);
+    session.extracted = reply.extracted || session.extracted;
+    session.appointmentOnly = reply.appointmentOnly === true;
+    session.pendingCancellation = reply.pendingCancellation || null;
+    const say = spokenText(reply.say, "I can't verify that right now. Please text us so we can check it.");
+    sendToken(ws, say, true);
+    return say;
+  }
+  if (deps.voiceOpenJobBrief) session.openJobBrief = await deps.voiceOpenJobBrief({ phone: session.fromNumber, clientId: session.clientId });
   const today =
     (deps.torontoTodayYmd && deps.torontoTodayYmd()) || new Date().toISOString().slice(0, 10);
   const profile = await getAiAnswerSettings();
@@ -276,6 +339,7 @@ Caller: ${session.fromNumber || 'unknown'}
 Today (Toronto): ${today}
 Known client: ${session.clientName || 'new'}
 Known address: ${session.knownAddress || 'none'}
+${session.openJobBrief || 'Caller schedule is not loaded. Do not guess whether there is a booking.'}
 Visits: ${profile.workDaysLabel || 'Monday–Friday'}, ${profile.workHours || '7 a.m. to 9 p.m.'}
 ${session.calendarBrief || ''}
 
@@ -337,9 +401,10 @@ owner_address: the caller's home if it is different from the repair address.
 has_job_site=true if the repair is not at the caller's own home (tenant, rental, another house).
 If the spoken street is not the known home, has_job_site=true, address=repair place, owner_address=home.
 wants_callback=true if they asked to speak to a live person, the technician, the master, or to get a call back from a human. After that, do not treat missing time as incomplete.
-service_declined=true if we cannot take the job: outside the service area, not a household appliance (laptop/computer/phone), they cancelled, or we told them we don't do that work. Then createJob=false.
+appointment_intent: lookup, cancel, reschedule, new_repair, or none. Use new_repair ONLY if the CALLER explicitly requested a separate new repair, never from the assistant reading existing job facts. An appointment lookup/cancellation/reschedule is not a new order: createJob=false. Dates mentioned in an old booking or a cancellation are NOT a new scheduled_date/time.
+service_declined=true if we cannot take a NEW job: outside the service area, not a household appliance (laptop/computer/phone), or we told them we don't do that work. Then createJob=false. Cancellation of an existing visit is handled by the calendar tool, not by this flag.
 Return STRICT JSON only:
-{"client_name":null,"address":null,"city":null,"postal_code":null,"owner_address":null,"appliance_type":null,"brand":null,"model":null,"problem_description":null,"scheduled_date":null,"scheduled_time":null,"wants_callback":false,"has_job_site":false,"contact_on_site_name":null,"contact_on_site_phone":null,"notes":null,"service_declined":false,"decline_reason":null,"done":false,"createJob":false}
+{"appointment_intent":"none","client_name":null,"address":null,"city":null,"postal_code":null,"owner_address":null,"appliance_type":null,"brand":null,"model":null,"problem_description":null,"scheduled_date":null,"scheduled_time":null,"wants_callback":false,"has_job_site":false,"contact_on_site_name":null,"contact_on_site_phone":null,"notes":null,"service_declined":false,"decline_reason":null,"done":false,"createJob":false}
 
 done=true ONLY if the caller said goodbye/bye/that's all, or they declined "anything else". Never because they said thanks, okay, yes, or the visit is already booked. Never for a laptop, computer, or something we don't repair.
 createJob=true if we should create a repair job (enough info OR live callback OR angry with some details). NEVER if service_declined. Not for a laptop/computer unless they also have a household appliance.
@@ -382,7 +447,7 @@ You said: ${assistantText}`;
 async function persistSession(session, extra) {
   const { callsRef } = deps;
   if (!session.callSid) return;
-  const greeting = String(session.greeting || '').trim();
+  const greeting = session.engine === 'gemini-live' ? '' : String(session.greeting || '').trim();
   if (greeting) {
     const history = session.history || [];
     const already = history.some(
@@ -419,6 +484,10 @@ async function persistSession(session, extra) {
       ? session.transcription
       : existingTranscription;
   session.transcription = transcription;
+  const onlyAppointment = appointmentOnly(session);
+  if (session.appointmentOnly) {
+    session.extracted = { ...(session.extracted || {}), appointment_only: onlyAppointment };
+  }
   const reception = {
     history,
     extracted: session.extracted,
@@ -426,16 +495,19 @@ async function persistSession(session, extra) {
     turns: session.turns || 0,
     engine: session.engine || 'relay',
     liveFailed: false,
+    appointmentOnly: onlyAppointment,
+    pendingCancellation: session.pendingCancellation || null,
   };
   if (extra && extra.done) reception.done = true;
   const declined =
     voiceFacts.isServiceDeclined(session.extracted) ||
     Boolean(extra && extra.serviceDeclined);
-  reception.createJob = Boolean(extra && extra.createJob) && !declined;
+  reception.createJob = Boolean(extra && extra.createJob) && !declined && !onlyAppointment;
   reception.serviceDeclined = declined;
   await callsRef.doc(session.callSid).set(
     {
       answeredBy: 'ai',
+      ...(session.clientId ? { clientId: session.clientId } : {}),
       extractedData: session.extracted || {},
       transcription,
       aiReception: reception,
@@ -473,7 +545,8 @@ function applyLocalExtract(session) {
     extracted.owner_address = session.knownAddress;
   }
   session.extracted = extracted;
-  if (voiceFacts.isServiceDeclined(extracted)) {
+  if (session.appointmentOnly) extracted.appointment_only = appointmentOnly(session);
+  if (voiceFacts.isServiceDeclined(extracted) || appointmentOnly(session)) {
     session.createJob = false;
   } else if (deps.hasEnoughForJob(extracted) || extracted.wants_callback === true) {
     session.createJob = true;
@@ -591,7 +664,7 @@ function lastHistoryText(session, role) {
 function armReplyWatchdog(session) {
   clearReplyWatchdog(session);
   session.replyWatch = setTimeout(() => {
-    if (session.closed || session.wantHangup || !session.ready) return;
+    if (session.closed || session.wantHangup || !session.ready || session.toolPending) return;
     if (session.assistantPartial) return;
     const lastUser = lastHistoryText(session, 'user');
     if (!lastUser) return;
@@ -855,7 +928,9 @@ function greetLive(session) {
           role: 'user',
           parts: [
             {
-              text: `The call just connected. Speak ONLY this greeting, then wait silently for the caller. No other words: ${greeting}`,
+              text: `The call just connected. For this first greeting only, answer in your own words in English, warmly and matter-of-factly, as if picking up the shop phone for one person.
+Use an easy conversational rhythm, not a recording or a call-centre announcement. Keep the meaning of this opening, not its exact wording: ${greeting}
+Keep it to one short breath. No sales pitch, exaggerated cheerfulness, made-up personal name, filler or staged laughter. End with one easy invitation to speak, then stop and listen. Do not start collecting repair details yet.`,
             },
           ],
         },
@@ -943,41 +1018,154 @@ function steerCollectAfterTurn(session, lastUser, lastAsst) {
   });
 }
 
-function handleLiveToolCall(session, message) {
+async function withCalendarDeadline(work) {
+  let timer;
+  try {
+    return await Promise.race([
+      work,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Calendar timeout')), 8000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function refreshCallerSchedule(session) {
+  const result = await withCalendarDeadline(deps.loadCallerSchedule({
+    phone: session.fromNumber, clientId: session.clientId, callSid: session.callSid,
+  }));
+  session.openJobBrief = result.brief || 'Caller calendar is unavailable; do not guess.';
+  session.callerAppointments = result.ok ? result.appointments || [] : [];
+  return result;
+}
+
+function appointmentOnly(session) {
+  return voiceFacts.isAppointmentOnly(session.extracted, {
+    aiReception: { appointmentOnly: session.appointmentOnly, history: session.history },
+  });
+}
+
+function cancellationConfirmed(session, pending) {
+  const userTurns = (session.history || []).filter((item) => item.role === 'user').length;
+  if (!pending || userTurns <= pending.userTurns || Date.now() - pending.askedAt > 5 * 60000) return false;
+  const history = session.history || [];
+  const userIndex = history.findLastIndex((item) => item.role === 'user');
+  const question = String(history.slice(0, userIndex).findLast((item) => item.role === 'assistant')?.text || '');
+  const answer = lastHistoryText(session, 'user').trim();
+  if (!/\b(cancel|cancellation)\b/i.test(question) || !/\?|\b(shall|should|want|confirm)\b/i.test(question)) return false;
+  if (/\b(no|not|don't|never|keep|but|instead|rather|other|different|reschedule|move)\b|нет|не отмен|остав|перен/i.test(answer)) return false;
+  return /^(yes|yeah|yep|please cancel|cancel it|go ahead)\b/i.test(answer) || /^(да|отмените|отмени)([\s,.!]|$)/i.test(answer);
+}
+
+async function runAppointmentTool(session, name, args = {}) {
+  if (!['get_caller_appointments', 'cancel_appointment', 'check_availability'].includes(name)) {
+    return { ok: false, error: 'unknown_tool' };
+  }
+  if (session.closed) return { ok: false, error: 'call_inactive' };
+  try {
+    if (name === 'check_availability') {
+      const date = String(args.date || '');
+      const time = String(args.time || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+        return { ok: false, error: 'invalid_time' };
+      }
+      const [y, m, d] = date.split('-').map(Number);
+      const [h, min] = time.split(':').map(Number);
+      const start = voiceFacts.fromTorontoWallClock(y, m, d, h, min);
+      const parts = voiceFacts.torontoParts(start);
+      if (voiceFacts.torontoTodayYmd(start) !== date || parts.h !== h || parts.min !== min) {
+        return { ok: false, error: 'invalid_time' };
+      }
+      return { ...(await withCalendarDeadline(deps.checkBookingSlot(start, {}))), checkedAt: new Date().toISOString(), booked: false };
+    }
+    session.appointmentOnly = true;
+    session.extracted = { ...(session.extracted || {}), appointment_only: !voiceFacts.hasNewRepairRequest(session.history) };
+    if (appointmentOnly(session)) session.createJob = false;
+    const current = await refreshCallerSchedule(session);
+    if (!current.ok || name === 'get_caller_appointments') return current;
+    const pending = session.pendingCancellation;
+    if (pending && (session.history || []).filter((item) => item.role === 'user').length > pending.userTurns &&
+        /^(no|nope|нет)\b|don't cancel|do not cancel|keep (it|the|my)|не отмен|остав/i.test(lastHistoryText(session, 'user').trim())) {
+      session.pendingCancellation = null;
+      return { ok: true, status: 'unchanged', say: "Okay, I haven't changed anything." };
+    }
+    const jobId = args.job_id || (args.confirmed === true && pending && pending.jobId);
+    const visitId = args.visit_id || (args.confirmed === true && pending && pending.visitId);
+    const appointments = current.appointments || [];
+    const selected = jobId || visitId
+      ? appointments.find((visit) => visit.jobId === jobId && visit.visitId === visitId)
+      : appointments.length === 1 ? appointments[0] : null;
+    if (!selected) {
+      session.pendingCancellation = null;
+      return {
+        ok: false, status: appointments.length ? 'selection_required' : 'no_upcoming_visit', appointments,
+        say: appointments.length ? 'Which visit would you like to cancel?' : "I don't see an upcoming visit for your number. There is nothing scheduled to cancel.",
+      };
+    }
+    const same = pending && pending.jobId === selected.jobId && pending.visitId === selected.visitId && pending.startAt === selected.startAt;
+    if (args.confirmed !== true || !same || !cancellationConfirmed(session, pending)) {
+      session.pendingCancellation = {
+        ...selected, askedAt: Date.now(), userTurns: (session.history || []).filter((item) => item.role === 'user').length,
+      };
+      return {
+        ok: true, status: 'confirmation_required', appointment: selected,
+        say: `Should I cancel your visit on ${selected.when}${selected.address ? ` at ${selected.address}` : ''}?`,
+      };
+    }
+    const result = await withCalendarDeadline(deps.cancelCallerVisit({
+      phone: session.fromNumber, clientId: session.clientId, callSid: session.callSid,
+    }, { jobId: selected.jobId, visitId: selected.visitId, expectedStartAt: pending.startAt }));
+    session.pendingCancellation = null;
+    if (!result.ok) {
+      return { ...result, say: "That visit has changed. I couldn't confirm a cancellation; please let us check the current booking." };
+    }
+    await refreshCallerSchedule(session).catch(() => {
+      session.openJobBrief = 'The selected cancellation was saved, but the remaining caller schedule is unavailable. Recheck before discussing any other appointment.';
+      session.callerAppointments = [];
+    });
+    return { ...result, say: `Your visit on ${selected.when} is cancelled.` };
+  } catch (error) {
+    console.warn(`voice calendar ${name}: ${error.message}`);
+    session.openJobBrief = 'Caller calendar is unavailable. Do not claim a booking exists or is absent, or that any change succeeded.';
+    session.callerAppointments = [];
+    return { ok: false, error: 'calendar_unavailable', say: "I can't verify the calendar right now. Please text us so we can check it." };
+  }
+}
+
+async function handleLiveToolCall(session, message) {
   const toolCall = pick(message, 'toolCall', 'tool_call') || {};
   const calls = pick(toolCall, 'functionCalls', 'function_calls') || [];
   if (!calls.length) return;
-  const responses = [];
-  for (const call of calls) {
-    const name = pick(call, 'name') || '';
-    const id = pick(call, 'id') || '';
-    const args = pick(call, 'args', 'arguments') || {};
-    if (name === 'end_call') {
-      console.warn(`voiceLive ignored hangup tool ${session.callSid}`);
-      cancelHangup(session);
-      session.wantHangup = false;
-      responses.push({
-        id,
-        name,
-        response: {
-          result: 'stay on the line. You cannot hang up. Wait for the caller.',
-        },
-      });
-      continue;
+  flushPartial(session, 'userPartial');
+  clearReplyWatchdog(session);
+  session.toolPending = true;
+  try {
+    const responses = [];
+    for (const call of calls) {
+      const name = pick(call, 'name') || '';
+      const id = pick(call, 'id') || '';
+      const args = pick(call, 'args', 'arguments') || {};
+      if (name === 'end_call') {
+        console.warn(`voiceLive ignored hangup tool ${session.callSid}`);
+        cancelHangup(session);
+        responses.push({ id, name, response: { ok: false, result: 'You cannot hang up. Wait for the caller.' } });
+        continue;
+      }
+      const response = await runAppointmentTool(session, name, args);
+      console.log(`voice calendar ${session.callSid || '?'} ${name} ${response.status || response.error || (response.ok ? 'ok' : 'blocked')}`);
+      responses.push({ id, name, response });
     }
-    responses.push({
-      id,
-      name,
-      response: { result: name === 'end_call' ? 'ok, hang up after goodbye' : 'ok' },
-    });
+    sendJson(session.geminiWs, { toolResponse: { functionResponses: responses } });
+    persistSessionSoon(session, { createJob: session.createJob });
+  } finally {
+    session.toolPending = false;
   }
-  sendJson(session.geminiWs, { toolResponse: { functionResponses: responses } });
 }
 
 async function checkLiveSlot(session) {
   if (!deps || !deps.checkBookingSlot) return;
   const extracted = session.extracted || {};
-  if (extracted.wants_callback) return;
+  if (extracted.wants_callback || appointmentOnly(session)) return;
   if (!extracted.scheduled_date || !extracted.scheduled_time) return;
   const start = voiceFacts.parseScheduledAtDate(extracted);
   if (!start) return;
@@ -1105,7 +1293,11 @@ function handleGeminiMessage(session, raw) {
     clearReplyWatchdog(session);
     sendTwilioAudio(session, base64ToInt16(inline.data), parsePcmRate(inline.mimeType || inline.mime_type));
   }
-  handleLiveToolCall(session, message);
+  if (pick(message, 'toolCall', 'tool_call')) {
+    session.toolTail = (session.toolTail || Promise.resolve())
+      .then(() => handleLiveToolCall(session, message))
+      .catch((error) => console.warn('voiceLive tool:', error.message));
+  }
   if (pick(content, 'turnComplete', 'turn_complete') === true) {
     flushPartials(session);
     const lastAsst = lastHistoryText(session, 'assistant');
@@ -1212,7 +1404,7 @@ function resumeLive(session, reason) {
   session.setupPayload = buildSetup(
     model,
     `${session.systemText}\n\nThe live audio session restarted. Continue this same phone call. Do not greet again.`,
-    false,
+    session.liveTools !== false,
     session.resumeHandle
   );
   console.log(
@@ -1233,7 +1425,7 @@ function startGeminiLive(session) {
   }
   const models = uniqueModels();
   let index = 0;
-  let tools = false;
+  let tools = true;
   session.retryGemini = () => {
     if (session.closed || session.ready || session.connecting || session.liveStarted) return;
     if (index >= models.length) {
@@ -1255,7 +1447,8 @@ function startGeminiLive(session) {
     }
     const model = models[index++];
     session.connecting = true;
-    session.setupPayload = buildSetup(model, session.systemText, tools);
+    session.liveTools = tools;
+    session.setupPayload = buildSetup(model, tools ? session.systemText : `${session.systemText}\nLive calendar tools are unavailable. Do not claim a fresh lookup or a saved cancellation. Ask the caller to text us for a change.`, tools);
     console.log(`voiceLive connect ${session.callSid} ${model} tools=${tools}`);
     attachGeminiSocket(
       session,
@@ -1282,6 +1475,16 @@ async function hydrateCall(session, callSid, fromNumber) {
   const data = snap && snap.exists ? snap.data() || {} : {};
   const reception = data.aiReception || {};
   const known = await findClientByPhone(data.fromNumber || session.fromNumber);
+  session.clientId = (known && known.id) || data.clientId || '';
+  session.appointmentOnly = reception.appointmentOnly === true;
+  session.pendingCancellation = reception.pendingCancellation || null;
+  // Пункт 17: без этого секретарь не знает, что заказ уже принят.
+  session.openJobBrief = deps.voiceOpenJobBrief
+    ? await deps.voiceOpenJobBrief({
+        phone: data.fromNumber || session.fromNumber,
+        clientId: (known && known.id) || data.clientId || '',
+      })
+    : '';
   session.extracted = reception.extracted || {};
   session.history = Array.isArray(reception.history) ? reception.history : [];
   session.transcription = data.transcription || '';
@@ -1398,6 +1601,9 @@ async function onRelayMessage(ws, session, message) {
     const data = snap && snap.exists ? snap.data() || {} : {};
     const reception = data.aiReception || {};
     const known = await findClientByPhone(data.fromNumber || session.fromNumber);
+    session.clientId = (known && known.id) || data.clientId || '';
+    session.appointmentOnly = reception.appointmentOnly === true;
+    session.pendingCancellation = reception.pendingCancellation || null;
     session.extracted = reception.extracted || {};
     session.history = Array.isArray(reception.history) ? reception.history : [];
     session.transcription = data.transcription || '';
@@ -1577,6 +1783,46 @@ function clearAuthGrace(session) {
   }
 }
 
+const relayHttpServers = new WeakSet();
+const upgradedSockets = new WeakMap();
+
+function preserveUpgradedSockets(httpServer) {
+  if (!httpServer || relayHttpServers.has(httpServer)) return;
+  const previous = httpServer.rawListeners('clientError');
+  for (const listener of previous) httpServer.removeListener('clientError', listener);
+  httpServer.on('clientError', (error, socket) => {
+    const upgraded = upgradedSockets.has(socket);
+    if (upgraded && error.code === 'ERR_HTTP_REQUEST_TIMEOUT') {
+      if (!upgradedSockets.get(socket)) {
+        console.log('voiceRelay: preserved WebSocket after HTTP request timeout');
+        upgradedSockets.set(socket, true);
+      }
+      return;
+    }
+    if (previous.length) {
+      for (const listener of previous.slice()) {
+        const onceIndex = listener.listener ? previous.indexOf(listener) : -1;
+        if (onceIndex >= 0) previous.splice(onceIndex, 1);
+        listener.call(httpServer, error, socket);
+      }
+      return;
+    }
+    if (
+      !upgraded && socket.writable &&
+      (!socket._httpMessage || !socket._httpMessage._headerSent)
+    ) {
+      const status = {
+        ERR_HTTP_REQUEST_TIMEOUT: 408,
+        HPE_HEADER_OVERFLOW: 431,
+        HPE_CHUNK_EXTENSIONS_OVERFLOW: 413,
+      }[error.code] || 400;
+      socket.write(`HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\nConnection: close\r\n\r\n`);
+    }
+    socket.destroy(error);
+  });
+  relayHttpServers.add(httpServer);
+}
+
 function handleRequest(req, res) {
   const incoming = req.rawRequest || req;
   const headers = incoming.headers || req.headers || {};
@@ -1586,8 +1832,10 @@ function handleRequest(req, res) {
     deps.saveRelayHost(`wss://${host.split(',')[0].trim()}`).catch(() => {});
   }
   if (upgrade === 'websocket') {
+    preserveUpgradedSockets(incoming.socket && incoming.socket.server);
     const server = getWss();
     server.handleUpgrade(incoming, incoming.socket, Buffer.alloc(0), (ws) => {
+      upgradedSockets.set(incoming.socket, false);
       server.emit('connection', ws, incoming);
     });
     return;
@@ -1598,4 +1846,9 @@ function handleRequest(req, res) {
 module.exports = {
   init,
   handleRequest,
+  greetLive,
+  persistSession,
+  liveSystemPrompt,
+  buildSetup,
+  runAppointmentTool,
 };

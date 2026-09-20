@@ -25,7 +25,7 @@ class GlobalCallListener extends StatefulWidget {
 
 class _GlobalCallListenerState extends State<GlobalCallListener>
     with WidgetsBindingObserver {
-  static const _device = MethodChannel('fix_appliance/device');
+  StreamSubscription<MethodCall>? _nativeSubscription;
   StreamSubscription<CallEvent>? _subscription;
   StreamSubscription<String>? _statusSub;
   Timer? _incomingDebounce;
@@ -37,7 +37,8 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
     WidgetsBinding.instance.addObserver(this);
     _subscription = TwilioService.callEventStream.listen(_onCallEvent);
     _statusSub = TwilioService.callStatusStream.listen(_onCallStatus);
-    _device.setMethodCallHandler(_onNative);
+    _nativeSubscription = NotificationService.nativeEvents.listen(_onNative);
+    NotificationService.bindNativeEvents();
     _start();
   }
 
@@ -54,6 +55,8 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
   }
 
   Future<void> _onAppResumed() async {
+    unawaited(NotificationService.initialize());
+    unawaited(TwilioService.refreshRegistration());
     final dropped = await TwilioService.dropStaleIncomingIfNeeded();
     if (!mounted || dropped) return;
     await _openActiveCallScreen(resume: true);
@@ -91,8 +94,8 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
       final phone = call == null
           ? ''
           : (call.callDirection == CallDirection.incoming
-              ? TwilioService.displayIncomingNumber(call)
-              : activeCallDisplayNumber(call));
+                ? TwilioService.displayIncomingNumber(call)
+                : activeCallDisplayNumber(call));
       unawaited(LocalNotificationService.showActiveCall(phone: phone));
     } else {
       unawaited(LocalNotificationService.cancelActiveCall());
@@ -130,27 +133,35 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
   }
 
   Future<void> _openActiveCallScreen({bool resume = false}) async {
-    if (!mounted || _callScreenShown) return;
-    if (!_isLive(TwilioService.callStatus)) return;
-    if (await TwilioService.dropStaleIncomingIfNeeded()) return;
-
-    final activeCall = TwilioService.activeCall ??
-        TwilioVoicePlatform.instance.call.activeCall;
-    if (activeCall == null) return;
-
-    final isIncoming = activeCall.callDirection == CallDirection.incoming;
-    if (!resume && !isIncoming && TwilioService.placingOutgoing) return;
-
-    final navigator = widget.navigatorKey.currentState;
-    if (navigator == null) return;
-
+    if (!mounted || _callScreenShown || !_isLive(TwilioService.callStatus)) {
+      return;
+    }
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    if (lifecycle == AppLifecycleState.paused ||
+        lifecycle == AppLifecycleState.detached) {
+      return;
+    }
     _callScreenShown = true;
-    await _openCallScreen(
-      navigator,
-      activeCall,
-      isIncoming: isIncoming,
-      resumeExisting: true,
-    );
+    try {
+      if (await TwilioService.dropStaleIncomingIfNeeded()) return;
+      if (!mounted || !_isLive(TwilioService.callStatus)) return;
+      final activeCall =
+          TwilioService.activeCall ??
+          TwilioVoicePlatform.instance.call.activeCall;
+      if (activeCall == null) return;
+      final isIncoming = activeCall.callDirection == CallDirection.incoming;
+      if (!resume && !isIncoming && TwilioService.placingOutgoing) return;
+      final navigator = widget.navigatorKey.currentState;
+      if (navigator == null) return;
+      await _openCallScreen(
+        navigator,
+        activeCall,
+        isIncoming: isIncoming,
+        resumeExisting: true,
+      );
+    } finally {
+      _callScreenShown = false;
+    }
   }
 
   Future<void> _openCallScreen(
@@ -162,17 +173,17 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
     var phone = isIncoming
         ? TwilioService.displayIncomingNumber(activeCall)
         : activeCallDisplayNumber(activeCall);
-    final digits = phone.replaceAll(RegExp(r'\D'), '');
-    if (isIncoming && digits.length < 10) {
-      phone = await _latestInboundCaller() ?? phone;
+    final sid = TwilioService.parentCallSid(activeCall);
+    if (isIncoming &&
+        phone.replaceAll(RegExp(r'\D'), '').length < 10 &&
+        sid != null) {
+      phone = await _inboundCaller(sid) ?? phone;
     }
-    final name = await _resolveContactName(
-      digits.length >= 10 ? phone : (isIncoming ? activeCall.from : activeCall.to),
-    );
-    if (!navigator.mounted) {
-      _callScreenShown = false;
+    final name = await _resolveContactName(phone);
+    if (!mounted || !navigator.mounted || !_isLive(TwilioService.callStatus)) {
       return;
     }
+    if (sid != null && TwilioService.parentCallSid() != sid) return;
     await CallScreen.open(
       navigator.context,
       phoneNumber: phone,
@@ -180,22 +191,16 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
       isIncoming: isIncoming,
       resumeExisting: resumeExisting,
     );
-    _callScreenShown = false;
   }
 
-  Future<String?> _latestInboundCaller() async {
+  Future<String?> _inboundCaller(String callSid) async {
     try {
       final snapshot = await FirestoreService.callsRef
-          .where('direction', isEqualTo: 'inbound')
-          .limit(8)
-          .get();
-      if (snapshot.docs.isEmpty) return null;
-      final docs = [...snapshot.docs]..sort((a, b) {
-          final aTime = (a.data() as Map)['startTime'];
-          final bTime = (b.data() as Map)['startTime'];
-          return bTime.toString().compareTo(aTime.toString());
-        });
-      final from = (docs.first.data() as Map)['fromNumber']?.toString() ?? '';
+          .doc(callSid)
+          .get()
+          .timeout(const Duration(seconds: 1));
+      if (!snapshot.exists) return null;
+      final from = (snapshot.data() as Map)['fromNumber']?.toString() ?? '';
       return from.isEmpty ? null : from;
     } catch (_) {
       return null;
@@ -206,7 +211,9 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
     try {
       final normalized = SmsService.normalizePhone(phone);
       if (normalized.isEmpty) return null;
-      final clients = await ClientService.streamAll().first;
+      final clients = await ClientService.streamAll().first.timeout(
+        const Duration(seconds: 1),
+      );
       for (final c in clients) {
         if (SmsService.normalizePhone(c.phone) == normalized) return c.fullName;
       }
@@ -220,7 +227,7 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
     _incomingDebounce?.cancel();
     _subscription?.cancel();
     _statusSub?.cancel();
-    _device.setMethodCallHandler(null);
+    _nativeSubscription?.cancel();
     super.dispose();
   }
 

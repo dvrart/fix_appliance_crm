@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import '../core/api_keys.dart';
 import '../models/warehouse_item.dart';
@@ -99,6 +100,45 @@ class ExtractedJobData {
       applianceType == null;
 }
 
+/// Что ИИ разобрал на фото запчасти или её этикетки.
+class PartStickerScan {
+  final String? partNumber;
+  final String? name;
+  final String? brand;
+  final String? modelNumber;
+  final String? barcode;
+  final String? category;
+  final String? purpose;
+  final List<String> interchange;
+
+  const PartStickerScan({
+    this.partNumber,
+    this.name,
+    this.brand,
+    this.modelNumber,
+    this.barcode,
+    this.category,
+    this.purpose,
+    this.interchange = const [],
+  });
+
+  bool get isEmpty =>
+      (partNumber ?? '').isEmpty &&
+      (name ?? '').isEmpty &&
+      (modelNumber ?? '').isEmpty &&
+      (barcode ?? '').isEmpty;
+
+  /// Название для карточки: бренд + имя, если бренд ещё не в имени.
+  String? get displayName {
+    final n = name?.trim();
+    if (n == null || n.isEmpty) return null;
+    final b = brand?.trim();
+    if (b == null || b.isEmpty) return n;
+    if (n.toLowerCase().contains(b.toLowerCase())) return n;
+    return '$b $n';
+  }
+}
+
 /// Сервис для работы с Gemini AI
 class AiService {
   static const _models = [
@@ -135,7 +175,15 @@ class AiService {
     return 'ИИ не ответил. Напишите правку сами по тексту звонка.';
   }
 
-  static Future<String> generateText(String prompt) async {
+  static Future<String> generateText(String prompt) =>
+      _generate(Content.text(prompt), timeout: const Duration(seconds: 22));
+
+  /// Один запрос к Gemini с перебором моделей и повтором при перегрузке.
+  /// [content] может содержать и текст, и картинку.
+  static Future<String> _generate(
+    Content content, {
+    required Duration timeout,
+  }) async {
     if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
       throw Exception('Не настроен ключ Gemini');
     }
@@ -144,9 +192,8 @@ class AiService {
       for (var attempt = 0; attempt < 2; attempt++) {
         try {
           final model = GenerativeModel(model: name, apiKey: kGeminiApiKey);
-          final response = await model
-              .generateContent([Content.text(prompt)])
-              .timeout(const Duration(seconds: 22));
+          final response =
+              await model.generateContent([content]).timeout(timeout);
           final out = (response.text ?? '').trim();
           if (out.isNotEmpty) return out;
         } catch (error) {
@@ -309,6 +356,109 @@ Rules:
         if (clean.toLowerCase() == category.toLowerCase()) return category;
       }
       return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Разобрать фото запчасти / её этикетки / коробки: что за деталь, номер,
+  /// для какой техники. Возвращает null, если ИИ не ответил или на фото
+  /// ничего не разобрать — тогда зовём офлайн-OCR.
+  static Future<PartStickerScan?> readPartSticker({
+    required Uint8List imageBytes,
+    required List<String> categories,
+    String mime = 'image/jpeg',
+  }) async {
+    if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
+      return null;
+    }
+    if (imageBytes.isEmpty) return null;
+
+    final prompt =
+        '''
+You are an appliance parts counter specialist in Canada. The photo shows a
+spare part for a household appliance and/or its label, sticker, bag or box.
+
+Read everything printed and identify the part. Return ONLY JSON, no prose:
+{
+  "part_number": "the OEM part number as printed (e.g. W10130913, DC97-16350C, WR57X10032, 5304475102), or null",
+  "name": "short English part name with brand, e.g. \\"Whirlpool Water Inlet Valve\\", or null",
+  "brand": "manufacturer brand, or null",
+  "model_number": "appliance model the part fits, if printed, or null",
+  "barcode": "UPC/EAN digits under the barcode, if printed, or null",
+  "category": "exactly one line from the list below, copied character for character, or null",
+  "purpose": "one short sentence in Russian: what this part is and what it does, e.g. \\"Впускной клапан воды стиральной машины — подаёт воду в бак.\\"",
+  "interchange": ["other part numbers printed as replaces / supersedes / substitutes / also fits"]
+}
+
+Category list:
+${categories.join('\n')}
+
+Rules:
+- Copy numbers character for character. Never invent a part number: if it is
+  not printed and you do not recognise the part for sure, use null.
+- Part number is the manufacturer part number, not the UPC, not the appliance
+  model, not a date or lot code.
+- Category: pick one only when you are sure which appliance the part is for.
+  A part used on several appliances is "${categories.contains('Универсальное') ? 'Универсальное' : 'null'}".
+- If you can see the part itself, use its shape to help name it (pump, valve,
+  belt, board, thermostat, heating element, door gasket, knob, etc).
+- Unknown fields are null. Do not add fields.
+''';
+
+    try {
+      final text = await _generate(
+        Content.multi([TextPart(prompt), DataPart(mime, imageBytes)]),
+        timeout: const Duration(seconds: 45),
+      );
+      final start = text.indexOf('{');
+      final end = text.lastIndexOf('}');
+      if (start < 0 || end <= start) return null;
+      final decoded = json.decode(text.substring(start, end + 1));
+      if (decoded is! Map) return null;
+
+      String? str(String key) {
+        final raw = decoded[key];
+        if (raw == null) return null;
+        final value = raw.toString().trim();
+        if (value.isEmpty || value.toLowerCase() == 'null') return null;
+        return value;
+      }
+
+      final categoryRaw = str('category');
+      String? category;
+      if (categoryRaw != null) {
+        for (final c in categories) {
+          if (c.toLowerCase() == categoryRaw.toLowerCase()) category = c;
+        }
+      }
+
+      final interchange = <String>[];
+      final rawList = decoded['interchange'];
+      if (rawList is List) {
+        for (final row in rawList) {
+          final clean = row.toString().trim().toUpperCase();
+          if (clean.isEmpty || interchange.contains(clean)) continue;
+          interchange.add(clean);
+          if (interchange.length >= 8) break;
+        }
+      }
+
+      final scan = PartStickerScan(
+        partNumber: str('part_number')
+            ?.toUpperCase()
+            .replaceAll(RegExp(r'[^A-Z0-9\-/]'), ''),
+        name: str('name'),
+        brand: str('brand'),
+        modelNumber: str('model_number')
+            ?.toUpperCase()
+            .replaceAll(RegExp(r'[^A-Z0-9\-/]'), ''),
+        barcode: str('barcode')?.replaceAll(RegExp(r'[^0-9A-Z]'), ''),
+        category: category,
+        purpose: str('purpose'),
+        interchange: interchange,
+      );
+      return scan.isEmpty ? null : scan;
     } catch (_) {
       return null;
     }

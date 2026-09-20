@@ -14,6 +14,8 @@ import android.os.Bundle
 import android.telecom.*
 import android.util.Log
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.twilio.twilio_voice.R
 import com.twilio.twilio_voice.call.TVCallInviteParametersImpl
 import com.twilio.twilio_voice.call.TVCallParametersImpl
@@ -40,8 +42,12 @@ import com.twilio.voice.Call
 //import com.twilio.voice.CallException
 
 class TVConnectionService : ConnectionService() {
+    private var microphoneForeground = false
 
     companion object {
+        fun canStartMicrophoneForeground(visible: Boolean, alreadyRunning: Boolean): Boolean =
+            visible || alreadyRunning
+
         val TAG = "TwilioVoiceConnectionService"
 
         val activeConnections = HashMap<String, TVCallConnection>()
@@ -63,6 +69,9 @@ class TVConnectionService : ConnectionService() {
         private val cancelledCallInvites = LinkedHashSet<String>()
 
         private const val MAX_CANCELLED_CALL_INVITES = 32
+
+        fun hasCallHandle(callSid: String): Boolean = activeConnections.containsKey(callSid) ||
+            pendingCallInvites.containsKey(callSid) || cancelledCallInvites.contains(callSid)
 
         /**
          * Notification id used for the foreground-service (ongoing call) notification.
@@ -86,6 +95,7 @@ class TVConnectionService : ConnectionService() {
          * Action used to hangup an active call connection.
          */
         const val ACTION_HANGUP: String = "ACTION_HANGUP"
+        const val ACTION_DECLINE_INCOMING: String = "ACTION_DECLINE_INCOMING"
 
         /**
          * Action used to toggle the speakerphone state of an active call connection.
@@ -310,7 +320,7 @@ class TVConnectionService : ConnectionService() {
 
                     if (connection == null) {
                         Log.w(TAG, "onStartCommand: [ACTION_CANCEL_CALL_INVITE] no connection yet for callHandle: $callHandle, cancelling the pending one")
-                        IncomingCallNotifier.cancel(applicationContext)
+                        IncomingCallNotifier.cancel(applicationContext, callHandle)
                         // The Connection is still in flight; mark it so onCreateIncomingConnection
                         // does not raise a call the caller has already given up on.
                         if (cancelledCallInvites.size >= MAX_CANCELLED_CALL_INVITES) {
@@ -341,6 +351,10 @@ class TVConnectionService : ConnectionService() {
                         return@let
                     }
 
+                    if (hasCallHandle(callInvite.callSid)) {
+                        onConnectionEnded(null)
+                        return@let
+                    }
                     val telecomManager = getSystemService(TELECOM_SERVICE) as TelecomManager
                     if (!telecomManager.canReadPhoneState(applicationContext)) {
                         Log.e(TAG, "onCallInvite: Permission to read phone state not granted or requested.")
@@ -403,7 +417,7 @@ class TVConnectionService : ConnectionService() {
 
                     val connection = getConnection(callHandle) ?: run {
                         Log.e(TAG, "onStartCommand: [ACTION_ANSWER] could not find connection for callHandle: $callHandle")
-                        IncomingCallNotifier.cancel(applicationContext)
+                        IncomingCallNotifier.cancel(applicationContext, callHandle)
                         onConnectionEnded(null)
                         return@let
                     }
@@ -415,16 +429,30 @@ class TVConnectionService : ConnectionService() {
                     }
                 }
 
+                ACTION_DECLINE_INCOMING -> {
+                    val callHandle = it.getStringExtra(EXTRA_CALL_HANDLE)
+                    val connection = callHandle?.let { handle -> getConnection(handle) } as? TVCallInviteConnection
+                    if (connection != null && connection.state == Connection.STATE_RINGING) {
+                        connection.rejectFromNotification()
+                    } else {
+                        IncomingCallNotifier.cancel(applicationContext, callHandle)
+                        onConnectionEnded(null)
+                    }
+                }
+
                 ACTION_HANGUP -> {
                     val callHandle = it.getStringExtra(EXTRA_CALL_HANDLE)
-                    val connection = (callHandle?.let { handle -> getConnection(handle) })
-                        ?: getActiveCallHandle()?.let { handle -> getConnection(handle) }
-                        ?: pendingOutgoingConnection
-                        ?: activeConnections.values.firstOrNull()
+                    val connection = if (callHandle != null) {
+                        getConnection(callHandle)
+                    } else {
+                        getActiveCallHandle()?.let { handle -> getConnection(handle) }
+                            ?: pendingOutgoingConnection
+                            ?: activeConnections.values.firstOrNull()
+                    }
 
                     if (connection == null) {
                         Log.e(TAG, "onStartCommand: [ACTION_HANGUP] no connection to disconnect")
-                        IncomingCallNotifier.cancel(applicationContext)
+                        IncomingCallNotifier.cancel(applicationContext, callHandle)
                         onConnectionEnded(null)
                         return@let
                     }
@@ -612,7 +640,7 @@ class TVConnectionService : ConnectionService() {
 
         // The caller hung up while this Connection was still being created - report it as missed
         // rather than ringing a call that no longer exists.
-        if (cancelledCallInvites.remove(callSid)) {
+        if (cancelledCallInvites.contains(callSid)) {
             Log.i(TAG, "onCreateIncomingConnection: invite '$callSid' was cancelled before the connection was created")
             pendingCallInvites.remove(callSid)
             onConnectionEnded(null)
@@ -791,12 +819,19 @@ class TVConnectionService : ConnectionService() {
      * (e.g. a connection that failed during creation).
      */
     private fun onConnectionEnded(callSid: String?) {
-        callSid?.let { activeConnections.remove(it) }
-        activeConnections.remove(PENDING_OUTGOING_HANDLE)
-        if (callSid == null || pendingOutgoingConnection?.twilioCall?.sid == callSid) {
-            pendingOutgoingConnection = null
+        callSid?.let {
+            activeConnections.remove(it)
+            if (cancelledCallInvites.size >= MAX_CANCELLED_CALL_INVITES) {
+                cancelledCallInvites.iterator().let { iterator -> iterator.next(); iterator.remove() }
+            }
+            cancelledCallInvites.add(it)
         }
-        if (!hasActiveCalls()) {
+        if ((callSid != null && pendingOutgoingConnection?.twilioCall?.sid == callSid) ||
+            pendingOutgoingConnection?.state == Connection.STATE_DISCONNECTED) {
+            pendingOutgoingConnection = null
+            activeConnections.remove(PENDING_OUTGOING_HANDLE)
+        }
+        if (!hasActiveCalls() && pendingCallInvites.isEmpty()) {
             stopForegroundService()
             stopSelf()
         } else {
@@ -813,6 +848,7 @@ class TVConnectionService : ConnectionService() {
 
         val onAction: ValueBundleChanged<String> = ValueBundleChanged { event: String?, extra: Bundle? ->
             sendBroadcastEvent(applicationContext, event ?: "", callSid, extra)
+            if (connection.state == Connection.STATE_ACTIVE) tryStartForegroundService()
         }
 
         val onEvent: ValueBundleChanged<String> = ValueBundleChanged { event: String?, extra: Bundle? ->
@@ -826,6 +862,9 @@ class TVConnectionService : ConnectionService() {
         val onCallState: CompletionHandler<Call.State> = CompletionHandler { state ->
             if (state == Call.State.DISCONNECTED) {
                 onConnectionEnded(callSid)
+            } else if (state == Call.State.CONNECTED) {
+                IncomingCallNotifier.cancel(applicationContext, callSid)
+                tryStartForegroundService()
             }
         }
 
@@ -909,6 +948,7 @@ class TVConnectionService : ConnectionService() {
     }
 
     private fun createNotification(): Notification {
+        IncomingCallNotifier.currentNotification?.let { return it }
         val channel = getOrCreateChannel()
         val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -982,10 +1022,13 @@ class TVConnectionService : ConnectionService() {
                 //    "android.permission.FOREGROUND_SERVICE_MICROPHONE" tools:node="remove"/>
                 val hasFgsMicPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
                         checkPermission(android.Manifest.permission.FOREGROUND_SERVICE_MICROPHONE)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasMicrophoneAccess() && hasFgsMicPermission) {
+                val visible = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasMicrophoneAccess() && hasFgsMicPermission &&
+                    canStartMicrophoneForeground(visible, microphoneForeground)) {
                     serviceTypes = serviceTypes or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 }
                 startForeground(FOREGROUND_NOTIFICATION_ID, notification, serviceTypes)
+                microphoneForeground = serviceTypes and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0
             } else {
                 startForeground(FOREGROUND_NOTIFICATION_ID, notification)
             }
@@ -1001,6 +1044,7 @@ class TVConnectionService : ConnectionService() {
             // STOP_FOREGROUND_REMOVE is a flags value; previously the notification id (100)
             // was passed here, which is not a valid flag.
             stopForeground(STOP_FOREGROUND_REMOVE)
+            microphoneForeground = false
             cancelNotification()
         } catch (e: java.lang.Exception) {
             Log.w(TAG, "[VoiceConnectionService] can't stop foreground service :$e")

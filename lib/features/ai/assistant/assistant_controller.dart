@@ -136,6 +136,13 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
   bool _opening = false;
   bool _closing = false;
   bool _reconnectScheduled = false;
+  bool _togglingPause = false;
+  bool _disposed = false;
+  int _generation = 0;
+  int _connectionGeneration = 0;
+  Future<bool>? _focusRequest;
+  Future<void>? _closeFuture;
+  Future<void> _micOperation = Future<void>.value();
 
   bool isOpen = false;
   bool isConnecting = false;
@@ -154,10 +161,28 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
 
   String _t(String ru, String en) => AppLocale.instance.t(ru, en);
 
+  bool _isCurrent(int generation) =>
+      generation == _generation &&
+      isOpen &&
+      !_closing &&
+      !_disposed &&
+      !AssistantAudioService.playback.isActive;
+
+  bool _isCurrentConnection(int generation, int connection) =>
+      _isCurrent(generation) && connection == _connectionGeneration;
+
   Future<void> open() async {
-    if (isOpen || _opening) return;
+    if (isOpen ||
+        _opening ||
+        _closing ||
+        _disposed ||
+        AssistantAudioService.playback.isActive) {
+      return;
+    }
+    final generation = ++_generation;
+    final connection = ++_connectionGeneration;
     _opening = true;
-    _closing = false;
+    _closeFuture = null;
     isOpen = true;
     isConnecting = true;
     isPaused = false;
@@ -168,33 +193,35 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     notifyListeners();
 
     try {
-      await AssistantAudioService.requestFocus();
-      await _connectSession();
-      await _startMic();
+      if (!_isCurrentConnection(generation, connection)) return;
+      _focusRequest = AssistantAudioService.requestFocus();
+      final focused = await _focusRequest!;
+      if (!_isCurrentConnection(generation, connection)) return;
+      if (!focused) {
+        throw Exception(
+          _t('Звук сейчас недоступен', 'Audio is currently unavailable'),
+        );
+      }
+      await _connectSession(generation, connection);
+      if (!_isCurrentConnection(generation, connection)) return;
+      await _startMic(generation);
+      if (!_isCurrentConnection(generation, connection)) return;
       isConnecting = false;
       statusText = _t('Слушаю — нажмите для паузы', 'Listening — tap to pause');
       notifyListeners();
-      _startScreenSight();
+      if (_isCurrentConnection(generation, connection)) _startScreenSight();
     } catch (e) {
-      errorText = _friendlyError(e);
+      if (!_isCurrentConnection(generation, connection)) return;
+      final error = _friendlyError(e);
+      final closing = close();
+      final closedGeneration = _generation;
+      await closing;
+      if (_disposed || closedGeneration != _generation) return;
+      errorText = error;
       statusText = _t('Не удалось подключиться', 'Could not connect');
-      isConnecting = false;
-      isOpen = false;
-      _screenTimer?.cancel();
-      _screenTimer = null;
-      await _micSub?.cancel();
-      _micSub = null;
-      try {
-        await _recorder.stop();
-      } catch (_) {}
-      try {
-        await _session?.close();
-      } catch (_) {}
-      _session = null;
-      await AssistantAudioService.releaseFocus();
       notifyListeners();
     } finally {
-      _opening = false;
+      if (generation == _generation) _opening = false;
     }
   }
 
@@ -213,8 +240,11 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     return raw;
   }
 
-  Future<void> _connectSession() async {
+  Future<void> _connectSession(int generation, int connection) async {
+    bool current() => _isCurrentConnection(generation, connection);
+    if (!current()) return;
     final mic = await Permission.microphone.request();
+    if (!current()) return;
     if (!mic.isGranted) {
       throw Exception('Нет доступа к микрофону');
     }
@@ -223,12 +253,14 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     }
 
     final config = await SettingsService.loadConfig();
+    if (!current()) return;
     final english =
         SettingsService.readAssistantLanguage(config) ==
             SettingsService.assistantLanguageEn;
     _assistantName = SettingsService.readAssistantWakeWord(config);
+    final voice = SettingsService.readAssistantVoice(config);
     final genAI = GoogleGenAI(apiKey: kGeminiApiKey);
-    _session = await genAI.live.connect(
+    final session = await genAI.live.connect(
       LiveConnectParameters(
         model: _model,
         systemInstruction: Content(
@@ -245,7 +277,7 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
           speechConfig: SpeechConfig(
             languageCode: AppLocale.instance.isEn ? 'en-US' : 'ru-RU',
             voiceConfig: VoiceConfig(
-              prebuiltVoiceConfig: PrebuiltVoiceConfig(voiceName: 'Kore'),
+              prebuiltVoiceConfig: PrebuiltVoiceConfig(voiceName: voice),
             ),
           ),
         ),
@@ -264,42 +296,58 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
         tools: [_tools],
         callbacks: LiveCallbacks(
           onOpen: () {
-            if (!isOpen) return;
+            if (!current()) return;
             statusText = isPaused
                 ? _t('Пауза', 'Paused')
                 : _t('Слушаю — нажмите для паузы', 'Listening — tap to pause');
             isConnecting = false;
             notifyListeners();
           },
-          onMessage: _onMessage,
+          onMessage: (message) => _onMessage(message, generation, connection),
           onError: (error, _) {
-            if (!isOpen || _closing) return;
+            if (!current()) return;
             errorText = error.toString();
             statusText = _t('Ошибка связи', 'Connection error');
             notifyListeners();
           },
           onClose: (_, reason) {
-            if (!isOpen || _closing) return;
-            _scheduleReconnect();
+            if (!current()) return;
+            _scheduleReconnect(generation, connection);
           },
         ),
       ),
     );
+    if (!current()) {
+      unawaited(_closeSession(session));
+      return;
+    }
+    _session = session;
   }
 
-  void _scheduleReconnect() {
-    if (_reconnectScheduled || _closing || !isOpen) return;
+  Future<void> _closeSession(LiveSession session) async {
+    try {
+      await session.close();
+    } catch (_) {}
+  }
+
+  void _scheduleReconnect(int generation, int connection) {
+    if (_reconnectScheduled || !_isCurrentConnection(generation, connection)) {
+      return;
+    }
     _reconnectScheduled = true;
     statusText = _t('Переподключаюсь...', 'Reconnecting...');
     notifyListeners();
     Future<void>.delayed(const Duration(milliseconds: 600), () async {
+      if (!_isCurrentConnection(generation, connection)) return;
       _reconnectScheduled = false;
-      if (!isOpen || _closing) return;
+      final nextConnection = ++_connectionGeneration;
       try {
         await _player.stop();
+        if (!_isCurrentConnection(generation, nextConnection)) return;
         isSpeaking = false;
         _sendAudioAfter = DateTime.now().add(const Duration(milliseconds: 800));
-        await _connectSession();
+        await _connectSession(generation, nextConnection);
+        if (!_isCurrentConnection(generation, nextConnection)) return;
         if (isPaused) {
           statusText = _t('Пауза', 'Paused');
         } else {
@@ -310,6 +358,7 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
         }
         notifyListeners();
       } catch (e) {
+        if (!_isCurrentConnection(generation, nextConnection)) return;
         errorText = e.toString();
         statusText = _t('Связь оборвалась', 'Connection lost');
         notifyListeners();
@@ -318,24 +367,31 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
   }
 
   Future<void> togglePause() async {
-    if (!isOpen || isConnecting || _opening || _closing) return;
-    if (isPaused) {
-      isPaused = false;
-      errorText = null;
-      await _startMic();
-      statusText = _t('Слушаю — нажмите для паузы', 'Listening — tap to pause');
-    } else {
-      isPaused = true;
-      await _micSub?.cancel();
-      _micSub = null;
-      try {
-        await _recorder.stop();
-      } catch (_) {}
-      await _player.stop();
-      isSpeaking = false;
-      statusText = _t('Пауза — нажмите, чтобы слушать', 'Paused — tap to listen');
+    final generation = _generation;
+    if (!_isCurrent(generation) || isConnecting || _opening || _togglingPause) {
+      return;
     }
-    notifyListeners();
+    _togglingPause = true;
+    try {
+      if (isPaused) {
+        isPaused = false;
+        errorText = null;
+        await _startMic(generation);
+        if (!_isCurrent(generation)) return;
+        statusText = _t('Слушаю — нажмите для паузы', 'Listening — tap to pause');
+      } else {
+        isPaused = true;
+        await _stopMic();
+        if (!_isCurrent(generation)) return;
+        await _player.stop();
+        if (!_isCurrent(generation)) return;
+        isSpeaking = false;
+        statusText = _t('Пауза — нажмите, чтобы слушать', 'Paused — tap to listen');
+      }
+      notifyListeners();
+    } finally {
+      if (generation == _generation) _togglingPause = false;
+    }
   }
 
   void _startScreenSight() {
@@ -347,44 +403,59 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
   }
 
   Future<void> _pushScreen({bool force = false}) async {
-    if (!isOpen || _closing || _session == null) return;
+    final generation = _generation;
+    final session = _session;
+    if (!_isCurrent(generation) || session == null) return;
     if (!force && (isPaused || isSpeaking || isConnecting)) return;
     final bytes = await AssistantScreenSight.capture();
     if (bytes == null || bytes.isEmpty) return;
-    if (!isOpen || _session == null) return;
+    if (!_isCurrent(generation) || !identical(session, _session)) return;
     try {
-      _session!.sendVideo(bytes, mimeType: 'image/png');
+      session.sendVideo(bytes, mimeType: 'image/png');
     } catch (e) {
       debugPrint('assistant screen push: $e');
     }
   }
 
-  Future<void> close() async {
+  Future<void> close() {
+    final closing = _closeFuture;
+    if (closing != null) return closing;
+    final completed = Completer<void>();
+    _closeFuture = completed.future;
+    unawaited(_close().then(completed.complete, onError: completed.completeError));
+    return completed.future;
+  }
+
+  Future<void> _close() async {
     _closing = true;
+    ++_generation;
+    _opening = false;
+    _togglingPause = false;
+    _reconnectScheduled = false;
     isOpen = false;
     isConnecting = false;
     isSpeaking = false;
     isPaused = false;
     statusText = '';
-    notifyListeners();
     _holdTimer?.cancel();
     _speakWatchdog?.cancel();
     _intentTimer?.cancel();
     _screenTimer?.cancel();
     _screenTimer = null;
-    await _micSub?.cancel();
-    _micSub = null;
-    try {
-      await _recorder.stop();
-    } catch (_) {}
-    await _player.stop();
-    try {
-      await _session?.close();
-    } catch (_) {}
+    final session = _session;
     _session = null;
-    await AssistantAudioService.releaseFocus();
-    _closing = false;
-    notifyListeners();
+    if (session != null) unawaited(_closeSession(session));
+    if (!_disposed) notifyListeners();
+    try {
+      await _stopMic();
+      await _player.stop();
+    } finally {
+      await _focusRequest;
+      _focusRequest = null;
+      await AssistantAudioService.releaseFocus();
+      _closing = false;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   bool _isEndCommand(String raw) {
@@ -419,13 +490,38 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     unawaited(onCloseRequested?.call());
   }
 
-  Future<void> _startMic() async {
-    await _micSub?.cancel();
+  Future<void> _serializeMic(Future<void> Function() action) {
+    final operation = _micOperation.then((_) => action());
+    _micOperation = operation.catchError((Object _) {});
+    return operation;
+  }
+
+  Future<void> _stopMic() => _serializeMic(() async {
+    final subscription = _micSub;
+    _micSub = null;
     try {
-      if (await _recorder.isRecording()) {
+      await subscription?.cancel();
+    } catch (_) {}
+    try {
+      await _recorder.stop();
+    } catch (_) {}
+  });
+
+  Future<void> _startMic(int generation) => _serializeMic(() async {
+    bool current() => _isCurrent(generation) && !isPaused;
+    if (!current()) return;
+    final subscription = _micSub;
+    _micSub = null;
+    await subscription?.cancel();
+    if (!current()) return;
+    try {
+      final recording = await _recorder.isRecording();
+      if (!current()) return;
+      if (recording) {
         await _recorder.stop();
       }
     } catch (_) {}
+    if (!current()) return;
     final stream = await _recorder.startStream(
       const RecordConfig(
         encoder: AudioEncoder.pcm16bits,
@@ -438,18 +534,24 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
         androidConfig: AndroidRecordConfig(
           manageBluetooth: true,
           audioSource: AndroidAudioSource.voiceCommunication,
-          speakerphone: false,
+          speakerphone: true,
           audioManagerMode: AudioManagerMode.modeInCommunication,
         ),
       ),
     );
+    if (!current()) {
+      try {
+        await _recorder.stop();
+      } catch (_) {}
+      return;
+    }
     final holdUntil = DateTime.now().add(const Duration(milliseconds: 280));
     if (holdUntil.isAfter(_sendAudioAfter)) {
       _sendAudioAfter = holdUntil;
     }
     _micSub = stream.listen((chunk) {
       final session = _session;
-      if (session == null || chunk.isEmpty) return;
+      if (!_isCurrent(generation) || session == null || chunk.isEmpty) return;
       if (!_shouldSendMic()) return;
       session.sendRealtimeInput(
         audio: Blob(
@@ -458,10 +560,10 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
         ),
       );
     });
-  }
+  });
 
   bool _shouldSendMic() {
-    if (isPaused) return false;
+    if (!_isCurrent(_generation) || isPaused) return false;
     if (isSpeaking || _player.isPlaying) return false;
     if (DateTime.now().isBefore(_sendAudioAfter)) return false;
     return true;
@@ -488,10 +590,11 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
   }
 
   void _holdMicAfterSpeech() {
+    final generation = _generation;
     _holdTimer?.cancel();
     _speakWatchdog?.cancel();
     _speakWatchdog = Timer(const Duration(seconds: 10), () {
-      if (!isOpen || isPaused) return;
+      if (!_isCurrent(generation) || isPaused) return;
       if (!isSpeaking || _player.isPlaying) return;
       isSpeaking = false;
       if (!isPaused) {
@@ -500,6 +603,10 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
       }
     });
     _holdTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
+      if (!_isCurrent(generation)) {
+        timer.cancel();
+        return;
+      }
       if (_player.isPlaying) return;
       timer.cancel();
       isSpeaking = false;
@@ -511,7 +618,13 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     });
   }
 
-  Future<void> _onMessage(LiveServerMessage message) async {
+  Future<void> _onMessage(
+    LiveServerMessage message,
+    int generation,
+    int connection,
+  ) async {
+    bool current() => _isCurrentConnection(generation, connection);
+    if (!current()) return;
     var changed = false;
     final content = message.serverContent;
     if (content?.interrupted == true) {
@@ -538,7 +651,7 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
       transcript = input.trim();
       changed = true;
       _maybeCloseOnEnd(transcript);
-      if (!isOpen) return;
+      if (!current()) return;
       _scheduleLocalIntent(transcript);
     }
 
@@ -553,7 +666,9 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
         notifyListeners();
         changed = false;
       }
+      if (!current()) return;
       await _player.addPcm16Bytes(Uint8List.fromList(base64Decode(audioB64)));
+      if (!current()) return;
       _holdMicAfterSpeech();
     }
 
@@ -562,6 +677,7 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     }
 
     if (changed) notifyListeners();
+    if (!current()) return;
 
     final calls = _collectCalls(message);
     var ranTool = false;
@@ -573,6 +689,7 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
       final args = _argsOf(call);
       ranTool = true;
       await _runTool(name, args, id: id.isEmpty ? null : id);
+      if (!current()) return;
     }
     if (ranTool) {
       _intentTimer?.cancel();
@@ -607,14 +724,17 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
   }
 
   void _scheduleLocalIntent(String text) {
+    final generation = _generation;
+    final connection = _connectionGeneration;
     _intentTimer?.cancel();
     _intentTimer = Timer(const Duration(milliseconds: 1400), () {
-      if (!isOpen || isPaused) return;
+      if (!_isCurrentConnection(generation, connection) || isPaused) return;
       final parsed = AssistantIntents.parse(text);
       if (parsed == null) return;
       if (_recentlyRan(parsed.name)) return;
-      unawaited(_runTool(parsed.name, parsed.args).then((_) {
-        return onToolsFinished?.call();
+      unawaited(_runTool(parsed.name, parsed.args).then((_) async {
+        if (!_isCurrentConnection(generation, connection)) return;
+        await onToolsFinished?.call();
       }));
     });
   }
@@ -624,6 +744,9 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     Map<String, dynamic> args, {
     String? id,
   }) async {
+    final generation = _generation;
+    final connection = _connectionGeneration;
+    if (!_isCurrentConnection(generation, connection)) return;
     if (AssistantIntents.mutating.contains(name) && _recentlyRan(name)) {
       if (id != null) {
         try {
@@ -639,6 +762,7 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     _recentTools[name] = DateTime.now();
     statusText = '${'Делаю'.tr}: $name';
     notifyListeners();
+    if (!_isCurrentConnection(generation, connection)) return;
     Map<String, dynamic> result;
     try {
       if (name == 'look_at_screen') {
@@ -654,6 +778,7 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     } catch (e) {
       result = {'ok': false, 'error': e.toString()};
     }
+    if (!_isCurrentConnection(generation, connection)) return;
     if (id != null && id.isNotEmpty) {
       try {
         _session?.sendFunctionResponse(
@@ -918,12 +1043,8 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
 
   @override
   void dispose() {
-    _holdTimer?.cancel();
-    _speakWatchdog?.cancel();
-    _intentTimer?.cancel();
-    _screenTimer?.cancel();
-    _micSub?.cancel();
-    _recorder.dispose();
+    _disposed = true;
+    unawaited(close().whenComplete(_recorder.dispose));
     super.dispose();
   }
 }

@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
 import '../core/constants.dart';
+import 'auth_service.dart';
 import 'offline_queue_service.dart';
 
 /// Есть ли связь с базой. Спрашиваем не у радиомодуля, а у самого Firestore:
@@ -19,10 +20,31 @@ class NetworkStatusService {
   static StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _probe;
   static StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _jobs;
   static bool _started = false;
+  static String? _userId;
+  static Timer? _retry;
 
   static void start() {
     if (_started) return;
     _started = true;
+    AuthService.user.addListener(_bindUser);
+    _bindUser();
+  }
+
+  static void _bindUser() {
+    if (!_started) return;
+    final userId = AuthService.user.value?.uid;
+    if (_userId == userId && _probe != null) return;
+    _probe?.cancel();
+    _jobs?.cancel();
+    _probe = null;
+    _jobs = null;
+    _retry?.cancel();
+    _userId = userId;
+    if (userId == null) {
+      offline.value = true;
+      pendingWrites.value = 0;
+      return;
+    }
     final db = FirebaseFirestore.instance;
     final company = db.collection('companies').doc(kCompanyId);
 
@@ -32,24 +54,34 @@ class NetworkStatusService {
         .doc('config')
         .snapshots(includeMetadataChanges: true)
         .listen(
-      (snapshot) => _setOffline(snapshot.metadata.isFromCache),
-      onError: (Object error) => debugPrint('NetworkStatus probe: $error'),
-    );
+          (snapshot) => _setOffline(snapshot.metadata.isFromCache),
+          onError: _onError,
+        );
 
     // Заявки — единственное, что мастер правит в поле, поэтому считаем именно их.
     _jobs = company
         .collection('jobs')
         .snapshots(includeMetadataChanges: true)
-        .listen(
-      (snapshot) {
-        var pending = 0;
-        for (final doc in snapshot.docs) {
-          if (doc.metadata.hasPendingWrites) pending++;
-        }
-        if (pendingWrites.value != pending) pendingWrites.value = pending;
-      },
-      onError: (Object error) => debugPrint('NetworkStatus jobs: $error'),
-    );
+        .listen((snapshot) {
+          var pending = 0;
+          for (final doc in snapshot.docs) {
+            if (doc.metadata.hasPendingWrites) pending++;
+          }
+          if (pendingWrites.value != pending) pendingWrites.value = pending;
+        }, onError: _onError);
+  }
+
+  static void _onError(Object error) {
+    debugPrint('NetworkStatus: $error');
+    _setOffline(true);
+    _probe?.cancel();
+    _jobs?.cancel();
+    _probe = null;
+    _jobs = null;
+    _retry?.cancel();
+    if (_started && AuthService.signedIn) {
+      _retry = Timer(const Duration(seconds: 15), _bindUser);
+    }
   }
 
   static void _setOffline(bool value) {
@@ -62,6 +94,9 @@ class NetworkStatusService {
   }
 
   static void dispose() {
+    AuthService.user.removeListener(_bindUser);
+    _retry?.cancel();
+    _userId = null;
     _probe?.cancel();
     _jobs?.cancel();
     _probe = null;
@@ -82,9 +117,23 @@ Future<void> settleWrite(
     await write.timeout(wait);
   } on TimeoutException {
     // Нормальный офлайн: запись лежит в кэше и уедет позже.
-    unawaited(write.catchError((Object error) {
-      debugPrint('Отложенная запись не прошла: $error');
-    }));
+    unawaited(
+      write.catchError((Object error) {
+        debugPrint('Отложенная запись не прошла: $error');
+      }),
+    );
+  }
+}
+
+Future<bool> waitForWriteAcknowledgement(
+  Future<void> pendingWrites, {
+  Duration wait = const Duration(seconds: 8),
+}) async {
+  try {
+    await pendingWrites.timeout(wait);
+    return true;
+  } on TimeoutException {
+    return false;
   }
 }
 
@@ -96,9 +145,11 @@ Future<T?> settleWriteValue<T>(
   try {
     return await write.timeout(wait);
   } on TimeoutException {
-    unawaited(write.then<void>((_) {}).catchError((Object error) {
-      debugPrint('Отложенная запись не прошла: $error');
-    }));
+    unawaited(
+      write.then<void>((_) {}).catchError((Object error) {
+        debugPrint('Отложенная запись не прошла: $error');
+      }),
+    );
     return null;
   }
 }

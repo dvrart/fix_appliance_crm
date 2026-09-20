@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../core/constants.dart';
+import '../services/app_time_service.dart';
 import '../services/status_service.dart';
 
 /// Единица техники в заявке
@@ -62,12 +63,18 @@ class JobVisit {
   final int durationMinutes;
   final String note;
   final String outcome;
+  final Map<String, dynamic> smsBooking;
   final String smsBookingDayKey;
   final String smsBookingSlotKey;
   final DateTime? smsBookingSentAt;
+  final DateTime? smsBookingPendingAt;
   final DateTime? smsReminderSentAt;
   final String smsConfirmStatus;
   final String smsDialog;
+  final bool smsBookingPending;
+  final bool smsBookingSentSms;
+  final bool smsBookingSentEmail;
+  final String smsBookingVia;
 
   const JobVisit({
     required this.id,
@@ -75,12 +82,18 @@ class JobVisit {
     this.durationMinutes = kDefaultVisitMinutes,
     this.note = '',
     this.outcome = scheduled,
+    this.smsBooking = const {},
     this.smsBookingDayKey = '',
     this.smsBookingSlotKey = '',
     this.smsBookingSentAt,
+    this.smsBookingPendingAt,
     this.smsReminderSentAt,
     this.smsConfirmStatus = '',
     this.smsDialog = '',
+    this.smsBookingPending = false,
+    this.smsBookingSentSms = false,
+    this.smsBookingSentEmail = false,
+    this.smsBookingVia = '',
   });
 
   DateTime get endAt =>
@@ -91,6 +104,35 @@ class JobVisit {
   bool get isCancelled =>
       outcome == cancelled || smsConfirmStatus == confirmCancelled;
   bool get isActiveSlot => isScheduled && !isCancelled;
+
+  static String _bookingKey(String raw) => raw.trim().replaceFirstMapped(
+    RegExp(r'^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})$'),
+    (match) => '${match[1]}T${match[2]}',
+  );
+
+  String get bookingSmsState {
+    final slotKey = AppTimeService.bookingSlotKey(startAt);
+    if (smsBooking.isNotEmpty) {
+      final nestedSlotKey = _bookingKey((smsBooking['slotKey'] ?? '').toString());
+      return nestedSlotKey == slotKey
+          ? (smsBooking['state'] ?? '').toString()
+          : '';
+    }
+    final legacySlotKey = _bookingKey(smsBookingSlotKey);
+    if (legacySlotKey.isNotEmpty && legacySlotKey != slotKey) return '';
+    if (smsBookingPending) return 'pending';
+    final via = smsBookingVia.trim().toLowerCase();
+    if (smsBookingSentAt != null &&
+        (smsBookingSentSms || via.isEmpty || via == 'sms' || via == 'both')) {
+      return 'sent';
+    }
+    return '';
+  }
+
+  bool get bookingSmsInProgress {
+    final state = bookingSmsState;
+    return state == 'approved' || state == 'sending';
+  }
 
   /// pending / confirmed / reschedule / cancelled.
   String get effectiveConfirmStatus {
@@ -144,12 +186,20 @@ class JobVisit {
       durationMinutes: (map['durationMinutes'] as num?)?.toInt() ?? kDefaultVisitMinutes,
       note: (map['note'] ?? '').toString(),
       outcome: (map['outcome'] ?? scheduled).toString(),
+      smsBooking: map['smsBooking'] is Map
+          ? Map<String, dynamic>.from(map['smsBooking'] as Map)
+          : const {},
       smsBookingDayKey: (map['smsBookingDayKey'] ?? '').toString(),
       smsBookingSlotKey: (map['smsBookingSlotKey'] ?? '').toString(),
       smsBookingSentAt: _parseDate(map['smsBookingSentAt']),
+      smsBookingPendingAt: _parseDate(map['smsBookingPendingAt']),
       smsReminderSentAt: _parseDate(map['smsReminderSentAt']),
       smsConfirmStatus: (map['smsConfirmStatus'] ?? '').toString(),
       smsDialog: (map['smsDialog'] ?? '').toString(),
+      smsBookingPending: map['smsBookingPending'] == true,
+      smsBookingSentSms: map['smsBookingSentSms'] == true,
+      smsBookingSentEmail: map['smsBookingSentEmail'] == true,
+      smsBookingVia: (map['smsBookingVia'] ?? '').toString(),
     );
   }
 
@@ -160,12 +210,18 @@ class JobVisit {
       'durationMinutes': durationMinutes.clamp(15, 8 * 60),
       'note': note,
       'outcome': outcome,
+      'smsBooking': smsBooking,
       'smsBookingDayKey': smsBookingDayKey,
       'smsBookingSlotKey': smsBookingSlotKey,
       'smsBookingSentAt': smsBookingSentAt,
+      'smsBookingPendingAt': smsBookingPendingAt,
       'smsReminderSentAt': smsReminderSentAt,
       'smsConfirmStatus': smsConfirmStatus,
       'smsDialog': smsDialog,
+      'smsBookingPending': smsBookingPending,
+      'smsBookingSentSms': smsBookingSentSms,
+      'smsBookingSentEmail': smsBookingSentEmail,
+      'smsBookingVia': smsBookingVia,
     };
   }
 
@@ -174,12 +230,18 @@ class JobVisit {
     int? durationMinutes,
     String? note,
     String? outcome,
+    Map<String, dynamic>? smsBooking,
     String? smsBookingDayKey,
     String? smsBookingSlotKey,
     DateTime? smsBookingSentAt,
+    DateTime? smsBookingPendingAt,
     DateTime? smsReminderSentAt,
     String? smsConfirmStatus,
     String? smsDialog,
+    bool? smsBookingPending,
+    bool? smsBookingSentSms,
+    bool? smsBookingSentEmail,
+    String? smsBookingVia,
     bool clearSms = false,
     bool clearSmsDialog = false,
   }) {
@@ -189,12 +251,15 @@ class JobVisit {
       durationMinutes: durationMinutes ?? this.durationMinutes,
       note: note ?? this.note,
       outcome: outcome ?? this.outcome,
+      smsBooking: clearSms ? const {} : (smsBooking ?? this.smsBooking),
       smsBookingDayKey:
           clearSms ? '' : (smsBookingDayKey ?? this.smsBookingDayKey),
       smsBookingSlotKey:
           clearSms ? '' : (smsBookingSlotKey ?? this.smsBookingSlotKey),
       smsBookingSentAt:
           clearSms ? null : (smsBookingSentAt ?? this.smsBookingSentAt),
+      smsBookingPendingAt:
+          clearSms ? null : (smsBookingPendingAt ?? this.smsBookingPendingAt),
       smsReminderSentAt:
           clearSms ? null : (smsReminderSentAt ?? this.smsReminderSentAt),
       smsConfirmStatus:
@@ -202,6 +267,16 @@ class JobVisit {
       smsDialog: clearSms || clearSmsDialog
           ? ''
           : (smsDialog ?? this.smsDialog),
+      smsBookingPending: clearSms
+          ? false
+          : (smsBookingPending ?? this.smsBookingPending),
+      smsBookingSentSms: clearSms
+          ? false
+          : (smsBookingSentSms ?? this.smsBookingSentSms),
+      smsBookingSentEmail: clearSms
+          ? false
+          : (smsBookingSentEmail ?? this.smsBookingSentEmail),
+      smsBookingVia: clearSms ? '' : (smsBookingVia ?? this.smsBookingVia),
     );
   }
 
@@ -725,6 +800,19 @@ class Job {
         scheduledAt: scheduledAt,
         durationMinutes: durationMinutes,
       );
+
+  List<JobVisit> get activeVisits {
+    if (isDeleted || JobStatuses.isClosed(status)) return const [];
+    return coalescedVisits.where((visit) => visit.isActiveSlot).toList();
+  }
+
+  JobVisit? nextActiveVisit({DateTime? now}) {
+    final instant = (now ?? DateTime.now()).toUtc();
+    for (final visit in activeVisits) {
+      if (visit.endAt.toUtc().isAfter(instant)) return visit;
+    }
+    return null;
+  }
 
   /// Последний по дате визит — текущий слот заявки.
   JobVisit? get latestVisit {

@@ -7,6 +7,8 @@
 -keep class org.json.** { *; }
 -keepnames class org.json.** { *; }
 -keepattributes InnerClasses
+-keep class com.example.fix_appliance_crm.CrmShadeNotifier { *; }
+-keep class com.example.fix_appliance_crm.CrmCallActions { *; }
 
 # Stripe Terminal / Tap to Pay
 -keep class com.stripe.** { *; }
