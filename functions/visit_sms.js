@@ -2235,10 +2235,15 @@ async function keepVisit(match, from, clientId) {
   return true;
 }
 
+// Без region функция создаётся в регионе базы Firestore (northamerica-northeast2),
+// как processIncomingSms и processQueuedCallRecording. Прежний явный us-central1
+// гонял каждое событие между регионами — не возвращайте его обратно.
+// Учтите: одной правки здесь мало. Регион уже существующей функции деплоем не
+// меняется, нужен firebase functions:delete onJobWritten --region <старый>,
+// и на время пересоздания триггер на заявках не работает.
 exports.onJobWritten = onDocumentWritten(
   {
     document: `companies/${COMPANY_ID}/jobs/{jobId}`,
-    region: 'us-central1',
     timeoutSeconds: 180,
     memory: '512MiB',
   },

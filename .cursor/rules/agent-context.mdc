@@ -475,7 +475,29 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 ## Голос секретаря и предупреждение о firebase-functions (20 сентября 2026)
 
 - Голос Gemini Live — **`Zephyr`** (женский), `buildSetup` в `voice_relay.js`. Был `Charon` (мужской). Запасной путь `Gather`/ConversationRelay говорит женским `en-US-Chirp3-HD-Aoede`, его не трогали. Голос проверяется тестом «pause tuning preserves the voice…» в `voice_relay.test.js` — меняя голос, правьте и тест. Деплой: `functions:aiVoiceRelay`.
-- `functions: package.json indicates an outdated version of firebase-functions` в логе деплоя — **косметика, не чините сгоряча**. `firebase-tools/lib/deploy/functions/runtimes/node/versioning.js` печатает её при любом `installed !== latest`; настоящий минимум `MIN_FUNCTIONS_SDK_VERSION = 3.20.0`, у нас 7.3.2. Отдельное предупреждение «слишком старая» выглядит иначе (`FUNCTIONS_SDK_VERSION_TOO_OLD_WARNING`). Строка будет возвращаться после каждого релиза Google.
-- Обновление до `7.4.0` (вышла 15.09.2026) владелец сознательно отложил до **22 сентября 2026**: правило «не ставить пакеты моложе 7 дней». В релизе — GA Auth-триггеров 2-го поколения, совместимость параметров при смешанных версиях SDK, перенос манифеста на `globalThis` (#1955, трогает discovery — тот самый, из-за которого нужен `FUNCTIONS_DISCOVERY_TIMEOUT=120`), рефактор `v2/ai`. Ломающих изменений не заявлено. Перед деплоем — `npm --prefix functions test` и проверка живого звонка.
+- `functions: package.json indicates an outdated version of firebase-functions` в логе деплоя — **косметика, не чините сгоряча**. `firebase-tools/lib/deploy/functions/runtimes/node/versioning.js` печатает её при любом `installed !== latest`; настоящий минимум `MIN_FUNCTIONS_SDK_VERSION = 3.20.0`. Отдельное предупреждение «слишком старая» выглядит иначе (`FUNCTIONS_SDK_VERSION_TOO_OLD_WARNING`). Строка будет возвращаться после каждого релиза Google.
+- 20.09.2026 по решению владельца подняли `firebase-functions` до **`7.4.0`** (в релизе: GA Auth-триггеров 2-го поколения, совместимость параметров при смешанных версиях SDK, перенос манифеста на `globalThis` #1955 — трогает тот самый discovery, из-за которого нужен `FUNCTIONS_DISCOVERY_TIMEOUT=120`, рефактор `v2/ai`). 107 тестов прошли, discovery не сломался, предупреждение из лога деплоя исчезло.
+- Вечером 20.09.2026 догнали прод: к голосовым доехали ещё **22 функции**, на 3 сентября осознанно оставлены только `p`, `shortenLink`, `estimateConfirm`, `getStripeBalance`, `twilioAccessToken`, `createTerminalPaymentIntent`, `createTerminalConnectionToken` — их собственный код с тех пор не менялся. Главное, что это починило: `notify.js` слал Android-пуш с блоком `notification`, который глотает Twilio-сервис FCM, поэтому уведомления о визитах, письмах и оплатах не доходили; и `retryStuckCallAi` обрабатывал запись звонка **без** `withProcessingLease` параллельно с `processQueuedCallRecording`.
+
+## Как узнать, что реально крутится в проде (20 сентября 2026)
+
+**Гиту верить нельзя.** Коммит `4b3106a` — свалка накопленного за две недели, но куски этого кода уезжали в прод отдельными деплоями 7, 8, 14 и 18 сентября. По датам коммитов это не восстанавливается, и «незадеплоенным» легко посчитать то, что давно работает.
+
+`gcloud` на машине нет. Рабочий способ — переиспользовать `accessToken()` из `tools/read_logs.js`:
+
+1. `GET https://cloudfunctions.googleapis.com/v2/projects/fix-appliance-crm/locations/-/functions` — время деплоя каждой функции. **Локация обязательно `-`**: в `us-central1` нет `onJobWritten`, `processIncomingSms` и `processQueuedCallRecording` — они в `northamerica-northeast2`, и запрос по одному региону молча их теряет.
+2. `POST .../functions/{ИМЯ}:generateDownloadUrl` — скачивает **реальный архив исходников из прода**. Распаковать и сравнить с рабочим деревом. Это единственный точный ответ на вопрос «что там лежит».
+
+Имя в Cloud Functions API — camelCase (`incomingCall`), а в Cloud Run — в нижнем регистре (`incomingcall`). Перепутаете — получите 404.
+
+Деплой заливает **всю папку `functions/` целиком**, поэтому «выкатить только `notify.js`» нельзя: функция получает и новый `index.js`, и всё остальное.
+
+## Регион onJobWritten (20 сентября 2026)
+
+`onJobWritten` теперь в **`northamerica-northeast2`**, рядом с базой Firestore и с двумя другими триггерами. Раньше у него был явно прописан `region: 'us-central1'`, и каждое событие ходило между регионами — Firebase ругался на это при каждом деплое.
+
+- **Регион существующей функции нельзя сменить деплоем.** Убрать `region:` из исходника мало: `firebase deploy` спокойно обновит функцию там, где она уже стоит, и предупреждение останется. Нужно `firebase functions:delete onJobWritten --region us-central1 --force`, затем обычный деплой — он создаст её заново в правильном регионе.
+- Между удалением и созданием (~2 минуты) триггер на заявках не существует. Пропущенные подтверждения визита догоняет ежечасный `sendMissedBookingConfirms`, а вот строки журнала `recordJobChanges` за эту дыру теряются безвозвратно. Делать только в тихое окно.
+- У `sendVisitReminders` `region: 'us-central1'` **оставлен намеренно** — это планировщик, у него нет триггера в другом регионе, и трогать его значит зря пересоздавать функцию. `aiVoiceRelay` и `callRecordingAudio` тоже обязаны остаться в `us-central1`: их адрес зашит в подпись Twilio и в ссылки, которые открывает приложение.
 
 - Проверка: `npm --prefix functions test` (107 тестов на Node 22.20.0); `flutter test --no-pub test/job_visit_sms_test.dart` (56). Реальный Gemini проверен на синтетическом lookup и подтверждённой отмене с in-memory backend, **без записи в production**. Обновлены 15 функций голос/SMS/Gmail/recovery и установлен release APK на `R5CW421KFXH`. Для shared-calendar изменений обновлять также `onJobWritten`, `sendVisitReminders`, `retryStuckCallAi`, `recoverStuckCallJobs`, `syncGmailInbox`, `sendSms`, `smsStatusCallback`, кроме основного набора голосовых функций.
