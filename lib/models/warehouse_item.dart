@@ -13,6 +13,13 @@ class WarehouseItem {
   final int quantity;
   final int? minQuantity;
   final String? imageUrl;
+
+  /// Картинка детали, которую ИИ нашёл в интернете (каталожное фото).
+  /// Своё фото стикера живёт отдельно в [imageUrl].
+  final String? webImageUrl;
+
+  /// Магазин, откуда картинка.
+  final String? webImageSource;
   final String? other; // доп. информация
   final bool isUsed; // б/у или новая
 
@@ -35,6 +42,8 @@ class WarehouseItem {
     this.quantity = 0,
     this.minQuantity,
     this.imageUrl,
+    this.webImageUrl,
+    this.webImageSource,
     this.other,
     this.isUsed = false,
     this.interchange = const [],
@@ -44,6 +53,14 @@ class WarehouseItem {
   });
 
   bool get isDeleted => deletedAt != null;
+
+  /// Что показывать в списке: каталожная картинка красивее стикера.
+  String? get displayImageUrl {
+    final web = webImageUrl?.trim();
+    if (web != null && web.isNotEmpty) return web;
+    final own = imageUrl?.trim();
+    return own == null || own.isEmpty ? null : own;
+  }
 
   static const trashKeepDays = 30;
 
@@ -141,6 +158,8 @@ class WarehouseItem {
       quantity: _asInt(map['quantity']),
       minQuantity: map['minQuantity'] == null ? null : _asInt(map['minQuantity']),
       imageUrl: map['imageUrl'],
+      webImageUrl: map['webImageUrl'],
+      webImageSource: map['webImageSource'],
       other: map['other'],
       isUsed: map['isUsed'] == true,
       interchange: parseInterchange(map['interchange']),
@@ -168,6 +187,8 @@ class WarehouseItem {
       'quantity': quantity,
       'minQuantity': minQuantity,
       'imageUrl': imageUrl,
+      'webImageUrl': webImageUrl,
+      'webImageSource': webImageSource,
       'other': other,
       'isUsed': isUsed,
       'interchange': interchange,
@@ -187,6 +208,8 @@ class WarehouseItem {
     int? quantity,
     int? minQuantity,
     String? imageUrl,
+    String? webImageUrl,
+    String? webImageSource,
     String? other,
     bool? isUsed,
     List<String>? interchange,
@@ -206,6 +229,8 @@ class WarehouseItem {
       quantity: quantity ?? this.quantity,
       minQuantity: minQuantity ?? this.minQuantity,
       imageUrl: imageUrl ?? this.imageUrl,
+      webImageUrl: webImageUrl ?? this.webImageUrl,
+      webImageSource: webImageSource ?? this.webImageSource,
       other: other ?? this.other,
       isUsed: isUsed ?? this.isUsed,
       interchange: interchange ?? this.interchange,

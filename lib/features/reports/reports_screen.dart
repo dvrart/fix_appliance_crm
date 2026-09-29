@@ -17,6 +17,7 @@ import '../../core/l10n/app_locale.dart';
 import 'tax_workbook_view.dart';
 import 'tax_writeoff_guide_page.dart';
 import '../expenses/expenses_screen.dart';
+import '../../services/error_log_service.dart';
 
 class ReportsScreen extends StatefulWidget {
   const ReportsScreen({super.key});
@@ -43,6 +44,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   @override
   void initState() {
     super.initState();
+    ErrorLogService.markScreen('Отчёты');
     _loadWarehouseCosts();
     _loadStripeBalance();
     _loadCompany();

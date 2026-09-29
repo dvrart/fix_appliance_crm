@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -17,11 +19,24 @@ class ErrorLogService {
   static const _kPending = 'error_log_pending_v1';
   static const _kSessionOpen = 'error_log_session_open_v1';
   static const _kLastScreen = 'error_log_last_screen_v1';
+  static const _kScreenAt = 'error_log_screen_at_v1';
+  static const _kVitals = 'error_log_vitals_v1';
   static const int keepPending = 40;
+
+  /// Как часто снимаем показания, пока приложение открыто. Замер уходит в
+  /// SharedPreferences, поэтому он переживает и вылет, и OOM-kill.
+  static const vitalsPeriod = Duration(seconds: 30);
+
+  /// Насколько метка экрана считается свежей. Раньше метка не сбрасывалась
+  /// никогда, и любой вылет за месяц подписывался последним экраном, который
+  /// её ставил, — журнал уверенно врал про «Склад».
+  static const screenIsFreshFor = Duration(minutes: 3);
 
   static String _screen = '';
   static String _version = '';
   static bool _installed = false;
+  static Timer? _vitalsTimer;
+  static int _baselineRss = 0;
 
   /// Куда смотрел мастер, когда всё сломалось. Ставится при открытии экрана.
   static void markScreen(String name) {
@@ -33,6 +48,54 @@ class ErrorLogService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kLastScreen, name);
+      await prefs.setInt(_kScreenAt, DateTime.now().millisecondsSinceEpoch);
+    } catch (_) {}
+  }
+
+  // ------------------------------------------------------- замер состояния
+
+  /// Память процесса и картинки в кэше. Именно это отличает OOM-kill от
+  /// любой другой причины: у вылета по памяти замер перед смертью большой.
+  static AppVitals vitals() {
+    var rss = 0;
+    try {
+      rss = ProcessInfo.currentRss;
+    } catch (_) {}
+    // Первый замер сеанса становится точкой отсчёта.
+    if (_baselineRss == 0 && rss > 0) _baselineRss = rss;
+    var imageBytes = 0;
+    var imageCount = 0;
+    try {
+      final cache = PaintingBinding.instance.imageCache;
+      imageBytes = cache.currentSizeBytes;
+      imageCount = cache.currentSize;
+    } catch (_) {}
+    return AppVitals(
+      at: DateTime.now(),
+      screen: _screen,
+      rssBytes: rss,
+      baselineRssBytes: _baselineRss,
+      imageCacheBytes: imageBytes,
+      imageCount: imageCount,
+    );
+  }
+
+  /// Пока приложение на экране — раз в полминуты записываем показания.
+  static void startVitals() {
+    _vitalsTimer?.cancel();
+    unawaited(_writeVitals());
+    _vitalsTimer = Timer.periodic(vitalsPeriod, (_) => _writeVitals());
+  }
+
+  static void stopVitals() {
+    _vitalsTimer?.cancel();
+    _vitalsTimer = null;
+  }
+
+  static Future<void> _writeVitals() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kVitals, jsonEncode(vitals().toMap()));
     } catch (_) {}
   }
 
@@ -104,25 +167,91 @@ class ErrorLogService {
       // а умерло. Так ловятся вылеты, до которых Flutter не доживает.
       if (prefs.getBool(_kSessionOpen) == true) {
         final screen = prefs.getString(_kLastScreen) ?? '';
+        final screenAt = prefs.getInt(_kScreenAt);
+        final last = AppVitals.tryParse(prefs.getString(_kVitals));
         await _stash({
           'at': DateTime.now().toIso8601String(),
           'kind': 'crash',
-          'message': screen.isEmpty
-              ? 'Приложение закрылось само (вылет)'
-              : 'Приложение закрылось само на экране «$screen»',
-          'screen': screen,
+          'message': describeCrash(
+            screen: screen,
+            screenAt: screenAt == null
+                ? null
+                : DateTime.fromMillisecondsSinceEpoch(screenAt),
+            last: last,
+            now: DateTime.now(),
+          ),
+          // Экран пишем в поле только если метке можно верить.
+          'screen': screenAt != null &&
+                  DateTime.now()
+                          .difference(
+                            DateTime.fromMillisecondsSinceEpoch(screenAt),
+                          )
+                          .abs() <=
+                      screenIsFreshFor
+              ? screen
+              : '',
           'version': _version,
         });
       }
       await prefs.setBool(_kSessionOpen, true);
+      await prefs.remove(_kVitals);
     } catch (error) {
       debugPrint('ErrorLog start: $error');
     }
+    startVitals();
     unawaited(flush());
+  }
+
+  /// Человекочитаемый разбор вылета. Чистая функция — закрыта тестом, потому
+  /// что прежний вариант («на экране Склад») месяц уводил в сторону.
+  @visibleForTesting
+  static String describeCrash({
+    required String screen,
+    required DateTime? screenAt,
+    required AppVitals? last,
+    required DateTime now,
+  }) {
+    final parts = <String>['Приложение закрылось само'];
+    if (screen.isEmpty || screenAt == null) {
+      parts.add('экран неизвестен');
+    } else {
+      final age = now.difference(screenAt).abs();
+      parts.add(
+        age <= screenIsFreshFor
+            ? 'на экране «$screen»'
+            : 'последний отмеченный экран «$screen», но метке уже '
+                '${_humanAge(age)} — верить ей нельзя',
+      );
+    }
+    if (last == null) {
+      parts.add('замера памяти нет');
+    } else {
+      final age = now.difference(last.at).abs();
+      final growth = last.baselineRssBytes > 0
+          ? ', в начале сеанса ${last.baselineRssMb} МБ '
+              '(${last.rssGrowthMb >= 0 ? '+' : ''}${last.rssGrowthMb} МБ)'
+          : '';
+      parts.add(
+        'замер за ${_humanAge(age)} до конца: память ${last.rssMb} МБ$growth, '
+        'картинки в кэше ${last.imageCacheMb} МБ (${last.imageCount} шт)',
+      );
+      if (last.looksLikeOutOfMemory) {
+        parts.add('память заметно росла — похоже на нехватку памяти');
+      }
+    }
+    return '${parts.join('. ')}.';
+  }
+
+  static String _humanAge(Duration age) {
+    if (age.inSeconds < 60) return '${age.inSeconds} с';
+    if (age.inMinutes < 60) return '${age.inMinutes} мин';
+    if (age.inHours < 24) return '${age.inHours} ч';
+    return '${age.inDays} дн';
   }
 
   /// Приложение уходит в фон штатно — вылета не было.
   static Future<void> markCleanPause() async {
+    stopVitals();
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_kSessionOpen, false);
@@ -130,6 +259,7 @@ class ErrorLogService {
   }
 
   static Future<void> markResumed() async {
+    startVitals();
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_kSessionOpen, true);
@@ -258,6 +388,85 @@ class ErrorLogService {
         .take(count)
         .toList();
     return lines.join('\n');
+  }
+}
+
+/// Снимок состояния приложения. Пишется раз в полминуты, чтобы после
+/// вылета было видно, сколько памяти держало приложение перед смертью.
+class AppVitals {
+  final DateTime at;
+  final String screen;
+  final int rssBytes;
+
+  /// Сколько памяти держало приложение в начале сеанса. Абсолютное число
+  /// ни о чём не говорит: живой замер на телефоне мастера дал 440 МБ RSS
+  /// сразу после запуска, то есть любой фиксированный порог кричал бы «OOM»
+  /// на каждом вылете. Смотреть надо на рост внутри сеанса.
+  final int baselineRssBytes;
+  final int imageCacheBytes;
+  final int imageCount;
+
+  const AppVitals({
+    required this.at,
+    required this.screen,
+    required this.rssBytes,
+    required this.baselineRssBytes,
+    required this.imageCacheBytes,
+    required this.imageCount,
+  });
+
+  int get rssMb => (rssBytes / (1024 * 1024)).round();
+  int get baselineRssMb => (baselineRssBytes / (1024 * 1024)).round();
+  int get imageCacheMb => (imageCacheBytes / (1024 * 1024)).round();
+
+  /// Насколько выросла память с начала сеанса.
+  int get rssGrowthMb => rssMb - baselineRssMb;
+
+  /// Такой рост внутри одного сеанса — это уже не обычная работа, а утечка
+  /// или разовый всплеск (пачка картинок в ИИ, полноразмерное фото).
+  ///
+  /// Величина привязана к живому замеру: `ProcessInfo.currentRss` отдаёт по
+  /// этому приложению ~176 МБ, тогда как `dumpsys` для того же процесса
+  /// показывает 460 МБ. То есть Dart видит свою часть, а не весь процесс, и
+  /// сравнивать надо только с его же началом сеанса.
+  static const suspiciousGrowthMb = 150;
+
+  /// Кэш картинок Flutter по умолчанию упирается в 100 МБ. Почти полный кэш
+  /// значит, что экран забит крупными снимками — второй признак OOM, который
+  /// в Dart-RSS может и не проявиться: битмапы живут за его пределами.
+  static const saturatedImageCacheMb = 90;
+
+  bool get looksLikeOutOfMemory =>
+      (baselineRssBytes > 0 && rssGrowthMb >= suspiciousGrowthMb) ||
+      imageCacheMb >= saturatedImageCacheMb;
+
+  Map<String, dynamic> toMap() => {
+    'at': at.toIso8601String(),
+    'screen': screen,
+    'rss': rssBytes,
+    'base': baselineRssBytes,
+    'img': imageCacheBytes,
+    'imgCount': imageCount,
+  };
+
+  static AppVitals? tryParse(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final map = jsonDecode(raw);
+      if (map is! Map) return null;
+      final at = DateTime.tryParse('${map['at']}');
+      if (at == null) return null;
+      return AppVitals(
+        at: at,
+        screen: (map['screen'] ?? '').toString(),
+        rssBytes: (map['rss'] as num?)?.toInt() ?? 0,
+        baselineRssBytes: (map['base'] as num?)?.toInt() ?? 0,
+        imageCacheBytes: (map['img'] as num?)?.toInt() ?? 0,
+        imageCount: (map['imgCount'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }
 

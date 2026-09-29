@@ -136,6 +136,17 @@ class StripeService {
     );
   }
 
+  /// Проверить статус оплаты Stripe по ссылке или инвойсу.
+  static Future<Map<String, dynamic>> checkPaymentStatus({
+    required String jobId,
+    required int documentIndex,
+  }) async {
+    return await _postJson('/checkStripePayment', {
+      'jobId': jobId,
+      'documentIndex': documentIndex,
+    });
+  }
+
   /// Возврат по счёту: Stripe refund + запись в CRM.
   /// [amount] null = вернуть всё, что оплачено по документу.
   static Future<StripeRefundResult> refundPayment({

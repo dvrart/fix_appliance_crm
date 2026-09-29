@@ -9,6 +9,7 @@ import 'job_details_controller.dart';
 import 'tabs/details_tab.dart';
 import 'tabs/finance_tab.dart';
 import 'tabs/chat_tab.dart';
+import '../../../services/error_log_service.dart';
 
 class JobDetailsScreen extends StatefulWidget {
   final String jobId;
@@ -38,6 +39,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
   @override
   void initState() {
     super.initState();
+    ErrorLogService.markScreen('Карточка заявки');
     _tabController = TabController(
       length: 3,
       vsync: this,

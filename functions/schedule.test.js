@@ -133,6 +133,21 @@ test('caller brief includes every upcoming visit, earliest first, with explicit 
   assert.ok(brief.indexOf('2099') < brief.indexOf('2100'));
 });
 
+// Звонит номер, на котором уже есть заявка: секретарь не должна догадываться,
+// она спрашивает — это про ту заявку или новая.
+test('a caller with work on file is asked whether the call is about it or a new repair', () => {
+  const booked = schedule.describeCallerJobs([job()], NOW);
+  assert.match(booked, /about that repair or want a separate new one/);
+  const noVisitYet = schedule.describeCallerJobs([job({ visits: [] })], NOW);
+  assert.match(noVisitYet, /about that repair or want a separate new one/);
+});
+
+test('a caller with nothing open is not asked which repair the call is about', () => {
+  const brief = schedule.describeCallerJobs([job({ status: 'Completed' })], NOW);
+  assert.match(brief, /No upcoming visits/);
+  assert.doesNotMatch(brief, /separate new one/);
+});
+
 test('legacy schedule fields still describe a real future visit', () => {
   const brief = schedule.describeCallerJobs([job({ visits: [], scheduledDate: START })], NOW);
   assert.match(brief, /2099/);
@@ -252,4 +267,22 @@ test('ended calls cannot start a new cancellation', async () => {
   store.get(`${COMPANY}/calls/${CALLER.callSid}`).status = 'completed';
   assert.equal((await schedule.cancelCallerVisit(CALLER, TARGET)).ok, false);
   assert.deepEqual(writes, []);
+});
+
+test('a closed Saturday is spoken as fully booked, never as a day we do not work', async () => {
+  store.set(`${COMPANY}/settings/config`, {
+    workDays: [1, 2, 3, 4, 5], workStartMinutes: 420, workEndMinutes: 1260,
+  });
+  const check = await schedule.checkSlot(new Date('2099-01-03T17:00:00Z'));
+  assert.equal(check.ok, false);
+  assert.equal(check.reason, 'closed');
+  assert.equal(check.wantedWeekday, 'Saturday');
+  assert.match(check.note, /do work Saturdays/i);
+  const sms = schedule.smsBusyReply(check);
+  assert.match(sms, /We do work Saturdays, but every window that day is already booked/);
+  assert.doesNotMatch(sms, /doesn't visit that day/);
+  const brief = await schedule.calendarBrief();
+  assert.match(brief, /Saturday: never say we are closed/);
+  assert.match(brief, /Sunday: no visit/);
+  assert.doesNotMatch(brief, /Saturday and Sunday: no visit/);
 });

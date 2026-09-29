@@ -133,7 +133,10 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
   }
 
   Future<void> _openActiveCallScreen({bool resume = false}) async {
-    if (!mounted || _callScreenShown || !_isLive(TwilioService.callStatus)) {
+    if (!mounted ||
+        _callScreenShown ||
+        CallScreen.isShown ||
+        !_isLive(TwilioService.callStatus)) {
       return;
     }
     final lifecycle = WidgetsBinding.instance.lifecycleState;

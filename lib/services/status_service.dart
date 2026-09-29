@@ -54,6 +54,7 @@ class StatusService {
   static const Map<String, int> _builtinColors = {
     JobStatuses.call: 0xFF1E88E5,
     JobStatuses.inProgress: 0xFFFCC520,
+    JobStatuses.deposit: 0xFFFFB300,
     JobStatuses.rescheduled: 0xFF7E57C2,
     JobStatuses.waitingPart: 0xFFFB8C00,
     JobStatuses.install: 0xFF3F51B5,
@@ -230,17 +231,55 @@ class StatusService {
 
   static bool isBuiltin(String status) => builtins.contains(status);
 
-  static Color colorOf(String status) {
+  static JobStatusDef? _findDef(String status) {
+    final key = status.trim();
     for (final item in _cache) {
-      if (item.id == status || item.label == status) return item.color;
+      if (item.id == key || item.label == key) return item;
     }
-    return JobStatuses.fallbackColor(status);
+    final folded = key.toLowerCase();
+    for (final item in _cache) {
+      if (item.id.toLowerCase() == folded ||
+          item.label.toLowerCase() == folded) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  static Color _builtinColorOf(String id) {
+    for (final item in _cache) {
+      if (item.id == id) return item.color;
+    }
+    return Color(_builtinColors[id] ?? 0xFF14557F);
+  }
+
+  /// Базовый статус, чьим цветом красим алиасы («Готов», «Canceled»…).
+  static String? _aliasTarget(String status) {
+    if (JobStatuses.isCompletedStatus(status)) return JobStatuses.completed;
+    if (JobStatuses.isCancelledStatus(status)) return JobStatuses.cancelled;
+    if (JobStatuses.isInstallStatus(status)) return JobStatuses.install;
+    if (JobStatuses.isDepositStatus(status)) return JobStatuses.deposit;
+    return null;
+  }
+
+  static Color colorOf(String status) {
+    final key = status.trim();
+    final def = _findDef(key);
+    if (def != null) return def.color;
+    final alias = _aliasTarget(key);
+    if (alias != null) return _builtinColorOf(alias);
+    if (key.toLowerCase() == JobStatuses.inProgress.toLowerCase()) {
+      return Color(_builtinColors[JobStatuses.inProgress]!);
+    }
+    return JobStatuses.fallbackColor(key);
   }
 
   static String labelOf(String status) {
-    for (final item in _cache) {
-      if (item.id == status || item.label == status) return item.label;
-    }
+    final key = status.trim();
+    final def = _findDef(key);
+    if (def != null) return def.label;
+    final alias = _aliasTarget(key);
+    if (alias != null) return _findDef(alias)?.label ?? alias;
     return status;
   }
 
@@ -412,11 +451,13 @@ class StatusService {
     if (!rawIds.contains(JobStatuses.callBack)) return true;
     if (!rawIds.contains(JobStatuses.repeatVisit)) return true;
     if (!rawIds.contains(JobStatuses.repeat)) return true;
+    if (!rawIds.contains(JobStatuses.deposit)) return true;
     final parsedIds = {for (final item in parsed) item.id};
     if (!parsedIds.contains(JobStatuses.install)) return true;
     if (!parsedIds.contains(JobStatuses.callBack)) return true;
     if (!parsedIds.contains(JobStatuses.repeatVisit)) return true;
     if (!parsedIds.contains(JobStatuses.repeat)) return true;
+    if (!parsedIds.contains(JobStatuses.deposit)) return true;
     return false;
   }
 

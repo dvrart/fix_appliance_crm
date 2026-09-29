@@ -10,6 +10,7 @@ import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
 import '../../models/secretary_lesson.dart';
 import '../../services/ai_service.dart';
+import '../../services/client_service.dart';
 import '../../services/firestore_service.dart';
 import '../../services/job_service.dart';
 import '../../services/message_translate_service.dart';
@@ -19,6 +20,7 @@ import '../../shared/widgets/call_transcript_chat.dart';
 import '../ai/job_preview_screen.dart';
 import '../jobs/job_details/editors/call_recording_page.dart';
 import '../jobs/job_details/job_details_screen.dart';
+import '../messages/conversation_screen.dart';
 import 'call_screen.dart';
 
 /// Запись, расшифровка RU/EN и разбор ошибки секретаря по одному звонку.
@@ -51,6 +53,57 @@ class CallReviewPage extends StatelessWidget {
     );
   }
 
+  static Future<void> _openMessageFromCall(
+    BuildContext context, {
+    required CallRecord call,
+    String? contactName,
+  }) async {
+    final phone = (call.isIncoming ? call.fromNumber : call.toNumber).trim();
+    if (phone.isEmpty) return;
+    var name = (contactName ?? '').trim();
+    var clientId = (call.clientId ?? '').trim();
+    if (name.isEmpty) {
+      final extracted = {
+        ...?call.extractedData,
+        if (call.aiReception?['extracted'] is Map)
+          ...Map<String, dynamic>.from(call.aiReception!['extracted'] as Map),
+      };
+      for (final key in [
+        'client_name',
+        'clientName',
+        'name',
+        'caller_name',
+        'contactName',
+      ]) {
+        final val = (extracted[key] ?? '').toString().trim();
+        if (val.isNotEmpty) {
+          name = val;
+          break;
+        }
+      }
+    }
+    if (clientId.isEmpty || name.isEmpty) {
+      try {
+        final client = (call.clientId ?? '').trim().isNotEmpty
+            ? await ClientService.getById(call.clientId!)
+            : await ClientService.findByPhone(phone);
+        if (client != null) {
+          if (clientId.isEmpty) clientId = client.id;
+          if (name.isEmpty) name = client.fullName.trim();
+        }
+      } catch (_) {}
+    }
+    if (!context.mounted) return;
+    await ConversationScreen.open(
+      context,
+      phoneNumber: phone,
+      contactName: name.isNotEmpty ? name : null,
+      clientId: clientId.isNotEmpty ? clientId : null,
+      jobId: (call.createdJobId ?? '').trim().isNotEmpty ? call.createdJobId : null,
+      initialChannel: ConversationChannel.sms,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<CallRecord?>(
@@ -60,6 +113,9 @@ class CallReviewPage extends StatelessWidget {
         return StreamBuilder<List<SecretaryLesson>>(
           stream: SecretaryLearnService.streamForCall(callId),
           builder: (context, lessonsSnap) {
+            final phone = call != null
+                ? (call.isIncoming ? call.fromNumber : call.toNumber).trim()
+                : '';
             return Scaffold(
               backgroundColor: const Color(0xFFF4F6F8),
               appBar: AppBar(
@@ -70,6 +126,16 @@ class CallReviewPage extends StatelessWidget {
                 backgroundColor: AppColors.primary,
                 foregroundColor: Colors.white,
                 actions: [
+                  if (call != null && phone.isNotEmpty)
+                    IconButton(
+                      tooltip: context.tr('Написать', 'Message'),
+                      icon: const Icon(Icons.chat_bubble_outline),
+                      onPressed: () => _openMessageFromCall(
+                        context,
+                        call: call,
+                        contactName: contactName,
+                      ),
+                    ),
                   if (call != null && !call.isDeleted)
                     IconButton(
                       tooltip: 'Удалить'.tr,
@@ -121,6 +187,8 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
   late String _transcriptEn;
   String _lang = 'ru';
   bool _translating = false;
+  String? _clientLookupName;
+  String? _clientLookupId;
 
   String get _transcript => _lang == 'en' ? _transcriptEn : _transcriptRu;
 
@@ -140,6 +208,7 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
     super.initState();
     _hydrate(widget.call);
     _ensureLanguages();
+    _lookupClient(widget.call);
   }
 
   @override
@@ -158,6 +227,103 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
       _hydrate(next);
       _ensureLanguages();
     }
+    if (next.id != prev.id ||
+        next.fromNumber != prev.fromNumber ||
+        next.toNumber != prev.toNumber ||
+        next.clientId != prev.clientId) {
+      _lookupClient(next);
+    }
+  }
+
+  Future<void> _lookupClient(CallRecord call) async {
+    final phone = (call.isIncoming ? call.fromNumber : call.toNumber).trim();
+    if (phone.isEmpty) return;
+    try {
+      final client = (call.clientId ?? '').trim().isNotEmpty
+          ? await ClientService.getById(call.clientId!)
+          : await ClientService.findByPhone(phone);
+      if (!mounted || client == null) return;
+      setState(() {
+        _clientLookupName = client.fullName.trim();
+        _clientLookupId = client.id;
+      });
+    } catch (_) {}
+  }
+
+  String _effectiveName(CallRecord call) {
+    if ((widget.contactName ?? '').trim().isNotEmpty) {
+      return widget.contactName!.trim();
+    }
+    if ((_clientLookupName ?? '').trim().isNotEmpty) {
+      return _clientLookupName!.trim();
+    }
+    final extracted = {
+      ...?call.extractedData,
+      if (call.aiReception?['extracted'] is Map)
+        ...Map<String, dynamic>.from(call.aiReception!['extracted'] as Map),
+    };
+    for (final key in [
+      'client_name',
+      'clientName',
+      'name',
+      'caller_name',
+      'contactName',
+    ]) {
+      final val = (extracted[key] ?? '').toString().trim();
+      if (val.isNotEmpty) return val;
+    }
+    return '';
+  }
+
+  String? _effectiveClientId(CallRecord call) {
+    if ((call.clientId ?? '').trim().isNotEmpty) {
+      return call.clientId!.trim();
+    }
+    if ((_clientLookupId ?? '').trim().isNotEmpty) {
+      return _clientLookupId!.trim();
+    }
+    return null;
+  }
+
+  Future<void> _openMessage() async {
+    final call = widget.call;
+    final phone = (call.isIncoming ? call.fromNumber : call.toNumber).trim();
+    if (phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            context.tr('Номер телефона не указан', 'No phone number available'),
+          ),
+        ),
+      );
+      return;
+    }
+    final name = _effectiveName(call);
+    final clientId = _effectiveClientId(call);
+    final jobId = (call.createdJobId ?? '').trim().isNotEmpty
+        ? call.createdJobId
+        : null;
+
+    await ConversationScreen.open(
+      context,
+      phoneNumber: phone,
+      contactName: name.isNotEmpty ? name : null,
+      clientId: clientId,
+      jobId: jobId,
+      initialChannel: ConversationChannel.sms,
+    );
+  }
+
+  void _callBack() {
+    final call = widget.call;
+    final phone = (call.isIncoming ? call.fromNumber : call.toNumber).trim();
+    if (phone.isEmpty) return;
+    final name = _effectiveName(call);
+    CallScreen.open(
+      context,
+      phoneNumber: phone,
+      contactName: name.isNotEmpty ? name : null,
+    );
   }
 
   void _hydrate(CallRecord call) {
@@ -322,8 +488,8 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
   @override
   Widget build(BuildContext context) {
     final call = widget.call;
-    final phone = call.isIncoming ? call.fromNumber : call.toNumber;
-    final name = (widget.contactName ?? '').trim();
+    final phone = (call.isIncoming ? call.fromNumber : call.toNumber).trim();
+    final name = _effectiveName(call);
     final url = playableCallUrl(call.toAttachment());
     final report = _report;
     final hasProblem = (report?.isIssue ?? false) ||
@@ -359,7 +525,13 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
             ),
           ),
         const SizedBox(height: 12),
-        _HeaderCard(call: call, name: name, phone: phone),
+        CallReviewHeaderCard(
+          call: call,
+          name: name,
+          phone: phone,
+          onCall: phone.isEmpty ? null : _callBack,
+          onMessage: phone.isEmpty ? null : _openMessage,
+        ),
         // Краткое изложение — над аудио
         if (_summary.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -427,16 +599,32 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
           ),
         ],
         const SizedBox(height: 16),
-        OutlinedButton.icon(
-          onPressed: phone.trim().isEmpty
-              ? null
-              : () => CallScreen.open(
-                    context,
-                    phoneNumber: phone,
-                    contactName: name.isEmpty ? null : name,
-                  ),
-          icon: const Icon(Icons.call),
-          label: Text(context.tr('Перезвонить', 'Call back')),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: phone.isEmpty ? null : _callBack,
+                icon: const Icon(Icons.call),
+                label: Text(context.tr('Перезвонить', 'Call back')),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: phone.isEmpty ? null : _openMessage,
+                icon: const Icon(Icons.chat_bubble_outline),
+                label: Text(context.tr('Написать', 'Message')),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E88E5),
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size.fromHeight(48),
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -457,15 +645,20 @@ Future<void> _openJob(BuildContext context, String jobId) async {
   );
 }
 
-class _HeaderCard extends StatelessWidget {
+class CallReviewHeaderCard extends StatelessWidget {
   final CallRecord call;
   final String name;
   final String phone;
+  final VoidCallback? onCall;
+  final VoidCallback? onMessage;
 
-  const _HeaderCard({
+  const CallReviewHeaderCard({
+    super.key,
     required this.call,
     required this.name,
     required this.phone,
+    this.onCall,
+    this.onMessage,
   });
 
   @override
@@ -481,7 +674,27 @@ class _HeaderCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (name.isNotEmpty && phone.isNotEmpty)
-            Text(phone, style: const TextStyle(color: Colors.black54)),
+            InkWell(
+              onTap: () => AppFeedback.copy(context, phone),
+              borderRadius: BorderRadius.circular(4),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      phone,
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    const Icon(Icons.copy, size: 14, color: Colors.black38),
+                  ],
+                ),
+              ),
+            ),
           const SizedBox(height: 4),
           Text(
             [
@@ -491,6 +704,41 @@ class _HeaderCard extends StatelessWidget {
             ].join(' · '),
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
+          if (phone.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onCall,
+                    icon: const Icon(Icons.phone, size: 18),
+                    label: Text(context.tr('Позвонить', 'Call')),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF008F3B),
+                      side: const BorderSide(color: Color(0xFF008F3B)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: onMessage,
+                    icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                    label: Text(context.tr('Написать', 'Message')),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E88E5),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

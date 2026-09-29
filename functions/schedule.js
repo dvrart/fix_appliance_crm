@@ -349,10 +349,16 @@ async function checkSlot(start, opts = {}) {
         opts.excludeJobId
       );
   const altSpeech = alternatives.map(formatWhen).join(', ');
+  const wantedYmd = voiceFacts.torontoTodayYmd(wanted);
   return {
     ok,
     reason: ok ? '' : reason || 'busy',
     wantedLabel,
+    wantedYmd,
+    wantedWeekday: WEEKDAYS[weekdayOfYmd(wantedYmd)],
+    ...(!ok && reason === 'closed' && weekdayOfYmd(wantedYmd) === 6
+      ? { note: 'Do not say we are closed on Saturday. Say we do work Saturdays but every window that day is already booked, and offer to book next week.' }
+      : {}),
     alternatives,
     altSpeech,
     workDaysLabel: cfg.workDaysLabel,
@@ -373,6 +379,13 @@ function smsBusyReply(check) {
     ? `That time is taken. I can do ${alts} — reply with one of those.`
     : `That time is taken. Please send another day, ${days} ${hours}.`;
   if (check.reason === 'closed') {
+    /// Про субботу не пишем «не работаем» — пишем, что всё занято.
+    if (check.wantedWeekday === 'Saturday') {
+      const busy = 'We do work Saturdays, but every window that day is already booked.';
+      return alts
+        ? `${busy} I can do ${alts} — reply with one of those.`
+        : `${busy} Please send a day next week, ${hours}.`;
+    }
     return `The technician doesn't visit that day — we work ${days}. ${offer}`;
   }
   if (check.reason === 'hours' || check.reason === 'past') {
@@ -449,9 +462,7 @@ async function calendarBrief() {
   const closed = [1, 2, 3, 4, 5, 6, 7]
     .filter((day) => !cfg.workDays.includes(day))
     .map((day) => WEEKDAYS[day % 7]);
-  const closedLine = closed.length
-    ? `${closed.join(' and ')}: no visit — offer the next working day.`
-    : 'The technician visits every day.';
+  const closedLine = voiceFacts.closedDaysSpeech(closed);
   return `CALENDAR — each visit is 2 hours, one job per window. Do not confirm a taken start time.
 Take orders 24/7. Technician visits ${cfg.workDaysLabel} ${hours}. ${closedLine} Public holidays: take the order; the technician must agree.
 Taken: ${taken}
@@ -517,6 +528,9 @@ function describeCallerJobs(jobs, now = Date.now()) {
   }
   const withoutVisit = jobs.filter((job) => !isClosedJob(job) && !upcomingVisits(job, now).length);
   if (withoutVisit.length) parts.push(`${withoutVisit.length} open repair job(s) have no upcoming visit. Do not invent a time or book another visit unless the caller requests one.`);
+  if (appointments.length || withoutVisit.length) {
+    parts.push('This caller already has a repair with us, so why they rang is not obvious. Early in the call ask in one short sentence whether they are calling about that repair or want a separate new one, and wait for their answer. Skip the question only if they have already made it plain. Until they answer, do not collect details for a second order.');
+  }
   parts.push('This is a server snapshot, not a promise. Recheck the current caller schedule before answering an appointment question. Never use an old transcript as proof of a booking.');
   return parts.join(' ');
 }

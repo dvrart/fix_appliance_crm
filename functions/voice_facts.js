@@ -17,6 +17,7 @@ const VOICE_FAREWELL_ES =
   'Que esté bien, adiós. Nuestro técnico se comunicará con usted lo antes posible.';
 
 const VOICE_CALL_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
+Never pushy: one repair question per reply at most, and only when it fits. Off-topic chat gets a human answer first — the repair comes back once, lightly, when the moment opens. If they need to think or want to call back later, accept warmly and stop collecting.
 Visit days, hours, and prices are in the owner rules. Each visit is 2 hours — do not book a taken window.
 The caller picks the day and time. Ask what suits them; never propose a slot of your own unless the one they asked for is taken.
 When you have enough, or they want a callback: pass it to the tech, photo of the model sticker, anything else. If they say no: Have a good day. Do not hang up.`;
@@ -24,6 +25,7 @@ When you have enough, or they want a callback: pass it to the tech, photo of the
 const EXTRACT_CARD_RULES = `Keep street, city, unit, and postal code in the original English/Canadian spelling. Never translate or transliterate into Russian (write "King Street", not "Кинг-стрит"; "Toronto", not "Торонто"). Person names stay in English as spoken. problem_description is ONLY the appliance fault and model number — never the SMS, email, or call transcript. client_email is the customer's email from the letter body, not a booking-agency From: address.`;
 
 const VOICE_LIVE_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
+Never pushy: one repair question per reply at most, and only when it fits. Off-topic chat gets a human answer first — the repair comes back once, lightly, when the moment opens. If they need to think or want to call back later, accept warmly and stop collecting.
 Visit days and hours are in the owner rules. Each visit is 2 hours — do not book a taken window.
 The caller picks the day and time. Ask what suits them; never propose a slot of your own unless the one they asked for is taken.
 When you have enough: pass it to the tech, photo, anything else. If they say no: Have a good day. Do not hang up.`;
@@ -548,6 +550,85 @@ function snapCity(city, known) {
   return best || raw;
 }
 
+/**
+ * Города, по которым мастер выезжает. Идут в подсказки распознаванию речи, в
+ * исправление услышанного города (`snapCity`) и — те из них, что попали внутрь
+ * полигона с карты, — в зону обслуживания секретаря. Координаты нужны именно
+ * для последнего: подпись зоны собирается по углам полигона и городов в ней
+ * почти нет. Список один на сервер и на `tools/check_service_area.js`.
+ */
+const SERVICE_TOWNS = [
+  { name: 'Brantford', lat: 43.1394, lng: -80.2644 },
+  { name: 'Paris', lat: 43.1934, lng: -80.384 },
+  { name: 'Scotland', lat: 43.0167, lng: -80.3667 },
+  { name: 'Tillsonburg', lat: 42.8623, lng: -80.728 },
+  { name: 'Delhi', lat: 42.8542, lng: -80.5 },
+  { name: 'Port Dover', lat: 42.7848, lng: -80.2 },
+  { name: 'Norwich', lat: 42.9878, lng: -80.5972 },
+  { name: 'Simcoe', lat: 42.8376, lng: -80.3074 },
+  { name: 'Waterford', lat: 42.9337, lng: -80.2833 },
+  { name: 'Burford', lat: 43.1042, lng: -80.4256 },
+  { name: 'Cayuga', lat: 42.9445, lng: -79.85 },
+  { name: 'Hagersville', lat: 42.9618, lng: -80.0537 },
+  { name: 'Dunnville', lat: 42.9045, lng: -79.6166 },
+  { name: 'Woodstock', lat: 43.1306, lng: -80.7467 },
+  { name: 'Ingersoll', lat: 43.0383, lng: -80.8836 },
+  { name: 'Ancaster', lat: 43.2187, lng: -79.9874 },
+  { name: 'Caledonia', lat: 43.0672, lng: -79.9539 },
+  { name: 'Ayr', lat: 43.2833, lng: -80.45 },
+  { name: 'Otterville', lat: 42.9219, lng: -80.61 },
+  { name: 'Langton', lat: 42.765, lng: -80.57 },
+  { name: 'St. George', lat: 43.2372, lng: -80.2556 },
+  { name: 'Kitchener', lat: 43.4516, lng: -80.4925 },
+  { name: 'Waterloo', lat: 43.4643, lng: -80.5204 },
+  { name: 'Cambridge', lat: 43.3616, lng: -80.3144 },
+];
+
+/** Точка внутри нарисованного полигона зоны (луч вправо, ray casting). */
+function pointInPolygon(lat, lng, polygon) {
+  const ring = (Array.isArray(polygon) ? polygon : [])
+    .map((p) => [Number(p && p.lat), Number(p && p.lng)])
+    .filter(([y, x]) => Number.isFinite(y) && Number.isFinite(x));
+  if (ring.length < 3) return false;
+  const y = Number(lat);
+  const x = Number(lng);
+  if (!Number.isFinite(y) || !Number.isFinite(x)) return false;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [yi, xi] = ring[i];
+    const [yj, xj] = ring[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Имена городов из таблицы, попавшие внутрь зоны с карты настроек. */
+function townsInsideArea(towns, polygon) {
+  return (Array.isArray(towns) ? towns : [])
+    .filter((town) => town && pointInPolygon(town.lat, town.lng, polygon))
+    .map((town) => String(town.name || '').trim())
+    .filter(Boolean);
+}
+
+/**
+ * Текст зоны для секретаря.
+ *
+ * Подпись с карты («Ontario: Brant, Norfolk, Zorra…») — это названия того, что
+ * оказалось в углах полигона, а не список того, что внутри. Модель читала её как
+ * закрытый перечень и отказывала Тилсонбургу, который в зоне. Поэтому к подписи
+ * добавляем города, реально попавшие внутрь, и прямо говорим, что список неполный.
+ */
+function serviceAreaSpeech(label, townNames) {
+  const area = String(label || '').trim();
+  const towns = (Array.isArray(townNames) ? townNames : []).filter(Boolean);
+  if (!towns.length) return area;
+  const head = area ? `${area.replace(/\.$/, '')}. ` : '';
+  return (
+    `${head}Towns inside the zone: ${towns.join(', ')}. ` +
+    'That list is not the whole zone — smaller places and the rural roads between these towns are inside it too.'
+  );
+}
+
 function isPlaceholderClientName(name) {
   const s = String(name || '').trim();
   if (!s) return true;
@@ -595,6 +676,38 @@ function titleCaseName(name) {
     .filter(Boolean)
     .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
     .join(' ');
+}
+
+/** Оставляет только цифры и берёт последние 10 (североамериканский номер без кода страны). */
+function phoneDigits(value) {
+  if (!value) return '';
+  const digits = String(value).replace(/\D/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+/**
+ * Контакт человека на месте ремонта (job site). Если звонящий чётко не назвал
+ * ДРУГОГО человека («я буду», своё же имя или вообще ничего) — контактом на
+ * адресе становится сам клиент: его имя и телефон. explicit=true только когда
+ * назван именно другой человек (другое имя или другой номер).
+ */
+function onSiteContactFrom(extracted, ownerName, ownerPhone) {
+  const spoken = String((extracted && extracted.contact_on_site_name) || '').trim();
+  const spokenName =
+    spoken && looksLikePersonName(spoken) && !/^(i|i'?m|me|myself|himself|herself|themselves|ourselves|we|us|they|them|you|its? me|the same|same)$/i.test(spoken)
+      ? titleCaseName(spoken)
+      : '';
+  const spokenPhone = phoneDigits(extracted && extracted.contact_on_site_phone);
+  const owner = String(ownerName || '').trim();
+  const ownerDigits = phoneDigits(ownerPhone);
+  const distinctName =
+    Boolean(spokenName) && spokenName.toLowerCase() !== owner.toLowerCase();
+  const distinctPhone = Boolean(spokenPhone) && spokenPhone !== ownerDigits;
+  return {
+    name: distinctName ? spokenName : owner || spokenName,
+    phone: distinctPhone ? spokenPhone : ownerDigits || spokenPhone,
+    explicit: distinctName || distinctPhone,
+  };
 }
 
 function nameFromHistory(history) {
@@ -1018,6 +1131,21 @@ function workHoursSpeech(startMinutes, endMinutes) {
   return `${formatHour12(start)} to ${formatHour12(end)}`;
 }
 
+/// Про субботу секретарь не говорит «мы не работаем»: мы работаем, просто окон
+/// нет — и зовём на следующую неделю. Остальные закрытые дни как раньше.
+const SATURDAY_BUSY_LINE =
+  'Saturday: never say we are closed, that we do not work Saturdays, or that the technician does not visit on Saturday. Say we do work Saturdays but unfortunately every window is already booked, and offer to set the visit for next week.';
+
+function closedDaysSpeech(closedNames) {
+  const closed = (Array.isArray(closedNames) ? closedNames : []).filter(Boolean);
+  if (!closed.length) return 'The technician visits every day of the week.';
+  const others = closed.filter((name) => String(name) !== 'Saturday');
+  const parts = [];
+  if (others.length) parts.push(`${others.join(' and ')}: no visit — offer the next working day.`);
+  if (closed.length !== others.length) parts.push(SATURDAY_BUSY_LINE);
+  return parts.join(' ');
+}
+
 function hasNewRepairRequest(history) {
   return (Array.isArray(history) ? history : []).some((item) => {
     if (!item || item.role !== 'user') return false;
@@ -1079,6 +1207,10 @@ module.exports = {
   editDistance,
   snapCity,
   citiesFromClient,
+  SERVICE_TOWNS,
+  pointInPolygon,
+  townsInsideArea,
+  serviceAreaSpeech,
   titleCaseName,
   enrichExtracted,
   mergeExtracted,
@@ -1094,6 +1226,7 @@ module.exports = {
   torontoParts,
   formatHour12,
   workHoursSpeech,
+  closedDaysSpeech,
   detectSpokenLanguage,
   wantsEnglish,
   detectLiveCallback,
@@ -1117,6 +1250,7 @@ module.exports = {
   detectJobSite,
   detectMoved,
   addressesLookDifferent,
+  onSiteContactFrom,
   EXTRACT_CARD_RULES,
   VOICE_LIVE_FLOW,
   VOICE_FAREWELL_EN,

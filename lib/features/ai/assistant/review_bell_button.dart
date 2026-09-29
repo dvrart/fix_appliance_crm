@@ -3,15 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../../../core/app_feedback.dart';
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../models/job.dart';
-import '../../../models/secretary_lesson.dart';
 import '../../../services/job_service.dart';
 import '../../../services/local_notification_service.dart';
 import '../../../services/sms_service.dart';
-import '../../../services/secretary_learn_service.dart';
 import '../../../services/twilio_service.dart';
 import '../../../shared/widgets/appliance_picture.dart';
 import '../../calls/call_review_page.dart';
@@ -34,11 +31,9 @@ class ReviewBellButton extends StatelessWidget {
     required List<CallRecord> processing,
     required List<SmsMessage> emailOffers,
     List<SmsMessage> smsOffers = const [],
-    List<SecretaryLesson> lessons = const [],
+    List<SmsMessage> failedSms = const [],
   }) {
-    var n = emailOffers.length +
-        smsOffers.length +
-        lessons.where((l) => l.isPending && l.isIssue).length;
+    var n = emailOffers.length + smsOffers.length + failedSms.length;
     final seenJobIds = <String>{};
     // Count jobs with needsReview (legacy auto-created or email/website)
     for (final job in jobs) {
@@ -70,14 +65,15 @@ class ReviewBellButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
-      builder: (jobs, pending, processing, lessons, emailOffers, _, smsOffers) {
+      builder:
+          (jobs, pending, processing, emailOffers, _, smsOffers, failedSms) {
         final count = inboxCount(
           jobs: jobs,
           pending: pending,
           processing: processing,
           emailOffers: emailOffers,
           smsOffers: smsOffers,
-          lessons: lessons,
+          failedSms: failedSms,
         );
         return IconButton(
           tooltip: context.tr('Уведомления', 'Notifications'),
@@ -226,14 +222,15 @@ class ReviewBellPickleIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
-      builder: (jobs, pending, processing, lessons, emailOffers, _, smsOffers) {
+      builder:
+          (jobs, pending, processing, emailOffers, _, smsOffers, failedSms) {
         final count = ReviewBellButton.inboxCount(
           jobs: jobs,
           pending: pending,
           processing: processing,
           emailOffers: emailOffers,
           smsOffers: smsOffers,
-          lessons: lessons,
+          failedSms: failedSms,
         );
         return Badge(
           isLabelVisible: count > 0,
@@ -353,7 +350,7 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
     } else if (sheet.mounted && Navigator.of(sheet).canPop()) {
       Navigator.pop(sheet);
     }
-    await Future<void>.delayed(const Duration(milliseconds: 120));
+    await Future<void>.delayed(const Duration(milliseconds: 280));
     if (!host.mounted) return;
     await open();
   }
@@ -412,9 +409,9 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
     required List<Job> jobs,
     required List<CallRecord> pending,
     required List<CallRecord> processing,
-    required List<SecretaryLesson> lessons,
     required List<SmsMessage> emailOffers,
     required List<SmsMessage> smsOffers,
+    List<SmsMessage> failedSms = const [],
   }) {
     final host = widget.hostContext;
     final items = <_InboxItem>[];
@@ -643,32 +640,30 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
       addCall(call, busy: false);
     }
 
-    // Secretary lessons (pending issues)
-    for (final lesson in lessons) {
-      if (!lesson.isPending || !lesson.isIssue) continue;
-      final title = lesson.problemRu.trim().isNotEmpty
-          ? lesson.problemRu.trim()
-          : lesson.titleRu.trim();
+    // SMS, которые оператор не доставил (Twilio 30007 и прочее)
+    for (final message in failedSms) {
+      final phone = message.to.trim();
       items.add(
         _InboxItem(
-          icon: Icons.psychology_outlined,
-          color: lesson.severity == 'fail'
-              ? const Color(0xFFC62828)
-              : const Color(0xFFE65100),
-          name: title.isEmpty
-              ? context.tr('Ошибка секретаря', 'Secretary error')
-              : title,
-          when: lesson.createdAt,
-          originLabel: context.tr('Секретарь', 'Secretary'),
-          originIcon: Icons.phone_in_talk,
+          icon: Icons.sms_failed,
+          color: const Color(0xFFC62828),
+          name: phone.isEmpty ? unknown : phone,
+          when: message.createdAt,
+          originLabel: context.tr('SMS не дошло', 'SMS not delivered'),
+          originIcon: Icons.error_outline,
           onTap: () {
             unawaited(
-              _closeInboxThen(
-                () => _SecretaryLessonSheet.show(widget.hostContext, lesson),
-              ),
+              _closeInboxThen(() async {
+                unawaited(SmsService.dismissFailure(message.id));
+                await ConversationScreen.open(
+                  host,
+                  phoneNumber: phone,
+                  clientId: message.clientId,
+                );
+              }),
             );
           },
-          onClear: () => SecretaryLearnService.reject(lesson),
+          onClear: () => SmsService.dismissFailure(message.id),
         ),
       );
     }
@@ -751,14 +746,15 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
   @override
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
-      builder: (jobs, pendingAll, processing, lessons, emailOffers, _, smsOffers) {
+      builder:
+          (jobs, pendingAll, processing, emailOffers, _, smsOffers, failedSms) {
         final items = _items(
           jobs: jobs,
           pending: pendingAll,
           processing: processing,
-          lessons: lessons,
           emailOffers: emailOffers,
           smsOffers: smsOffers,
+          failedSms: failedSms,
         );
         final width = MediaQuery.sizeOf(context).width;
         final columns = width >= 520 ? 4 : 3;
@@ -967,12 +963,11 @@ class _ReviewInboxStreams extends StatelessWidget {
     List<Job> jobs,
     List<CallRecord> pending,
     List<CallRecord> processing,
-    List<SecretaryLesson> lessons,
     List<SmsMessage> emailOffers,
     List<Job> waitingParts,
     List<SmsMessage> smsOffers,
-  )
-  builder;
+    List<SmsMessage> failedSms,
+  ) builder;
 
   const _ReviewInboxStreams({required this.builder});
 
@@ -987,28 +982,30 @@ class _ReviewInboxStreams extends StatelessWidget {
             return StreamBuilder<List<CallRecord>>(
               stream: TwilioService.getAiProcessingCalls(),
               builder: (context, processingSnap) {
-                return StreamBuilder<List<SecretaryLesson>>(
-                  stream: SecretaryLearnService.streamPending(),
-                  builder: (context, lessonsSnap) {
-                    return StreamBuilder<List<SmsMessage>>(
-                      stream: SmsService.streamEmailOffers(),
-                      builder: (context, offersSnap) {
-                        return StreamBuilder<List<Job>>(
-                          stream: JobService.streamByStatus(
-                            JobStatuses.waitingPart,
-                          ),
-                          builder: (context, partsSnap) {
+                return StreamBuilder<List<SmsMessage>>(
+                  stream: SmsService.streamEmailOffers(),
+                  builder: (context, offersSnap) {
+                    return StreamBuilder<List<Job>>(
+                      stream: JobService.streamByStatus(
+                        JobStatuses.waitingPart,
+                      ),
+                      builder: (context, partsSnap) {
+                        return StreamBuilder<List<SmsMessage>>(
+                          stream: SmsService.streamSmsOffers(),
+                          builder: (context, smsOffersSnap) {
                             return StreamBuilder<List<SmsMessage>>(
-                              stream: SmsService.streamSmsOffers(),
-                              builder: (context, smsOffersSnap) {
+                              stream: SmsService.streamFailedOutbound(),
+                              builder: (context, failedSnap) {
                                 return builder(
                                   jobsSnap.data ?? const <Job>[],
                                   pendingSnap.data ?? const <CallRecord>[],
-                                  processingSnap.data ?? const <CallRecord>[],
-                                  lessonsSnap.data ?? const <SecretaryLesson>[],
+                                  processingSnap.data ??
+                                      const <CallRecord>[],
                                   offersSnap.data ?? const <SmsMessage>[],
                                   partsSnap.data ?? const <Job>[],
-                                  smsOffersSnap.data ?? const <SmsMessage>[],
+                                  smsOffersSnap.data ??
+                                      const <SmsMessage>[],
+                                  failedSnap.data ?? const <SmsMessage>[],
                                 );
                               },
                             );
@@ -1023,260 +1020,6 @@ class _ReviewInboxStreams extends StatelessWidget {
           },
         );
       },
-    );
-  }
-}
-
-/// Листовой виджет с деталями ошибки секретаря: что сделала не так, как надо
-/// было, и две кнопки: «Подтвердить» (применить правило) и «Отклонить».
-class _SecretaryLessonSheet extends StatefulWidget {
-  final SecretaryLesson lesson;
-
-  const _SecretaryLessonSheet({required this.lesson});
-
-  static Future<void> show(BuildContext context, SecretaryLesson lesson) {
-    return showModalBottomSheet<void>(
-      context: context,
-      useRootNavigator: true,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => _SecretaryLessonSheet(lesson: lesson),
-    );
-  }
-
-  @override
-  State<_SecretaryLessonSheet> createState() => _SecretaryLessonSheetState();
-}
-
-class _SecretaryLessonSheetState extends State<_SecretaryLessonSheet> {
-  bool _busy = false;
-
-  Future<void> _approve() async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      await SecretaryLearnService.approve(widget.lesson);
-      if (!mounted) return;
-      Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            context.tr(
-              'Правило принято — секретарь запомнила',
-              'Rule accepted — secretary will remember',
-            ),
-          ),
-          backgroundColor: Colors.green.shade700,
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _reject() async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      await SecretaryLearnService.reject(widget.lesson);
-      if (!mounted) return;
-      Navigator.of(context).pop();
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final lesson = widget.lesson;
-    final when = lesson.createdAt;
-    final stamp =
-        when == null ? '' : DateFormat('dd.MM.yyyy HH:mm').format(when.toLocal());
-    final isFail = lesson.severity == 'fail';
-    final color =
-        isFail ? const Color(0xFFC62828) : const Color(0xFFE65100);
-    final problem = lesson.problemRu.trim().isNotEmpty
-        ? lesson.problemRu.trim()
-        : lesson.titleRu.trim();
-    final happened = lesson.whatHappenedRu.trim();
-    final fix = lesson.suggestedFixRu.trim();
-    final phone = lesson.fromNumber.trim();
-
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: EdgeInsets.only(
-          left: 20,
-          right: 20,
-          top: 16,
-          bottom: MediaQuery.viewInsetsOf(context).bottom + 24,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Ручка
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: Colors.black26,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            // Заголовок
-            Row(
-              children: [
-                Icon(Icons.psychology_outlined, color: color, size: 22),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    context.tr('Ошибка секретаря', 'Secretary error'),
-                    style: TextStyle(
-                      fontWeight: FontWeight.w900,
-                      fontSize: 18,
-                      color: color,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            if (phone.isNotEmpty || stamp.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(
-                [if (phone.isNotEmpty) phone, if (stamp.isNotEmpty) stamp]
-                    .join(' · '),
-                style:
-                    const TextStyle(color: Colors.black54, fontSize: 13),
-              ),
-            ],
-            const SizedBox(height: 16),
-            // Что пошло не так
-            if (problem.isNotEmpty) ...[
-              Text(
-                context.tr('Что пошло не так', 'What went wrong'),
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13,
-                  color: Colors.black54,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                problem,
-                style: const TextStyle(
-                  fontSize: 15,
-                  height: 1.35,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
-            // Как это произошло
-            if (happened.isNotEmpty) ...[
-              Text(
-                context.tr('Как это произошло', 'How it happened'),
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13,
-                  color: Colors.black54,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                happened,
-                style: const TextStyle(fontSize: 14, height: 1.4),
-              ),
-              const SizedBox(height: 12),
-            ],
-            // Как надо было
-            if (fix.isNotEmpty) ...[
-              Text(
-                context.tr('Как надо было', 'How it should have been'),
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13,
-                  color: Colors.black54,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE8F5E9),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF81C784)),
-                ),
-                child: Text(
-                  fix,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    height: 1.45,
-                    color: Color(0xFF1B5E20),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-            ] else
-              const SizedBox(height: 20),
-            // Кнопки
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton(
-                    onPressed: _busy ? null : _approve,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Colors.green.shade700,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                    child: _busy
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : Text(
-                            context.tr('Подтвердить', 'Confirm'),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                              fontSize: 15,
-                            ),
-                          ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _busy ? null : _reject,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.red.shade700,
-                      side: BorderSide(color: Colors.red.shade300),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                    child: Text(
-                      context.tr('Отклонить', 'Reject'),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 15,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

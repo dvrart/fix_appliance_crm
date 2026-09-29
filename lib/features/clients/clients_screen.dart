@@ -24,6 +24,7 @@ import '../../shared/widgets/email_field.dart';
 import '../../shared/widgets/selection_action_bar.dart';
 import 'clients_map_screen.dart';
 import 'clients_duplicates_screen.dart';
+import '../../services/error_log_service.dart';
 
 class ClientsScreen extends StatefulWidget {
   const ClientsScreen({super.key});
@@ -46,6 +47,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
   @override
   void initState() {
     super.initState();
+    ErrorLogService.markScreen('Клиенты');
     _clientsStream = FirebaseFirestore.instance
         .collection('companies')
         .doc(kCompanyId)

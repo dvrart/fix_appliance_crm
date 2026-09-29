@@ -87,7 +87,15 @@ android {
                 logger.warn("key.properties не найден — релиз подписан отладочным ключом")
                 signingConfigs.getByName("debug")
             }
-            // Правила для Twilio Voice SDK — используются, если включите minifyEnabled.
+            // Минификация выключена. Её включали строками `minifyEnabled true`
+            // и `shrinkResources true` — это синтаксис Groovy, а файл на
+            // Kotlin DSL, поэтому релизная сборка вообще перестала собираться
+            // («Unexpected tokens»). По-котлиновски это `isMinifyEnabled = true`
+            // и `isShrinkResources = true`, но включать R8 надо отдельной
+            // сборкой и с проверкой на телефоне: уведомления и звонки зовут
+            // CrmShadeNotifier и CrmCallActions через рефлексию, и если правило
+            // -keep не сработает, шторка молча перестанет рисоваться.
+            // Правила для Twilio Voice SDK и рефлексии лежат в proguard-rules.pro.
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

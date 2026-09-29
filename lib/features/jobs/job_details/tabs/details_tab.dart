@@ -41,6 +41,11 @@ class _DetailsTabState extends State<DetailsTab> {
   JobDetailsController get ctrl => widget.controller;
   List<Job> _relatedJobs = const [];
   Job? _originalJob;
+  /// Вторая заявка с того же номера: дубляж, который сервер не стал соединять
+  /// сам, либо та, в которую эту уже слили.
+  Job? _twinJob;
+  String _twinJobId = '';
+  bool _mergeBusy = false;
   bool _bookingBusy = false;
   final Map<String, String> _bookingRequestIds = {};
   StreamSubscription<List<JobChangeEvent>>? _changesSub;
@@ -57,6 +62,7 @@ class _DetailsTabState extends State<DetailsTab> {
     super.initState();
     ctrl.addListener(_onControllerChange);
     _loadRelatedJobs();
+    unawaited(_loadTwinJob());
     _changesSub = ChangeLogService.streamChanges(ctrl.jobId).listen((events) {
       if (mounted) setState(() => _changes = events);
     });
@@ -71,6 +77,23 @@ class _DetailsTabState extends State<DetailsTab> {
 
   void _onControllerChange() {
     if (mounted) setState(() {});
+    if (_duplicateTwinId() != _twinJobId) unawaited(_loadTwinJob());
+  }
+
+  /// Заявка, с которой эту стоит соединить (или уже соединили).
+  String _duplicateTwinId() {
+    final merged = (ctrl.jobData['mergedIntoJobId'] ?? '').toString().trim();
+    if (merged.isNotEmpty) return merged;
+    if (ctrl.jobData['duplicateDismissed'] == true) return '';
+    return (ctrl.jobData['possibleDuplicateOfJobId'] ?? '').toString().trim();
+  }
+
+  Future<void> _loadTwinJob() async {
+    final id = _duplicateTwinId();
+    _twinJobId = id;
+    final twin = id.isEmpty ? null : await JobService.getById(id);
+    if (!mounted) return;
+    setState(() => _twinJob = twin?.isDeleted == true ? null : twin);
   }
 
   Future<JobChatContact?> _pickContact(
@@ -1420,7 +1443,9 @@ class _DetailsTabState extends State<DetailsTab> {
         .replaceAll('{review}', reviewUrl)
         .replaceAll('{appliance}', '')
         .trim();
-    if (reviewUrl.isNotEmpty && !body.contains(reviewUrl)) {
+    // Только если ссылки в тексте нет вообще: шаблон с вписанной руками
+    // ссылкой иначе получал вторую, из настроек.
+    if (reviewUrl.isNotEmpty && !RegExp(r'https?://').hasMatch(body)) {
       body = '$body $reviewUrl'.trim();
     }
 
@@ -2120,6 +2145,10 @@ class _DetailsTabState extends State<DetailsTab> {
             _reviewBanner(),
             const SizedBox(height: 16),
           ],
+          if (_twinJob != null) ...[
+            _buildDuplicateBanner(_twinJob!),
+            const SizedBox(height: 16),
+          ],
           IntrinsicHeight(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2209,6 +2238,164 @@ class _DetailsTabState extends State<DetailsTab> {
                 ],
               ),
             );
+  }
+
+  /// Тот же номер и меньше двух суток между заявками. Входящие черновики
+  /// сервер соединяет сам; здесь остаются случаи, где решает мастер.
+  Widget _buildDuplicateBanner(Job twin) {
+    final mergedInto = (ctrl.jobData['mergedIntoJobId'] ?? '')
+        .toString()
+        .trim()
+        .isNotEmpty;
+    final when = DateFormat(
+      'd MMM, HH:mm',
+      AppLocale.instance.dateLocale,
+    ).format(twin.scheduledAt ?? twin.createdAt);
+    final subtitle = [
+      twin.clientName.trim(),
+      trAny(twin.applianceType),
+      when,
+    ].where((part) => part.isNotEmpty).join(' · ');
+    final color = mergedInto ? Colors.blueGrey : Colors.amber;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            mergedInto ? 'Соединено с заявкой'.tr : 'Похоже на дубляж'.tr,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            mergedInto
+                ? subtitle
+                : '${'Тот же номер'.tr} · $subtitle',
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _openJobCard(twin),
+                  icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                  label: Text('Открыть'.tr),
+                ),
+              ),
+              if (!mergedInto) ...[
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _mergeBusy ? null : () => _mergeWithTwin(twin),
+                    icon: _mergeBusy
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.merge_rounded, size: 18),
+                    label: Text('Соединить'.tr),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF22C55E),
+                      foregroundColor: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (!mergedInto)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: _mergeBusy
+                    ? null
+                    : () => JobService.dismissDuplicateHint(ctrl.jobId),
+                child: Text(
+                  'Не дубляж'.tr,
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _openJobCard(Job job) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => JobDetailsScreen(
+          jobId: job.id,
+          clientId: job.clientId,
+          jobData: job.toMap(),
+        ),
+      ),
+    );
+  }
+
+  /// Главной остаётся заявка с визитом; если визита нет ни там, ни там —
+  /// та, что пришла раньше (метку сервер ставит на более свежую).
+  bool _keepCurrentJob(Job twin) {
+    final mineHasVisit =
+        ctrl.visits.any((visit) => visit.outcome != JobVisit.cancelled) ||
+        ctrl.scheduledAt != null;
+    final twinHasVisit =
+        twin.coalescedVisits.any((visit) => visit.outcome != JobVisit.cancelled) ||
+        twin.scheduledAt != null;
+    if (mineHasVisit != twinHasVisit) return mineHasVisit;
+    return false;
+  }
+
+  Future<void> _mergeWithTwin(Job twin) async {
+    final keepCurrent = _keepCurrentJob(twin);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Соединить заявки?'.tr),
+        content: Text(
+          keepCurrent
+              ? 'Данные второй заявки перейдут сюда, она закроется.'.tr
+              : 'Данные этой заявки перейдут во вторую, эта закроется.'.tr,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Отмена'.tr),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('Соединить'.tr),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _mergeBusy = true);
+    final ok = await JobService.mergeDuplicate(
+      keepId: keepCurrent ? ctrl.jobId : twin.id,
+      dropId: keepCurrent ? twin.id : ctrl.jobId,
+    );
+    if (!mounted) return;
+    setState(() => _mergeBusy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? 'Заявки соединены'.tr : 'Не удалось соединить'.tr),
+      ),
+    );
+    // Эту заявку закрыли как дубль — смотреть больше нечего.
+    if (ok && !keepCurrent) Navigator.pop(context);
   }
 
   Widget _routeButton() {
@@ -2489,13 +2676,13 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 
   Widget _sitePiece() {
+    final clientName = (ctrl.jobData['clientName'] ?? '').toString().trim();
     final siteName = ctrl.hasJobSite
         ? (ctrl.jobSiteName.isEmpty
-            ? 'Контакт на адресе'.tr
+            // Другого человека на месте не назвали — там сам клиент.
+            ? (clientName.isEmpty ? 'Контакт на адресе'.tr : clientName)
             : ctrl.jobSiteName)
-        : ((ctrl.jobData['clientName'] ?? '').toString().trim().isEmpty
-            ? 'Клиент'.tr
-            : (ctrl.jobData['clientName'] ?? '').toString().trim());
+        : (clientName.isEmpty ? 'Клиент'.tr : clientName);
     return _compactSiteNameCard(name: siteName, onTap: _editJobSite);
   }
 
@@ -2795,8 +2982,11 @@ class _DetailsTabState extends State<DetailsTab> {
       case 'visit_confirmed': return '${'Клиент подтвердил'.tr}: ${e.data['slot'] ?? ''}';
       case 'visit_cancelled': return '${'Клиент отменил'.tr}: ${e.data['slot'] ?? ''}';
       case 'payment_recorded': return '${'Оплата'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''} (${e.data['method'] ?? ''})';
+      case 'tip_recorded': return '${'Чаевые'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''}';
       case 'refund_recorded': return '${'Возврат'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''}';
       case 'invoice_fully_paid': return 'Счёт полностью оплачен'.tr;
+      case 'merged_duplicate': return '${'Соединено с дубляжом'.tr}${e.data['detail'] == null || e.data['detail'].toString().isEmpty ? '' : ': ${trAny(e.data['detail'])}'}';
+      case 'merged_into': return 'Дубляж — соединено с другой заявкой'.tr;
       default: return e.event;
     }
   }

@@ -20,8 +20,11 @@ import 'pages/menu_settings_page.dart';
 import 'pages/message_templates_page.dart';
 import 'pages/payments_settings_page.dart';
 import 'pages/pricing_settings_page.dart';
+import 'pages/secretary_learn_page.dart';
 import 'pages/service_area_settings_page.dart';
 import 'pages/work_days_settings_page.dart';
+import '../../models/secretary_lesson.dart';
+import '../../services/secretary_learn_service.dart';
 import 'widgets/company_logo.dart';
 import 'widgets/settings_ui.dart';
 
@@ -264,6 +267,30 @@ class SettingsScreen extends StatelessWidget {
                               context,
                               const AiSecretarySettingsPage(),
                             ),
+                          ),
+                          StreamBuilder<List<SecretaryLesson>>(
+                            stream: SecretaryLearnService.streamPending(),
+                            builder: (context, snap) {
+                              final count = (snap.data ?? const <SecretaryLesson>[])
+                                  .where((item) => item.isIssue)
+                                  .length;
+                              return SettingsHubTile(
+                                title: context.tr(
+                                  'Ошибки секретаря',
+                                  'Secretary errors',
+                                ),
+                                subtitle: count > 0
+                                    ? '$count ${context.tr('новых', 'new')}'
+                                    : context.tr('Разбор звонков', 'Call review'),
+                                icon: Icons.psychology_outlined,
+                                color: Colors.deepOrange,
+                                active: count > 0,
+                                onTap: () => _open(
+                                  context,
+                                  const SecretaryLearnPage(),
+                                ),
+                              );
+                            },
                           ),
                           SettingsHubTile(
                             title: context.tr('Почта', 'Email'),

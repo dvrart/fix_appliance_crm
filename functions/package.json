@@ -2,7 +2,7 @@
   "name": "fix-appliance-crm-functions",
   "description": "Firebase Functions for Fix Appliance CRM",
   "scripts": {
-    "test": "node --test --test-reporter=tap schedule.test.js visit_sms.test.js voice_relay.test.js notify.test.js recording_store.test.js processing_lease.test.js ingress.test.js",
+    "test": "node --test --test-reporter=tap schedule.test.js visit_sms.test.js voice_relay.test.js voice_facts.test.js service_area.test.js notify.test.js recording_store.test.js processing_lease.test.js ingress.test.js job_dedupe.test.js part_image.test.js sms_links.test.js",
     "serve": "firebase emulators:start --only functions",
     "shell": "firebase functions:shell",
     "start": "npm run shell",

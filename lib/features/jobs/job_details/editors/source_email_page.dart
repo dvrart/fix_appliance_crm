@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../../../core/constants.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../services/sms_service.dart';
 import '../../../messages/conversation_screen.dart';

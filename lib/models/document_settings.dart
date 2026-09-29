@@ -12,6 +12,7 @@ class DocumentSettings {
   final String receiptSms;
   final String invoiceTerms;
   final String estimateTerms;
+  final String warrantyTerms;
   final int estimateValidDays;
   final String logoUrl;
   final String smsHeader;
@@ -39,6 +40,7 @@ class DocumentSettings {
     required this.receiptSms,
     required this.invoiceTerms,
     required this.estimateTerms,
+    required this.warrantyTerms,
     required this.estimateValidDays,
     this.logoUrl = '',
     this.smsHeader = kDefaultSmsHeader,
@@ -112,6 +114,7 @@ class DocumentSettings {
     String? receiptSms,
     String? invoiceTerms,
     String? estimateTerms,
+    String? warrantyTerms,
     int? estimateValidDays,
     String? logoUrl,
     String? smsHeader,
@@ -139,6 +142,7 @@ class DocumentSettings {
       receiptSms: receiptSms ?? this.receiptSms,
       invoiceTerms: invoiceTerms ?? this.invoiceTerms,
       estimateTerms: estimateTerms ?? this.estimateTerms,
+      warrantyTerms: warrantyTerms ?? this.warrantyTerms,
       estimateValidDays: estimateValidDays ?? this.estimateValidDays,
       logoUrl: logoUrl ?? this.logoUrl,
       smsHeader: smsHeader ?? this.smsHeader,
@@ -205,6 +209,8 @@ class DocumentSettings {
         'Payment is due upon completion of work. HST/GST is included when shown on this invoice.',
     estimateTerms:
         'This estimate is preliminary. The price may change after diagnosis.',
+    warrantyTerms:
+        'Warranty: 1 year on labor from the service date. Installed parts are covered by the manufacturer\'s warranty. The warranty applies to the repaired defect on the serviced appliance and does not cover new or unrelated issues, damage from misuse, power surges, flooding, or lack of maintenance. Please keep this document as proof of service.',
     estimateValidDays: 30,
     logoUrl: '',
     smsHeader: kDefaultSmsHeader,
@@ -239,6 +245,7 @@ class DocumentSettings {
       receiptSms: (map['receiptSms'] ?? defaults.receiptSms).toString(),
       invoiceTerms: (map['invoiceTerms'] ?? defaults.invoiceTerms).toString(),
       estimateTerms: (map['estimateTerms'] ?? defaults.estimateTerms).toString(),
+      warrantyTerms: (map['warrantyTerms'] ?? defaults.warrantyTerms).toString(),
       estimateValidDays: validDays <= 0 ? defaults.estimateValidDays : validDays,
       logoUrl: (map['logoUrl'] ?? defaults.logoUrl).toString(),
       smsHeader: sanitizeSmsHeader(
@@ -275,6 +282,7 @@ class DocumentSettings {
       'receiptSms': receiptSms,
       'invoiceTerms': invoiceTerms,
       'estimateTerms': estimateTerms,
+      'warrantyTerms': warrantyTerms,
       'estimateValidDays': estimateValidDays,
       'logoUrl': logoUrl,
       'smsHeader': smsHeader,

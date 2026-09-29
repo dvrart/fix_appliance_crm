@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../core/constants.dart';
+import '../core/geo/service_area.dart';
 import '../core/l10n/app_locale.dart';
 
 /// Результат построения маршрута через Google Directions API
@@ -237,20 +238,8 @@ class MapsService {
     return '$province: $list';
   }
 
-  static List<LatLng> polygonFromConfig(dynamic raw) {
-    if (raw is! List) return const [];
-    return raw
-        .whereType<Map>()
-        .map((item) {
-          final map = Map<String, dynamic>.from(item);
-          return LatLng(
-            (map['lat'] as num?)?.toDouble() ?? 0,
-            (map['lng'] as num?)?.toDouble() ?? 0,
-          );
-        })
-        .where((point) => point.latitude != 0 || point.longitude != 0)
-        .toList();
-  }
+  static List<LatLng> polygonFromConfig(dynamic raw) =>
+      ServiceArea.pointsFrom(raw);
 
   static Future<String> describeServiceAreaFromConfig(
     Map<String, dynamic> config,

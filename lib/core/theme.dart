@@ -184,10 +184,10 @@ class _SmoothPageTransitionsBuilder extends PageTransitionsBuilder {
       curve: const Cubic(0.16, 1, 0.3, 1),
       reverseCurve: Curves.easeInOutCubic,
     );
-    final outgoing = CurvedAnimation(
-      parent: secondaryAnimation,
-      curve: Curves.easeInOutCubic,
-    );
+    // No secondary animation: the screen below stays still while the new
+    // screen slides in. Prevents the background from drifting left when a
+    // route is pushed on top (especially noticeable with opaque:false routes
+    // like the call screen).
     return FadeTransition(
       opacity: incoming,
       child: SlideTransition(
@@ -195,16 +195,7 @@ class _SmoothPageTransitionsBuilder extends PageTransitionsBuilder {
           begin: const Offset(0.055, 0),
           end: Offset.zero,
         ).animate(incoming),
-        child: FadeTransition(
-          opacity: Tween<double>(begin: 1, end: 0.86).animate(outgoing),
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: Offset.zero,
-              end: const Offset(-0.04, 0),
-            ).animate(outgoing),
-            child: child,
-          ),
-        ),
+        child: child,
       ),
     );
   }

@@ -30,6 +30,7 @@ class AppColors {
 class JobStatuses {
   static const String call = 'Вызов';
   static const String inProgress = 'В работе';
+  static const String deposit = 'Депозит';
   static const String rescheduled = 'Перенос';
   static const String waitingPart = 'Ожидание запчасти';
   static const String install = 'Установка';
@@ -41,6 +42,7 @@ class JobStatuses {
 
   static const List<String> all = [
     call,
+    deposit,
     waitingPart,
     install,
     repeatVisit,
@@ -85,6 +87,25 @@ class JobStatuses {
         n == 'ready';
   }
 
+  static bool isDepositStatus(String status) {
+    final n = _fold(status);
+    return n == _fold(deposit) ||
+        n == 'взят депозит' ||
+        n == 'депозит взят' ||
+        n == 'deposit' ||
+        n == 'deposit taken';
+  }
+
+  /// Клиент внёс часть суммы по счёту → статус «Депозит» ставим сами.
+  /// «Ожидание запчасти» не трогаем: иначе заявка выпадет из очереди
+  /// запчастей (фургон). Закрытые заявки тоже не поднимаем.
+  static bool shouldMarkDeposit(String currentStatus) {
+    if (isDepositStatus(currentStatus)) return false;
+    if (isClosed(currentStatus)) return false;
+    if (_fold(currentStatus) == _fold(waitingPart)) return false;
+    return true;
+  }
+
   static bool isCancelledStatus(String status) {
     final n = _fold(status);
     return n == _fold(cancelled) ||
@@ -106,8 +127,10 @@ class JobStatuses {
         status == rescheduled;
   }
 
+  /// «Депозит» автопереносом не перетираем: деньги клиента важнее метки
+  /// переноса, статус снимет сам мастер или закрытие заявки.
   static bool canMarkRescheduled(String status) =>
-      !isClosed(status) && !isInstallStatus(status);
+      !isClosed(status) && !isInstallStatus(status) && !isDepositStatus(status);
 
   /// After «Ожидание запчасти», the return visit is installation — not «Перенос».
   static bool shouldMarkInstallOnReturnVisit({
@@ -142,7 +165,8 @@ class JobStatuses {
     if (all.contains(status) || status == inProgress) return false;
     return isCompletedStatus(status) ||
         isCancelledStatus(status) ||
-        isInstallStatus(status);
+        isInstallStatus(status) ||
+        isDepositStatus(status);
   }
 
   static Color fallbackColor(String status) {
@@ -151,6 +175,8 @@ class JobStatuses {
         return Colors.blue;
       case inProgress:
         return AppColors.accent;
+      case deposit:
+        return const Color(0xFFFFB300);
       case rescheduled:
         return Colors.deepPurple;
       case waitingPart:
@@ -176,7 +202,13 @@ class JobStatuses {
           Colors.cyan,
           Colors.deepOrange,
         ];
-        return palette[status.hashCode.abs() % palette.length];
+        // Стабильный хеш: String.hashCode случаен при каждом запуске,
+        // поэтому цвет «чужого» статуса прыгал между перезапусками.
+        var hash = 0;
+        for (final unit in status.codeUnits) {
+          hash = (hash * 31 + unit) & 0x7fffffff;
+        }
+        return palette[hash % palette.length];
     }
   }
 

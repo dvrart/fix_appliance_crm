@@ -29,6 +29,7 @@ import '../../shared/widgets/confirm_action_sheet.dart';
 import '../../shared/widgets/visit_confirm_badge.dart';
 import 'visit_link_overlay.dart';
 import 'calendar_event_sheet.dart';
+import '../../services/error_log_service.dart';
 
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
@@ -59,6 +60,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   bool _showRouteMap = false;
   bool _appliedDefaultView = false;
   bool _showVisitLinks = true;
+  VisitLinkCatalog? _linkCatalog;
   String _defaultViewMode = SettingsService.defaultCalendarView;
 
   DateTime? _lastTapTime;
@@ -84,6 +86,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   @override
   void initState() {
     super.initState();
+    ErrorLogService.markScreen('Календарь');
     _calendarController.view = CalendarView.week;
     _jobsSnap = FirebaseFirestore.instance
         .collection('companies')
@@ -731,6 +734,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                 ),
                 visibleDays: calendarVisibleDayCount(_calendarController.view),
               );
+              _linkCatalog = linkCatalog;
 
               return Column(
                 children: [
@@ -819,6 +823,16 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                 },
                 dataSource: JobDataSource(appointments),
                 onViewChanged: (details) {
+                  // При перелистывании build не перезапускается — держим
+                  // границы каталога актуальными, иначе линии к карточкам
+                  // соседней недели не рисуются.
+                  final visibleDates = details.visibleDates;
+                  if (visibleDates.isNotEmpty) {
+                    _linkCatalog?.updateVisibleRange(
+                      visibleDates.first,
+                      visibleDates.last,
+                    );
+                  }
                   WidgetsBinding.instance.addPostFrameCallback((_) {
                     if (mounted && _visitLinksEnabled) {
                       _visitLinkHub.bump();

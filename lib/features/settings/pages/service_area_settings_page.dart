@@ -29,7 +29,6 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
   CanadianProvince _province = CanadianProvince.all.first;
   final List<LatLng> _points = [];
   bool _loading = true;
-  bool _saving = false;
   bool _dirty = false;
 
   @override
@@ -81,7 +80,6 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
   }
 
   Future<bool> _save() async {
-    setState(() => _saving = true);
     try {
       final label = await MapsService.describeServiceArea(
         provinceName: _province.name,
@@ -109,8 +107,6 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
       return true;
     } catch (_) {
       return false;
-    } finally {
-      if (mounted) setState(() => _saving = false);
     }
   }
 

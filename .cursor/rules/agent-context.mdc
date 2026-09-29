@@ -7,6 +7,39 @@ alwaysApply: true
 
 Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: Samsung `R5CW421KFXH`, package `com.example.fix_appliance_crm`. PowerShell: no `&&`; use `;`. Do not commit unless asked. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
 
+## Проверки перед сдачей работы
+
+`.github/workflows/checks.yml` — GitHub Actions на каждый push: `flutter analyze
+--no-fatal-infos`, `flutter test`, **сборка релизного APK**, `npm test` в `functions` и
+проверка, что правила доступа привязаны к uid, а не к «любому вошедшему».
+
+- **Предупреждений и ошибок в анализаторе ноль** (21.09.2026), поэтому CI на них валится, а
+  подсказки стиля пропускает. Держите этот ноль: появилось предупреждение — либо чините, либо
+  осознанно понижаете в `analysis_options.yaml` с объяснением, как сделано для
+  `unused_element_parameter` (оно срабатывает на необязательных параметрах приватных виджетов,
+  которым нигде не передают значение, но которые читаются).
+- Для этого был вычищен мёртвый код: в `job_service.dart` убран разбор звонка для
+  отключённого автосоздания заявок (`_looksLikeRepairCall`, `_visitFromExtracted`, `_textOf`,
+  `_callText`, `_inferAppliance`, `_historyText`, `_creatingFromCall`), поля `_saving`, которые
+  никто не читал, и неиспользуемые импорты.
+- Сборка APK в CI не роскошь: именно поломку `build.gradle.kts` она и ловит — см. ниже.
+- Ключей в репозитории нет, поэтому CI копирует `lib/core/api_keys.example.dart` в
+  `api_keys.dart` — только чтобы код скомпилировался.
+
+**Тесты на деньги** — `test/job_money_test.dart`: сумма счёта, HST, оплаты, метка оплаты
+(`paid` / `deposit` / `unpaid` / `refunded`), разделение на депозит и остаток, итоги по заявке
+и `JobService.paymentStatusOf`. Все 28 прошли с первого запуска — расчёт был верным, тестов
+на него просто не было. Правите деньги — начинайте с этого файла.
+
+**Минификация выключена, и это осознанно (21.09.2026).** В `android/app/build.gradle.kts`
+кто-то дописал `minifyEnabled true` / `shrinkResources true` — это синтаксис Groovy, а файл на
+Kotlin DSL, поэтому `flutter build apk --release` **вообще не собирался** («Unexpected tokens»,
+строка 90). Строки убраны. По-котлиновски это `isMinifyEnabled = true` /
+`isShrinkResources = true`, правила в `proguard-rules.pro` уже подготовлены (включая `-keep`
+для `CrmShadeNotifier` и `CrmCallActions`), но включать R8 надо **отдельной** сборкой и с
+проверкой на телефоне: шторка уведомлений и звонки зовут эти классы через рефлексию, и если
+`-keep` не сработает, уведомления молча перестанут рисоваться.
+
 Typical install (always do this after app UI/code changes — do not wait for FIX to say «поставь»):
 
 ```
@@ -20,7 +53,32 @@ adb -s R5CW421KFXH shell am start -n com.example.fix_appliance_crm/.MainActivity
 - **Phone secretary** (Twilio + Gemini Live): answers inbound calls if FIX does not pick up. Speaks English only. Files: `functions/voice_relay.js`, `functions/voice_facts.js`, `functions/index.js` (`aiVoiceRelay`, `aiVoiceTurn`, `getAiAnswerSettings`). Prompt/hangup changes are **server deploy**, no APK.
 - **In-app assistant** (FIX-Appliance / wake word): `lib/features/ai/assistant/*`. Do not mix this with the phone secretary.
 
-Owner does **not** rewrite the phone secretary from the app. Coach chat was removed. Errors go to **Настройки → Ошибки секретаря** (`SecretaryLearnPage`); FIX copies the pack and sends it here so the agent can patch prompt/functions. Live prompt is **server-only**: `DEFAULT_VOICE_INSTRUCTIONS` + shop hours + calendar + service-area map. App greeting, collect checkboxes, `extraRules`, and `learnedRules` are **not** injected into Live.
+**Обучение секретаря из приложения — выключено честно (21.09.2026).** Раньше выключено оно
+было только на словах, а в коде жила видимость:
+
+- `SettingsService.ensureAiVoiceSettings()` на **каждом старте приложения** писала в
+  `settings/ai_voice` пустые `extraRules`, `ownerBrief` и `learnedRules`. То же делали
+  `SecretaryLearnService.syncLearnedRules()` (после каждого «Подтвердить») и
+  `SettingsService.setAiVoiceExtraRules(text)`, которая вообще игнорировала свой аргумент.
+- Колокольчик при этом показывал «Правило принято — секретарь запомнила».
+- Сервер (`functions/secretary_learn.js:63`) читает `voice.learnedRules`, чтобы не присылать
+  уже принятые замечания. Список всегда был пуст, поэтому один и тот же разбор приходил
+  бесконечно. Отклонённые разборы читаются из коллекции уроков и работали.
+
+Что сделано: затирание убрано (`ensureAiVoiceSettings` пишет только `liveIgnoresAppRules`),
+`syncLearnedRules`, `setAiVoiceExtraRules`, `rejectOtherPending`, `markNoted` удалены. Вместе с
+ними вырезан мёртвый коуч-чат: `streamCoach`, `ensureCoachWelcome`, `postPendingLesson`,
+`sendCoachMessage`, `SecretaryCoachMessage`, `FirestoreService.secretaryCoachRef`,
+`AiService.coachSecretaryTurn` — из UI это не вызывалось, но обещало «запомню в скрипт».
+Кнопки в колокольчике теперь **«Это ошибка» / «Не ошибка»**, под ними плашка «её правят на
+сервере» и кнопка **«Скопировать для правки»**. «Не ошибка» — единственная, которая реально
+влияет на секретаря. Проверено в бою: метка, положенная в `learnedRules`, переживает
+перезапуск приложения.
+
+Не возвращайте затирание. Если дойдёт до настоящего обучения — эти поля надо **читать** и
+подмешивать в серверный промпт, а не обнулять.
+
+Owner does **not** rewrite the phone secretary from the app. Coach chat was removed. Errors go to **Настройки → Ошибки секретаря** (`SecretaryLearnPage`); FIX copies the pack and sends it here so the agent can patch prompt/functions. Live prompt is **server-only**: `DEFAULT_VOICE_INSTRUCTIONS` + shop hours + calendar + service-area map. App greeting, collect checkboxes, `extraRules`, and `learnedRules` are **not** injected into Live. The greeting itself is also improvised: no canned line is sent to the stream (`twimlGeminiLiveStream` passes `greeting` only for the live handoff "The technician had to step away…"); `greetLive` in `functions/voice_relay.js` tells her to greet in her own words, a little differently every call. Do not re-add `DEFAULT_VOICE_GREETING` as a script anchor for Live — FIX asked for a human, off-script hello (2026-09-20).
 
 ## Secretary behavior (current, Aug 23 2026)
 
@@ -28,7 +86,7 @@ Company on the phone: **FixApplianceCA**. Polite, easy, a little erudite. Answer
 
 - Do **not** inject fake user turns (`steerCollectAfterTurn`) after every reply — that made her not listen.
 - After confirm: model-sticker photo, then “anything else?”, then **Have a good day**. Do **not hang up**. Wait until the caller says goodbye. `end_call` is ignored.
-- Visits **Monday–Friday 7:00 a.m. – 9:00 p.m.** Toronto, last start **7:00 p.m.** Saturday and Sunday: **no visit** — still take the order, offer a weekday. Public holidays: take the order; the technician must agree. Secretary answers **24/7**.
+- Visits **Monday–Friday 7:00 a.m. – 9:00 p.m.** Toronto, last start **7:00 p.m.** Sunday: **no visit** — still take the order, offer a weekday. **Saturday: never say we are closed.** She says we do work Saturdays but every window is already booked, and offers next week (`closedDaysSpeech` in `functions/voice_facts.js`, used by `getAiAnswerSettings` and `calendarBrief`; SMS wording in `smsBusyReply`). The server still refuses to book a Saturday. Public holidays: take the order; the technician must agree. Secretary answers **24/7**.
 - We repair washers, dryers, dishwashers, gas ovens, electric ovens, **electric** cooktops, fridges, freezers, microwaves. Not gas cooktops, TVs, laptops, phones.
 - Old client: use their name; ask if the repair is at the address on file. New site → job site + who will be there + phone. Ask who is home only if it is not the owner’s house.
 - After “I’ll pass this to the tech”, ask photo, then anything else, then Have a good day. The caller hangs up.
@@ -36,6 +94,8 @@ Company on the phone: **FixApplianceCA**. Polite, easy, a little erudite. Answer
 - **Calendar:** each visit is **2 hours**, one job per window (`functions/schedule.js`). Secretary sees a live calendar brief. If 2:00 p.m. is taken, do **not** book it — offer another time the **same day** first. Server refuses busy slots on job create (`resolveJobSchedule`). SMS reschedule uses the same check (`visit_sms.js` `tryMoveVisit`).
 
 Spoken first name (e.g. Amelia) must go on the **client card** (`fullName`), not only the job. Do not leave `Клиент` / `Клиент +1…`. Helpers: `usableClientName` / `isPlaceholderClientName` in `functions/voice_facts.js`, `applyPersonNameToClient` in `functions/index.js`. Opening a job or client card also copies a real name from the job onto a placeholder client.
+
+**Контакт на адресе = клиент, если другого человека не назвали (22.09.2026).** Звонок с «я буду» оставлял `jobSiteName`/`jobSitePhone` пустыми — карточка показывала «Контакт на адресе» без имени. Теперь `voiceFacts.onSiteContactFrom(extracted, ownerName, ownerPhone)` подставляет имя и телефон клиента, если явно не назван другой человек; `explicit=true` только для другого человека (другое имя или номер). Фолбэк вшит в создание заявки, `patchDraftJobFromCall`, контакты локации карточки клиента, `applyInboundAddressToClient` и email/website-заявку. Позже названный реальный человек заменяет фолбэк, а существующий записанный контакт фолбэк не затирает. В extraction-промптах (Live `voice_relay.js`, текстовый режим и SMS/email в `index.js`): «I'll be there»/«me»/«my husband» без имени → null. Live-секретарю: «клиент будет сам — не переспрашивать имя». В приложении `JobDetailsController.contactName/contactPhone` и карточка «Где работа» (`details_tab._sitePiece`) тоже падают на данные клиента. Тесты: `voice_facts.test.js` («onSiteContactFrom…»).
 
 Gemini Live: Twilio media stream `timeLimit` is 3600s (1 hour). Context compression starts at 32k tokens (keep 18k) so she does not freeze mid-word on a normal call. WebSocket still reconnects around 10 min (`goAway` + session resume). `aiVoiceRelay` is 2GiB; text-turn runtime is 512MiB.
 
@@ -65,6 +125,16 @@ Page **Save** is only the top-right app-bar control: a **green check logo** (`Ap
 
 `lib/widgets/smart_address_picker.dart` has a **Unit** field next to street. Persist via `ClientService.addressFields` / `Location.unit`.
 
+Manual address search looks **only inside the service polygon** («Настройки → Зона»,
+`servicePolygon`). `lib/core/geo/service_area.dart` (`ServiceArea`) parses the polygon, does
+point-in-polygon like `functions/voice_facts.js`, and cuts the zone into `searchCircles` because
+Google Places `strictbounds` takes at most 50 km per request — FIX's zone needs two circles, so
+the picker fires one autocomplete call per circle and interleaves the results. If nothing is
+found inside the zone, it retries unrestricted and shows the amber «В зоне ничего не нашлось».
+A picked address outside the polygon shows the red «Адрес вне зоны обслуживания» but can still
+be saved. Do not re-add `serviceCity` — that config key is gone; the header shows
+`serviceAreaLabel`.
+
 ## Catalog settings
 
 Each catalog list (types, brands, statuses, sources) must **not** have a yellow plus in the app bar. Add items with the plus in the body.
@@ -82,6 +152,89 @@ Drawer **Корзина** is a 30-day recycle bin (`deletedAt` on jobs and clien
 `sendBookingIfNeeded` skips jobs with `needsReview === true`. The confirmation goes only after FIX taps **Проверено**. Email jobs (`source` / `sourceEmailId` / `sourceEmailFrom`) still get a **letter**. If a phone number exists, they **also get SMS** for the visit date and for date/time changes (`confirm_rescheduled`). Phone-only jobs get SMS. Hourly `sendVisitReminders` retries missed booking confirms and catch-up SMS for email jobs that never got a text. Deploy `onJobWritten`, `sendVisitReminders`.
 
 A follow-up email from a client with an open job is parsed by Gemini and written onto that job (address, model, serial, job-site contact). It does **not** create a second job. Deploy `syncGmailInbox`, `incomingSms`.
+
+## SMS доставка и 30007 (Sep 21 2026)
+
+Twilio принимает SMS (`queued`) и только потом присылает статус-колбэк. Номер шопа —
+**канадский локальный long code**, а канадские операторы жёстко фильтруют по нему A2P.
+Живой замер 21.09.2026, один и тот же короткий текст на +1 250…5149:
+
+| ссылка в тексте | результат |
+|---|---|
+| `https://fix-appliance.ca/review` | undelivered **30007** |
+| без ссылки | delivered |
+| `…cloudfunctions.net/p/review` | delivered |
+| `https://www.google.com/maps/place/…` | delivered |
+
+Плюс история за месяц: `g.page` 4 / 11 зарезано, `firebasestorage.googleapis.com` 12 / 0.
+**Вывод: в SMS проходят только google-хосты.** Свой домен режется — поэтому в SMS уже
+давно уходит длинная ссылка Stripe, а не `fix-appliance.ca/pay/...`.
+
+- Ссылка на отзыв меняется автоматически: `smsLinks.prepareReviewSms` заводит короткую
+  ссылку с кодом `review` (`short_links.js`) и подставляет `carrierUrl`
+  `…cloudfunctions.net/p/review` → то, что лежит в `settings/config.googleReviewUrl`.
+  Менять настройку можно свободно, адрес в SMS остаётся тем же. Точки вызова:
+  `exports.sendSms`, `sendScheduledSms` (index.js) и `sendReviewIfNeeded` (visit_sms.js).
+  Код `review` резервируется по имени (`ensureShortLink({ reserveCode: true })`), иначе
+  при первой отправке выдавался случайный код и адрес каждый раз был новый.
+- Второй рубеж — `fallbackBody`: короткий текст **без ссылки** («Your repair is complete…
+  Search <company> on Google and leave a review»). При 30007 его шлёт `smsStatusCallback`
+  (`retried30007`). `sendTwilioSms` в `visit_sms.js` раньше `fallbackBody` не писал —
+  повтора не было; теперь пишет.
+- **Промо-стиль режут сильнее ссылки.** Шаблон FIX на 431 символ (`⭐️⭐️⭐️⭐️⭐️`, `🛠️😊`,
+  `📍`, «supporting our small business ❤️») зарезали и со ссылкой, и без. Тот же смысл на
+  ~220 символов с шапкой, ссылкой на google-хосте и парой эмодзи (✅ ⭐) прошёл.
+  Отсюда короткий `job_done` по умолчанию и правило: не раздувать шаблон и не делать
+  из запасного текста копию промо-блока.
+- FIX просил красивый текст с ссылкой (21.09.2026): его старый промо-шаблон
+  (431 символ) был сохранён в Firestore и резался — клиент видел только запасной
+  «Search … on Google». Новый дефолт `job_done` — тёплый текст с `{review}` и
+  эмодзи (~237 символов с шапкой), живой замер на +12507105149: delivered.
+  Промо-вариант мигрируется на дефолт в `ensureEnglishClientCopy`
+  (признаки: «supporting our small business», «the repair is complete!», «⭐️⭐️»).
+- Если повтора нет, `smsStatusCallback` ставит `deliveryFailed: true` + `errorCode` и
+  будит мастера (`notifyMaster`, type `sms`). В чате пузырь получает красную плашку
+  «Не доставлено: причина», в колокольчике — карточка «SMS не дошло»
+  (`SmsService.streamFailedOutbound` / `dismissFailure`). Коды → текст:
+  `smsFailureReason` (сервер) и `SmsMessage.failureReasonFor` (приложение).
+- Шаблон из чата раньше вставлялся сырым — клиент получал буквальное `{review}`.
+  Подстановки делает `_insertTemplate` в `conversation_screen.dart`.
+- Радикальное решение, если фильтр начнёт резать и это: канадский long code для A2P
+  вообще не предназначен, Twilio советует verified toll-free или short code.
+- Деплой: `firebase deploy --only functions:sendSms,functions:smsStatusCallback,functions:processScheduledMessages,functions:onJobWritten,functions:sendVisitReminders`
+- Проверять доставку по Twilio, а не по чату: `client.messages.list`, ключи в `functions/.env`.
+
+## Статус → цвет
+
+Цвет карточки везде (календарь неделя/5 дней/месяц, список, карточка заявки, карта маршрута)
+идёт через **одну функцию** `StatusService.colorOf(status)` (`lib/services/status_service.dart`).
+Она чистит пробелы/регистр, понимает алиасы («Готов»/«completed» → цвет «Завершено»,
+«Canceled» → «Отменено») и держит жёлтый «В работе», хотя `_parse` вырезает этот id из списка.
+НЕ использовать `String.hashCode` для цвета — он случаен при каждом запуске приложения
+(`JobStatuses.fallbackColor` теперь считает стабильный хеш из codeUnits). Новые свои статусы
+FIX заводит в Настройки → Каталог → Статусы; цвет оттуда подхватывается везде сам.
+Проверка: `test/status_service_test.dart`.
+
+## Статус «Депозит» (Sep 20 2026)
+
+Базовый статус `JobStatuses.deposit` = **«Депозит»**, янтарный `0xFFFFB300` (как янтарная
+метка депозита в счетах). Ставится **сам, без вопросов**, как только по счёту прошла
+**частичная** оплата: `Job.documentDepositTaken(doc)` (есть деньги, остаток > 0; ссылка Stripe
+`mode: deposit` без оплаты и частичный возврат — не депозит).
+
+- Правило, кому можно менять статус: `JobStatuses.shouldMarkDeposit`. **«Ожидание запчасти»
+  не трогаем** — иначе заявка выпадет из очереди запчастей (фургон). Закрытые и уже
+  «Депозит» — тоже нет.
+- Приложение: `JobDetailsController.markDepositTaken()`. Триггеры — `updateDocument`
+  (наличные / e-Transfer: `_addLocalPayment` кладёт **копию** документа, иначе «было/стало»
+  не сравнить) и `_onDocumentsRemoteUpdate` (Stripe/другое устройство; статус из снапшота
+  передаётся в `remoteStatus`, чтобы не писать второй раз за сервером).
+- Сервер: `recordStripePayment` в `functions/stripe.js` (ссылка-депозит, Tap to Pay, инвойс)
+  пишет `status: 'Депозит'` по тем же правилам (`shouldMarkDepositStatus`).
+- «Депозит» **не перетирается автопереносом**: `JobStatuses.canMarkRescheduled` = false, и в
+  `functions/visit_sms.js` все автозаписи `status: 'Перенос'` идут через `rescheduleStatus(job)`.
+- Деплой серверной части: `firebase deploy --only functions:stripeWebhook,functions:stripePaymentComplete,functions:completeTerminalPayment,functions:incomingSms,functions:onJobWritten`
+- Проверка: `test/job_deposit_test.dart`, `test/status_service_test.dart`.
 
 ## UI notes
 
@@ -148,6 +301,32 @@ restore), `ClientService`, `ClientJobSync`, `SettingsService`, and the new-clien
 uses `_ref.doc()` + `set()` instead of `add()`, because `add()` waits for the server to hand back
 an id.
 
+**Офлайн-очередь (`OfflineQueueService`) — три правила, не откатывать (21.09.2026):**
+
+- **Массив никогда не досылается целиком.** `JobService.addAttachment` на ошибке ставил в
+  очередь `{'attachments': [одно фото]}`, а очередь делает `update()` — то есть **заменяла**
+  массив и стирала все остальные снимки заявки. Единственный вызов — подпись клиента в счёте,
+  значит подпись по плохой связи уносила все фото. Теперь есть `enqueueJobArrayUnion`.
+- **Типы сохраняются.** `jsonEncode` превращал `Timestamp` в строку, и дата визита уезжала в
+  базу строкой. Даты пакуются в `{'__ts': мс}` (`encodeData`/`decodeData`).
+- **Половина записи не отправляется.** `FieldValue` в JSON не сериализуется; раньше такие поля
+  молча выбрасывались и в базу уходил огрызок. Теперь операция не ставится в очередь вовсе, а
+  владелец видит запись в «Ошибки» (`hasUnsendableValue`).
+- У операции есть `id` и `attempts`, после `maxAttempts` она снимается с очереди — иначе
+  запись, которую сервер отвергает всегда, висела вечно и держала жёлтое «Отправлю: N».
+- Фото из очереди дописывает ссылку в **уже лежащую** запись по имени файла
+  (`applyUploadedPhoto`, транзакция): раньше в заявке оставались две записи, одна с локальным
+  путём, который на другом телефоне не открывается.
+- Старая очередь `offline_ops_v1` переносится только в части фото: правки заявок там с
+  испорченными типами. Тесты: `test/offline_queue_service_test.dart`.
+
+**Склад: только `FieldValue.increment`.** `WarehouseService.adjustQuantity`, кнопки «+/−»
+(`_updateQuantity` в `warehouse_screen.dart`) и слияние дублей считали `текущее + delta` после
+чтения — два списания подряд, две машины или чтение из офлайн-кэша съедали одно. Количество
+может уйти в минус, и это специально: минус = «деталь поставили, а на складе не числилась»,
+в списке она горит красным. Расчёт списания по счёту вынесен в чистые
+`WarehouseService.stockDeltas` / `shouldApplyStock`, тест `test/warehouse_stock_test.dart`.
+
 `NetworkStatusService` decides online/offline from Firestore's own `metadata.isFromCache`
 (`snapshots(includeMetadataChanges: true)` on `settings/config`) — no `connectivity_plus`, and
 Wi-Fi without internet is caught too. It counts jobs with `hasPendingWrites` and flushes
@@ -164,8 +343,19 @@ timeouts and falls back to `OfflineQueueService`, and the job card then shows «
 База больше не открыта. Do **not** loosen these:
 
 - `firestore.rules` + `storage.rules` lie in the repo and are wired into `firebase.json`.
-  Everything requires `request.auth != null`. There is exactly one owner account
-  (email + password), created by hand in the Firebase console.
+  Доступ привязан к **uid владельца**, а не к «любой вошедший»:
+  `Ew8vDgXvuMMwt9gYQUOi7rujNxO2` (dvrart@gmail.com), функция `owners()` в обоих файлах.
+  **Не возвращайте `request.auth != null`** (21.09.2026): саморегистрация в проекте открыта
+  (`client.permissions.disabledUserSignup` = false, проверено через Identity Toolkit), web API
+  key лежит в APK, поэтому аккаунт мог создать кто угодно и такой аккаунт проходил проверку
+  `auth != null` — то есть получал всю базу клиентов, счетов, переписки и записей звонков.
+  FIX решил саморегистрацию не закрывать и полагаться на правила.
+  Второй телефон владельцу правил не требует — это тот же аккаунт; второй мастер добавляется
+  в `owners()`. Клиентские ссылки в SMS/письмах это не ломает: download URL с токеном
+  открывается без входа, а Cloud Functions ходят через Admin SDK и правила обходят.
+  Проверять правила, не трогая данные: `projects:test` у `firebaserules.googleapis.com`
+  (владелец ALLOW, чужой uid и вход отсутствует — DENY).
+  Деплой: `firebase deploy --only firestore:rules,storage` (не `storage:rules`).
 - `AuthService` (`lib/services/auth_service.dart`) keeps the ID token and hands out
   `AuthService.headers()`. **Every** app → function call must use it; `withAuthQuery` is only
   for URLs that a player/browser opens itself (audio). A new HTTP call without headers gets 401.
@@ -218,9 +408,39 @@ timeouts and falls back to `OfflineQueueService`, and the job card then shows «
 - **Город.** Распознавание теряет буквы: приехал **«Branford»** вместо «Brantford», а такого
   города нет — маршрут не строится. `voiceFacts.snapCity` подтягивает услышанное к известному
   (расстояние ≤2 для названий от 7 букв, ≤1 для коротких) по городам из карточки клиента плюс
-  `SERVICE_TOWNS` в `index.js`. Оттуда же собираются `VOICE_HINTS` — держите список в одном
-  месте. `serviceAreaLabel` в настройках — это районы («Ontario: Brant, Haldimand, Norfolk,
-  Tillsonburg, Zorra»), названий городов там нет, сверять по нему нельзя.
+  `voiceFacts.SERVICE_TOWNS`. Оттуда же собираются `VOICE_HINTS` — список городов один на всё
+  (сервер + `tools/check_service_area.js`), держите его в `voice_facts.js`.
+- **Зона обслуживания (Sep 20 2026).** `serviceAreaLabel` — это **не** перечень покрытия:
+  `MapsService.describeServiceArea` геокодирует центр полигона и до 7 его углов, поэтому в
+  подписи оказываются названия тауншипов («Ontario: Brant, Norfolk, Zorra, Wellesley, North
+  Dumfries, Haldimand»). Секретарь читала подпись как закрытый белый список и **отказала
+  Тилсонбургу**, который внутри зоны. Теперь `describeServiceArea` в `index.js` добавляет к
+  подписи города из `SERVICE_TOWNS`, попавшие внутрь полигона (`voiceFacts.townsInsideArea` +
+  `serviceAreaSpeech`), и прямо пишет, что список неполный. Незнакомый город — **не отказ**:
+  спросить postal code, принять заявку, мастер подтвердит; отказ только для явно далёких
+  (Toronto, Hamilton, London, Ottawa…). Проверять зону: `node tools/check_service_area.js`
+  (можно с координатами точки). Текущий полигон накрывает и **Kitchener / Waterloo /
+  Cambridge**, а **Ancaster, Cayuga, Dunnville** из списка городов — снаружи; если это не так
+  задумано, перерисуйте зону в настройках. И осторожно со `stripServiceAreaLines`: шаблон был
+  шире и срезал из базовых инструкций правило «Service area check: … when in doubt, take the
+  order» — именно то, что мешало ложным отказам.
+- **`check_service_area` — инструмент Live (Sep 20 2026).** Список названий никогда не будет
+  полным: между Тилсонбургом и Брантфордом два десятка деревень. Поэтому у секретаря есть
+  серверный инструмент (`functions/service_area.js`, объявлен в `voice_relay.js`, подключён
+  через `deps.checkServiceArea`): точное совпадение с `SERVICE_TOWNS` — мгновенно, иначе
+  геокодирование Google + попадание в полигон. Принимает деревню, **почтовый индекс** и полный
+  адрес. Ответ: `inside=true` — да, едем; `inside=false` — вежливый отказ; `inside=null`
+  (не нашли / нет ключа / нет карты) — спросить индекс и **всё равно принять заявку**. Отказ
+  разрешён только при `inside=false`.
+  Ключ: `GOOGLE_MAPS_API_KEY` в `functions/.env` — тот же, что `kGoogleMapsApiKey` в
+  `lib/core/api_keys.dart` (работает с сервера, проверено). Без него инструмент отвечает
+  `inside=null`, а не отказом.
+  Проверено запросами: одноимённых деревень в Онтарио много, и «Mount Pleasant» уезжает под
+  Белвилл. `bounds` геокодер игнорирует, второй `components=administrative_area` — тоже.
+  Работает **только** округ, дописанный прямо в адрес, поэтому при ответе вне зоны идёт веер
+  повторных запросов «`место`, `округ`, Ontario» по округам из `serviceAreaLabel` (все разом,
+  один поход в сеть, ~400 мс). Ответ типа `administrative_area_level_2` (центр округа) не
+  считается находкой — иначе любая чушь «попадала» бы в зону.
 - **Текстовые модели Gemini.** Проверено запросами с рабочим ключом: живая только
   `gemini-flash-lite-latest`. `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`,
   `gemini-3-flash` — 404 «no longer available». `gemini-flash-latest` и `gemini-3.6-flash` —
@@ -293,8 +513,41 @@ that a repainting error floods the collection.
 
 Native crashes (an OOM kill, for example) never reach Dart, so the service keeps a
 `session_open` flag: set on start and on resume, cleared in `AppLockGate` on pause. A flag still
-set at the next launch becomes a «crash» row naming the last screen. Call
+set at the next launch becomes a «crash» row. Call
 `ErrorLogService.markScreen('Склад')` in `initState` of any screen worth naming.
+
+**Метка экрана раньше врала — не откатывайте починку (21.09.2026).** `markScreen` стоял
+только на Складе и Расходах и никогда не сбрасывался, поэтому **каждый** вылет за месяц
+подписывался «на экране Склад», и по журналу выходило, что падает склад. Сейчас:
+
+- у метки есть время (`error_log_screen_at_v1`); если ей больше `screenIsFreshFor` (3 минуты),
+  отчёт прямо пишет «метке уже 5 ч — верить ей нельзя», а поле `screen` остаётся пустым;
+- метки расставлены на Главной, Заявках, Карточке заявки, Календаре, Клиентах, Переписке,
+  Отчётах, Складе, Расходах. Добавляете экран — добавьте `markScreen`;
+- раз в 30 с пишется замер `AppVitals` (`error_log_vitals_v1`): память, кэш картинок, экран.
+  Он переживает OOM-kill, и отчёт о вылете показывает последний замер;
+- разбор собирает `ErrorLogService.describeCrash` — чистая функция, тест
+  `test/error_log_crash_report_test.dart`.
+
+**Абсолютные пороги памяти не вводить.** Живой замер на этом телефоне: `dumpsys` даёт для
+процесса 460 МБ RSS, а `ProcessInfo.currentRss` из Dart — 176 МБ. Dart видит свою часть, не
+весь процесс. Поэтому признак OOM считается по **росту от начала сеанса**
+(`suspiciousGrowthMb`, точка отсчёта — первый замер) плюс по забитому кэшу картинок
+(`saturatedImageCacheMb`): битмапы живут вне Dart-RSS и в росте могут не проявиться.
+
+**Почему приложение вообще близко к OOM.** Замер 21.09.2026: в покое процесс держит
+313–460 МБ, а свободной памяти в системе оставалось 74 МБ (`/proc/meminfo` MemFree при 7 ГБ
+всего). В таком состоянии убивает почти любой всплеск, поэтому два места были сужены:
+
+- `fullImage` в `lib/core/utils/thumb_image.dart` — полноэкранный просмотр фото. Сырой
+  `NetworkImage`/`FileImage` разжимает кадр целиком (4000×3000 это ~48 МБ), а `PageView` в
+  `full_screen_gallery.dart` держит и соседние страницы. Теперь декодируем под экран с
+  запасом на зум. Те же грабли были в `conversation_screen._openPhoto` (фото от клиента
+  приходит в полном разрешении).
+- `PartImageService.maxShotBytes` / `maxTotalShotBytes` — поиск картинки детали запускается
+  на складе **сам**, брал 4 снимка по 4 МБ и отдавал их ИИ одним запросом, где `DataPart`
+  кодирует всё в base64 (+⅓) в одну строку. Каталожное фото 1600×1200 весит 150–400 КБ,
+  так что потолок 1.5 МБ ничего не портит.
 
 FIX sees them in **Настройки → Данные → Ошибки** (`ErrorLogPage`) with «Копировать всё». The
 endpoint is `GET https://us-central1-fix-appliance-crm.cloudfunctions.net/appErrors?limit=40`
@@ -320,6 +573,59 @@ The warehouse dialog used to be the worst offline screen in the app; do not undo
 - Photo upload has 25s/15s timeouts and says «Фото не загрузилось — нет связи»; part-number
   lookups go through `_lookupPartNumber` (6s timeout, null on failure).
 - Text controllers and the debounce `Timer` are disposed in `whenComplete` on the dialog.
+
+**Картинка детали из интернета (Sep 20 2026).** Карточка склада держит два снимка:
+`imageUrl` — своё фото/стикер, `webImageUrl` (+ `webImageSource`) — каталожное фото,
+которое нашёл ИИ. В списке склада главной идёт **картинка из интернета**, стикер — запасной.
+**Ищет сам телефон** (`PartImageService` в `lib/services/part_image_service.dart`), а не
+сервер. С адресов Google Cloud каталог отдаёт **403**, а картинки Bing приезжают от чужой
+темы — в журнале боевой функции были часы, игры Sprunki и аниме-раскраски. С обычной сети
+мастера те же адреса отвечают нужной деталью. `functions/part_image.js` → `findPartImage`
+(POST, `requireAppUser`, 120s, 1GiB) оставлен **запасным ходом**: приложение зовёт его,
+только если само не смогло скачать ни одного кандидата.
+Источник номер один — **каталог `applianceparts.homedepot.ca/search?q=<номер>`**: один
+результат → редирект на карточку, несколько → плитки `product-image` + `productN.partNumber`
+рядом в скрипте; id картинки поднимаем до `/thumbnail/product/<id>/1600/1200/<НОМЕР>.jpg`
+(`parseApplianceParts`, покрытие 9 из 10 проверенных номеров). Только если каталог пуст —
+картинки **Bing** (`m="{…murl…}"` в HTML) и затем DuckDuckGo `i.js` с `vqd`.
+Дальше отбрасываем логотипы/svg/Pinterest, качаем до 4 кандидатов, показываем их Gemini
+и кладём победителя в Storage
+`companies/fix_appliance_ca/warehouse/web/…` с download-токеном. Хотлинк с чужого хоста на
+телефоне часто не грузится — поэтому именно своя ссылка. Ключей поиска нет и не нужно.
+
+**Сетевые источники проверяйте с того узла, который к ним пойдёт.** Проверка `curl` с машины
+FIX ничего не говорит про Cloud Functions: с ноутбука каталог и Bing отдавали ровно те
+детали, а с сервера — 403 и мусор. Правда видна только в журнале боевого пути
+(`findPartImage кандидат N …`, `источник=каталог|поиск`, `best=0 why=…`).
+Тот же разбор продублирован в Dart (`PartImageService.parseCatalog` / `parseBing`) и в JS —
+правите одно, поправьте второе. Тесты: `test/part_image_service_test.dart` и
+`functions/part_image.test.js`.
+**Не спрашивайте у Gemini «это точно та самая деталь?»** — с первой версией промпта она
+честно отвечала `0` на каждый запрос, и поиск не находил ничего вообще (в журнале: `best=0`).
+Узнать номер детали по фотографии модель не может. Совпадение номера даёт сам поиск (номер
+стоит в адресе картинки и страницы), а у ИИ спрашивают только «где тут нормальное фото
+детали, а где схема, текст, логотип или целая машина». `resolvePartImage` пишет в журнал
+`part= ranked= images= best= why=` — по этой строке сразу видно, на каком шаге пусто.
+В окне «Новая деталь» поиск запускается сам (после номера/скана, один раз на набор полей) и
+по плитке **Найти фото**; предложение показывается карточкой с зелёной галочкой / красным
+крестом / «Поискать ещё». Непринятый файл удаляется из Storage (`PartImageService.discard`),
+в том числе при закрытии окна. Разбор выдачи закрыт тестом `functions/part_image.test.js`.
+Деплой: `firebase deploy --only functions:findPartImage`.
+
+**Проверка замен запчастей (21 Sep 2026).** Колонка «Заменяет номера» ловила ложные
+номера от `AiService.guessInterchangeNumbers` — ИИ их выдумывал, догадка попадала в поле,
+а потом склад показывал «уже есть замена» на абсолютно другую деталь и при сохранении
+сшивал номера в обе стороны. Теперь любая подставленная пара сверяется с живым
+каталогом: `lib/services/part_supersession_service.dart` (`PartSupersessionService.check`)
+идёт с телефона в `applianceparts.homedepot.ca/search?q=<номер>` — старый номер сам
+редиректит на карточку нового с `?replaces=` в адресе, на странице печатается
+`Part #:`. Вердикты: `replaces` (одна карточка на двоих), `different` (каталог знает оба
+номера и это разные товары — тогда баннер замены прячем, а номера не сшиваем),
+`unknown` (нет сети или каталог молчит — оставляем как раньше, офлайн важнее).
+В поле «Заменяет номера» ИИ-догадки попадают только после подтверждения
+(`verifiedOnly`); уже опровергнутые пары лежат в `refutedPairs` диалога, чтобы
+AI-проход их не воскрешал. Тесты: `test/part_supersession_service_test.dart`.
+Не переносите эту проверку на сервер — с адресов Cloud каталог отдаёт 403.
 
 Low stock: `lowStockAlertEnabled` appends a «Заканчивается» block to the morning briefing
 (`MorningBriefingService`), and the briefing fires even on a day with no jobs if stock is low.
@@ -424,7 +730,7 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 - Main chrome: **シ-face** (`AssistantFaceButton`) at top center. Tap or Purish turns it **yellow** and starts listen — no full-screen overlay. Mouth opens while speaking. Calendar header is the view chip only (day / 5 days / week / month / list). Bouncing `local_shipping` van top-right. Bottom dock: yellow menu/bell **full height** of the navy bar; Calendar / Связь / Клиенты grouped in the **center**.
 - Declined service calls (`service_declined` / `serviceDeclined`) stay in the bell and do **not** create a repair job.
 - Booking SMS waits for FIX to confirm the job. Email jobs get the same 1 / 0 / 5 confirmation as a letter **and SMS if a phone exists** (so a date change is not email-only). Review SMS after **Готово/Завершено** runs from `onJobWritten` even though the job is closed; hourly `sendVisitReminders` also catch-ups recent completes missing `reviewSmsSentAt`. Deploy `onJobWritten`, `sendVisitReminders`.
-- Take repair orders 24/7. Technician visits Mon–Fri 7 a.m.–9 p.m. Saturday and Sunday: no visit; offer a weekday. Holidays by agreement with the technician.
+- Take repair orders 24/7. Technician visits Mon–Fri 7 a.m.–9 p.m. Sunday: no visit; offer a weekday. Saturday: say we work but are fully booked, offer next week. Holidays by agreement with the technician.
 - Dishwasher icon: match `dish` / `посуд` before `washer` (`dishwasher` contains `wash`).
 - Basket is 30-day trash for deleted jobs/clients; unscheduled jobs have their own list.
 - Reports: two tabs — **Для T2** (UFile / TurboTax GIFI pack: 8000 sales, 8320 parts, GST34 101/103) and **Операции** (Jobber KPIs + Stripe). Default period is calendar **year**. Simple T2 method: type 8000 and 8320, leave inventory 8300/8500 blank. PDF/copy from the T2 screen. Not tax advice.
@@ -499,5 +805,16 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 - **Регион существующей функции нельзя сменить деплоем.** Убрать `region:` из исходника мало: `firebase deploy` спокойно обновит функцию там, где она уже стоит, и предупреждение останется. Нужно `firebase functions:delete onJobWritten --region us-central1 --force`, затем обычный деплой — он создаст её заново в правильном регионе.
 - Между удалением и созданием (~2 минуты) триггер на заявках не существует. Пропущенные подтверждения визита догоняет ежечасный `sendMissedBookingConfirms`, а вот строки журнала `recordJobChanges` за эту дыру теряются безвозвратно. Делать только в тихое окно.
 - У `sendVisitReminders` `region: 'us-central1'` **оставлен намеренно** — это планировщик, у него нет триггера в другом регионе, и трогать его значит зря пересоздавать функцию. `aiVoiceRelay` и `callRecordingAudio` тоже обязаны остаться в `us-central1`: их адрес зашит в подпись Twilio и в ссылки, которые открывает приложение.
+
+## Дубляж заявок с одного номера (20 сентября 2026)
+
+`functions/job_dedupe.js` — единственное место, где живёт правило дубляжа и слияние заявок. Правило владельца: **один номер + меньше 48 часов между заявками = дубляж, даже если техника разная или не названа**. Исключение — если у обеих заявок есть адрес и адреса разные (управляющий домами): это два разных вызова, соединять нельзя.
+
+- Автоматически закрывается только **входящий черновик** (`source` phone / sms / email / website и визита ещё нет). Заявку, заведённую руками, и заявку с назначенным визитом сервер не закрывает — он ставит `possibleDuplicateOfJobId`, а мастер решает кнопкой «Соединить» в карточке. Главной остаётся заявка с визитом, иначе более заполненная (`jobFillScore`), иначе старшая — порядок обязан быть одинаковым с любой стороны, иначе две копии триггера закроют друг друга.
+- Соединение = **перелить данные**: пустые поля, недостающая техника в `appliances`, фото, описание дубля дописывается снизу. Служебных строк в описание не пишем — след только в истории заявки (`changes`: `merged_duplicate` у главной, `merged_into` у дубля). Дубль получает `status: 'Отменено'`, `mergedIntoJobId`, его визиты гасятся, а звонки и сообщения перевешиваются на главную.
+- Точка входа — `processJobWrite` в `visit_sms.js` (то есть `onJobWritten`), только при создании заявки или когда сменился телефон (`phoneChanged`). Если заявку слили в другую, обработка обрывается: иначе клиенту уйдёт SMS о визите по закрытому дублю.
+- `closeCloneJob` в `index.js` и `collapseDuplicateEmailJobs` в `email.js` теперь зовут `jobDedupe.mergeJobs` — раньше они просто ставили «Отменено» и данные дубля пропадали. `jobFillScore` / `applianceKey` / `jobApplianceKey` переехали в `job_dedupe.js`, в `index.js` остались ссылки.
+- Ручное соединение: `mergeDuplicateJobs` (POST `{keepId, dropId}`, `requireAppUser`) → `JobService.mergeDuplicate`. «Не дубляж» ставит `duplicateDismissed` прямо из приложения.
+- Тесты: `functions/job_dedupe.test.js` (16). Деплой: `firebase deploy --only functions:onJobWritten,functions:mergeDuplicateJobs,functions:syncGmailInbox,functions:retryStuckCallAi,functions:recoverStuckCallJobs`.
 
 - Проверка: `npm --prefix functions test` (107 тестов на Node 22.20.0); `flutter test --no-pub test/job_visit_sms_test.dart` (56). Реальный Gemini проверен на синтетическом lookup и подтверждённой отмене с in-memory backend, **без записи в production**. Обновлены 15 функций голос/SMS/Gmail/recovery и установлен release APK на `R5CW421KFXH`. Для shared-calendar изменений обновлять также `onJobWritten`, `sendVisitReminders`, `retryStuckCallAi`, `recoverStuckCallJobs`, `syncGmailInbox`, `sendSms`, `smsStatusCallback`, кроме основного набора голосовых функций.

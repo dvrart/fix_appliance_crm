@@ -57,10 +57,6 @@ class FirestoreService {
   static CollectionReference get secretaryLessonsRef =>
       companyRef.collection('secretary_lessons');
 
-  /// Чат хозяина с секретарём — переписывают, как вести звонки.
-  static CollectionReference get secretaryCoachRef =>
-      companyRef.collection('secretary_coach');
-
   static CollectionReference get expensesRef =>
       companyRef.collection('expenses');
 

@@ -188,6 +188,7 @@ test('reply delivery stays connected while shop rules and caller pauses remain u
   assert.ok(prompt.includes(profile.serviceArea));
   assert.ok(prompt.includes(profile.priceLine));
   assert.ok(prompt.includes(session.openJobBrief));
+  assert.match(prompt, /whether this call is about that repair or a separate new one/);
   assert.ok(prompt.includes(session.calendarBrief));
   assert.match(prompt, /Do not greet again/);
   assert.match(prompt, /If they pause to look something up, wait quietly/);
@@ -218,17 +219,17 @@ test('pause tuning preserves the voice, listening sensitivity and long-session c
   });
 });
 
-test('first greeting uses natural wording rather than an exact script', () => {
-  const { session, messages } = greetingSession();
+test('first greeting is improvised like a live person, without a canned line', () => {
+  const { session, messages } = greetingSession({ greeting: '' });
   voiceRelay.greetLive(session);
   assert.equal(messages.length, 1);
   const content = messages[0].clientContent;
   const prompt = content.turns[0].parts[0].text;
   assert.match(prompt, /in your own words/i);
-  assert.match(prompt, /in English/);
   assert.match(prompt, /first greeting only/);
-  assert.match(prompt, /not its exact wording/);
-  assert.ok(prompt.includes(session.greeting));
+  assert.match(prompt, /no memorized slogan/i);
+  assert.doesNotMatch(prompt, /Keep the meaning of this opening/);
+  assert.doesNotMatch(prompt, /Hi, FIX Appliance CA/);
   assert.match(prompt, /stop and listen/);
   assert.doesNotMatch(prompt, /Speak ONLY this greeting|No other words:/);
   assert.equal(content.turnComplete, true);
@@ -352,8 +353,41 @@ function confirmCancellation(session, text = 'Yes, please cancel it.') {
 test('Live declares real calendar tools and never declares a hangup tool', () => {
   const { setup } = voiceRelay.buildSetup('gemini-3.1-flash-live-preview', 'Shop rules', true);
   const names = setup.tools.flatMap((tool) => tool.functionDeclarations.map((fn) => fn.name));
-  assert.deepEqual(names.sort(), ['cancel_appointment', 'check_availability', 'get_caller_appointments']);
+  assert.deepEqual(names.sort(), [
+    'cancel_appointment',
+    'check_availability',
+    'check_service_area',
+    'get_caller_appointments',
+  ]);
   assert.equal(voiceRelay.buildSetup('gemini-3.1-flash-live-preview', 'Shop rules', false).setup.tools, undefined);
+});
+
+// Вопрос «вы ездите в Вильсонвилль?» не должен превращать звонок в разговор про
+// существующий визит: раньше любой инструмент включал appointmentOnly и заявка
+// переставала создаваться.
+test('service area lookup answers from the map without touching the appointment state', async (t) => {
+  const asked = [];
+  const { session, state } = appointmentSession(t, {
+    checkServiceArea: async (place) => {
+      asked.push(place);
+      return { ok: true, inside: true, place: 'Wilsonville, Norfolk, ON', source: 'geocode' };
+    },
+  });
+  const result = await voiceRelay.runAppointmentTool(session, 'check_service_area', {
+    place: 'Wilsonville',
+  });
+  assert.deepEqual(asked, ['Wilsonville']);
+  assert.equal(result.inside, true);
+  assert.equal(state.reads, 0);
+  assert.equal(session.appointmentOnly, undefined);
+  assert.equal(session.createJob, undefined);
+});
+
+test('without a map service the relay reports it instead of refusing the caller', async (t) => {
+  const { session } = appointmentSession(t);
+  const result = await voiceRelay.runAppointmentTool(session, 'check_service_area', { place: 'Ayr' });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'no_map');
 });
 
 test('appointment lookup reloads the server instead of repeating the session snapshot', async (t) => {

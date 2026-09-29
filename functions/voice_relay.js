@@ -108,7 +108,7 @@ function outsideAreaRule(profile, thenWhat) {
   if (!area) {
     return `- Do not refuse a caller based on town names from memory. Coverage comes from the owner's service-area map, and it is not set.`;
   }
-  return `- Outside this service area (${area}): we don't travel there, then ${thenWhat}.`;
+  return `- Service area: ${area} An unfamiliar town is not a refusal — ask for the postal code and take the order. Only a plainly far city is outside: we don't travel there, then ${thenWhat}.`;
 }
 
 function compactKnown(session) {
@@ -190,7 +190,7 @@ function liveSystemPrompt(profile, session) {
   const area = String((profile && profile.serviceArea) || '').trim();
   const opening = session.greetingSpoken
     ? 'Hello already played. Do not greet again. Wait.'
-    : 'You pick up the phone. Say the greeting once, warmly and briskly, then stop and wait.';
+    : 'You pick up the phone. Greet like a real person in a small repair shop: your own words, a little different every time, warm and brisk. Never a memorized slogan or a call-centre announcement. One short breath, then stop and wait.';
   return `You are a real woman answering the shop phone for FixApplianceCA. Not a script. Not a form.
 
 ${opening} When they speak, first words are ordinary — a real reaction, then one easy follow-up. If they say the dryer is broken: "Oh no — what's it doing?" not their name, not the address.
@@ -203,19 +203,26 @@ ${session.openJobBrief || 'Caller schedule is not loaded. Do not guess whether t
 Visits: ${visitDays}, ${hours} Toronto. ${closedDays}
 ${session.calendarBrief || ''}
 ${profile.priceLine || ''}
-${area ? `Service area: ${area}. Clearly outside: we do not travel there.` : 'Service area map is not set — do not refuse from memory.'}
+${area ? `Service area: ${area}` : 'Service area map is not set — do not refuse from memory.'}
 ${profile.awayLine || ''}
 
 ${profile.instructions}
 
 LIVE CALENDAR — server facts take priority over any transcript or earlier snapshot:
 - Before saying whether THIS caller has a visit, call get_caller_appointments and answer from its latest result. Shop-wide Taken/Open times are NOT this caller's bookings.
+- If the caller schedule above shows a repair already on file, do not assume why they rang: ask once, in one short sentence, whether this call is about that repair or a separate new one, and open a new order only after they say it is new.
 - Read the full date including the year. Cancelled, completed, deleted and past visits are not upcoming appointments. A provisional visit still needs technician review; do not call it confirmed.
 - A lookup or cancellation is not a new repair order. Do not collect repair details or create a new job unless the caller explicitly asks for a separate repair.
 - For cancellation, call cancel_appointment, ask its exact confirmation question, wait for the caller's explicit yes, then call it again with confirmed=true. Say it is cancelled ONLY after status=cancelled. On an error say you could not verify the change; never pretend it was saved.
 - If there is more than one visit, ask which one. Never cancel another visit or every visit by guessing.
 - Before accepting a proposed NEW time call check_availability. This checks availability, not a saved booking. Existing-visit rescheduling must be agreed with the technician or handled by SMS; do not claim it has already been moved.
 - Do not read internal job IDs or visit IDs aloud. Keep personal calendar event details private.
+
+SERVICE AREA — the map decides, never your memory:
+- The towns listed above are only the well-known ones. The zone also holds villages, hamlets and rural roads that are not named there.
+- For any other place — a village, a postal code, a street address, a town you are unsure about — call check_service_area BEFORE you say anything about travelling there.
+- inside=true: say yes, we come out there, and carry on with the booking. inside=false: politely say we don't travel that far, done=true, createJob=false. inside=null: ask for the postal code, take the order anyway, and say the technician will confirm the trip.
+- Never tell a caller we do not serve their place unless check_service_area answered inside=false.
 
 HOW YOU SOUND — you are on a phone, not reading:
 - Start your answer promptly when the caller finishes; do not add a silent thinking beat.
@@ -302,6 +309,20 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
             time: { type: 'STRING', description: 'HH:mm, 24-hour Toronto time.' },
           },
           required: ['date', 'time'],
+        },
+      },
+      {
+        name: 'check_service_area',
+        description: 'Ask the map whether a place is inside the technician\'s service area. Use it for any town, village, postal code or address you are not sure about, before saying anything about travelling there. Never answer coverage from memory.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            place: {
+              type: 'STRING',
+              description: 'What the caller said: a town, a hamlet, a postal code, or a full street address. Ontario is assumed.',
+            },
+          },
+          required: ['place'],
         },
       },
     ] }];
@@ -400,6 +421,7 @@ address: the REPAIR address (where the technician drives). Street number + stree
 owner_address: the caller's home if it is different from the repair address.
 has_job_site=true if the repair is not at the caller's own home (tenant, rental, another house).
 If the spoken street is not the known home, has_job_site=true, address=repair place, owner_address=home.
+contact_on_site_name / contact_on_site_phone: ONLY if the caller names a DIFFERENT person who will be at the repair address, with that person's name and/or phone. "I'll be there", "me", "just me", or "my husband" without a name → null. The caller's own name is not an on-site contact.
 wants_callback=true if they asked to speak to a live person, the technician, the master, or to get a call back from a human. After that, do not treat missing time as incomplete.
 appointment_intent: lookup, cancel, reschedule, new_repair, or none. Use new_repair ONLY if the CALLER explicitly requested a separate new repair, never from the assistant reading existing job facts. An appointment lookup/cancellation/reschedule is not a new order: createJob=false. Dates mentioned in an old booking or a cancellation are NOT a new scheduled_date/time.
 service_declined=true if we cannot take a NEW job: outside the service area, not a household appliance (laptop/computer/phone), or we told them we don't do that work. Then createJob=false. Cancellation of an existing visit is handled by the calendar tool, not by this flag.
@@ -916,11 +938,14 @@ function greetLive(session) {
   if (session.greeted) return;
   session.greeted = true;
   if (session.greetingSpoken) return;
-  const greeting = String(
-    session.greeting ||
-      (deps && deps.defaultVoiceGreeting) ||
-      'Hello, this is FIX Appliance CA. How can I help you?'
-  ).trim();
+  // Фиксированная фраза приветствия больше не передаётся: секретарь
+  // здоровается своими словами, каждый раз чуть иначе, как живой человек.
+  // session.greeting остался только для ситуативных строк (мастер снял трубку
+  // и передал звонок ИИ на ходу) — тогда смысл строки сохраняем.
+  const greeting = String(session.greeting || '').trim();
+  const body = greeting
+    ? `Use an easy conversational rhythm, not a recording or a call-centre announcement. Keep the meaning of this opening, not its exact wording: ${greeting}`
+    : 'Do not recite a set line: no memorized slogan, no call-centre announcement, nothing that sounds read from a script. Sound like someone who works here and just picked up the phone. Mention the shop (FixApplianceCA) naturally, and phrase it a little differently on every call.';
   sendJson(session.geminiWs, {
     clientContent: {
       turns: [
@@ -929,7 +954,7 @@ function greetLive(session) {
           parts: [
             {
               text: `The call just connected. For this first greeting only, answer in your own words in English, warmly and matter-of-factly, as if picking up the shop phone for one person.
-Use an easy conversational rhythm, not a recording or a call-centre announcement. Keep the meaning of this opening, not its exact wording: ${greeting}
+${body}
 Keep it to one short breath. No sales pitch, exaggerated cheerfulness, made-up personal name, filler or staged laughter. End with one easy invitation to speak, then stop and listen. Do not start collecting repair details yet.`,
             },
           ],
@@ -1058,11 +1083,16 @@ function cancellationConfirmed(session, pending) {
 }
 
 async function runAppointmentTool(session, name, args = {}) {
-  if (!['get_caller_appointments', 'cancel_appointment', 'check_availability'].includes(name)) {
+  if (!['get_caller_appointments', 'cancel_appointment', 'check_availability', 'check_service_area'].includes(name)) {
     return { ok: false, error: 'unknown_tool' };
   }
   if (session.closed) return { ok: false, error: 'call_inactive' };
   try {
+    // Вопрос про зону — не запись на визит: состояние звонка не трогаем.
+    if (name === 'check_service_area') {
+      if (!deps.checkServiceArea) return { ok: false, error: 'no_map' };
+      return await withCalendarDeadline(deps.checkServiceArea(String(args.place || '')));
+    }
     if (name === 'check_availability') {
       const date = String(args.date || '');
       const time = String(args.time || '');

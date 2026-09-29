@@ -13,6 +13,7 @@ class SettingsPageScaffold extends StatelessWidget {
   final bool dirty;
   final Future<bool> Function()? onSave;
   final VoidCallback? onDiscard;
+  final PreferredSizeWidget? bottom;
 
   const SettingsPageScaffold({
     super.key,
@@ -22,6 +23,7 @@ class SettingsPageScaffold extends StatelessWidget {
     this.dirty = false,
     this.onSave,
     this.onDiscard,
+    this.bottom,
   });
 
   @override
@@ -37,6 +39,7 @@ class SettingsPageScaffold extends StatelessWidget {
             foregroundColor: Colors.white,
             automaticallyImplyLeading: false,
             actions: actions,
+            bottom: bottom,
           ),
           body: body,
           bottomNavigationBar: onSave == null

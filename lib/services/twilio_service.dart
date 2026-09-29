@@ -505,10 +505,18 @@ class TwilioService {
     if (!_isInitialized) {
       await initialize();
     }
-    final tokenOk = await _refreshVoiceToken();
-    if (!tokenOk) {
-      _setCallStatus('failed');
-      return false;
+    // Skip full re-registration if Twilio token was recently refreshed (< 45 min).
+    // This mirrors the same guard in refreshRegistration and avoids an HTTP
+    // round-trip + FCM token fetch on every single outgoing call.
+    final tokenFresh = _voiceTokenAt != null &&
+        DateTime.now().difference(_voiceTokenAt!) <
+            const Duration(minutes: 45);
+    if (!tokenFresh) {
+      final tokenOk = await _refreshVoiceToken();
+      if (!tokenOk) {
+        _setCallStatus('failed');
+        return false;
+      }
     }
 
     if (_isAndroid) {

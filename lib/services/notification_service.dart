@@ -475,12 +475,6 @@ class NotificationService {
     }
 
     if (type == 'secretary_lesson') {
-      await LocalNotificationService.showSecretaryLearn(
-        title: title.isEmpty ? 'Разбор звонка секретаря' : title,
-        body: body,
-        tag: tag,
-        data: data,
-      );
       return;
     }
 

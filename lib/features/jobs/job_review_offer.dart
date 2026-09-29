@@ -5,6 +5,10 @@ import '../../core/l10n/app_locale.dart';
 import '../../services/services.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
 
+final _linkRe = RegExp(r'https?://', caseSensitive: false);
+
+bool _hasLink(String text) => _linkRe.hasMatch(text);
+
 class JobReviewOffer {
   static Future<void> askAndSend(
     BuildContext context, {
@@ -75,7 +79,9 @@ class JobReviewOffer {
         .replaceAll('{review}', reviewUrl)
         .replaceAll('{appliance}', '')
         .trim();
-    if (reviewUrl.isNotEmpty && !body.contains(reviewUrl)) {
+    // Дописываем ссылку, только если в тексте её вообще нет. Раньше сравнивали
+    // с адресом из настроек, и шаблон с вписанной руками ссылкой получал вторую.
+    if (reviewUrl.isNotEmpty && !_hasLink(body)) {
       body = '$body $reviewUrl'.trim();
     }
 

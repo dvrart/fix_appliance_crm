@@ -464,6 +464,70 @@ Rules:
     }
   }
 
+  /// Выбрать из найденных в интернете снимков тот, что годится в карточку.
+  ///
+  /// Возвращает номер снимка (1..n) и короткое пояснение; 0 — все негодные.
+  /// Узнать деталь «в лицо» по номеру модель не может, и когда её об этом
+  /// просили, она честно отвечала 0 на каждый запрос. Совпадение номера даёт
+  /// сам поиск, а у ИИ спрашиваем другое: где нормальное фото детали, а где
+  /// схема, текст, логотип или целая машина.
+  static Future<(int, String)> pickPartPhoto({
+    required List<Uint8List> images,
+    required String partNumber,
+    required String name,
+    String brand = '',
+  }) async {
+    if (images.isEmpty) return (0, '');
+    if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
+      return (0, '');
+    }
+
+    final prompt =
+        '''
+You pick photos for an appliance-parts shop inventory card.
+
+All ${images.length} pictures below were found by a web search for this spare part:
+part number ${partNumber.isEmpty ? '(unknown)' : partNumber}, name ${name.isEmpty ? '(unknown)' : name}, brand ${brand.isEmpty ? '(unknown)' : brand}.
+The search already matched the number, so do NOT try to verify the number yourself.
+Your only job is to throw out junk pictures and pick the best product photo.
+
+Reject a picture if it is:
+- a wiring diagram, schematic or exploded parts drawing;
+- a page of text, a table, a screenshot or a web page;
+- only a logo, a watermark or a brand banner;
+- the whole appliance instead of the part;
+- a person, or an installation scene where the part is not clear;
+- a collage of many different parts;
+- too blurry or too dark to see the part.
+
+Among the rest pick the clearest single part, preferably on a plain background.
+Answer 0 only if every picture must be rejected.
+
+Return ONLY JSON, no prose:
+{"best": <1-${images.length} or 0>, "why": "<до 4 слов по-русски: что на фото>"}
+''';
+
+    try {
+      final parts = <Part>[TextPart(prompt)];
+      for (var i = 0; i < images.length; i++) {
+        parts.add(TextPart('Picture ${i + 1}:'));
+        parts.add(DataPart('image/jpeg', images[i]));
+      }
+      final text = await _generate(
+        Content.multi(parts),
+        timeout: const Duration(seconds: 45),
+      );
+      final map = _jsonObject(text);
+      if (map == null) return (0, '');
+      final best = int.tryParse('${map['best']}') ?? 0;
+      final why = '${map['why'] ?? ''}'.trim();
+      if (best < 1 || best > images.length) return (0, why);
+      return (best, why);
+    } catch (_) {
+      return (0, '');
+    }
+  }
+
   /// Другие артикулы той же детали: OEM supersession, WP-префикс, aftermarket.
   /// Пусто, если ИИ не уверен — лучше пустое поле, чем выдуманный номер.
   static Future<List<String>> guessInterchangeNumbers({
@@ -684,49 +748,5 @@ $conversation
     } catch (_) {
       return text;
     }
-  }
-
-  /// Чат с хозяином: переписать, как секретарю вести входящие звонки.
-  static Future<Map<String, String>> coachSecretaryTurn({
-    required String ownerText,
-    required String extraRules,
-    required List<String> learnedRules,
-    String pendingProblem = '',
-  }) async {
-    final prompt = '''
-You help the shop owner rewrite how the live phone secretary answers incoming repair calls in Ontario.
-The owner writes in Russian. You reply in Russian, short, as that secretary: confirm what you will do on the next call.
-Do not talk about the in-app assistant. This is only the phone secretary.
-
-Current extra rules:
-${extraRules.trim().isEmpty ? '(none)' : extraRules.trim()}
-
-Already learned:
-${learnedRules.isEmpty ? '(none)' : learnedRules.map((line) => '- $line').join('\n')}
-
-Pending mistake from a recent call (if any):
-${pendingProblem.trim().isEmpty ? '(none)' : pendingProblem.trim()}
-
-Owner:
-$ownerText
-
-Return JSON only:
-{
-  "replyRu": "your short Russian reply",
-  "ruleEn": "one English imperative for the live call, or empty if they only asked a question",
-  "rewriteExtraRules": "full replacement of extra rules if they asked to rewrite the script, else empty"
-}
-''';
-    final parsed = _jsonObject(await generateText(prompt)) ?? const {};
-    String take(String key) => (parsed[key] ?? '').toString().trim();
-    var reply = take('replyRu');
-    if (reply.isEmpty) {
-      reply = 'Хорошо. Напишите ещё, как вести звонок — запомню.';
-    }
-    return {
-      'replyRu': reply,
-      'ruleEn': take('ruleEn'),
-      'rewriteExtraRules': take('rewriteExtraRules'),
-    };
   }
 }

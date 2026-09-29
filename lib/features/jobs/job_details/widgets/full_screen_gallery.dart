@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../../../core/utils/thumb_image.dart';
+
 class FullScreenGallery extends StatefulWidget {
   final List<Map<String, dynamic>> images;
   final int initialIndex;
@@ -33,11 +35,18 @@ class _FullScreenGalleryState extends State<FullScreenGallery> {
     super.dispose();
   }
 
-  ImageProvider _imageOf(Map<String, dynamic> item) {
+  ImageProvider _imageOf(BuildContext context, Map<String, dynamic> item) {
     final local = (item['localPath'] ?? '').toString();
     final url = (item['url'] ?? '').toString();
-    if (local.isNotEmpty && url.isEmpty) return FileImage(File(local));
-    return NetworkImage(url);
+    final source = local.isNotEmpty && url.isEmpty
+        ? FileImage(File(local)) as ImageProvider
+        : NetworkImage(url);
+    // Полное разрешение здесь не нужно и опасно: см. fullImage.
+    return fullImage(
+      source,
+      logicalWidth: MediaQuery.sizeOf(context).width,
+      devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+    );
   }
 
   @override
@@ -64,7 +73,7 @@ class _FullScreenGalleryState extends State<FullScreenGallery> {
             panEnabled: false,
             child: Center(
               child: Image(
-                image: _imageOf(widget.images[index]),
+                image: _imageOf(context, widget.images[index]),
                 fit: BoxFit.contain,
                 errorBuilder: (context, error, stackTrace) {
                   return const Icon(

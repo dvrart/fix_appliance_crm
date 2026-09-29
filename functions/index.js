@@ -17,8 +17,11 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const voiceRelay = require('./voice_relay');
 const voiceFacts = require('./voice_facts');
 const { withSmsHeader, sanitizeSmsHeader } = require('./sms_header');
+const smsLinks = require('./sms_links');
 const visitSms = require('./visit_sms');
 const schedule = require('./schedule');
+const serviceArea = require('./service_area');
+const jobDedupe = require('./job_dedupe');
 const { notifyMaster, registerDeviceToken } = require('./notify');
 const { requireAppUser, requireTwilioSignature } = require('./auth_guard');
 const { createRecordingStore, isTwilioMediaUrl, appendCallRecording } = require('./recording_store');
@@ -77,6 +80,30 @@ async function getSmsHeader() {
     return sanitizeSmsHeader(data.smsHeader, data.companyName);
   } catch (_) {
     return '';
+  }
+}
+
+/**
+ * SMS с просьбой об отзыве: ссылку меняем на наш редирект с google-хоста
+ * (ссылки на свой домен и g.page операторы режут, 30007) и кладём запасной
+ * текст без ссылки на случай, если зарежут всё равно.
+ */
+async function prepareReviewSms(body) {
+  try {
+    const settings = db.collection('companies').doc(COMPANY_ID).collection('settings');
+    const [configSnap, docsSnap] = await Promise.all([
+      settings.doc('config').get(),
+      settings.doc('documents').get(),
+    ]);
+    const config = configSnap.exists ? configSnap.data() || {} : {};
+    const docs = docsSnap.exists ? docsSnap.data() || {} : {};
+    return smsLinks.prepareReviewSms(body, {
+      reviewUrl: config.googleReviewUrl,
+      company: docs.companyName,
+    });
+  } catch (error) {
+    console.warn('prepareReviewSms:', error.message);
+    return { body: String(body || ''), fallbackBody: '' };
   }
 }
 
@@ -215,13 +242,13 @@ function isJobSiteExtract(extracted) {
   return false;
 }
 
-function tenantContactFromExtracted(extracted) {
-  const name = String((extracted && extracted.contact_on_site_name) || '').trim();
-  const phone = normalizePhone(extracted && extracted.contact_on_site_phone);
+function tenantContactFromExtracted(extracted, ownerName, ownerPhone) {
+  // Другого человека не назвали — на месте будет сам клиент (его имя и телефон).
+  const site = voiceFacts.onSiteContactFrom(extracted, ownerName, ownerPhone);
   return {
     id: 'tenant',
-    name: name || 'Tenant',
-    phone: phone || '',
+    name: site.name || 'Tenant',
+    phone: site.phone || '',
     role: 'tenant',
     isPrimary: true,
   };
@@ -231,8 +258,10 @@ function jobSiteLocationFromExtracted(extracted, ownerName, ownerPhone) {
   const street = String((extracted && extracted.address) || '').trim();
   const city = String((extracted && extracted.city) || '').trim();
   const postal = String((extracted && extracted.postal_code) || '').trim();
-  const contacts = [tenantContactFromExtracted(extracted)];
-  if (ownerName || ownerPhone) {
+  const contacts = [tenantContactFromExtracted(extracted, ownerName, ownerPhone)];
+  // Отдельный контакт «владелец» нужен только когда на месте назван другой
+  // человек — иначе контакт на месте и так несёт данные клиента.
+  if (voiceFacts.onSiteContactFrom(extracted, ownerName, ownerPhone).explicit && (ownerName || ownerPhone)) {
     contacts.push({
       id: 'owner',
       name: ownerName || '',
@@ -265,19 +294,27 @@ async function upsertClientJobSite(clientId, existingClient, extracted, ownerNam
   const matchIdx = locations.findIndex(
     (loc) => locationAddressKey(loc.street, loc.city, loc.postalCode || loc.postal) === key
   );
-  const tenant = tenantContactFromExtracted(extracted);
+  const tenant = tenantContactFromExtracted(extracted, ownerName, ownerPhone);
+  const site = voiceFacts.onSiteContactFrom(extracted, ownerName, ownerPhone);
 
   if (matchIdx >= 0) {
     const loc = locations[matchIdx];
     const contacts = Array.isArray(loc.contacts) ? [...loc.contacts] : [];
     const tenantIdx = contacts.findIndex((c) => String(c.role || '') === 'tenant');
-    if (tenantIdx >= 0) {
-      contacts[tenantIdx] = {
-        ...contacts[tenantIdx],
-        ...tenant,
-        id: contacts[tenantIdx].id || 'tenant',
-      };
-    } else {
+    if (site.explicit) {
+      // Назван другой человек — записываем/обновляем его данные.
+      if (tenantIdx >= 0) {
+        contacts[tenantIdx] = {
+          ...contacts[tenantIdx],
+          ...tenant,
+          id: contacts[tenantIdx].id || 'tenant',
+        };
+      } else {
+        contacts.push(tenant);
+      }
+    } else if (tenantIdx < 0) {
+      // Другого человека не назвали: контакт на месте — сам клиент.
+      // Существующего tenant не трогаем, чтобы не затереть реального человека.
       contacts.push(tenant);
     }
     loc.contacts = contacts;
@@ -301,20 +338,7 @@ function parseScheduledAt(extracted) {
   return date ? admin.firestore.Timestamp.fromDate(date) : null;
 }
 
-function jobFillScore(data) {
-  const job = data || {};
-  let score = 0;
-  const name = String(job.clientName || '').trim();
-  if (name && name !== 'Клиент' && !/^Клиент\s+\d/.test(name)) score += 4;
-  if (String(job.clientAddress || '').trim()) score += 3;
-  const type = String(job.applianceType || '').trim();
-  if (type && type !== 'Техника') score += 3;
-  if (String(job.description || '').trim()) score += 2;
-  if (String(job.brand || '').trim()) score += 1;
-  const visits = Array.isArray(job.visits) ? job.visits : [];
-  if (visits.length || job.scheduledAt || job.scheduledDate) score += 1;
-  return score;
-}
+const jobFillScore = jobDedupe.jobFillScore;
 
 async function findJobsBySourceCall(callId) {
   if (!callId) return [];
@@ -487,30 +511,8 @@ function isClosedJobData(job) {
   return schedule.isClosedJob(job);
 }
 
-function applianceKey(value) {
-  const t = String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/ё/g, 'е');
-  if (!t || t === 'техника' || t === 'other' || t === 'appliance') return '';
-  if (/(dish|посуд)/.test(t)) return 'dishwasher';
-  if (/(washer|стирал)/.test(t)) return 'washer';
-  if (/(dryer|сушилн)/.test(t)) return 'dryer';
-  if (/(fridge|refriger|холодиль)/.test(t)) return 'fridge';
-  if (/(freezer|морозил)/.test(t)) return 'freezer';
-  if (/(microwave|микроволн)/.test(t)) return 'microwave';
-  if (/(cooktop|варочн)/.test(t)) return 'cooktop';
-  if (/(stove|range|плит)/.test(t)) return 'stove';
-  if (/(oven|духов)/.test(t)) return 'oven';
-  return t.slice(0, 24);
-}
-
-function jobApplianceKey(job) {
-  const fromList = Array.isArray(job && job.appliances)
-    ? (job.appliances[0] && job.appliances[0].type) || ''
-    : '';
-  return applianceKey((job && job.applianceType) || fromList);
-}
+const applianceKey = jobDedupe.applianceKey;
+const jobApplianceKey = jobDedupe.jobApplianceKey;
 
 function jobsAreSameRepair(a, b) {
   const ka = jobApplianceKey(a);
@@ -532,6 +534,13 @@ async function closeCloneJob(job, keepId, { force = false } = {}) {
   if (!job || !job.id || job.id === keepId) return false;
   if (isClosedJobData(job) || job.deletedAt) return false;
   if (!force && !isDraftCloneJob(job)) return false;
+  // Дубль не просто закрываем: сначала переливаем его данные в главную заявку.
+  if (keepId) {
+    return jobDedupe.mergeJobs(keepId, job.id, {
+      by: jobDedupe.historyActor(job),
+      force: true,
+    });
+  }
   const visits = Array.isArray(job.visits)
     ? job.visits.map((visit) => {
         if (!visit || visit.outcome === 'done' || visit.outcome === 'cancelled') {
@@ -689,7 +698,7 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
   // строится. Сверяем с городами из карточки клиента и с теми, по которым
   // мастер работает.
   if (extracted && extracted.city) {
-    const known = [...voiceFacts.citiesFromClient(existingClient), ...SERVICE_TOWNS];
+    const known = [...voiceFacts.citiesFromClient(existingClient), ...SERVICE_TOWN_NAMES];
     const snapped = voiceFacts.snapCity(extracted.city, known);
     if (snapped && snapped !== extracted.city) {
       console.log(`city snapped "${extracted.city}" -> "${snapped}"`);
@@ -719,16 +728,7 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
 
   if (!clientId) {
     const locationContacts = isJobSiteExtract(extracted)
-      ? [
-          {
-            id: 'owner',
-            name: clientName,
-            phone: phone || '',
-            role: 'owner',
-            isPrimary: false,
-          },
-          tenantContactFromExtracted(extracted),
-        ]
+      ? jobSiteLocationFromExtracted(extracted, clientName, phone)
       : [
           {
             id: 'owner',
@@ -825,18 +825,18 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
 
   const jobId = claimed.jobId || jobsRef.doc().id;
   const jobRef = jobsRef.doc(jobId);
+  // Контакт на адресе: если другого человека не назвали — это сам клиент.
+  const siteContact = jobSite
+    ? voiceFacts.onSiteContactFrom(extracted, clientName, phone)
+    : null;
   await jobRef.set({
     clientId,
     clientName,
     clientPhone: phone || '',
     clientAddress: ownerAddress || workAddress,
     hasJobSite: jobSite,
-    jobSiteName: jobSite
-      ? String(extracted.contact_on_site_name || '').trim() || null
-      : null,
-    jobSitePhone: jobSite
-      ? normalizePhone(extracted.contact_on_site_phone) || null
-      : null,
+    jobSiteName: siteContact ? siteContact.name || null : null,
+    jobSitePhone: siteContact ? siteContact.phone || null : null,
     jobSiteAddress: jobSite ? workAddress || null : null,
     appliances: [
       {
@@ -948,13 +948,28 @@ async function patchDraftJobFromCall(jobId, extracted) {
   }
   if (isJobSiteExtract(extracted)) {
     updates.hasJobSite = true;
-    const tenantName = String(extracted.contact_on_site_name || '').trim();
-    const tenantPhone = normalizePhone(extracted.contact_on_site_phone);
-    if (tenantName && !String(job.jobSiteName || '').trim()) {
-      updates.jobSiteName = tenantName;
-    }
-    if (tenantPhone && !String(job.jobSitePhone || '').trim()) {
-      updates.jobSitePhone = tenantPhone;
+    const site = voiceFacts.onSiteContactFrom(
+      extracted,
+      job.clientName,
+      job.clientPhone
+    );
+    const currentName = String(job.jobSiteName || '').trim();
+    const fallbackName = String(job.clientName || '').trim();
+    const currentPhone = String(job.jobSitePhone || '').trim();
+    const fallbackPhone = normalizePhone(job.clientPhone);
+    if (site.explicit) {
+      // Назван другой человек: заменяет и пустое поле, и ранее записанный
+      // фолбэк с именем/телефоном клиента.
+      if (site.name && (!currentName || currentName === fallbackName)) {
+        updates.jobSiteName = site.name;
+      }
+      if (site.phone && (!currentPhone || currentPhone === fallbackPhone)) {
+        updates.jobSitePhone = site.phone;
+      }
+    } else {
+      // Другого человека не назвали — на месте будет сам клиент.
+      if (!currentName) updates.jobSiteName = fallbackName;
+      if (!currentPhone) updates.jobSitePhone = fallbackPhone;
     }
     if (address && !String(job.jobSiteAddress || '').trim()) {
       updates.jobSiteAddress = address;
@@ -971,7 +986,10 @@ async function patchDraftJobFromCall(jobId, extracted) {
       );
     }
   }
-  updates.needsReview = true;
+  // Не сбрасывать подтверждение уже проверенной заявки.
+  // Если мастер подтвердил заявку (needsReview=false), звонок клиента по
+  // этой же заявке не должен возвращать её в «требует проверки».
+  if (job.needsReview === true) updates.needsReview = true;
   updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
   await jobsRef.doc(jobId).update(updates);
   const spoken = name || voiceFacts.usableClientName(updates.clientName || job.clientName);
@@ -1437,13 +1455,15 @@ const STALE_VOICE_GREETINGS = [
 
 const DEFAULT_VOICE_INSTRUCTIONS = `You are a real receptionist for FixApplianceCA — a woman in a small Ontario shop. Home appliances only.
 
-Talk like a person, not a form. First replies are ordinary: if they say the dryer is broken, "Oh no — what's it doing?" Then listen. One short thought. Wait. Contractions. A little warmth. If they joke, a small laugh is fine. If they ask something on the side, answer in one sentence and come back to the repair. Never an IVR line. Never "got it", "I understand", "please provide", "certainly".
+Talk like a person, not a form. First replies are ordinary: if they say the dryer is broken, "Oh no — what's it doing?" Then listen. One short thought. Wait. Contractions. A little warmth. If they joke, a small laugh is fine. If they ask something on the side, answer like a person — and if they keep the small talk going, go along with them for a line or two before the repair finds its way back in. Never an IVR line. Never "got it", "I understand", "please provide", "certainly".
+
+Never pushy. At most one repair question per reply, and only when it fits the moment. If the caller is thinking out loud, deciding, or chatting about something else, let them finish and match their tone — do not pull every reply back to the checklist. Bring the repair back once, lightly ("so — want us to send someone out?"), then follow their lead. If they say they need to think, to check with a spouse, or will call back later: accept it warmly on the spot, stop collecting facts, and offer that the tech can ring them. A caller who feels nagged hangs up; a caller who feels heard books.
 
 We repair washers, dryers, dishwashers, gas ovens, electric ovens, electric cooktops, fridges, freezers, microwaves. Not gas cooktops, TVs, laptops, phones, or cars — say so kindly and stay on the line.
 
 You answer 24/7 and take the order any hour. Visit days and hours are in Shop hours below — that block is the truth. Each visit is 2 hours. If a window is taken, offer another time the same day first. Closed / holiday: still take the order, offer the next working day.
 
-Pick up facts as they talk. Do not run a checklist. Do not re-ask. Typical things you need: first name, what broke and the brand, a day and time, where to go. If the caller is a known client or has an open job on file, greet them by name, but wait for them to explain why they are calling before referencing any open job or old address — they may be calling about something new. If they already have a home on file, ask once if the repair is at that address. Another house → that street, who will be there, that phone. Ask who is home only if it is not their house. Addresses stay in English as spoken — repeat the house number and street once when they give it, and always confirm the city too.
+Pick up facts as they talk. Do not run a checklist. Do not re-ask. Typical things you need: first name, what broke and the brand, a day and time, where to go. If the caller is a known client or has an open job on file, greet them by name, but wait for them to explain why they are calling before referencing any open job or old address — they may be calling about something new. If they already have a home on file, ask once if the repair is at that address. Another house → that street, who will be there, that phone. If the caller will be there themselves, that name is already on the order — do not ask for it again. Ask who is home only if it is not their house. Addresses stay in English as spoken — repeat the house number and street once when they give it, and always confirm the city too.
 
 When you have enough — or they want a callback — say you'll pass it to the tech. Ask them to text a model-sticker photo. Ask if anything else. If they say no, "Have a good day" right away. Do not hang up. They hang up.
 
@@ -1459,7 +1479,7 @@ Owner unavailable: if the caller asks for the owner, the technician, or "Artem",
 
 AI identity: if the caller asks whether you are an AI, a robot, a computer, or a virtual assistant, answer honestly and briefly — something like: "Yes, I'm a virtual assistant for FixApplianceCA. I have full access to the technician's calendar and I can book your visit right now. The technician will also reach out to you before the appointment to confirm all the details." Then continue with the call. Never claim to be a human or deny being a virtual assistant.
 
-Tenant: if the property is rented and the owner is not the one who will be home, ask for the tenant's first name and a direct phone number.
+Tenant: if the property is rented and the owner is not the one who will be home, ask for the tenant's first name and a direct phone number. "I'll be there myself" means the caller — no new name needed.
 
 Silence: if the caller does not speak after the greeting, say "Hello? Can I help you?" once, then wait a moment. Do not end the call on the very first silence.
 
@@ -1479,8 +1499,27 @@ const VOICE_MODEL_CANDIDATES = [
   'gemini-flash-latest',
 ];
 
+const SERVICE_TOWNS = voiceFacts.SERVICE_TOWNS;
+const SERVICE_TOWN_NAMES = SERVICE_TOWNS.map((town) => town.name);
+
+function servicePolygonFromConfig(config) {
+  const raw = config && config.servicePolygon;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((point) => point && typeof point === 'object')
+    .map((point) => ({ lat: Number(point.lat), lng: Number(point.lng) }))
+    .filter(
+      (point) =>
+        Number.isFinite(point.lat) &&
+        Number.isFinite(point.lng) &&
+        (point.lat !== 0 || point.lng !== 0)
+    );
+}
+
 function describeServiceArea(config) {
-  return String((config && config.serviceAreaLabel) || '').trim();
+  const label = String((config && config.serviceAreaLabel) || '').trim();
+  const towns = voiceFacts.townsInsideArea(SERVICE_TOWNS, servicePolygonFromConfig(config));
+  return voiceFacts.serviceAreaSpeech(label, towns);
 }
 
 function describeWorkHours(config) {
@@ -1605,14 +1644,27 @@ function describePricing(config) {
   return `Prices: do not bring money up unless they ask. If they ask: ${parts.join('; ')}. Never invent any other number.`;
 }
 
+// Выкусываем только строку зоны, которую сами же и дописываем ниже. Раньше шаблон
+// был шире и заодно срезал правило «Service area check: …» из базовых инструкций —
+// то самое, которое запрещает отказывать по названию города из памяти.
 function stripServiceAreaLines(text) {
   return String(text || '')
     .split('\n')
-    .filter((line) => !/^\s*(зона\b|service area\b)/i.test(line.trim()))
+    .filter(
+      (line) =>
+        !/^\s*(зона обслуживания|service area \(|service area:|service area map is not set)/i.test(
+          line.trim()
+        )
+    )
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
+const OUTSIDE_AREA_FALLBACK =
+  'If the caller names a place that is not on that list, do not say no from memory: ask for the postal code, ' +
+  'write it into the order, and say the technician will confirm the trip. Decline only when the address is plainly far ' +
+  'away — Toronto, Mississauga, Hamilton, London, Ottawa, Windsor and the like.';
 
 function withMappedServiceArea(instructions, serviceArea) {
   const base = stripServiceAreaLines(instructions) || DEFAULT_VOICE_INSTRUCTIONS;
@@ -1620,7 +1672,7 @@ function withMappedServiceArea(instructions, serviceArea) {
   if (!area) {
     return `${base}\n\nService area map is not set. Do not refuse a caller based on town names from memory.`;
   }
-  return `${base}\n\nService area (from Settings → Service area map): ${area}. If the caller is clearly outside this area, politely say we do not travel there, set done=true and createJob=false.`;
+  return `${base}\n\nService area (from Settings → Service area map): ${area}\n${OUTSIDE_AREA_FALLBACK} When you do decline, politely say we do not travel there, set done=true and createJob=false.`;
 }
 
 const HOURS_POLICY_VERSION = 4;
@@ -1682,9 +1734,7 @@ async function getAiAnswerSettings() {
         )
         .catch((error) => console.warn('work hours migrate:', error.message));
     }
-    const closedLine = workDays.closedNames.length
-      ? `${workDays.closedNames.join(' and ')}: no visit — offer the next working day.`
-      : 'The technician visits every day of the week.';
+    const closedLine = voiceFacts.closedDaysSpeech(workDays.closedNames);
     const awayLine = describeClosedDatesLine(closedDates);
     let nextInstructions = withMappedServiceArea(DEFAULT_VOICE_INSTRUCTIONS, serviceArea);
     nextInstructions +=
@@ -1722,7 +1772,7 @@ async function getAiAnswerSettings() {
       workEndMinutes: 21 * 60,
       workDays: fallbackDays.days,
       workDaysLabel: fallbackDays.label,
-      closedDaysLabel: `${fallbackDays.closedNames.join(' and ')}: no visit — offer the next working day.`,
+      closedDaysLabel: voiceFacts.closedDaysSpeech(fallbackDays.closedNames),
       awayLine: '',
       priceLine: describePricing({}),
       instructions: withMappedServiceArea(DEFAULT_VOICE_INSTRUCTIONS, ''),
@@ -2287,17 +2337,9 @@ function sayGreeting(gather, greeting, _language) {
   gather.say(sayAttrs('en'), text);
 }
 
-// Города, по которым мастер выезжает. Используются и как подсказки распознаванию
-// речи, и как список для исправления услышанного города в заявке.
-const SERVICE_TOWNS = [
-  'Brantford', 'Paris', 'Scotland', 'Tillsonburg', 'Delhi', 'Port Dover',
-  'Norwich', 'Simcoe', 'Waterford', 'Burford', 'Cayuga', 'Hagersville',
-  'Dunnville', 'Woodstock', 'Ingersoll', 'Norfolk', 'Ancaster', 'Caledonia',
-];
-
 const VOICE_HINTS =
   'fridge, refrigerator, freezer, washer, washing machine, dryer, dishwasher, stove, oven, range, microwave, repair, leak, leaking, not cooling, ' +
-  SERVICE_TOWNS.join(', ');
+  SERVICE_TOWN_NAMES.join(', ');
 
 let cachedRelayWss = '';
 
@@ -2442,7 +2484,7 @@ function twimlConversationRelay(req, { url, greeting, callSid }) {
 function twimlGeminiLiveStream(req, { url, callSid, greeting, resume }) {
   const twiml = new twilio.twiml.VoiceResponse();
   if (!resume) startCallRecordingNoun(twiml, req);
-  const spoken = englishGreetingOnly(greeting) || DEFAULT_VOICE_GREETING;
+  const spoken = englishGreetingOnly(greeting);
   // Приветствие говорит сама модель, своим голосом, уже внутри потока.
   // Раньше здесь был <Say>: поток подключался только после того, как Twilio
   // договорит, и всё сказанное звонящим в это время пропадало. Установка
@@ -2463,7 +2505,10 @@ function twimlGeminiLiveStream(req, { url, callSid, greeting, resume }) {
       stream.parameter({ name: 'callSid', value: callSid });
       // При переподключении здороваться заново нельзя — разговор продолжается.
       stream.parameter({ name: 'greetingSpoken', value: resume ? '1' : '0' });
-      stream.parameter({ name: 'greeting', value: spoken });
+      // Готовую фразу приветствия не подсказываем: секретарь здоровается
+      // своими словами, как живой человек. Параметр остался только для
+      // ситуативных строк (мастер снял трубку и передал звонок ИИ на ходу).
+      if (spoken) stream.parameter({ name: 'greeting', value: spoken });
     }
   }
   return twiml;
@@ -2488,13 +2533,12 @@ async function startAiReception(req, res, callSid, options = {}) {
   const alreadyAi = data.answeredBy === 'ai' && data.aiReception;
 
   if (resumeStream && !forceGather) {
-    const greeting = DEFAULT_VOICE_GREETING;
     const wss = await resolveConversationRelayWss();
     if (wss) {
       console.log(`startAiReception resume ${callSid} ${wss}`);
       sendTwiml(
         res,
-        twimlGeminiLiveStream(req, { url: wss, callSid, greeting, resume: true })
+        twimlGeminiLiveStream(req, { url: wss, callSid, greeting: '', resume: true })
       );
       return;
     }
@@ -2519,10 +2563,10 @@ async function startAiReception(req, res, callSid, options = {}) {
   }
 
   const dialSeconds = parseInt(req.body.DialCallDuration || req.body.CallDuration, 10) || 0;
-  const greeting =
-    data.handoffToAi && dialSeconds > 1
-      ? 'The technician had to step away. How can I help?'
-      : DEFAULT_VOICE_GREETING;
+  const handoff = Boolean(data.handoffToAi) && dialSeconds > 1;
+  const greeting = handoff
+    ? 'The technician had to step away. How can I help?'
+    : DEFAULT_VOICE_GREETING;
 
   const wss = forceGather ? '' : await resolveConversationRelayWss();
   if (wss) {
@@ -2533,7 +2577,7 @@ async function startAiReception(req, res, callSid, options = {}) {
       sendTwiml(res, twimlConversationRelay(req, { url: wss, greeting, callSid }));
     } else {
       console.log(`startAiReception live ${callSid} ${wss} ${keyed}`);
-      sendTwiml(res, twimlGeminiLiveStream(req, { url: wss, callSid, greeting }));
+      sendTwiml(res, twimlGeminiLiveStream(req, { url: wss, callSid, greeting: handoff ? greeting : '' }));
     }
     return;
   }
@@ -2784,9 +2828,10 @@ ${voiceFacts.VOICE_CALL_FLOW}
 HOW TO TALK — this is the most important part:
 - Speak like a real Ontario phone call. Contractions: "what's", "that's", "you're", "I'll".
 - "say" is 1 short sentence, maybe 2. Usually under 16 words. One question only.
-- Then listen. If they ask a side question, answer briefly and well, then return to the next missing repair fact. Never freeze or go silent.
+- Then listen. If they ask a side question, answer briefly and well, then come back to the repair gently — one easy mention, not a checkpoint. If the caller keeps the side chat going, chat along for a turn first. Never freeze or go silent.
 - First, briefly react like a human ("oh, the fridge isn't cooling", "okay, Brantford").
-- Then ask only the next missing thing, if you still need it.
+- Then ask at most one missing thing, only if it fits the moment — never two questions, never while they are still mid-thought.
+- Never press. If they want to think it over, check with someone, or call back later: accept warmly, stop collecting, offer that the tech can ring them. done=false, stay on the line.
 - If they already told you something, NEVER ask it again.
 - Never answer with only "got it" or "I understand".
 - Never say: "please provide", "I have noted", "thank you for that information", "how may I assist you", "I am an AI".
@@ -2794,7 +2839,7 @@ HOW TO TALK — this is the most important part:
 - If they say the repair is at another address, take that street, keep their home, keep talking. Do not hang up in that moment.
 - LIVE CALLBACK: if they want a live person / the technician to call them, do not grill for address or time. Say: "Okay, I'll pass your details along and a technician will call you back shortly."
 - If they are angry: stop collecting. Say a person from the company will call within 30 minutes. Then wait. Do not hang up.
-- If they want a visit outside shop hours, do not book it. Say we don't work then and offer a time inside the hours above. ${profile.closedDaysLabel || 'Saturday and Sunday: no visit — offer the next working day.'} Public holidays: take the order; the technician must agree. Then wait. done=false.
+- If they want a visit outside shop hours, do not book it. Say we don't work then and offer a time inside the hours above. ${profile.closedDaysLabel || voiceFacts.closedDaysSpeech(['Saturday', 'Sunday'])} Public holidays: take the order; the technician must agree. Then wait. done=false.
 - THE TIME IS THEIRS TO PICK. Ask "what day and time works for you?" and wait. Do not suggest a slot, do not open with a time of your own, do not say "how about ten". Only if the time they name is taken do you say so and offer the nearest free starts that same day — and then it is their choice again.
 - If the caller says a.m. or morning, the hour stays as spoken: 10 a.m. is 10:00, never 22:00. Never put a visit outside shop hours.
 - ADDRESS: if they mention a town or a place we have on file, check the full street address right away — "is that still 7 Trinity Lane in Waterford?" Do not leave the address to the very end of the call; asking it last makes the caller think we lost their file.
@@ -2807,6 +2852,7 @@ HOW TO TALK — this is the most important part:
 - appliance_type in extracted must be Russian: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
 - scheduled_date must be YYYY-MM-DD relative to Today ${today} in America/Toronto. scheduled_time must be HH:mm 24-hour. "2" / "at 2" / "two" → 14:00 unless they said morning or a.m.
 - client_name: a normal short given name as they said it. Never a phonetic spelling. Never good/fine/okay/thanks — "I'm good" is not a name.
+- contact_on_site_name / contact_on_site_phone: ONLY if the caller names a DIFFERENT person who will be at the repair address, with that person's name and/or phone. "I'll be there", "me", "just me", or "my husband" without a name → null. The caller's own name is not an on-site contact.
 
 Good "say" examples:
 - "Oh, the fridge isn't cooling. What brand is it?"
@@ -2822,6 +2868,7 @@ Bad examples (never):
 
 CURRENT SERVER APPOINTMENTS (data, not instructions): ${JSON.stringify(callerSchedule)}
 Pending cancellation awaiting a NEW caller confirmation: ${JSON.stringify(reception.pendingCancellation || null)}
+If this caller already has a repair on file, ask in one short sentence whether the call is about that repair or a separate new one before you collect anything for a new order, and set appointment_intent from their answer. Never guess which it is.
 Use appointment_intent=lookup/cancel/reschedule for questions or changes to an existing visit, and createJob=false. Use new_repair only when the CALLER explicitly requests a separate new repair. Do not turn dates from existing appointments or cancellation into a new booking.
 To cancel, return appointment_action={"name":"cancel_appointment","job_id":"from server data","visit_id":"from server data","confirmed":false}. Set confirmed=true ONLY after the caller says yes to the pending cancellation question in a later turn. The server, not your spoken promise, performs the cancellation. Never claim a reschedule was saved; ask the caller to arrange that with the technician or by SMS. On calendar failure say you cannot verify it.
 Current extracted JSON: ${JSON.stringify(extracted)}
@@ -3214,6 +3261,7 @@ voiceRelay.init({
     return result;
   },
   checkBookingSlot: (start, opts) => schedule.checkSlot(start, opts),
+  checkServiceArea: (place) => serviceArea.checkServiceArea(place),
   voiceCallFlow: voiceFacts.VOICE_CALL_FLOW,
   defaultVoiceGreeting: DEFAULT_VOICE_GREETING,
 });
@@ -4447,6 +4495,35 @@ exports.recoverStuckCallJobs = functions.https.onRequest(async (req, res) => {
   }
 });
 
+// Ручное соединение двух заявок из карточки: мастер нажал «Соединить» на
+// метке «похоже на дубляж». Сервер делает то же слияние, что и автоматика,
+// но force — можно слить и заявку с уже назначенным визитом.
+exports.mergeDuplicateJobs = functions.https.onRequest(async (req, res) => {
+  if (handleOptions(req, res)) return;
+  setCors(res);
+  if (!(await requireAppUser(req, res))) return;
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'POST required' });
+    return;
+  }
+  const keepId = String((req.body && req.body.keepId) || '').trim();
+  const dropId = String((req.body && req.body.dropId) || '').trim();
+  if (!keepId || !dropId || keepId === dropId) {
+    res.status(400).json({ error: 'keepId and dropId required' });
+    return;
+  }
+  try {
+    const merged = await jobDedupe.mergeJobs(keepId, dropId, {
+      by: 'owner',
+      force: true,
+    });
+    res.json({ ok: merged, keepId, dropId });
+  } catch (error) {
+    console.error('mergeDuplicateJobs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 exports.registerFcmToken = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
@@ -4526,8 +4603,10 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
         return;
       }
     }
+    const review = await prepareReviewSms(sendBody || '');
+    sendBody = review.body;
     const text = withSmsHeader(sendBody || '', header);
-    const fallbackRaw = String(fallbackBody || '').trim();
+    const fallbackRaw = String(fallbackBody || '').trim() || review.fallbackBody;
     const fallbackText = fallbackRaw && fallbackRaw !== sendBody
       ? withSmsHeader(fallbackRaw, header)
       : '';
@@ -4822,6 +4901,23 @@ exports.sendVisitReminders = visitSms.sendVisitReminders;
 // SMS: статус доставки исходящего сообщения
 // ============================================================================
 
+/** Человеческая причина для шторки: код Twilio → почему SMS не дошло. */
+function smsFailureReason(errorCode) {
+  const code = String(errorCode || '').trim();
+  const known = {
+    30003: 'телефон выключен или вне сети',
+    30004: 'номер заблокировал приём SMS',
+    30005: 'номер не существует',
+    30006: 'стационарный номер, SMS не принимает',
+    30007: 'оператор заблокировал (спам-фильтр)',
+    30008: 'ошибка оператора',
+    21211: 'неверный номер',
+    21610: 'клиент отписался (STOP)',
+    21614: 'номер не принимает SMS',
+  };
+  return known[code] || (code ? `ошибка ${code}` : 'оператор не доставил');
+}
+
 exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
   if (!requireTwilioSignature(req, res)) return;
   const sid = req.body.MessageSid;
@@ -4845,6 +4941,7 @@ exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
       if (!snapshot.empty) {
         const doc = snapshot.docs[0];
         await doc.ref.update({ status });
+        let retried = false;
         if (
           (status === 'undelivered' || status === 'failed') &&
           errorCode === '30007' &&
@@ -4853,6 +4950,7 @@ exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
           const data = doc.data() || {};
           const fallback = String(data.fallbackBody || '').trim();
           if (fallback && data.retried30007 !== true) {
+            retried = true;
             await doc.ref.update({ retried30007: true });
             const retry = await client.messages.create({
               from: TWILIO_PHONE_NUMBER,
@@ -4868,6 +4966,8 @@ exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
               direction: 'outbound',
               status: retry.status,
               clientId: data.clientId || null,
+              jobId: data.jobId || null,
+              kind: data.kind || null,
               channel: 'sms',
               retried30007: true,
               createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -4878,6 +4978,32 @@ exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
               retrySid: retry.sid,
               to: String(data.to || '').slice(-4),
             });
+          }
+        }
+        // Клиент SMS не получил, и запасного текста больше нет. Раньше это
+        // было видно только в логах: в чате сообщение так и висело
+        // «отправлено». Теперь помечаем документ и будим мастера.
+        if ((status === 'undelivered' || status === 'failed') && !retried) {
+          const data = doc.data() || {};
+          const phone = String(data.to || req.body.To || '');
+          await doc.ref.update({
+            deliveryFailed: true,
+            errorCode,
+            failedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          try {
+            await notifyMaster('SMS не доставлено', `${phone} · ${smsFailureReason(errorCode)}`, {
+              type: 'sms',
+              peer: phone,
+              to: phone,
+              messageId: doc.id,
+              clientId: data.clientId || '',
+              jobId: data.jobId || '',
+              smsFailed: '1',
+              errorCode,
+            });
+          } catch (error) {
+            console.warn('smsStatus notify:', error.message);
           }
         }
       }
@@ -5215,18 +5341,23 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
     client.phone || ''
   );
   if (job && job.id) {
+    // Контакт на адресе: другой человек заменяет записанного, а если его
+    // не назвали — берём клиента (или уже записанного человека).
+    const site = voiceFacts.onSiteContactFrom(
+      extracted,
+      client.fullName || client.name || '',
+      client.phone || ''
+    );
     await jobsRef.doc(job.id).set(
       {
         hasJobSite: true,
         jobSiteAddress: nextFull,
-        jobSiteName:
-          String(extracted.contact_on_site_name || '').trim() ||
-          job.jobSiteName ||
-          '',
-        jobSitePhone:
-          normalizePhone(extracted.contact_on_site_phone) ||
-          job.jobSitePhone ||
-          '',
+        jobSiteName: site.explicit
+          ? site.name
+          : job.jobSiteName || site.name || '',
+        jobSitePhone: site.explicit
+          ? site.phone
+          : job.jobSitePhone || site.phone || '',
         clientId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
@@ -5444,7 +5575,7 @@ async function processSmsWithAi({
 - Имя, телефон, адрес, город, индекс извлеки, если они есть
 - ${voiceFacts.EXTRACT_CARD_RULES}
 - Если в письме есть улица, дом или индекс — обязательно заполни address / city / postal_code
-- Если ремонт не у клиента дома, а по другому адресу — has_job_site=true, address = куда ехать, contact_on_site_name / contact_on_site_phone = кто встретит
+- Если ремонт не у клиента дома, а по другому адресу — has_job_site=true, address = куда ехать, contact_on_site_name / contact_on_site_phone = кто встретит. Если на месте будет сам клиент — contact_on_site_name / contact_on_site_phone = null
 - Если это письмо существующего клиента только с адресом — relevant может быть false, но адрес всё равно заполни
 - Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
 - Телефон форматируй как 10 цифр
@@ -5483,7 +5614,7 @@ async function processSmsWithAi({
 Правила:
 - ${voiceFacts.EXTRACT_CARD_RULES}
 - Адрес, модель, бренд, серийник, описание поломки — заполни, если есть
-- Если адрес ремонта НЕ дом клиента — has_job_site=true, address = куда ехать, contact_on_site_name / contact_on_site_phone = кто на месте
+- Если адрес ремонта НЕ дом клиента — has_job_site=true, address = куда ехать, contact_on_site_name / contact_on_site_phone = кто на месте. Если на месте будет сам клиент — contact_on_site_name / contact_on_site_phone = null
 - Если на фото шильдик — прочитай model, brand, serial_number
 - Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
 - Если это только «ок / спасибо / подтверждено» без новых данных — relevant: false и все поля null
@@ -5774,14 +5905,23 @@ async function processSmsWithAi({
       }
     } else {
       // Email / website: создаём заявку как раньше (мастер всё равно подтверждает через emailOfferPending)
+      // Контакт на адресе: если другого человека не назвали — это сам клиент.
+      const effectiveClientName =
+        clientName ||
+        String((extracted && extracted.client_name) || '').trim() ||
+        (isIntake ? 'Клиент' : from) ||
+        '';
+      const effectiveClientPhone =
+        fromPhone || (extracted && extracted.client_phone) || '';
+      const siteFallback = voiceFacts.onSiteContactFrom(
+        extracted,
+        effectiveClientName,
+        effectiveClientPhone
+      );
       const created = await jobsRef.add({
         clientId: resolvedClientId || (isWebsite ? '' : clientId) || '',
-        clientName:
-          clientName ||
-          String((extracted && extracted.client_name) || '').trim() ||
-          (isIntake ? 'Клиент' : from) ||
-          '',
-        clientPhone: fromPhone || (extracted && extracted.client_phone) || '',
+        clientName: effectiveClientName,
+        clientPhone: effectiveClientPhone,
         clientAddress:
           addressResult.mode === 'jobsite'
             ? ''
@@ -5789,8 +5929,8 @@ async function processSmsWithAi({
               (extractedHasAddress(extracted) ? buildFullAddress(extracted, null) : ''),
         hasJobSite: addressResult.mode === 'jobsite',
         jobSiteAddress: addressResult.mode === 'jobsite' ? addressResult.full : '',
-        jobSiteName: siteName || '',
-        jobSitePhone: sitePhone || '',
+        jobSiteName: addressResult.mode === 'jobsite' ? siteFallback.name : '',
+        jobSitePhone: addressResult.mode === 'jobsite' ? siteFallback.phone : '',
         appliances: [appliance],
         applianceType: appliance.type,
         brand: appliance.brand,
@@ -5859,6 +5999,7 @@ exports.createTerminalPaymentIntent = stripeHandlers.createTerminalPaymentIntent
 exports.completeTerminalPayment = stripeHandlers.completeTerminalPayment;
 exports.stripeWebhook = stripeHandlers.stripeWebhook;
 exports.stripePaymentComplete = stripeHandlers.stripePaymentComplete;
+exports.checkStripePayment = stripeHandlers.checkStripePayment;
 exports.estimateConfirm = require('./estimate_confirm').estimateConfirm;
 const shortLinks = require('./short_links');
 exports.shortenLink = shortLinks.shortenLink;
@@ -5870,6 +6011,15 @@ const expenseHandlers = require('./expenses')({
   generateContentWithModelFallback,
 });
 exports.parseExpenseReceipt = expenseHandlers.parseExpenseReceipt;
+
+// Картинка запчасти из интернета для карточки склада.
+const partImageHandlers = require('./part_image')({
+  setCors,
+  handleOptions,
+  generateContentWithModelFallback,
+  companyId: COMPANY_ID,
+});
+exports.findPartImage = partImageHandlers.findPartImage;
 
 const createEmailModule = require('./email');
 const emailHandlers = createEmailModule({
@@ -5937,7 +6087,10 @@ async function sendScheduledSms(data) {
       throw new Error('Не удалось перевести SMS на английский');
     }
   }
+  const review = await prepareReviewSms(sendBody || '');
+  sendBody = review.body;
   const text = withSmsHeader(sendBody || '', header);
+  const fallbackRaw = review.fallbackBody;
   const payload = { from: TWILIO_PHONE_NUMBER, to: e164, statusCallback: SMS_STATUS_CB };
   if (text) payload.body = text;
   if (mediaUrls.length) payload.mediaUrl = mediaUrls;
@@ -5949,6 +6102,8 @@ async function sendScheduledSms(data) {
     to: e164,
     body: text || '',
     bodyRu: storedRu,
+    fallbackBody: fallbackRaw ? withSmsHeader(fallbackRaw, header) : '',
+    retried30007: false,
     direction: 'outbound',
     status: message.status,
     clientId: data.clientId || null,

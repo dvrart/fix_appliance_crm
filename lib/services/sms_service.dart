@@ -56,6 +56,10 @@ class SmsMessage {
   final bool applianceRepair;
   /// Входящее SMS, которое ИИ определил как заявку на ремонт — ждёт ручного создания.
   final bool smsOfferPending;
+  /// Код ошибки Twilio, если оператор не доставил SMS (30007 — спам-фильтр).
+  final String errorCode;
+  /// Мастер убрал карточку «не доставлено» с колокольчика.
+  final bool failureDismissed;
   /// Русский текст для мастера. Клиенту уходит [body] на английском.
   final String bodyRu;
   final DateTime? deletedAt;
@@ -92,11 +96,43 @@ class SmsMessage {
     this.emailIntake = false,
     this.applianceRepair = false,
     this.smsOfferPending = false,
+    this.errorCode = '',
+    this.failureDismissed = false,
     this.bodyRu = '',
     this.deletedAt,
   });
 
   bool get isDeleted => deletedAt != null;
+
+  /// Оператор не доставил сообщение. Twilio присылает это статус-колбэком
+  /// уже после отправки, поэтому в чате такое SMS выглядело «отправлено».
+  bool get deliveryFailed =>
+      isOutbound && (status == 'undelivered' || status == 'failed');
+
+  /// Почему не дошло — человеческим языком, как в шторке.
+  String get failureReason => failureReasonFor(errorCode);
+
+  static String failureReasonFor(String code) {
+    switch (code.trim()) {
+      case '30003':
+        return 'телефон выключен или вне сети'.tr;
+      case '30004':
+        return 'номер заблокировал приём SMS'.tr;
+      case '30005':
+        return 'номер не существует'.tr;
+      case '30006':
+        return 'стационарный номер, SMS не принимает'.tr;
+      case '30007':
+        return 'оператор заблокировал (спам-фильтр)'.tr;
+      case '21610':
+        return 'клиент отписался (STOP)'.tr;
+      case '21211':
+      case '21614':
+        return 'неверный номер'.tr;
+      default:
+        return 'оператор не доставил'.tr;
+    }
+  }
 
   static const trashKeepDays = 30;
 
@@ -219,6 +255,8 @@ class SmsMessage {
       emailIntake: map['emailIntake'] == true,
       applianceRepair: map['applianceRepair'] == true,
       smsOfferPending: map['smsOfferPending'] == true,
+      errorCode: (map['errorCode'] ?? '').toString(),
+      failureDismissed: map['failureDismissed'] == true,
       bodyRu: (map['bodyRu'] ?? '').toString(),
       deletedAt: map['deletedAt'] is Timestamp
           ? (map['deletedAt'] as Timestamp).toDate()
@@ -430,6 +468,44 @@ class SmsService {
       );
       return items;
     });
+  }
+
+  /// Исходящие, которые оператор не доставил. Колокольчик показывает их,
+  /// пока мастер не уберёт: раньше провал был виден только в логах Twilio.
+  static Stream<List<SmsMessage>> streamFailedOutbound() {
+    return _ref
+        .where('deliveryFailed', isEqualTo: true)
+        .snapshots()
+        .map((snapshot) {
+      final cutoff = DateTime.now().subtract(const Duration(days: 7));
+      final items = snapshot.docs
+          .map(
+            (doc) => SmsMessage.fromMap(
+              doc.data() as Map<String, dynamic>,
+              doc.id,
+            ),
+          )
+          .where((message) {
+            if (message.failureDismissed || message.isDeleted) return false;
+            if (!message.deliveryFailed) return false;
+            final when = message.createdAt;
+            return when == null || when.isAfter(cutoff);
+          })
+          .toList();
+      items.sort(
+        (a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)),
+      );
+      return items;
+    });
+  }
+
+  static Future<void> dismissFailure(String messageId) async {
+    final id = messageId.trim();
+    if (id.isEmpty) return;
+    await _ref.doc(id).set(
+      {'failureDismissed': true},
+      SetOptions(merge: true),
+    );
   }
 
   static Future<void> dismissSmsOffer(String messageId) async {

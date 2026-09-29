@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/api_keys.dart';
-import '../core/constants.dart';
+import '../core/geo/service_area.dart';
 import '../core/l10n/app_locale.dart';
+import '../services/settings_service.dart';
 import '../shared/widgets/app_bar_save.dart';
 import '../shared/widgets/dirty_leave_scope.dart';
 import '../shared/widgets/keyboard_safe.dart';
@@ -103,8 +105,88 @@ void showSmartAddressPicker({
   var predictions = <Map<String, dynamic>>[];
   Timer? searchDebounce;
   final searchCtrl = TextEditingController();
-  var serviceCity = '';
-  var serviceRegion = '';
+  // Зона обслуживания с карты в настройках: поиск смотрит только в неё.
+  var area = ServiceArea.empty;
+  // В зоне ничего не нашлось — в списке лежат адреса снаружи.
+  var widenedSearch = false;
+  // Выбранный адрес оказался вне зоны.
+  var outsideArea = false;
+  final configFuture = SettingsService.loadConfig();
+
+  /// Одна выдача Google: [circle] — круг поиска, [strict] режет всё снаружи.
+  Future<List<Map<String, dynamic>>> fetchOnce(
+    String query, {
+    AreaSearchCircle? circle,
+    bool strict = false,
+  }) async {
+    final url = StringBuffer(
+      'https://maps.googleapis.com/maps/api/place/autocomplete/json'
+      '?input=${Uri.encodeComponent(query)}'
+      '&key=$kGoogleMapsApiKey'
+      '&language=${AppLocale.instance.isEn ? 'en' : 'ru'}'
+      '&components=country:ca',
+    );
+    if (circle != null) {
+      url.write(
+        '&location=${circle.center.latitude},${circle.center.longitude}'
+        '&radius=${circle.radiusMeters.round()}',
+      );
+      if (strict) url.write('&strictbounds=true');
+    }
+    try {
+      final response = await http.get(Uri.parse(url.toString()));
+      if (response.statusCode != 200) return const [];
+      final data = json.decode(response.body);
+      if (data['status'] != 'OK') return const [];
+      return List<Map<String, dynamic>>.from(data['predictions']);
+    } catch (e) {
+      debugPrint('${'Ошибка Autocomplete'.tr}: $e');
+      return const [];
+    }
+  }
+
+  /// Подсказки. [restrict] — только зона: круги с карты, которые её накрывают.
+  Future<List<Map<String, dynamic>>> fetchPredictions(
+    String query, {
+    required bool restrict,
+  }) async {
+    if (!area.hasPolygon) {
+      var input = query;
+      if (area.region.isNotEmpty &&
+          !input.toLowerCase().contains(area.region.toLowerCase())) {
+        input = '$input, ${area.region}';
+      }
+      return fetchOnce(input);
+    }
+    if (!restrict) {
+      return fetchOnce(
+        query,
+        circle: AreaSearchCircle(
+          area.center,
+          math.min(area.radiusMeters, ServiceArea.maxStrictRadiusMeters),
+        ),
+      );
+    }
+    final circles = area.searchCircles;
+    final batches = await Future.wait([
+      for (final circle in circles)
+        fetchOnce(query, circle: circle, strict: true),
+    ]);
+    // Чередуем выдачи кругов, чтобы лучшее совпадение каждого было сверху.
+    final merged = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    final depth = batches.fold<int>(0, (max, list) => math.max(max, list.length));
+    for (var i = 0; i < depth; i++) {
+      for (final batch in batches) {
+        if (i >= batch.length) continue;
+        final item = batch[i];
+        final id = (item['place_id'] ?? '').toString();
+        if (id.isNotEmpty && !seen.add(id)) continue;
+        merged.add(item);
+      }
+    }
+    return merged;
+  }
 
   bool isDirty() {
     return streetCtrl.text.trim() != initialStreetValue.trim() ||
@@ -137,20 +219,11 @@ void showSmartAddressPicker({
     builder: (sheetContext) {
       return StatefulBuilder(
         builder: (builderContext, setSheetState) {
-          return FutureBuilder<DocumentSnapshot>(
-            future: FirebaseFirestore.instance
-                .collection('companies')
-                .doc(kCompanyId)
-                .collection('settings')
-                .doc('config')
-                .get(),
+          return FutureBuilder<Map<String, dynamic>>(
+            future: configFuture,
             builder: (fbContext, snapshot) {
-              if (snapshot.hasData && snapshot.data!.exists) {
-                final data = snapshot.data!.data() as Map<String, dynamic>?;
-                if (data != null) {
-                  serviceCity = data['serviceCity'] ?? '';
-                  serviceRegion = data['serviceRegion'] ?? '';
-                }
+              if (snapshot.hasData) {
+                area = ServiceArea.fromConfig(snapshot.data!);
               }
 
               return DirtyLeaveScope(
@@ -177,9 +250,11 @@ void showSmartAddressPicker({
                                     color: Color(0xFF14557F),
                                   ),
                                 ),
-                                if (serviceCity.isNotEmpty || serviceRegion.isNotEmpty)
+                                if (area.title.isNotEmpty)
                                   Text(
-                                    '${'Зона:'.tr} ${serviceCity.isNotEmpty ? "$serviceCity, " : ""}$serviceRegion',
+                                    '${'Зона:'.tr} ${area.title}',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
                                       fontSize: 12,
                                       color: Colors.grey,
@@ -210,48 +285,71 @@ void showSmartAddressPicker({
                         onChanged: (value) {
                           searchDebounce?.cancel();
                           if (value.trim().length < 3) {
-                            setSheetState(() => predictions = []);
+                            setSheetState(() {
+                              predictions = [];
+                              widenedSearch = false;
+                              outsideArea = false;
+                            });
                             return;
                           }
                           searchDebounce = Timer(
                             const Duration(milliseconds: 280),
                             () async {
-                              String searchQuery = value;
-                              if (serviceCity.isNotEmpty &&
-                                  !searchQuery.toLowerCase().contains(serviceCity.toLowerCase())) {
-                                searchQuery = '$searchQuery, $serviceCity';
+                              // Сначала строго внутри зоны. Если там пусто —
+                              // показываем ближайшие, но помечаем как «вне зоны».
+                              var found =
+                                  await fetchPredictions(value, restrict: true);
+                              var widened = false;
+                              if (found.isEmpty && area.canRestrictSearch) {
+                                found = await fetchPredictions(
+                                  value,
+                                  restrict: false,
+                                );
+                                widened = found.isNotEmpty;
                               }
-                              if (serviceRegion.isNotEmpty &&
-                                  !searchQuery.toLowerCase().contains(serviceRegion.toLowerCase())) {
-                                searchQuery = '$searchQuery, $serviceRegion';
-                              }
-                              final url =
-                                  'https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${Uri.encodeComponent(searchQuery)}&key=$kGoogleMapsApiKey&language=${AppLocale.instance.isEn ? 'en' : 'ru'}&components=country:ca';
-                              try {
-                                final response = await http.get(Uri.parse(url));
-                                if (!sheetContext.mounted) return;
-                                if (response.statusCode == 200) {
-                                  final data = json.decode(response.body);
-                                  if (data['status'] == 'OK') {
-                                    setSheetState(() {
-                                      predictions = List<Map<String, dynamic>>.from(
-                                        data['predictions'],
-                                      );
-                                    });
-                                    return;
-                                  }
-                                }
-                                setSheetState(() => predictions = []);
-                              } catch (e) {
-                                debugPrint('Ошибка Autocomplete: $e');
-                                if (sheetContext.mounted) {
-                                  setSheetState(() => predictions = []);
-                                }
-                              }
+                              // Медленный ответ не должен затирать новый запрос.
+                              if (searchCtrl.text != value) return;
+                              if (!sheetContext.mounted) return;
+                              setSheetState(() {
+                                predictions = found;
+                                widenedSearch = widened;
+                                outsideArea = false;
+                              });
                             },
                           );
                         },
                       ),
+                      if (widenedSearch || outsideArea)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.warning_amber_rounded,
+                                size: 18,
+                                color: outsideArea
+                                    ? Colors.red.shade700
+                                    : Colors.orange.shade800,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  outsideArea
+                                      ? 'Адрес вне зоны обслуживания'.tr
+                                      : 'В зоне ничего не нашлось — показываю ближайшие'
+                                          .tr,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: outsideArea
+                                        ? Colors.red.shade700
+                                        : Colors.orange.shade800,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       if (predictions.isNotEmpty)
                         Expanded(
                           child: ListView.builder(
@@ -308,6 +406,12 @@ void showSmartAddressPicker({
 
                                 final lat = result['geometry']['location']['lat'];
                                 final lng = result['geometry']['location']['lng'];
+                                final inside = area.contains(
+                                  LatLng(
+                                    (lat as num).toDouble(),
+                                    (lng as num).toDouble(),
+                                  ),
+                                );
 
                                 setSheetState(() {
                                   streetCtrl.text = '$sNum $rName'.trim();
@@ -316,6 +420,8 @@ void showSmartAddressPicker({
                                   postalCtrl.text = zCode;
                                   searchCtrl.text = streetCtrl.text;
                                   predictions = [];
+                                  widenedSearch = false;
+                                  outsideArea = !inside;
                                   staticMapUrl =
                                       'https://maps.googleapis.com/maps/api/staticmap?center=$lat,$lng&zoom=16&size=600x300&markers=color:red%7C$lat,$lng&key=$kGoogleMapsApiKey';
                                   isFetching = false;

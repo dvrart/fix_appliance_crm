@@ -8,7 +8,7 @@ import '../../../shared/widgets/dirty_leave_scope.dart';
 import '../widgets/settings_ui.dart';
 import 'invoice_builder_page.dart';
 
-enum _DocSection { hub, pdf, numbering, estimate, invoiceTerms }
+enum _DocSection { hub, pdf, numbering, estimate, invoiceTerms, warranty }
 
 class DocumentSettingsPage extends StatefulWidget {
   const DocumentSettingsPage({super.key}) : _sectionIndex = 0;
@@ -17,7 +17,7 @@ class DocumentSettingsPage extends StatefulWidget {
 
   final int _sectionIndex;
 
-  _DocSection get _section => _DocSection.values[_sectionIndex.clamp(0, 4)];
+  _DocSection get _section => _DocSection.values[_sectionIndex.clamp(0, 5)];
 
   @override
   State<DocumentSettingsPage> createState() => _DocumentSettingsPageState();
@@ -26,6 +26,7 @@ class DocumentSettingsPage extends StatefulWidget {
 class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
   final _invoiceTerms = TextEditingController();
   final _estimateTerms = TextEditingController();
+  final _warrantyTerms = TextEditingController();
   final _validDays = TextEditingController();
   final _prefix = TextEditingController();
   final _nextInvoice = TextEditingController();
@@ -49,6 +50,7 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
     _nextInvoice.removeListener(_onNumberPreview);
     _invoiceTerms.dispose();
     _estimateTerms.dispose();
+    _warrantyTerms.dispose();
     _validDays.dispose();
     _prefix.dispose();
     _nextInvoice.dispose();
@@ -77,6 +79,7 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
     if (!mounted) return;
     _invoiceTerms.text = settings.invoiceTerms;
     _estimateTerms.text = settings.estimateTerms;
+    _warrantyTerms.text = settings.warrantyTerms;
     _validDays.text = '${settings.estimateValidDays}';
     _prefix.text = settings.documentPrefix;
     _nextInvoice.text = '${settings.nextInvoiceNumber}';
@@ -89,6 +92,7 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
     for (final controller in [
       _invoiceTerms,
       _estimateTerms,
+      _warrantyTerms,
       _validDays,
       _prefix,
       _nextInvoice,
@@ -116,6 +120,7 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
       current.copyWith(
         invoiceTerms: _invoiceTerms.text.trim(),
         estimateTerms: _estimateTerms.text.trim(),
+        warrantyTerms: _warrantyTerms.text.trim(),
         estimateValidDays: days <= 0 ? 30 : days,
         invoiceShowLogo: _showLogo,
         invoiceShowQr: _showQr,
@@ -179,6 +184,8 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
         return _buildEstimate();
       case _DocSection.invoiceTerms:
         return _buildInvoiceTerms();
+      case _DocSection.warranty:
+        return _buildWarranty();
     }
   }
 
@@ -236,6 +243,13 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
                 icon: Icons.notes,
                 color: Colors.blueGrey,
                 onTap: () => _open(_DocSection.invoiceTerms),
+              ),
+              SettingsHubTile(
+                title: 'Гарантия'.tr,
+                subtitle: _warrantyTerms.text.trim().isEmpty ? '—' : '…',
+                icon: Icons.verified_outlined,
+                color: Colors.teal,
+                onTap: () => _open(_DocSection.warranty),
               ),
             ],
           ),
@@ -343,6 +357,30 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
         padding: const EdgeInsets.all(16),
         children: [
           _field(_invoiceTerms, 'Условия счёта'.tr, Icons.notes, lines: 6),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWarranty() {
+    return _scaffold(
+      title: 'Гарантия'.tr,
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              'Текст гарантии печатается в счёте и смете под условиями. Всегда на английском.'.tr,
+              style: const TextStyle(color: Colors.black54, fontSize: 13),
+            ),
+          ),
+          _field(
+            _warrantyTerms,
+            'Условия гарантии'.tr,
+            Icons.verified_outlined,
+            lines: 6,
+          ),
         ],
       ),
     );

@@ -3,10 +3,30 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/secretary_lesson.dart';
 import '../services/ai_service.dart';
 import 'firestore_service.dart';
-import 'settings_service.dart';
 import 'twilio_service.dart';
 
-/// Разборы звонков и правки секретаря: в скрипт только после вашего подтверждения.
+/// Разборы звонков телефонного секретаря — папка ошибок, а не обучение.
+///
+/// **Секретарь отсюда ничему не учится, и это сознательно.** Живой промпт
+/// собирается только на сервере (`DEFAULT_VOICE_INSTRUCTIONS` в
+/// `functions/voice_relay.js` плюс часы, календарь и карта зоны); правила из
+/// приложения в Live не подмешиваются — их уже пробовали подмешивать, и
+/// секретарь от этого ломалась.
+///
+/// Раньше здесь жила видимость обучения: `syncLearnedRules()` при каждом
+/// «Подтвердить» записывала в настройки **пустые** `learnedRules`, а
+/// `SettingsService.ensureAiVoiceSettings()` затирала их ещё и на каждом
+/// старте приложения. Колокольчик при этом показывал «секретарь запомнила».
+/// Обещание убрано (21.09.2026), функция удалена. Реально работают два конца:
+///
+/// * `reject` — сервер (`functions/secretary_learn.js`) читает отклонённые
+///   разборы и больше не присылает то же самое;
+/// * `approve` / `saveManualRule` — карточка остаётся в папке, владелец
+///   копирует её («Скопировать для правки») и присылает в чат, правку пишут
+///   на сервере.
+///
+/// Если когда-нибудь дойдёт до настоящего обучения — хранить принятые правила
+/// и подмешивать их в серверный промпт, а не писать в Firestore пустоту.
 class SecretaryLearnService {
   static CollectionReference get _ref => FirestoreService.secretaryLessonsRef;
 
@@ -72,11 +92,9 @@ class SecretaryLearnService {
     return report;
   }
 
-  static Future<void> approve(
-    SecretaryLesson lesson, {
-    String note = '',
-    bool rejectOthers = false,
-  }) async {
+  /// Ошибка подтверждена: карточка остаётся в папке для правки на сервере.
+  /// Сама секретарь от этого не меняется — см. описание класса.
+  static Future<void> approve(SecretaryLesson lesson, {String note = ''}) async {
     var rule = lesson.ruleEn.trim();
     final owner = note.trim();
     if (owner.isNotEmpty) {
@@ -89,27 +107,29 @@ class SecretaryLearnService {
       'ruleEn': rule,
       'reviewedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
-    if (rejectOthers) {
-      await rejectOtherPending(exceptId: lesson.id);
-    }
-    await syncLearnedRules();
   }
 
+  /// Это не ошибка. Единственная кнопка, которая реально влияет на секретаря:
+  /// сервер читает отклонённые разборы и больше не присылает то же самое.
   static Future<void> reject(SecretaryLesson lesson, {String note = ''}) async {
     await _ref.doc(lesson.id).set({
       'status': SecretaryLesson.rejected,
       'masterNote': note.trim(),
       'reviewedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
-    await syncLearnedRules();
   }
 
-  static Future<void> markNoted(SecretaryLesson lesson, {String note = ''}) async {
+  /// Вернуть ошибку в статус «Новые» (ожидает разбора).
+  static Future<void> resetToPending(SecretaryLesson lesson) async {
     await _ref.doc(lesson.id).set({
-      'status': SecretaryLesson.noted,
-      'masterNote': note.trim(),
+      'status': SecretaryLesson.pending,
       'reviewedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+  }
+
+  /// Удалить запись разбора.
+  static Future<void> delete(SecretaryLesson lesson) async {
+    await _ref.doc(lesson.id).delete();
   }
 
   static Future<void> dismissPending() async {
@@ -128,26 +148,6 @@ class SecretaryLearnService {
       }, SetOptions(merge: true));
       writes++;
       if (writes >= 400) break;
-    }
-    if (writes > 0) await batch.commit();
-  }
-
-  static Future<void> rejectOtherPending({
-    required String exceptId,
-  }) async {
-    final snap = await _ref.get();
-    final batch = FirebaseFirestore.instance.batch();
-    var writes = 0;
-    for (final doc in snap.docs) {
-      if (doc.id == exceptId) continue;
-      final data = doc.data() as Map<String, dynamic>;
-      if ((data['status'] ?? '') != SecretaryLesson.pending) continue;
-      batch.set(doc.reference, {
-        'status': SecretaryLesson.rejected,
-        'masterNote': 'Мастер: это не надо, выучи только подтверждённое.',
-        'reviewedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      writes += 1;
     }
     if (writes > 0) await batch.commit();
   }
@@ -224,7 +224,6 @@ class SecretaryLearnService {
       'createdAt': FieldValue.serverTimestamp(),
       'reviewedAt': FieldValue.serverTimestamp(),
     });
-    await syncLearnedRules();
   }
 
   static Future<SecretaryLesson> reviewTranscript({
@@ -296,152 +295,5 @@ class SecretaryLearnService {
     } catch (_) {
       return (call.transcription ?? '').trim();
     }
-  }
-
-  static Future<void> syncLearnedRules() async {
-    await FirestoreService.aiVoiceRef.set({
-      'learnedRules': <Map<String, dynamic>>[],
-      'extraRules': '',
-      'ownerBrief': '',
-      'liveIgnoresAppRules': true,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
-
-  static CollectionReference get _coachRef => FirestoreService.secretaryCoachRef;
-
-  static Stream<List<SecretaryCoachMessage>> streamCoach() {
-    return _coachRef.snapshots().map((snap) {
-      final list = [
-        for (final doc in snap.docs)
-          SecretaryCoachMessage.fromMap(
-            doc.data() as Map<String, dynamic>,
-            doc.id,
-          ),
-      ];
-      list.sort((a, b) {
-        final at = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final bt = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-        return at.compareTo(bt);
-      });
-      return list;
-    });
-  }
-
-  static Future<void> ensureCoachWelcome() async {
-    final snap = await _coachRef.limit(1).get();
-    if (snap.docs.isNotEmpty) return;
-    await _coachRef.doc().set({
-      'role': 'secretary',
-      'text':
-          'Напишите здесь, как мне вести входящие звонки. Можно переписать правила своими словами. Например: если сказали другой адрес — не клади трубку, спроси день и время и поставь визит.',
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-  }
-
-  static Future<void> postPendingLesson(SecretaryLesson lesson) async {
-    if (lesson.id.isEmpty) return;
-    final existing = await _coachRef
-        .where('lessonId', isEqualTo: lesson.id)
-        .limit(1)
-        .get();
-    if (existing.docs.isNotEmpty) return;
-    final problem = lesson.problemRu.trim().isNotEmpty
-        ? lesson.problemRu.trim()
-        : lesson.titleRu.trim();
-    final who = lesson.fromNumber.trim();
-    await _coachRef.doc().set({
-      'role': 'secretary',
-      'lessonId': lesson.id,
-      'callSid': lesson.callSid,
-      'text': [
-        if (who.isNotEmpty) 'Звонок $who.',
-        if (problem.isNotEmpty) problem,
-        'Напишите, как надо в следующий раз — запомню в скрипт.',
-      ].join(' '),
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-  }
-
-  static Future<void> sendCoachMessage(String raw) async {
-    final text = raw.trim();
-    if (text.isEmpty) return;
-    await _coachRef.doc().set({
-      'role': 'owner',
-      'text': text,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    final pending = await streamPending().first;
-    final profile = await SettingsService.loadAiVoiceProfile();
-    final pendingProblem = pending.isEmpty
-        ? ''
-        : [
-            pending.first.problemRu,
-            pending.first.suggestedFixRu,
-          ].where((line) => line.trim().isNotEmpty).join('\n');
-    Map<String, String> coach;
-    try {
-      coach = await AiService.coachSecretaryTurn(
-        ownerText: text,
-        extraRules: profile.extraRules,
-        learnedRules: profile.learnedRules,
-        pendingProblem: pendingProblem,
-      );
-    } catch (_) {
-      coach = {
-        'replyRu':
-            'Запомнила вашу правку. Со следующего звонка буду так делать.',
-        'ruleEn': text,
-        'rewriteExtraRules': '',
-      };
-    }
-    final ruleEn = (coach['ruleEn'] ?? '').trim();
-    if (pending.isNotEmpty) {
-      await approve(pending.first, note: text);
-    } else if (ruleEn.isNotEmpty) {
-      await saveManualRule(problem: pendingProblem, nextTime: text);
-    }
-    await _coachRef.doc().set({
-      'role': 'secretary',
-      'text': (coach['replyRu'] ?? '').trim().isEmpty
-          ? 'Запомнила. Со следующего звонка буду так делать.'
-          : coach['replyRu']!.trim(),
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-  }
-}
-
-class SecretaryCoachMessage {
-  final String id;
-  final String role;
-  final String text;
-  final String lessonId;
-  final String callSid;
-  final DateTime? createdAt;
-
-  const SecretaryCoachMessage({
-    required this.id,
-    required this.role,
-    required this.text,
-    this.lessonId = '',
-    this.callSid = '',
-    this.createdAt,
-  });
-
-  bool get isOwner => role == 'owner';
-
-  factory SecretaryCoachMessage.fromMap(Map<String, dynamic> map, String id) {
-    DateTime? created;
-    final raw = map['createdAt'];
-    if (raw is Timestamp) created = raw.toDate();
-    if (raw is DateTime) created = raw;
-    return SecretaryCoachMessage(
-      id: id,
-      role: (map['role'] ?? '').toString(),
-      text: (map['text'] ?? '').toString(),
-      lessonId: (map['lessonId'] ?? '').toString(),
-      callSid: (map['callSid'] ?? '').toString(),
-      createdAt: created,
-    );
   }
 }

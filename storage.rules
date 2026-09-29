@@ -1,8 +1,20 @@
 rules_version = '2';
+
+// Файлы — только аккаунт владельца, по uid. Причина та же, что в
+// firestore.rules: `request.auth != null` пускал любой аккаунт, который кто
+// угодно мог создать через публичный REST API Firebase.
+//
+// Ссылки, которые уходят клиенту в SMS и письмах, это не ломает: download URL
+// со своим токеном открывается без входа и правила не проверяет. Cloud
+// Functions (счёт в PDF, картинка детали, копия базы) работают через Admin SDK
+// и правила тоже обходят.
 service firebase.storage {
   match /b/{bucket}/o {
-    function signedIn() {
-      return request.auth != null;
+    function owners() {
+      return ['Ew8vDgXvuMMwt9gYQUOi7rujNxO2'];
+    }
+    function isOwner() {
+      return request.auth != null && request.auth.uid in owners();
     }
     function underLimit(maxBytes) {
       return request.resource.size < maxBytes;
@@ -10,24 +22,24 @@ service firebase.storage {
 
     // Job photos and signatures from the shop app.
     match /jobs/{jobId}/attachments/{fileName} {
-      allow read, delete: if signedIn();
-      allow create, update: if signedIn() && underLimit(20 * 1024 * 1024);
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner() && underLimit(20 * 1024 * 1024);
     }
     match /jobs/{jobId}/signatures/{fileName} {
-      allow read, delete: if signedIn();
-      allow create, update: if signedIn() && underLimit(20 * 1024 * 1024);
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner() && underLimit(20 * 1024 * 1024);
     }
 
     // Warehouse part photos.
     match /warehouse/{fileName} {
-      allow read, delete: if signedIn();
-      allow create, update: if signedIn() && underLimit(12 * 1024 * 1024);
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner() && underLimit(12 * 1024 * 1024);
     }
 
     // Shop branding, outbound files, call recordings, SMS media.
     match /companies/fix_appliance_ca/{allPaths=**} {
-      allow read, delete: if signedIn();
-      allow create, update: if signedIn() && underLimit(25 * 1024 * 1024);
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner() && underLimit(25 * 1024 * 1024);
     }
   }
 }

@@ -21,29 +21,39 @@ import '../../features/settings/widgets/company_logo.dart';
 import '../unsaved_navigation_gate.dart';
 
 class CustomDrawer extends StatelessWidget {
-  const CustomDrawer({super.key});
+  /// Закрывает панель и завершается, когда анимация закрытия доиграла.
+  /// Без него панель считается системным `Scaffold.drawer`.
+  final Future<void> Function()? onClose;
 
-  void _openSettings(BuildContext context) async {
-    if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
-    if (!context.mounted) return;
+  const CustomDrawer({super.key, this.onClose});
+
+  /// Сначала полностью убираем панель, и только потом открываем экран —
+  /// иначе два разнонаправленных слайда накладываются друг на друга.
+  Future<void> _dismiss(BuildContext context) async {
+    final close = onClose;
+    if (close != null) {
+      await close();
+      return;
+    }
     Navigator.pop(context);
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const SettingsScreen()),
-    );
+    await Future<void>.delayed(const Duration(milliseconds: 280));
   }
+
+  void _openSettings(BuildContext context) => _open(context, const SettingsScreen());
 
   void _open(BuildContext context, Widget page) async {
     if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
     if (!context.mounted) return;
-    Navigator.pop(context);
-    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+    await _dismiss(context);
+    final ctx = rootNavigatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    Navigator.push(ctx, MaterialPageRoute(builder: (_) => page));
   }
 
   void _openSearch(BuildContext context) async {
     if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
     if (!context.mounted) return;
-    Navigator.pop(context);
+    await _dismiss(context);
     final overlayContext = rootNavigatorKey.currentContext;
     if (overlayContext != null && overlayContext.mounted) {
       await GlobalSearchOverlay.open(overlayContext);
@@ -145,7 +155,7 @@ class CustomDrawer extends StatelessWidget {
                               return;
                             if (!context.mounted) return;
                             final open = AssistantHost.opener(context);
-                            Navigator.pop(context);
+                            await _dismiss(context);
                             open?.call();
                           },
                         ),

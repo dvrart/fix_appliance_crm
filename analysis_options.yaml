@@ -9,6 +9,15 @@
 # packages, and plugins designed to encourage good coding practices.
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  errors:
+    # Сборка в CI идёт с --fatal-warnings, поэтому предупреждение должно
+    # означать настоящую проблему. Это — не означает: оно срабатывает на
+    # необязательном параметре приватного виджета, которому нигде не передают
+    # значение (`key`, `isNew`, `bottom`). Параметры при этом читаются и нужны
+    # по устройству виджета. Понижено до подсказки, а не выключено.
+    unused_element_parameter: info
+
 linter:
   # The lint rules applied to this project can be customized in the
   # section below to disable rules from the `package:flutter_lints/flutter.yaml`
@@ -21,8 +30,12 @@ linter:
   # `// ignore_for_file: name_of_lint` syntax on the line or in the file
   # producing the lint.
   rules:
+    prefer_const_constructors: true
+    avoid_init_to_null: true
+    prefer_final_fields: true
+    use_super_parameters: true
+    prefer_single_quotes: true
     # avoid_print: false  # Uncomment to disable the `avoid_print` rule
-    # prefer_single_quotes: true  # Uncomment to enable the `prefer_single_quotes` rule
 
 # Additional information about this file can be found at
 # https://dart.dev/guides/language/analysis-options

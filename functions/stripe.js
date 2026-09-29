@@ -60,7 +60,7 @@ async function getSmsHeader() {
 function setCors(res) {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
 function handleOptions(req, res) {
@@ -589,8 +589,8 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
           client_reference_id: jobId,
           metadata,
           locale: 'en',
-          success_url: `${base}/stripePaymentComplete?status=success`,
-          cancel_url: `${base}/stripePaymentComplete?status=cancel`,
+          success_url: `${base}/stripePaymentComplete?status=success&session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${base}/stripePaymentComplete?status=cancel&session_id={CHECKOUT_SESSION_ID}`,
           invoice_creation: {
             enabled: true,
             invoice_data: {
@@ -610,8 +610,8 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
           client_reference_id: jobId,
           metadata,
           locale: 'en',
-          success_url: `${base}/stripePaymentComplete?status=success`,
-          cancel_url: `${base}/stripePaymentComplete?status=cancel`,
+          success_url: `${base}/stripePaymentComplete?status=success&session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${base}/stripePaymentComplete?status=cancel&session_id={CHECKOUT_SESSION_ID}`,
           invoice_creation: {
             enabled: true,
             invoice_data: {
@@ -960,6 +960,46 @@ function isCompletedJobStatus(status) {
   );
 }
 
+const DEPOSIT_JOB_STATUS = 'Депозит';
+
+function isCancelledJobStatus(status) {
+  const n = String(status || '').trim().toLowerCase();
+  return n.includes('отмен') || n === 'cancelled' || n === 'canceled' || n === 'cancel';
+}
+
+function isDepositJobStatus(status) {
+  const n = String(status || '').trim().toLowerCase();
+  return n === 'депозит' || n === 'взят депозит' || n === 'deposit';
+}
+
+function isWaitingPartJobStatus(status) {
+  const n = String(status || '').trim().toLowerCase();
+  return n === 'ожидание запчасти';
+}
+
+/**
+ * Частичная оплата счёта = депозит → статус заявки «Депозит».
+ * Не трогаем «Ожидание запчасти» (заявка должна остаться в очереди запчастей),
+ * закрытые статусы и уже проставленный депозит. Та же логика в приложении:
+ * `JobStatuses.shouldMarkDeposit`.
+ */
+function shouldMarkDepositStatus(status) {
+  return (
+    !isDepositJobStatus(status) &&
+    !isCompletedJobStatus(status) &&
+    !isCancelledJobStatus(status) &&
+    !isWaitingPartJobStatus(status)
+  );
+}
+
+function isInvoiceDepositTaken(doc) {
+  if (!isInvoiceDoc(doc) || doc.deletedAt) return false;
+  const total = invoiceDocTotal(doc);
+  if (total <= 0.009) return false;
+  const paid = invoiceDocPaid(doc);
+  return paid > 0.009 && total - paid > 0.009;
+}
+
 function markJobVisitsDone(job) {
   const visits = Array.isArray(job.visits) ? job.visits : [];
   if (!visits.length) return null;
@@ -1134,11 +1174,14 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
   const jobRef = jobsRef.doc(jobId);
   let recorded = false;
   let shouldSuggestComplete = false;
+  let isDeposit = false;
+  let clientName = '';
 
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(jobRef);
     if (!snap.exists) return;
     const job = snap.data() || {};
+    clientName = job.clientName || '';
     const documents = Array.isArray(job.documents) ? [...job.documents] : [];
     if (index < 0 || index >= documents.length) return;
     const doc = { ...documents[index] };
@@ -1149,10 +1192,11 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
     const payments = Array.isArray(doc.payments) ? [...doc.payments] : [];
     const tipAmount = tip > 0.009 ? tip : 0;
     const jobAmount = Math.max(0, Number(amount) - tipAmount);
+    const paidAt = new Date().toISOString();
     payments.push({
       amount: jobAmount,
       method: methodLabel,
-      date: new Date().toISOString(),
+      date: paidAt,
       tip: tipAmount,
       stripeSessionId: ids.find((id) => id && String(id).startsWith('cs_')) || '',
       stripePaymentIntentId: ids.find((id) => id && String(id).startsWith('pi_')) || '',
@@ -1162,7 +1206,7 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
       payments.push({
         amount: tipAmount,
         method: 'Чаевые',
-        date: new Date().toISOString(),
+        date: paidAt,
         stripePaymentIntentId: ids.find((id) => id && String(id).startsWith('pi_')) || '',
       });
     }
@@ -1170,6 +1214,7 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
     doc.stripe = {
       ...(doc.stripe || {}),
       status: 'paid',
+      paidAt,
     };
     documents[index] = doc;
     const updates = {
@@ -1180,18 +1225,36 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
       updates.suggestComplete = true;
       updates.suggestCompleteAt = admin.firestore.FieldValue.serverTimestamp();
       shouldSuggestComplete = true;
+    } else if (isInvoiceDepositTaken(doc) && shouldMarkDepositStatus(job.status)) {
+      updates.status = DEPOSIT_JOB_STATUS;
+      isDeposit = true;
     }
     tx.update(jobRef, updates);
     recorded = true;
   });
 
-  if (recorded && shouldSuggestComplete) {
+  if (recorded) {
     try {
-      await notifyMaster(
-        'Счёт оплачен',
-        `Пометить заявку как завершённую? Нажмите, чтобы открыть.`,
-        { type: 'job', jobId }
-      );
+      const dollars = Number(amount).toFixed(2);
+      if (shouldSuggestComplete) {
+        await notifyMaster(
+          `Счёт оплачен: $${dollars}`,
+          `Счёт полностью оплачен${clientName ? ` (${clientName})` : ''}. Пометить заявку как завершённую?`,
+          { type: 'job', jobId }
+        );
+      } else if (isDeposit) {
+        await notifyMaster(
+          `Депозит получен: $${dollars}`,
+          `${clientName || 'Клиент'} внёс депозит через Stripe.`,
+          { type: 'job', jobId }
+        );
+      } else {
+        await notifyMaster(
+          `Оплата Stripe: $${dollars}`,
+          `${clientName || 'Клиент'} оплатил(а) через Stripe.`,
+          { type: 'job', jobId }
+        );
+      }
     } catch (error) {
       console.warn('recordStripePayment notify:', error.message);
     }
@@ -1201,6 +1264,8 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
 
 async function handleCheckoutCompleted(session) {
   const metadata = session.metadata || {};
+  const jobId = metadata.jobId || session.client_reference_id;
+  const documentIndex = metadata.documentIndex !== undefined ? metadata.documentIndex : 0;
   const amount = fromCents(session.amount_total);
   const dueCents = Number(metadata.dueCents || 0);
   const tip =
@@ -1208,8 +1273,8 @@ async function handleCheckoutCompleted(session) {
       ? Math.max(0, amount - fromCents(dueCents))
       : fromCents(metadata.tipCents || 0);
   await recordStripePayment({
-    jobId: metadata.jobId,
-    documentIndex: metadata.documentIndex,
+    jobId,
+    documentIndex,
     amount,
     tip,
     ids: [session.id, session.payment_intent, session.invoice].filter(Boolean),
@@ -1522,7 +1587,23 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
 
 exports.stripePaymentComplete = functions.https.onRequest(async (req, res) => {
   const status = (req.query.status || 'success').toString();
+  const sessionId = (req.query.session_id || '').toString();
   const ok = status === 'success';
+
+  if (ok && sessionId && sessionId.startsWith('cs_')) {
+    try {
+      const stripe = getStripe();
+      if (stripe) {
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if (session && (session.payment_status === 'paid' || session.status === 'complete')) {
+          await handleCheckoutCompleted(session);
+        }
+      }
+    } catch (error) {
+      console.error('stripePaymentComplete session sync error:', error.message);
+    }
+  }
+
   res.set('Content-Type', 'text/html; charset=utf-8');
   res.status(200).send(`<!doctype html>
 <html lang="en">
@@ -1547,4 +1628,101 @@ exports.stripePaymentComplete = functions.https.onRequest(async (req, res) => {
   </div>
 </body>
 </html>`);
+});
+
+exports.checkStripePayment = functions.https.onRequest(async (req, res) => {
+  if (handleOptions(req, res)) return;
+  setCors(res);
+  if (!(await requireAppUser(req, res))) return;
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'POST only' });
+    return;
+  }
+  if (requireStripe(res)) return;
+  const stripe = getStripe();
+
+  const { jobId, documentIndex } = req.body || {};
+  if (!jobId || documentIndex === undefined || documentIndex === null) {
+    res.status(400).json({ error: 'Нужны jobId и documentIndex' });
+    return;
+  }
+  const index = Number(documentIndex);
+
+  try {
+    const jobSnap = await jobsRef.doc(jobId).get();
+    if (!jobSnap.exists) {
+      res.status(404).json({ error: 'Заявка не найдена' });
+      return;
+    }
+    const job = jobSnap.data() || {};
+    const documents = Array.isArray(job.documents) ? job.documents : [];
+    if (index < 0 || index >= documents.length) {
+      res.status(400).json({ error: 'Документ не найден' });
+      return;
+    }
+    const doc = documents[index] || {};
+    const stripeInfo = doc.stripe && typeof doc.stripe === 'object' ? doc.stripe : {};
+    const sessionId = stripeInfo.checkoutSessionId;
+    const invoiceId = stripeInfo.invoiceId;
+
+    let checked = false;
+    let paymentStatus = stripeInfo.status || 'open';
+    let paidAmount = 0;
+
+    if (sessionId && sessionId.startsWith('cs_')) {
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      checked = true;
+      if (session.payment_status === 'paid' || session.status === 'complete') {
+        await handleCheckoutCompleted(session);
+        paymentStatus = 'paid';
+        paidAmount = fromCents(session.amount_total);
+      } else if (session.status === 'expired') {
+        paymentStatus = 'expired';
+        const updatedDocs = [...documents];
+        updatedDocs[index] = {
+          ...doc,
+          stripe: {
+            ...stripeInfo,
+            status: 'expired',
+          },
+        };
+        await jobsRef.doc(jobId).update({
+          documents: updatedDocs,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    } else if (invoiceId && invoiceId.startsWith('in_')) {
+      const invoice = await stripe.invoices.retrieve(invoiceId);
+      checked = true;
+      if (invoice.status === 'paid') {
+        await handleInvoicePaid(invoice);
+        paymentStatus = 'paid';
+        paidAmount = fromCents(invoice.amount_paid);
+      } else {
+        paymentStatus = invoice.status || 'open';
+      }
+    }
+
+    const freshSnap = await jobsRef.doc(jobId).get();
+    const freshJob = freshSnap.data() || {};
+    const freshDocs = Array.isArray(freshJob.documents) ? freshJob.documents : [];
+    const freshDoc = freshDocs[index] || {};
+    const freshStripe = freshDoc.stripe || {};
+    const totals = calcDocTotals(freshDoc);
+
+    res.json({
+      success: true,
+      checked,
+      status: freshStripe.status || paymentStatus,
+      paid: freshStripe.status === 'paid' || totals.due <= 0.009,
+      paidAt: freshStripe.paidAt || null,
+      due: totals.due,
+      paidAmount: totals.paid,
+      amount: freshStripe.amount || 0,
+      jobStatus: freshJob.status || '',
+    });
+  } catch (error) {
+    console.error('checkStripePayment error:', error);
+    res.status(500).json({ error: error.message || 'Ошибка проверки оплаты Stripe' });
+  }
 });

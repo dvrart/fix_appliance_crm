@@ -55,6 +55,8 @@ class _AssistantHostState extends State<AssistantHost>
   bool _openingAssistant = false;
   bool _assistantEnabled = true;
   bool _wakeEnabled = true;
+  bool _textFieldFocused = false;
+  bool _keyboardShown = false;
   String? _lastWakeHint;
 
   @override
@@ -62,6 +64,9 @@ class _AssistantHostState extends State<AssistantHost>
     super.initState();
     _lifecycleState = WidgetsBinding.instance.lifecycleState;
     WidgetsBinding.instance.addObserver(this);
+    FocusManager.instance.addListener(_onFocusChanged);
+    _onFocusChanged();
+    _readKeyboard();
     AssistantAudioService.playback.addListener(_onAssistantChanged);
     AssistantAudioService.playback.suspendMicrophone = _suspendForPlayback;
     unawaited(_watchAudio());
@@ -110,6 +115,31 @@ class _AssistantHostState extends State<AssistantHost>
     unawaited(_syncWake());
   }
 
+  /// Пока FIX печатает или диктует с клавиатуры, микрофон нужен клавиатуре:
+  /// её голосовой ввод — тот же SpeechRecognizer, что и wake-слушатель, и
+  /// вдвоём они не работают. Поле ввода в фокусе или клавиатура открыта —
+  /// wake-слово отпускает микрофон, закрыли — слушает снова.
+  bool get _typing => _textFieldFocused || _keyboardShown;
+
+  void _onFocusChanged() {
+    final focus = FocusManager.instance.primaryFocus;
+    final editing = focus?.context?.findAncestorWidgetOfExactType<EditableText>() != null;
+    if (editing == _textFieldFocused) return;
+    _textFieldFocused = editing;
+    unawaited(_syncWake());
+  }
+
+  void _readKeyboard() {
+    final views = WidgetsBinding.instance.platformDispatcher.views;
+    final shown = views.any((view) => view.viewInsets.bottom > 0);
+    if (shown == _keyboardShown) return;
+    _keyboardShown = shown;
+    unawaited(_syncWake());
+  }
+
+  @override
+  void didChangeMetrics() => _readKeyboard();
+
   bool get _appResumed =>
       _lifecycleState == null || _lifecycleState == AppLifecycleState.resumed;
 
@@ -153,6 +183,7 @@ class _AssistantHostState extends State<AssistantHost>
           _closingAssistant == null &&
           !AssistantAudioService.playback.isActive &&
           !_audioState.blocksWake &&
+          !_typing &&
           _appResumed;
       if (want) {
         if (!_wake.isArmed) await _wake.start();
@@ -234,6 +265,7 @@ class _AssistantHostState extends State<AssistantHost>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    FocusManager.instance.removeListener(_onFocusChanged);
     _audioWatchEpoch++;
     _audioSub?.cancel();
     _configSub?.cancel();

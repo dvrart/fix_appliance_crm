@@ -5,4 +5,7 @@ RewriteEngine On
 RewriteRule ^pay/([A-Za-z0-9]+)/?$ https://pay.fix-appliance.ca/$1 [R=302,L,NC]
 RewriteRule ^estimate/([A-Za-z0-9]+)/?$ https://doc.fix-appliance.ca/e/$1 [R=302,L,NC]
 RewriteRule ^invoice/([A-Za-z0-9]+)/?$ https://doc.fix-appliance.ca/i/$1 [R=302,L,NC]
+# Google review. The g.page link is filtered by Canadian carriers in SMS
+# (Twilio 30007), a link on our own domain gets through.
+RewriteRule ^review/?$ https://g.page/r/CePcNwc8SXpUEBE/review [R=302,L,NC]
 </IfModule>

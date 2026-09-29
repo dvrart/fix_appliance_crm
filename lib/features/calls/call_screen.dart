@@ -24,6 +24,12 @@ class CallScreen extends StatefulWidget {
     this.resumeExisting = false,
   });
 
+  /// Экран звонка на экране прямо сейчас. Не даём положить второй сверху:
+  /// прямой вызов из карточки и `GlobalCallListener` иначе могли открыть
+  /// два экрана на один разговор, и при завершении оба анимировались разом.
+  static bool _shown = false;
+  static bool get isShown => _shown;
+
   static Future<T?> open<T>(
     BuildContext context, {
     required String phoneNumber,
@@ -31,34 +37,44 @@ class CallScreen extends StatefulWidget {
     bool isIncoming = false,
     String? jobId,
     bool resumeExisting = false,
-  }) {
+  }) async {
+    if (_shown) return null;
+    _shown = true;
     if (!isIncoming) AppFeedback.pleasant();
-    return Navigator.of(context, rootNavigator: true).push<T>(
-      PageRouteBuilder<T>(
-        opaque: false,
-        fullscreenDialog: false,
-        transitionDuration: const Duration(milliseconds: 420),
-        reverseTransitionDuration: const Duration(milliseconds: 520),
-        pageBuilder: (_, animation, _) => CallScreen(
-          phoneNumber: phoneNumber,
-          contactName: contactName,
-          isIncoming: isIncoming,
-          jobId: jobId,
-          resumeExisting: resumeExisting,
+    try {
+      return await Navigator.of(context, rootNavigator: true).push<T>(
+        PageRouteBuilder<T>(
+          opaque: true,
+          transitionDuration: const Duration(milliseconds: 360),
+          reverseTransitionDuration: const Duration(milliseconds: 420),
+          pageBuilder: (_, animation, _) => CallScreen(
+            phoneNumber: phoneNumber,
+            contactName: contactName,
+            isIncoming: isIncoming,
+            jobId: jobId,
+            resumeExisting: resumeExisting,
+          ),
+          transitionsBuilder: (_, animation, _, child) {
+            // Только прозрачность и лёгкий масштаб по центру — никакого
+            // сдвига в сторону ни на открытии, ни на закрытии.
+            final curved = CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+              reverseCurve: Curves.easeInCubic,
+            );
+            return FadeTransition(
+              opacity: curved,
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
+                child: child,
+              ),
+            );
+          },
         ),
-        transitionsBuilder: (_, animation, _, child) {
-          final curved = CurvedAnimation(
-            parent: animation,
-            curve: Curves.easeOutCubic,
-            reverseCurve: Curves.easeInOutCubic,
-          );
-          return FadeTransition(
-            opacity: curved,
-            child: child,
-          );
-        },
-      ),
-    );
+      );
+    } finally {
+      _shown = false;
+    }
   }
 
   @override
@@ -89,7 +105,7 @@ class _CallScreenState extends State<CallScreen> {
     _closing = true;
     if (_callStatus != 'ended' && _callStatus != 'failed') {
       setState(() => _callStatus = 'ended');
-      await Future<void>.delayed(const Duration(milliseconds: 160));
+      await Future<void>.delayed(const Duration(milliseconds: 260));
     }
     if (!mounted || _popped) return;
     _popOnce(result);
@@ -291,7 +307,12 @@ class _CallScreenState extends State<CallScreen> {
         ),
         child: Scaffold(
           backgroundColor: const Color(0xFF071018),
-          body: DecoratedBox(
+          // Scaffold даёт body только maxWidth, а Column берёт ширину самого
+          // широкого ребёнка. Пока на экране есть Row с кнопками — это вся
+          // ширина; в момент «Звонок завершён» Row пропадал, Column сжимался
+          // до ширины номера и прилипал к левому краю — экран «уезжал влево».
+          body: SizedBox.expand(
+            child: DecoratedBox(
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
@@ -372,8 +393,10 @@ class _CallScreenState extends State<CallScreen> {
                 _buildKeypad(),
                 const SizedBox(height: 10),
               ],
-              if (showInCallControls)
-                Padding(
+              if (!isRingingIncoming)
+                _fade(
+                  visible: showInCallControls,
+                  child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 28),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -401,6 +424,7 @@ class _CallScreenState extends State<CallScreen> {
                         onTap: _toggleSpeaker,
                       ),
                     ],
+                  ),
                   ),
                 ),
               SizedBox(height: _showKeypad ? 12 : 28),
@@ -434,8 +458,10 @@ class _CallScreenState extends State<CallScreen> {
                     ],
                   ),
                 )
-              else if (!isEnded)
-                Padding(
+              else
+                _fade(
+                  visible: !isEnded,
+                  child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 28),
                   child: Column(
                     children: [
@@ -456,14 +482,30 @@ class _CallScreenState extends State<CallScreen> {
                       ),
                     ],
                   ),
+                  ),
                 ),
               SizedBox(height: _showKeypad ? 12 : 36),
             ],
                 ),
               ),
             ),
+            ),
           ),
         ),
+      ),
+    );
+  }
+
+  /// Кнопки после отбоя не выдёргиваем из разметки, а гасим: иначе Column
+  /// перестраивается и всё содержимое прыгает вверх за миг до закрытия.
+  Widget _fade({required bool visible, required Widget child}) {
+    return IgnorePointer(
+      ignoring: !visible,
+      child: AnimatedOpacity(
+        opacity: visible ? 1 : 0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        child: child,
       ),
     );
   }

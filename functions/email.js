@@ -3,6 +3,7 @@ const nodemailer = require('nodemailer');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const crypto = require('crypto');
+const jobDedupe = require('./job_dedupe');
 
 const COMPANY_ID = 'fix_appliance_ca';
 
@@ -919,16 +920,10 @@ module.exports = function createEmailModule({
       items.sort((a, b) => b.fill - a.fill || a.created - b.created);
       const keep = items[0];
       for (const extra of items.slice(1)) {
-        await extra.ref.set(
-          {
-            status: 'Отменено',
-            needsReview: false,
-            cloneOfJobId: keep.id,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        );
-        closed += 1;
+        // Не просто закрываем: данные письма-дубля переезжают в главную заявку.
+        if (await jobDedupe.mergeJobs(keep.id, extra.id, { by: 'email', force: true })) {
+          closed += 1;
+        }
       }
     }
     if (closed) console.log(`syncGmailInbox: closed ${closed} duplicate email jobs`);

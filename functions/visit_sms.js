@@ -6,8 +6,10 @@ const twilio = require('twilio');
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { withSmsHeader, sanitizeSmsHeader } = require('./sms_header');
+const smsLinks = require('./sms_links');
 const voiceFacts = require('./voice_facts');
 const schedule = require('./schedule');
+const jobDedupe = require('./job_dedupe');
 const { notifyMaster } = require('./notify');
 
 const COMPANY_ID = 'fix_appliance_ca';
@@ -18,8 +20,11 @@ const DEFAULTS = {
     'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day',
   day_before:
     'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}\n\nReply 1 ✅ to confirm this visit, 0 ❌ to cancel, 5 🔁 to pick another day.',
+  // Красиво, но без промо-блока: длинный текст с рядом звёзд и «supporting
+  // our small business» операторы режут (30007), а этот вариант (~200 симв.
+  // с шапкой и ссылкой на google-хосте) дошёл замером 21.09.2026.
   job_done:
-    'Repair complete! ✅\nThank you for choosing us.\n⭐ Please leave a review:\n{review}',
+    'Hi {name}! 👋\nYour repair is complete ✅\nThank you for choosing Fix-Appliance CA 🙏\nA quick Google review would mean a lot to us ⭐\n{review}\nHave a great day! 😊',
   cancel_save:
     'Sorry to hear that, {name}. Would you like to reschedule instead?\n\nReply:\n• A new day and time (example: Friday 11:00)\n• 0 — confirm cancellation',
   reschedule_ask:
@@ -434,6 +439,20 @@ function isCompletedStatus(status) {
   );
 }
 
+function isDepositStatus(status) {
+  const n = String(status || '').trim().toLowerCase();
+  return n === 'депозит' || n === 'взят депозит' || n === 'deposit';
+}
+
+/**
+ * Статус при переносе по SMS. «Депозит» не перетираем — как и в приложении
+ * (`JobStatuses.canMarkRescheduled`): деньги клиента важнее метки переноса.
+ */
+function rescheduleStatus(job) {
+  const status = String((job || {}).status || '');
+  return isDepositStatus(status) ? status : 'Перенос';
+}
+
 function isScheduledVisit(visit) {
   return schedule.visitBlocks(visit);
 }
@@ -466,7 +485,17 @@ async function getSmsHeader() {
   }
 }
 
-async function sendTwilioSms({ to, body, clientId, jobId, kind }) {
+async function getCompanyName() {
+  try {
+    const snap = await companyRef().collection('settings').doc('documents').get();
+    const data = snap.exists ? snap.data() || {} : {};
+    return String(data.companyName || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody }) {
   const client = twilioClient();
   const e164 = toE164(to);
   const text = String(body || '').trim();
@@ -486,6 +515,11 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind }) {
   try {
     const header = await getSmsHeader();
     const wrapped = withSmsHeader(text, header);
+    // Запасной текст без ссылки: если оператор зарежет (30007),
+    // smsStatusCallback перешлёт его, и клиент хотя бы получит просьбу.
+    const fallbackRaw = String(fallbackBody || '').trim();
+    const fallbackText =
+      fallbackRaw && fallbackRaw !== text ? withSmsHeader(fallbackRaw, header) : '';
     const message = await client.messages.create({
       from,
       to: e164,
@@ -497,6 +531,8 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind }) {
       from,
       to: e164,
       body: wrapped,
+      fallbackBody: fallbackText,
+      retried30007: false,
       direction: 'outbound',
       status: message.status,
       clientId: clientId || null,
@@ -517,7 +553,7 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind }) {
   }
 }
 
-async function sendSms({ to, body, clientId, jobId, kind, job }) {
+async function sendSms({ to, body, clientId, jobId, kind, job, fallbackBody }) {
   const wantEmail = (job && isEmailJob(job)) || String(to || '').includes('@');
   if (wantEmail) {
     const ok = await sendVisitEmail({ job, to, body, clientId, jobId, kind });
@@ -525,11 +561,11 @@ async function sendSms({ to, body, clientId, jobId, kind, job }) {
     const phone = job ? jobPhone(job) : '';
     if (normalizePhone(phone)) {
       console.warn(`visit email failed, SMS fallback job=${jobId || ''}`);
-      return sendTwilioSms({ to: phone, body, clientId, jobId, kind });
+      return sendTwilioSms({ to: phone, body, clientId, jobId, kind, fallbackBody });
     }
     return false;
   }
-  return sendTwilioSms({ to, body, clientId, jobId, kind });
+  return sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody });
 }
 
 
@@ -1044,19 +1080,26 @@ async function sendReviewIfNeeded(jobId, before, after, config, templates) {
     return;
   }
   const reviewUrl = String(config.googleReviewUrl || '').trim();
-  const body = applyTemplate(templates.job_done, {
+  const template = applyTemplate(templates.job_done, {
     name: jobName(after),
     date: '',
     time: '',
     address: jobAddress(after),
     review: reviewUrl,
   });
+  // Ссылку меняем на наш редирект с google-хоста: свой домен и g.page
+  // операторы режут (30007). Запасной текст — вообще без ссылки.
+  const review = await smsLinks.prepareReviewSms(template, {
+    reviewUrl,
+    company: await getCompanyName(),
+  });
   const sent = await sendTwilioSms({
     to: phone,
-    body,
+    body: review.body,
     clientId: after.clientId,
     jobId,
     kind: 'job_done',
+    fallbackBody: review.fallbackBody,
   });
   if (sent) {
     await jobsRef().doc(jobId).update({
@@ -1129,6 +1172,17 @@ async function processJobWrite(before, after, jobId) {
     await recordJobChanges(before, after, jobId);
     return;
   }
+  // Дубляж с одного номера. Смотрим на создании заявки и когда у неё
+  // впервые появился телефон; если эту заявку слили в другую — дальше не
+  // идём, иначе клиент получит SMS о визите по закрытому дублю.
+  if (jobDedupe.phoneChanged(before, after)) {
+    try {
+      const merged = await jobDedupe.checkJobForDuplicates(jobId, after);
+      if (merged.mergedInto) return;
+    } catch (error) {
+      console.error('job dedupe:', error.message);
+    }
+  }
   const config = await loadConfig();
   const templates = await loadTemplates();
   await sendReviewIfNeeded(jobId, before, after, config, templates);
@@ -1154,6 +1208,7 @@ async function recordJobChanges(before, after, jobId) {
     const prevStatus = String((before || {}).status || '');
     const nextStatus = String(after.status || '');
     if (prevStatus !== nextStatus && after.suggestComplete) return 'stripe';
+    if (prevStatus !== nextStatus && nextStatus === 'Депозит') return 'stripe';
     if (prevStatus !== nextStatus && (nextStatus === 'Перенос' || nextStatus === 'Вызов') &&
         coalesceVisits(after).some(v => String(v.smsConfirmStatus || '') === 'confirmed' &&
         coalesceVisits(before || {}).find(b => b.id === v.id && b.smsConfirmStatus !== 'confirmed'))) {
@@ -1218,12 +1273,19 @@ async function recordJobChanges(before, after, jobId) {
       const nextPayments = Array.isArray(nextDoc.payments) ? nextDoc.payments : [];
       const prevPayments = Array.isArray(prevDoc.payments) ? prevDoc.payments : [];
       if (nextPayments.length > prevPayments.length) {
-        const newPay = nextPayments[nextPayments.length - 1];
-        const amount = Number(newPay && newPay.amount) || 0;
-        const isTip = String((newPay && newPay.method) || '').includes('Чаевые');
-        if (!isTip && Math.abs(amount) > 0.009) {
-          const event = amount < 0 ? 'refund_recorded' : 'payment_recorded';
-          changes.push({ at: now, by: 'stripe', event, amount: Math.abs(amount), method: String((newPay && newPay.method) || '') });
+        for (let pIdx = prevPayments.length; pIdx < nextPayments.length; pIdx++) {
+          const newPay = nextPayments[pIdx];
+          const amount = Number(newPay && newPay.amount) || 0;
+          const isTip = String((newPay && newPay.method) || '').includes('Чаевые');
+          const payDate = (newPay && newPay.date) || now;
+          const payMethod = String((newPay && newPay.method) || '');
+          const payBy = payMethod.includes('Stripe') ? 'stripe' : by;
+          if (isTip && Math.abs(amount) > 0.009) {
+            changes.push({ at: payDate, by: 'stripe', event: 'tip_recorded', amount: Math.abs(amount) });
+          } else if (Math.abs(amount) > 0.009) {
+            const event = amount < 0 ? 'refund_recorded' : 'payment_recorded';
+            changes.push({ at: payDate, by: payBy, event, amount: Math.abs(amount), method: payMethod });
+          }
         }
       }
     }
@@ -1739,7 +1801,7 @@ async function beginRescheduleAsk(match, from, clientId, body) {
   };
   await match.doc.ref.update({
     visits,
-    status: 'Перенос',
+    status: rescheduleStatus(match.job),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
   const vars = visitVars(match.job, visits[idx]);
@@ -1885,7 +1947,7 @@ async function tryMoveVisit(match, slot, from, clientId, notifyTitle, opts = {})
       };
       await match.doc.ref.update({
         visits,
-        status: 'Перенос',
+        status: rescheduleStatus(match.job),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
@@ -2067,7 +2129,7 @@ async function handleDialogReply(match, body, from, clientId) {
       visits[idx] = { ...visits[idx], smsDialog: 'ask_slot', smsConfirmStatus: 'reschedule' };
       await match.doc.ref.update({
         visits,
-        status: 'Перенос',
+        status: rescheduleStatus(match.job),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
@@ -2171,7 +2233,7 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
         visits[idx] = { ...visits[idx], smsConfirmStatus: 'reschedule', smsDialog: 'ask_slot' };
         await match.doc.ref.update({
           visits,
-          status: 'Перенос',
+          status: rescheduleStatus(match.job),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
         await sendSms({

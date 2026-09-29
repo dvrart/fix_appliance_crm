@@ -25,9 +25,17 @@ class VisitLinkCatalog {
     required this.byJob,
   });
 
-  final DateTime visibleStart;
-  final DateTime visibleEnd;
+  DateTime visibleStart;
+  DateTime visibleEnd;
   final Map<String, List<VisitLinkNode>> byJob;
+
+  /// Обновляет видимый диапазон без пересоздания каталога: календарь
+  /// перелистывается без rebuild, а линии к карточкам за краем экрана
+  /// должны рисоваться от актуальных границ.
+  void updateVisibleRange(DateTime start, DateTime end) {
+    visibleStart = DateTime(start.year, start.month, start.day);
+    visibleEnd = DateTime(end.year, end.month, end.day);
+  }
 
   factory VisitLinkCatalog.fromAppointments(
     List<Appointment> appointments, {

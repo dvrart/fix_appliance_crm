@@ -91,7 +91,7 @@ function isHttpUrl(value) {
   }
 }
 
-async function ensureShortLink({ url, code, type, jobId }) {
+async function ensureShortLink({ url, code, type, jobId, reserveCode }) {
   const col = linksRef();
   const existingCode = String(code || '').trim();
   if (existingCode) {
@@ -108,6 +108,17 @@ async function ensureShortLink({ url, code, type, jobId }) {
         { merge: true }
       );
       return packLink(existingCode, linkType);
+    }
+    // Именованный код (`review`) — адрес должен быть постоянным, а не
+    // случайным при каждой первой отправке.
+    if (reserveCode) {
+      await col.doc(existingCode).set({
+        url,
+        type: type || '',
+        jobId: jobId || '',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return packLink(existingCode, type);
     }
   }
 

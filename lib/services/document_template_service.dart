@@ -823,6 +823,13 @@ class DocumentTemplateService {
                 'Valid for ${settings.estimateValidDays} days.',
                 style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
               ),
+            if (settings.warrantyTerms.trim().isNotEmpty) ...[
+              pw.SizedBox(height: 10),
+              pw.Text(
+                settings.warrantyTerms.trim(),
+                style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+              ),
+            ],
             if (signatureImage != null) ...[
               pw.SizedBox(height: 22),
               pw.Text(

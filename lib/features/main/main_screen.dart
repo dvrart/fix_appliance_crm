@@ -24,6 +24,7 @@ import '../ai/assistant/review_bell_button.dart';
 import '../../services/job_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/offline_queue_service.dart';
+import '../../services/error_log_service.dart';
 
 const double _handleWidth = 36;
 
@@ -34,7 +35,8 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> with UiSettingsAware {
+class _MainScreenState extends State<MainScreen>
+    with UiSettingsAware, SingleTickerProviderStateMixin {
   int _currentIndex = 0;
   bool _onRoot = true;
   bool _openingJob = false;
@@ -43,6 +45,11 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _inboxKey = GlobalKey<ReviewInboxPanelState>();
   late final List<_TabNavObserver> _navObservers;
+  late final AnimationController _menu = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 340),
+    reverseDuration: const Duration(milliseconds: 280),
+  );
 
   final List<GlobalKey<NavigatorState>> _navigatorKeys = [
     GlobalKey<NavigatorState>(),
@@ -59,6 +66,7 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
   @override
   void initState() {
     super.initState();
+    ErrorLogService.markScreen('Главная');
     _navObservers = [
       _TabNavObserver(_syncRoot),
       _TabNavObserver(_syncRoot),
@@ -78,7 +86,27 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
   void dispose() {
     AppCommands.selectTab.removeListener(_onSelectTabCommand);
     AppCommands.commsTab.removeListener(_onCommsTabChanged);
+    _menu.dispose();
     super.dispose();
+  }
+
+  bool get _menuOpen => !_menu.isDismissed;
+
+  Future<void> _openMenu() async {
+    try {
+      await _menu.forward().orCancel;
+    } on TickerCanceled {
+      // Прервано другим жестом — панель уже там, куда её повели.
+    }
+  }
+
+  Future<void> _closeMenu() async {
+    if (_menu.isDismissed) return;
+    try {
+      await _menu.reverse().orCancel;
+    } on TickerCanceled {
+      // См. выше.
+    }
   }
 
   void _onCommsTabChanged() {
@@ -153,12 +181,14 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
       setState(() => _composeOpen = false);
       return;
     }
+    if (_menuOpen) {
+      unawaited(_closeMenu());
+      return;
+    }
     if (AppCommands.dismissSelections()) return;
 
     final scaffold = _scaffoldKey.currentState;
-    if (scaffold != null &&
-        (scaffold.isDrawerOpen || scaffold.isEndDrawerOpen)) {
-      scaffold.closeDrawer();
+    if (scaffold != null && scaffold.isEndDrawerOpen) {
       scaffold.closeEndDrawer();
       return;
     }
@@ -180,10 +210,6 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
     if (leave && mounted) {
       SystemNavigator.pop();
     }
-  }
-
-  void _openMenu() {
-    _scaffoldKey.currentState?.openDrawer();
   }
 
   void _openNotifications() {
@@ -210,7 +236,7 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
     if (dx.abs() < 280 || dx.abs() < dy.abs()) return;
     AppFeedback.pleasant();
     if (dx > 0) {
-      _openMenu();
+      unawaited(_openMenu());
     } else {
       _openNotifications();
     }
@@ -233,13 +259,11 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
         key: _scaffoldKey,
         resizeToAvoidBottomInset: false,
         backgroundColor: AppColors.primary,
-        drawer: const CustomDrawer(),
         endDrawer: ReviewInboxDrawer(
           hostContext: context,
           panelKey: _inboxKey,
           onClose: _closeNotifications,
         ),
-        drawerEnableOpenDragGesture: false,
         endDrawerEnableOpenDragGesture: false,
         onEndDrawerChanged: (open) {
           if (open) {
@@ -248,7 +272,22 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
             _inboxKey.currentState?.onHostClosed();
           }
         },
-        body: Column(
+        body: Stack(
+          children: [
+            _buildBody(),
+            _SideMenuLayer(
+              controller: _menu,
+              onClose: _closeMenu,
+              child: CustomDrawer(onClose: _closeMenu),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    return Column(
           children: [
             ColoredBox(
               color: AppColors.primary,
@@ -311,7 +350,7 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
                       const SafeArea(top: false, child: SizedBox.shrink()),
                     ],
                   ),
-                  const _LeftMenuHandle(),
+                  _LeftMenuHandle(onOpen: _openMenu),
                   _RightNotifyHandle(
                     onToggle: _toggleNotifications,
                     onOpen: _openNotifications,
@@ -321,9 +360,7 @@ class _MainScreenState extends State<MainScreen> with UiSettingsAware {
               ),
             ),
           ],
-        ),
-      ),
-    );
+        );
   }
 
   Future<void> _openCreateJob() async {
@@ -506,16 +543,141 @@ class _TabNavObserver extends NavigatorObserver {
 }
 
 class _LeftMenuHandle extends StatelessWidget {
-  const _LeftMenuHandle();
+  final VoidCallback onOpen;
+
+  const _LeftMenuHandle({required this.onOpen});
 
   @override
   Widget build(BuildContext context) {
-    return const Positioned(
+    return Positioned(
       left: 0,
       top: 0,
       bottom: 0,
       width: _handleWidth,
-      child: _DockSideButton(left: true, onOpenMenu: true),
+      child: _DockSideButton(left: true, onTap: onOpen),
+    );
+  }
+}
+
+/// Своя боковая панель вместо `Scaffold.drawer`: содержимое живёт в дереве
+/// постоянно (стримы уже подписаны, сетка построена), поэтому при открытии
+/// ничего не собирается с нуля и анимация не проседает на первых кадрах.
+class _SideMenuLayer extends StatefulWidget {
+  final AnimationController controller;
+  final Future<void> Function() onClose;
+  final Widget child;
+
+  const _SideMenuLayer({
+    required this.controller,
+    required this.onClose,
+    required this.child,
+  });
+
+  @override
+  State<_SideMenuLayer> createState() => _SideMenuLayerState();
+}
+
+class _SideMenuLayerState extends State<_SideMenuLayer> {
+  late final CurvedAnimation _eased = CurvedAnimation(
+    parent: widget.controller,
+    curve: Curves.easeOutCubic,
+    reverseCurve: Curves.easeInCubic,
+  );
+  double _panelWidth = 304;
+
+  /// Пока панель ведут пальцем (и пока доигрывает «доводка» после
+  /// отпускания), позиция берётся напрямую из контроллера, без кривой:
+  /// иначе в момент отпускания панель прыгала бы на значение кривой.
+  bool _raw = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addStatusListener(_onStatus);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeStatusListener(_onStatus);
+    _eased.dispose();
+    super.dispose();
+  }
+
+  void _onStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed ||
+        status == AnimationStatus.dismissed) {
+      _raw = false;
+    }
+  }
+
+  void _onDragStart(DragStartDetails _) {
+    _raw = true;
+    widget.controller.stop();
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    widget.controller.value += details.primaryDelta! / _panelWidth;
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    final v = details.primaryVelocity ?? 0;
+    final value = widget.controller.value;
+    final close = v < -300 || (v.abs() <= 300 && value < 0.5);
+    // Доводим из текущей точки с замедлением; длительность — по остатку пути.
+    final remaining = close ? value : 1 - value;
+    final duration = Duration(
+      milliseconds: (80 + 220 * remaining).round(),
+    );
+    widget.controller.animateTo(
+      close ? 0 : 1,
+      duration: duration,
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width;
+    _panelWidth = (DrawerTheme.of(context).width ?? 304).clamp(0, width);
+    return AnimatedBuilder(
+      animation: widget.controller,
+      child: RepaintBoundary(child: widget.child),
+      builder: (context, child) {
+        final closed = widget.controller.isDismissed;
+        final t = _raw ? widget.controller.value : _eased.value;
+        return Offstage(
+          offstage: closed,
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: _onDragStart,
+            onHorizontalDragUpdate: _onDragUpdate,
+            onHorizontalDragEnd: _onDragEnd,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: widget.onClose,
+                    child: ColoredBox(
+                      color: Colors.black.withValues(alpha: 0.42 * t),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: _panelWidth,
+                  child: Transform.translate(
+                    offset: Offset(-_panelWidth * (1 - t), 0),
+                    child: child,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -582,9 +744,9 @@ class _RightNotifyHandleState extends State<_RightNotifyHandle> {
 
 class _DockSideButton extends StatelessWidget {
   final bool left;
-  final bool onOpenMenu;
+  final VoidCallback onTap;
 
-  const _DockSideButton({required this.left, required this.onOpenMenu});
+  const _DockSideButton({required this.left, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -599,11 +761,7 @@ class _DockSideButton extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: radius),
       child: InkWell(
         customBorder: RoundedRectangleBorder(borderRadius: radius),
-        onTap: () {
-          if (onOpenMenu) {
-            Scaffold.of(context).openDrawer();
-          }
-        },
+        onTap: onTap,
         child: const Center(
           child: Icon(Icons.more_vert, color: Color(0xFF14557F), size: 22),
         ),

@@ -34,8 +34,14 @@ class SettingsService {
       "Hi {name}! 🚗\nYour technician is on the way — about 30 minutes.";
   static const String defaultPartOrderedSms =
       'The part for your appliance is ordered. 🔧\nDelivery is usually 3–5 days.';
+  /// Красиво, но без промо-блока: длинный текст с рядом звёзд и «supporting
+  /// our small business» операторы режут (Twilio 30007), а этот вариант
+  /// (~200 симв. с шапкой и ссылкой на google-хосте) дошёл замером 21.09.2026.
   static const String defaultJobDoneSms =
-      'Repair complete! ✅\nThank you for choosing us.\n⭐ Please leave a review:\n{review}';
+      'Hi {name}! 👋\nYour repair is complete ✅\n'
+      'Thank you for choosing Fix-Appliance CA 🙏\n'
+      'A quick Google review would mean a lot to us ⭐\n{review}\n'
+      'Have a great day! 😊';
   static const String defaultBookingConfirmSms =
       'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day';
   static const String defaultDayBeforeSms =
@@ -136,6 +142,17 @@ class SettingsService {
           next[entry.key] = defaults[entry.key]!;
           smsChanged = true;
         }
+      }
+      // Промо-шаблон отзыва (431 символ, ряд ⭐️, «supporting our small
+      // business») операторы режут (Twilio 30007) — заменяем на проверенный.
+      final storedJobDone = (next['job_done'] ?? '').trim();
+      final jobDoneLower = storedJobDone.toLowerCase();
+      if (storedJobDone.isNotEmpty &&
+          (jobDoneLower.contains('supporting our small business') ||
+              jobDoneLower.contains('the repair is complete!') ||
+              jobDoneLower.contains('⭐️⭐️'))) {
+        next['job_done'] = defaults['job_done']!;
+        smsChanged = true;
       }
       if ((next['cancel_save'] ?? '').trim().isEmpty) {
         next['cancel_save'] = defaults['cancel_save']!;
@@ -1079,16 +1096,6 @@ class SettingsService {
     }, SetOptions(merge: true));
   }
 
-  static Future<void> setAiVoiceExtraRules(String extraRules) async {
-    await FirestoreService.aiVoiceRef.set({
-      'extraRules': '',
-      'ownerBrief': '',
-      'learnedRules': <Map<String, dynamic>>[],
-      'liveIgnoresAppRules': true,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
-
   static Future<void> updateConfigMap(Map<String, dynamic> values) async {
     if (values.isEmpty) return;
     await settleWrite(
@@ -1121,14 +1128,19 @@ class SettingsService {
     } catch (_) {}
   }
 
-  /// Пишет правила диспетчера в Firestore, если их ещё нет или это старая версия.
+  /// Отмечает, что живой промпт собирается на сервере, а не в приложении.
+  ///
+  /// Раньше этот вызов на **каждом старте приложения** записывал сюда пустые
+  /// `extraRules`, `ownerBrief` и `learnedRules`. Из-за этого «Подтвердить» в
+  /// колокольчике ничего не сохраняло, а сервер
+  /// (`functions/secretary_learn.js`) видел пустой список принятых правил и
+  /// присылал один и тот же разбор снова и снова. Затирание убрано
+  /// (21.09.2026) — не возвращайте его. Если дойдёт до настоящего обучения,
+  /// эти поля надо будет читать, а не обнулять.
   static Future<void> ensureAiVoiceSettings() async {
     try {
       await FirestoreService.aiVoiceRef.set({
         'liveIgnoresAppRules': true,
-        'extraRules': '',
-        'ownerBrief': '',
-        'learnedRules': <Map<String, dynamic>>[],
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     } catch (_) {}

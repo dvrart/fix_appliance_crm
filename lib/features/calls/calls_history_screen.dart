@@ -8,6 +8,7 @@ import '../../models/client.dart';
 import '../../services/client_service.dart';
 import '../../services/twilio_service.dart';
 import '../../shared/widgets/selection_action_bar.dart';
+import '../messages/conversation_screen.dart';
 import 'call_review_page.dart';
 import 'call_screen.dart';
 import 'dial_pad_screen.dart';
@@ -382,16 +383,39 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                     ),
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Перезвонить'.tr,
-                  onPressed: phone.trim().isEmpty
-                      ? null
-                      : () => CallScreen.open(
-                            context,
-                            phoneNumber: phone,
-                            contactName: name,
-                          ),
-                  icon: const Icon(Icons.call, size: 20),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Написать'.tr,
+                      onPressed: phone.trim().isEmpty
+                          ? null
+                          : () => ConversationScreen.open(
+                                context,
+                                phoneNumber: phone,
+                                contactName: name,
+                                clientId: call.clientId,
+                                jobId: call.createdJobId,
+                                initialChannel: ConversationChannel.sms,
+                              ),
+                      icon: const Icon(Icons.chat_bubble_outline, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                    ),
+                    IconButton(
+                      tooltip: 'Перезвонить'.tr,
+                      onPressed: phone.trim().isEmpty
+                          ? null
+                          : () => CallScreen.open(
+                                context,
+                                phoneNumber: phone,
+                                contactName: name,
+                              ),
+                      icon: const Icon(Icons.call, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                    ),
+                  ],
                 ),
                 if (canRetryAi && !isRetrying)
                   TextButton(

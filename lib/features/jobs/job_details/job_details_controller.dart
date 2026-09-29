@@ -229,6 +229,15 @@ class JobDetailsController extends ChangeNotifier {
       if (data.containsKey('clientPhone')) {
         jobData['clientPhone'] = data['clientPhone'];
       }
+      // Метки дубляжа ставит сервер — показываем их даже поверх черновика.
+      for (final key in [
+        'mergedIntoJobId',
+        'mergedFromJobIds',
+        'possibleDuplicateOfJobId',
+        'duplicateDismissed',
+      ]) {
+        if (data.containsKey(key)) jobData[key] = data[key];
+      }
 
       if (data['documents'] != null) {
         final nextDocs = List<Map<String, dynamic>>.from(
@@ -236,7 +245,10 @@ class JobDetailsController extends ChangeNotifier {
             (e) => Map<String, dynamic>.from(e as Map),
           ),
         );
-        _onDocumentsRemoteUpdate(nextDocs);
+        _onDocumentsRemoteUpdate(
+          nextDocs,
+          remoteStatus: (data['status'] ?? '').toString(),
+        );
       }
       if (data['attachments'] != null && !_attachmentsDirty) {
         attachments = List<Map<String, dynamic>>.from(data['attachments']);
@@ -474,12 +486,18 @@ class JobDetailsController extends ChangeNotifier {
       : (jobData['clientAddress'] ?? 'Не указан'.tr);
 
   /// Контактное имя на месте
-  String get contactName =>
-      hasJobSite ? jobSiteName : (jobData['clientName'] ?? 'Неизвестно'.tr);
+  String get contactName => hasJobSite
+      ? (jobSiteName.trim().isEmpty
+          ? (jobData['clientName'] ?? 'Неизвестно'.tr)
+          : jobSiteName)
+      : (jobData['clientName'] ?? 'Неизвестно'.tr);
 
   /// Контактный телефон
-  String get contactPhone =>
-      hasJobSite ? jobSitePhone : (jobData['clientPhone'] ?? '');
+  String get contactPhone => hasJobSite
+      ? (jobSitePhone.trim().isEmpty
+          ? (jobData['clientPhone'] ?? '')
+          : jobSitePhone)
+      : (jobData['clientPhone'] ?? '');
 
   List<JobChatContact> get chatContacts {
     final client = JobChatContact(
@@ -668,6 +686,7 @@ class JobDetailsController extends ChangeNotifier {
     } else if (JobStatuses.isCompletedStatus(status)) {
       _applyVisitFields(JobVisit.markAllScheduledDone(visits));
       _visitsDirty = true;
+      needsReview = false;
     } else if (JobStatuses.isCancelledStatus(status)) {
       _applyVisitFields(JobVisit.markAllScheduledCancelled(visits));
       _visitsDirty = true;
@@ -675,8 +694,10 @@ class JobDetailsController extends ChangeNotifier {
     }
     _queue({
       'status': status,
-      if (JobStatuses.isCompletedStatus(status))
+      if (JobStatuses.isCompletedStatus(status)) ...{
         'completedAt': FieldValue.serverTimestamp(),
+        'needsReview': false,
+      },
       if (JobStatuses.isCancelledStatus(status)) 'needsReview': false,
       if (extra != null) ...extra,
     });
@@ -1098,20 +1119,29 @@ class JobDetailsController extends ChangeNotifier {
     _financeTabRequested = false;
   }
 
-  void _onDocumentsRemoteUpdate(List<Map<String, dynamic>> nextDocs) {
+  void _onDocumentsRemoteUpdate(
+    List<Map<String, dynamic>> nextDocs, {
+    String remoteStatus = '',
+  }) {
     final prevDocs = documents;
     var justPaid = false;
+    var justDeposited = false;
     if (prevDocs.isNotEmpty) {
       for (var i = 0; i < nextDocs.length; i++) {
         final next = nextDocs[i];
-        if (!_invoiceFullyPaid(next)) continue;
         final prev = i < prevDocs.length ? prevDocs[i] : null;
-        if (prev != null && _invoiceFullyPaid(prev)) continue;
-        justPaid = true;
-        break;
+        if (_invoiceFullyPaid(next) &&
+            !(prev != null && _invoiceFullyPaid(prev))) {
+          justPaid = true;
+        }
+        if (Job.documentDepositTaken(next) &&
+            !(prev != null && Job.documentDepositTaken(prev))) {
+          justDeposited = true;
+        }
       }
     }
     documents = nextDocs;
+    if (justDeposited) unawaited(markDepositTaken(remoteStatus: remoteStatus));
     if (justPaid) {
       onInvoiceFullyPaid?.call();
       unawaited(completeAfterInvoicePaid());
@@ -1122,6 +1152,16 @@ class JobDetailsController extends ChangeNotifier {
     return Job.isInvoice(doc) &&
         !Job.isDocumentTrashed(doc) &&
         Job.documentPayMark(doc) == 'paid';
+  }
+
+  /// Клиент оставил депозит по счёту → статус заявки «Депозит» сразу, без
+  /// вопросов. «Ожидание запчасти» и закрытые статусы не трогаем.
+  Future<void> markDepositTaken({String remoteStatus = ''}) async {
+    // Тем же обновлением статус мог поставить сервер (вебхук Stripe) —
+    // второй раз в базу не пишем.
+    final status = remoteStatus.trim().isEmpty ? currentStatus : remoteStatus;
+    if (!JobStatuses.shouldMarkDeposit(status)) return;
+    await updateStatus(JobStatuses.deposit, persistNow: true);
   }
 
   /// Полная оплата инвойса → предлагаем пометить «Готово», не переводим автоматически.
@@ -1178,9 +1218,13 @@ class JobDetailsController extends ChangeNotifier {
 
   Future<void> updateDocument(int index, Map<String, dynamic> doc) async {
     if (index >= 0 && index < documents.length) {
+      final wasDeposit = Job.documentDepositTaken(documents[index]);
       documents[index] = doc;
       await saveDocuments();
       notifyListeners();
+      if (!wasDeposit && Job.documentDepositTaken(doc)) {
+        await markDepositTaken();
+      }
     }
   }
 

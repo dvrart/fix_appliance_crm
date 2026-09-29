@@ -490,6 +490,15 @@ class Job {
   final String amazonOrderId;
   /// Исходная заявка, если это повторный вызов по той же неисправности.
   final String? repeatOfJobId;
+  /// Заявка, в которую сервер слил этот дубляж (сама заявка при этом закрыта).
+  final String mergedIntoJobId;
+  /// Дубляжи, которые сервер слил сюда.
+  final List<String> mergedFromJobIds;
+  /// Похоже на дубляж: тот же номер, меньше 48 часов, но соединять автоматом
+  /// нельзя — решает мастер кнопкой в карточке.
+  final String possibleDuplicateOfJobId;
+  /// Мастер сказал «не дубляж» — больше не предлагаем.
+  final bool duplicateDismissed;
   final DateTime? deletedAt;
 
   Job({
@@ -531,8 +540,21 @@ class Job {
     this.trackingStatus = '',
     this.amazonOrderId = '',
     this.repeatOfJobId,
+    this.mergedIntoJobId = '',
+    this.mergedFromJobIds = const [],
+    this.possibleDuplicateOfJobId = '',
+    this.duplicateDismissed = false,
     this.deletedAt,
   });
+
+  /// Закрытый дубляж: его данные уже переехали в другую заявку.
+  bool get isMergedDuplicate => mergedIntoJobId.trim().isNotEmpty;
+
+  /// Ждёт решения мастера: соединить с [possibleDuplicateOfJobId] или нет.
+  bool get hasDuplicateHint =>
+      !duplicateDismissed &&
+      !isMergedDuplicate &&
+      possibleDuplicateOfJobId.trim().isNotEmpty;
 
   bool get isRepeatCall =>
       repeatOfJobId != null && repeatOfJobId!.trim().isNotEmpty;
@@ -916,6 +938,24 @@ class Job {
     return 'unpaid';
   }
 
+  /// Клиент реально внёс часть суммы по счёту — это депозит.
+  /// Выставленная ссылка Stripe (`mode: deposit`) без денег сюда не попадает,
+  /// частичный возврат по оплаченному счёту — тоже.
+  static bool documentDepositTaken(Map doc) {
+    if (!isInvoice(doc) || isDocumentTrashed(doc)) return false;
+    if (_hasRefundPayment(doc)) return false;
+    final stripe = doc['stripe'];
+    final stripeStatus =
+        stripe is Map ? (stripe['status'] ?? '').toString() : '';
+    if (stripeStatus == 'refunded' || stripeStatus == 'partially_refunded') {
+      return false;
+    }
+    final total = documentTotal(doc);
+    if (total <= 0.009) return false;
+    final paid = documentPaid(doc);
+    return paid > 0.009 && total - paid > 0.009;
+  }
+
   /// Deposit vs balance payment methods from the payments list.
   /// Partial payments → deposit; the payment that closes the invoice → balance.
   /// A single full payment is balance only.
@@ -1148,6 +1188,17 @@ class Job {
       repeatOfJobId: (map['repeatOfJobId'] ?? '').toString().trim().isEmpty
           ? null
           : (map['repeatOfJobId'] ?? '').toString().trim(),
+      mergedIntoJobId: (map['mergedIntoJobId'] ?? '').toString().trim(),
+      mergedFromJobIds: (map['mergedFromJobIds'] is List)
+          ? (map['mergedFromJobIds'] as List)
+                .map((id) => id.toString().trim())
+                .where((id) => id.isNotEmpty)
+                .toList()
+          : const [],
+      possibleDuplicateOfJobId: (map['possibleDuplicateOfJobId'] ?? '')
+          .toString()
+          .trim(),
+      duplicateDismissed: map['duplicateDismissed'] == true,
       deletedAt: parseDate(map['deletedAt']),
     );
   }
@@ -1192,6 +1243,10 @@ class Job {
       'trackingStatus': trackingStatus,
       'amazonOrderId': amazonOrderId,
       'repeatOfJobId': repeatOfJobId,
+      'mergedIntoJobId': mergedIntoJobId,
+      'mergedFromJobIds': mergedFromJobIds,
+      'possibleDuplicateOfJobId': possibleDuplicateOfJobId,
+      'duplicateDismissed': duplicateDismissed,
       'updatedAt': FieldValue.serverTimestamp(),
       ...JobVisit.syncFields(
         coalescedVisits,
@@ -1239,6 +1294,10 @@ class Job {
     String? trackingStatus,
     String? amazonOrderId,
     String? repeatOfJobId,
+    String? mergedIntoJobId,
+    List<String>? mergedFromJobIds,
+    String? possibleDuplicateOfJobId,
+    bool? duplicateDismissed,
     DateTime? deletedAt,
   }) {
     return Job(
@@ -1280,6 +1339,11 @@ class Job {
       trackingStatus: trackingStatus ?? this.trackingStatus,
       amazonOrderId: amazonOrderId ?? this.amazonOrderId,
       repeatOfJobId: repeatOfJobId ?? this.repeatOfJobId,
+      mergedIntoJobId: mergedIntoJobId ?? this.mergedIntoJobId,
+      mergedFromJobIds: mergedFromJobIds ?? this.mergedFromJobIds,
+      possibleDuplicateOfJobId:
+          possibleDuplicateOfJobId ?? this.possibleDuplicateOfJobId,
+      duplicateDismissed: duplicateDismissed ?? this.duplicateDismissed,
       deletedAt: deletedAt ?? this.deletedAt,
     );
   }

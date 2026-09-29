@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/app_feedback.dart';
@@ -33,9 +34,134 @@ class FinanceTab extends StatefulWidget {
 class _FinanceTabState extends State<FinanceTab> {
   JobDetailsController get ctrl => widget.controller;
   bool _busy = false;
+  bool _checkingStripe = false;
+  int? _lastAutoCheckedDocIndex;
   bool _inPayResult = false;
   DateTime? _lastReviewOfferAt;
   double _minimumCharge = 0;
+
+  DateTime? _extractStripePaidDate(Map<String, dynamic> doc, Map<String, dynamic> stripe) {
+    if (stripe['paidAt'] != null && stripe['paidAt'].toString().isNotEmpty) {
+      final dt = DateTime.tryParse(stripe['paidAt'].toString());
+      if (dt != null) return dt.toLocal();
+    }
+    final payments = doc['payments'];
+    if (payments is List) {
+      for (final p in payments.reversed) {
+        if (p is Map && (p['method'] ?? '').toString().contains('Stripe')) {
+          final d = p['date']?.toString();
+          if (d != null && d.isNotEmpty) {
+            final dt = DateTime.tryParse(d);
+            if (dt != null) return dt.toLocal();
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  DateTime? _extractStripeCreatedDate(Map<String, dynamic> stripe) {
+    if (stripe['createdAt'] != null && stripe['createdAt'].toString().isNotEmpty) {
+      final dt = DateTime.tryParse(stripe['createdAt'].toString());
+      if (dt != null) return dt.toLocal();
+    }
+    return null;
+  }
+
+  DateTime? _extractStripeRefundDate(Map<String, dynamic> doc, Map<String, dynamic> stripe) {
+    if (stripe['refundedAt'] != null && stripe['refundedAt'].toString().isNotEmpty) {
+      final dt = DateTime.tryParse(stripe['refundedAt'].toString());
+      if (dt != null) return dt.toLocal();
+    }
+    final payments = doc['payments'];
+    if (payments is List) {
+      for (final p in payments.reversed) {
+        if (p is Map) {
+          final m = (p['method'] ?? '').toString().toLowerCase();
+          if (m.contains('refund') || m.contains('возврат')) {
+            final d = p['date']?.toString();
+            if (d != null && d.isNotEmpty) {
+              final dt = DateTime.tryParse(d);
+              if (dt != null) return dt.toLocal();
+            }
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  void _maybeAutoCheckStripe(int index) {
+    if (_lastAutoCheckedDocIndex == index) return;
+    if (index < 0 || index >= ctrl.documents.length) return;
+    final doc = ctrl.documents[index];
+    final stripe = doc['stripe'];
+    if (stripe is Map && stripe['status'] == 'open') {
+      _lastAutoCheckedDocIndex = index;
+      _checkStripePayment(index, silent: true);
+    }
+  }
+
+  Future<void> _checkStripePayment(int docIndex, {bool silent = false}) async {
+    if (_checkingStripe || !mounted) return;
+    setState(() => _checkingStripe = true);
+    try {
+      final res = await StripeService.checkPaymentStatus(
+        jobId: ctrl.jobId,
+        documentIndex: docIndex,
+      );
+      if (!mounted) return;
+      final paid = res['paid'] == true;
+      final status = (res['status'] ?? '').toString();
+      final paidAmount = (res['paidAmount'] as num?)?.toDouble() ?? 0;
+      final paidAt = res['paidAt']?.toString();
+
+      if (paid) {
+        String msg = 'Оплата через Stripe получена'.tr;
+        if (paidAmount > 0) {
+          msg += ': ${Formatters.formatCurrency(paidAmount)}';
+        }
+        if (paidAt != null && paidAt.isNotEmpty) {
+          final dt = DateTime.tryParse(paidAt);
+          if (dt != null) {
+            msg += ' (${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(dt.toLocal())})';
+          }
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(msg),
+            backgroundColor: Colors.green.shade700,
+          ),
+        );
+      } else if (!silent) {
+        if (status == 'expired') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Срок действия ссылки Stripe истёк'.tr),
+              backgroundColor: Colors.orange.shade800,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Оплата пока не поступила (ссылка ожидает оплаты)'.tr),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка проверки: $e'.tr),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _checkingStripe = false);
+    }
+  }
 
   static double _money(dynamic value, [double fallback = 0]) {
     if (value is num) return value.toDouble();
@@ -539,18 +665,39 @@ class _FinanceTabState extends State<FinanceTab> {
                               padding: const EdgeInsets.only(top: 4),
                               child: Text(
                                 () {
+                                  final stripeMap =
+                                      Map<String, dynamic>.from(doc['stripe'] as Map);
                                   final status =
-                                      (doc['stripe']['status'] ?? '').toString();
+                                      (stripeMap['status'] ?? '').toString();
                                   if (status == 'refunded') {
-                                    return 'Stripe: возврат'.tr;
+                                    final rd = _extractStripeRefundDate(doc, stripeMap);
+                                    final rDate = rd != null
+                                        ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(rd)}'
+                                        : '';
+                                    return '${'Stripe: возврат'.tr}$rDate';
                                   }
                                   if (status == 'partially_refunded') {
-                                    return 'Stripe: частичный возврат'.tr;
+                                    final rd = _extractStripeRefundDate(doc, stripeMap);
+                                    final rDate = rd != null
+                                        ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(rd)}'
+                                        : '';
+                                    return '${'Stripe: частичный возврат'.tr}$rDate';
                                   }
                                   if (status == 'paid') {
-                                    return 'Stripe: оплачен'.tr;
+                                    final pd = _extractStripePaidDate(doc, stripeMap);
+                                    final pDate = pd != null
+                                        ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(pd)}'
+                                        : '';
+                                    return '${'Stripe: оплачен'.tr}$pDate';
                                   }
-                                  return 'Stripe: ссылка отправлена'.tr;
+                                  if (status == 'expired') {
+                                    return 'Stripe: ссылка истекла'.tr;
+                                  }
+                                  final cd = _extractStripeCreatedDate(stripeMap);
+                                  final cDate = cd != null
+                                      ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(cd)}'
+                                      : '';
+                                  return '${'Stripe: ожидает оплаты'.tr}$cDate';
                                 }(),
                                 style: TextStyle(
                                   color: (doc['stripe']['status'] == 'paid')
@@ -559,7 +706,9 @@ class _FinanceTabState extends State<FinanceTab> {
                                               doc['stripe']['status'] ==
                                                   'partially_refunded')
                                           ? Colors.red.shade700
-                                          : const Color(0xFF635BFF),
+                                          : (doc['stripe']['status'] == 'expired')
+                                              ? Colors.orange.shade800
+                                              : const Color(0xFF635BFF),
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -1288,6 +1437,10 @@ class _FinanceTabState extends State<FinanceTab> {
     }
 
     final doc = ctrl.documents[ctrl.viewingDocumentIndex!];
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _maybeAutoCheckStripe(ctrl.viewingDocumentIndex!);
+    });
     final items = [
       for (final item in doc['items'] as List? ?? [])
         if (item is Map) Map<String, dynamic>.from(item),
@@ -1419,13 +1572,27 @@ class _FinanceTabState extends State<FinanceTab> {
                         fontWeight: isRefund ? FontWeight.w700 : null,
                       ),
                     ),
-                    subtitle: Text(
-                      isRefund && !method.toLowerCase().contains('refund')
-                          ? 'Refund: ${_paymentMethodEn(method)}'
-                          : _paymentMethodEn(method),
-                      style: TextStyle(
-                        color: isRefund ? Colors.red.shade600 : null,
-                      ),
+                    subtitle: Builder(
+                      builder: (context) {
+                        final dateRaw = p['date']?.toString();
+                        String dateStr = '';
+                        if (dateRaw != null && dateRaw.isNotEmpty) {
+                          final dt = DateTime.tryParse(dateRaw);
+                          if (dt != null) {
+                            dateStr = DateFormat('d MMM yyyy, HH:mm', AppLocale.instance.dateLocale).format(dt.toLocal());
+                          }
+                        }
+                        final methodLabel = isRefund && !method.toLowerCase().contains('refund')
+                            ? 'Refund: ${_paymentMethodEn(method)}'
+                            : _paymentMethodEn(method);
+                        final subtitleText = dateStr.isNotEmpty ? '$methodLabel • $dateStr' : methodLabel;
+                        return Text(
+                          subtitleText,
+                          style: TextStyle(
+                            color: isRefund ? Colors.red.shade600 : null,
+                          ),
+                        );
+                      },
                     ),
                   ),
                 );
@@ -1807,26 +1974,50 @@ class _FinanceTabState extends State<FinanceTab> {
     final status = (stripe['status'] ?? '').toString();
     final paid = status == 'paid';
     final refunded = status == 'refunded' || status == 'partially_refunded';
+    final expired = status == 'expired';
     final url = _stripeUrl(doc);
+    final paidDate = _extractStripePaidDate(doc, stripe);
+    final createdDate = _extractStripeCreatedDate(stripe);
+    final refundDate = _extractStripeRefundDate(doc, stripe);
+
     final Color bg;
     final Color border;
+    final IconData statusIcon;
+    final Color iconColor;
     if (refunded) {
       bg = Colors.red.shade50;
       border = Colors.red.shade200;
+      statusIcon = Icons.undo;
+      iconColor = Colors.red.shade700;
     } else if (paid) {
       bg = Colors.green.shade50;
       border = Colors.green.shade200;
+      statusIcon = Icons.check_circle;
+      iconColor = Colors.green.shade700;
+    } else if (expired) {
+      bg = Colors.orange.shade50;
+      border = Colors.orange.shade200;
+      statusIcon = Icons.timer_off_outlined;
+      iconColor = Colors.orange.shade800;
     } else {
       bg = Colors.blue.shade50;
       border = Colors.blue.shade200;
+      statusIcon = Icons.hourglass_top;
+      iconColor = const Color(0xFF14557F);
     }
+
     final title = status == 'refunded'
         ? 'Возврат через Stripe'.tr
         : status == 'partially_refunded'
             ? 'Частичный возврат Stripe'.tr
             : paid
                 ? 'Оплачено через Stripe'.tr
-                : 'Ссылка Stripe активна'.tr;
+                : expired
+                    ? 'Срок ссылки истёк'.tr
+                    : 'Ссылка Stripe ожидает оплаты'.tr;
+
+    final docIndex = ctrl.viewingDocumentIndex ?? 0;
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -1838,43 +2029,119 @@ class _FinanceTabState extends State<FinanceTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(fontWeight: FontWeight.bold),
+          Row(
+            children: [
+              Icon(statusIcon, color: iconColor, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                    color: iconColor,
+                  ),
+                ),
+              ),
+            ],
           ),
+          const SizedBox(height: 8),
           if (stripe['amount'] != null) ...[
-            const SizedBox(height: 4),
             Text('${'Сумма'.tr}: ${Formatters.formatCurrency((stripe['amount'] as num).toDouble())}'),
+            const SizedBox(height: 4),
+          ],
+          if (paid && paidDate != null) ...[
+            Row(
+              children: [
+                Icon(Icons.access_time, size: 14, color: Colors.green.shade800),
+                const SizedBox(width: 4),
+                Text(
+                  '${'Оплата прошла'.tr}: ${DateFormat('d MMMM yyyy, HH:mm', AppLocale.instance.dateLocale).format(paidDate)}',
+                  style: TextStyle(
+                    color: Colors.green.shade900,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+          ],
+          if (!paid && createdDate != null) ...[
+            Row(
+              children: [
+                Icon(Icons.access_time, size: 14, color: Colors.grey.shade700),
+                const SizedBox(width: 4),
+                Text(
+                  '${'Ссылка отправлена'.tr}: ${DateFormat('d MMMM yyyy, HH:mm', AppLocale.instance.dateLocale).format(createdDate)}',
+                  style: TextStyle(color: Colors.grey.shade800, fontSize: 13),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+          ],
+          if (refunded && refundDate != null) ...[
+            Row(
+              children: [
+                Icon(Icons.access_time, size: 14, color: Colors.red.shade700),
+                const SizedBox(width: 4),
+                Text(
+                  '${'Дата возврата'.tr}: ${DateFormat('d MMMM yyyy, HH:mm', AppLocale.instance.dateLocale).format(refundDate)}',
+                  style: TextStyle(color: Colors.red.shade900, fontSize: 13),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
           ],
           if (stripe['lastRefundAmount'] != null) ...[
-            const SizedBox(height: 4),
             Text(
               '${'Возвращено'.tr}: ${Formatters.formatCurrency((stripe['lastRefundAmount'] as num).toDouble())}',
-              style: TextStyle(color: Colors.red.shade700),
+              style: TextStyle(color: Colors.red.shade700, fontWeight: FontWeight.w600),
             ),
+            const SizedBox(height: 4),
           ],
-          if (!paid && !refunded && url.isNotEmpty) ...[
-            const SizedBox(height: 12),
+          if (!paid && !refunded) ...[
+            const SizedBox(height: 8),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                TextButton.icon(
-                  onPressed: () => _copyUrl(url),
-                  icon: const Icon(Icons.copy, size: 18),
-                  label: Text('Копировать'.tr),
-                ),
-                TextButton.icon(
-                  onPressed: () => _openUrl(url),
-                  icon: const Icon(Icons.open_in_new, size: 18),
-                  label: Text('Открыть'.tr),
-                ),
-                if (due > 0)
-                  TextButton.icon(
-                    onPressed: _busy ? null : () => _resendCurrentLink(doc),
-                    icon: const Icon(Icons.sms, size: 18),
-                    label: Text('Ещё раз по SMS'.tr),
+                ElevatedButton.icon(
+                  onPressed: (_busy || _checkingStripe)
+                      ? null
+                      : () => _checkStripePayment(docIndex),
+                  icon: _checkingStripe
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.sync, size: 18),
+                  label: Text('Проверить оплату'.tr),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF14557F),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   ),
+                ),
+                if (url.isNotEmpty) ...[
+                  TextButton.icon(
+                    onPressed: () => _copyUrl(url),
+                    icon: const Icon(Icons.copy, size: 18),
+                    label: Text('Копировать'.tr),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => _openUrl(url),
+                    icon: const Icon(Icons.open_in_new, size: 18),
+                    label: Text('Открыть'.tr),
+                  ),
+                  if (due > 0)
+                    TextButton.icon(
+                      onPressed: _busy ? null : () => _resendCurrentLink(doc),
+                      icon: const Icon(Icons.sms, size: 18),
+                      label: Text('Ещё раз по SMS'.tr),
+                    ),
+                ],
               ],
             ),
           ],
@@ -2467,7 +2734,9 @@ class _FinanceTabState extends State<FinanceTab> {
   }
 
   Future<void> _addLocalPayment(int docIndex, double amount, String method, {double tip = 0}) async {
-    final doc = ctrl.documents[docIndex];
+    // Копия, а не сам документ: контроллер сравнивает «было / стало», чтобы
+    // поймать первый частичный платёж и поставить статус «Депозит».
+    final doc = Map<String, dynamic>.from(ctrl.documents[docIndex]);
     final payments = List<Map<String, dynamic>>.from(doc['payments'] ?? []);
     payments.add({
       'amount': amount,
@@ -2545,10 +2814,16 @@ class _FinanceTabState extends State<FinanceTab> {
           Job.isInvoice(ctrl.documents[documentIndex]) &&
           !Job.isDocumentTrashed(ctrl.documents[documentIndex]) &&
           Job.documentPayMark(ctrl.documents[documentIndex]) == 'paid';
+      final depositTaken = !paidFully &&
+          documentIndex != null &&
+          documentIndex >= 0 &&
+          documentIndex < ctrl.documents.length &&
+          Job.documentDepositTaken(ctrl.documents[documentIndex]);
       if (paidFully) {
         await _offerReviewAfterPaid();
         await ctrl.completeAfterInvoicePaid();
       } else {
+        if (depositTaken) await ctrl.markDepositTaken();
         ctrl.openFinanceMainList();
       }
     } finally {

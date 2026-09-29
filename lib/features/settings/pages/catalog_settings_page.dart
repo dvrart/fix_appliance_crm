@@ -742,7 +742,9 @@ class _StatusListPageState extends State<_StatusListPage> {
                     itemCount: _items.length,
                     itemBuilder: (context, i) {
                       final status = _items[i];
-                          final subtitle = status.id == JobStatuses.rescheduled
+                          final subtitle = status.id ==
+                                      JobStatuses.rescheduled ||
+                                  status.id == JobStatuses.deposit
                               ? 'Сам'.tr
                               : status.id == JobStatuses.inProgress
                                   ? '—'.tr

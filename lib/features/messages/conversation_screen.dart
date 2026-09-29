@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
@@ -5,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/utils/app_time_picker.dart';
+import '../../core/utils/thumb_image.dart';
 import '../../services/ai_service.dart';
 import '../../services/client_service.dart';
 import '../../services/email_service.dart';
@@ -20,6 +23,7 @@ import '../clients/client_details_screen.dart';
 import '../clients/edit_client_sheet.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/widgets/selection_action_bar.dart';
+import '../../services/error_log_service.dart';
 
 /// Выбор даты и времени в стиле приложения (как при добавлении визита):
 /// лист с двумя строками — дата и время. Возвращает null при отмене.
@@ -401,6 +405,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   String? _lastJumpId;
   final Set<String> _selectedIds = {};
   List<String> _visibleIds = const [];
+  Timer? _translateDebounce;
 
   bool get _selecting => _selectedIds.isNotEmpty;
 
@@ -454,6 +459,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   void initState() {
     super.initState();
+    ErrorLogService.markScreen('Переписка');
     _applyPeerFromWidget();
     _channel = widget.websiteInbox
         ? ConversationChannel.email
@@ -515,6 +521,24 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   void _onDraftChanged() {
     if (mounted) setState(() {});
+    // Pre-warm translation cache so Send is instant when the user finishes typing
+    _translateDebounce?.cancel();
+    final text = _textController.text.trim();
+    if (text.length >= 3) {
+      _translateDebounce = Timer(
+        const Duration(milliseconds: 1500),
+        () => _warmTranslation(text),
+      );
+    }
+  }
+
+  void _warmTranslation(String text) {
+    if (!mounted) return;
+    if (MessageTranslateService.looksRussian(text)) {
+      unawaited(MessageTranslateService.toEnglish(text));
+    } else if (MessageTranslateService.needsRussian(text)) {
+      unawaited(MessageTranslateService.toRussian(text));
+    }
   }
 
   void _markRead() {
@@ -528,6 +552,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   @override
   void dispose() {
+    _translateDebounce?.cancel();
     _textController.removeListener(_onDraftChanged);
     _textController.dispose();
     _scrollController.dispose();
@@ -650,9 +675,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
         }
       } else if (text.isNotEmpty) {
         englishBody = text;
-        russianBody = MessageTranslateService.needsRussian(text)
-            ? await MessageTranslateService.toRussian(text)
-            : text;
+        // Russian translation for owner's display is non-blocking — don't hold up send
+        if (MessageTranslateService.needsRussian(text)) {
+          unawaited(MessageTranslateService.toRussian(text)); // warms cache
+        }
       }
 
       final bool ok;
@@ -946,10 +972,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
             child: InteractiveViewer(
               minScale: 0.8,
               maxScale: 4,
-              child: Image.network(
-                url,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white54, size: 64),
+              child: Builder(
+                builder: (inner) => Image(
+                  // Фото клиента приходит в полном разрешении — без сжатия
+                  // под экран один такой кадр это десятки мегабайт.
+                  image: fullImage(
+                    NetworkImage(url),
+                    logicalWidth: MediaQuery.sizeOf(inner).width,
+                    devicePixelRatio: MediaQuery.devicePixelRatioOf(inner),
+                  ),
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white54, size: 64),
+                ),
               ),
             ),
           ),
@@ -958,9 +992,32 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  Future<void> _showSmsTemplates() async {
-    var templates = await SettingsService.loadSmsTemplates();
-    var custom = await SettingsService.loadChatCustomTemplates();
+  /// Шаблон в поле ввода. Подстановки заполняем здесь: иначе клиенту уходило
+  /// буквальное «{review}» вместо ссылки на отзыв.
+  Future<String> _resolveTemplate(String body) async {
+    var text = body;
+    if (text.contains('{name}')) {
+      final name = (_contactName.isNotEmpty
+              ? _contactName
+              : (widget.contactName ?? ''))
+          .trim()
+          .split(RegExp(r'\s+'))
+          .first;
+      text = text.replaceAll('{name}', name.isEmpty ? 'there' : name);
+    }
+    if (text.contains('{review}')) {
+      final config = await SettingsService.loadConfig();
+      text = text.replaceAll(
+        '{review}',
+        SettingsService.readGoogleReviewUrl(config),
+      );
+    }
+    return text.trim();
+  }
+
+  Future<void> _showSmsTemplates({ValueChanged<String>? onSelect}) async {
+    final templates = await SettingsService.loadSmsTemplates();
+    final custom = await SettingsService.loadChatCustomTemplates();
     if (!mounted) return;
 
     const builtins = <({String key, String title, IconData icon, Color color})>[
@@ -982,6 +1039,30 @@ class _ConversationScreenState extends State<ConversationScreen> {
         icon: Icons.check_circle,
         color: Colors.blue,
       ),
+      (
+        key: 'booking_confirm',
+        title: 'Подтверждение визита',
+        icon: Icons.event_available,
+        color: Colors.indigo,
+      ),
+      (
+        key: 'day_before',
+        title: 'Напоминание о визите',
+        icon: Icons.notifications,
+        color: Colors.deepPurple,
+      ),
+      (
+        key: 'reschedule_ask',
+        title: 'Перенос визита',
+        icon: Icons.event_repeat,
+        color: Colors.teal,
+      ),
+      (
+        key: 'cancel_save',
+        title: 'Отмена визита',
+        icon: Icons.cancel_outlined,
+        color: Colors.red,
+      ),
     ];
 
     await showModalBottomSheet<void>(
@@ -992,273 +1073,105 @@ class _ConversationScreenState extends State<ConversationScreen> {
       ),
       builder: (sheetContext) {
         return SafeArea(
-          child: StatefulBuilder(
-            builder: (context, setSheet) {
-              Future<void> reload() async {
-                templates = await SettingsService.loadSmsTemplates();
-                custom = await SettingsService.loadChatCustomTemplates();
-                setSheet(() {});
-              }
-
-              Future<void> editBuiltin(String key, String title) async {
-                final result = await _editTemplateDialog(
-                  title: title,
-                  body: templates[key] ?? '',
-                  canEditTitle: false,
-                );
-                if (result == null) return;
-                final next = Map<String, String>.from(templates);
-                next[key] = result.body;
-                await SettingsService.saveSmsTemplates(next);
-                await reload();
-              }
-
-              Future<void> editCustom(Map<String, String> item) async {
-                final result = await _editTemplateDialog(
-                  title: item['title'] ?? '',
-                  body: item['body'] ?? '',
-                  canEditTitle: true,
-                  allowDelete: true,
-                );
-                if (result == null) return;
-                final next = [...custom];
-                final idx = next.indexWhere((e) => e['id'] == item['id']);
-                if (result.delete) {
-                  if (idx >= 0) next.removeAt(idx);
-                } else if (idx >= 0) {
-                  next[idx] = {
-                    ...item,
-                    'title': result.title,
-                    'body': result.body,
-                  };
-                }
-                await SettingsService.saveChatCustomTemplates(next);
-                await reload();
-              }
-
-              Future<void> addCustom() async {
-                final result = await _editTemplateDialog(
-                  title: '',
-                  body: '',
-                  canEditTitle: true,
-                );
-                if (result == null || result.body.trim().isEmpty) return;
-                final next = [
-                  ...custom,
-                  {
-                    'id': DateTime.now().millisecondsSinceEpoch.toString(),
-                    'title': result.title.trim().isEmpty
-                        ? result.body.trim()
-                        : result.title.trim(),
-                    'body': result.body.trim(),
-                  },
-                ];
-                await SettingsService.saveChatCustomTemplates(next);
-                await reload();
-              }
-
-              return DraggableScrollableSheet(
-                expand: false,
-                initialChildSize: 0.62,
-                minChildSize: 0.4,
-                maxChildSize: 0.92,
-                builder: (context, scrollController) {
-                  return Column(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                'Шаблоны сообщений'.tr,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 18,
-                                ),
-                              ),
+          child: DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.62,
+            minChildSize: 0.4,
+            maxChildSize: 0.92,
+            builder: (context, scrollController) {
+              return Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            context.tr('Выбрать шаблон', 'Choose template'),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
                             ),
-                            IconButton(
-                              tooltip: 'Добавить шаблон'.tr,
-                              onPressed: addCustom,
-                              icon: Icon(Icons.add_circle, color: AppColors.primary),
-                            ),
-                          ],
+                          ),
                         ),
-                      ),
-                      Expanded(
-                        child: ListView(
-                          controller: scrollController,
-                          children: [
-                            for (final item in builtins)
-                              ListTile(
-                                leading: Icon(item.icon, color: item.color),
-                                title: Text(item.title.tr),
-                                subtitle: Text(
-                                  templates[item.key] ?? '',
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                trailing: IconButton(
-                                  tooltip: 'Изменить'.tr,
-                                  icon: const Icon(Icons.edit_outlined),
-                                  onPressed: () =>
-                                      editBuiltin(item.key, item.title.tr),
-                                ),
-                                onTap: () {
-                                  Navigator.pop(sheetContext);
-                                  setState(
-                                    () => _textController.text =
-                                        templates[item.key] ?? '',
-                                  );
-                                },
-                              ),
-                            if (custom.isNotEmpty) ...[
-                              const Divider(height: 20),
-                              Padding(
-                                padding:
-                                    const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                                child: Text(
-                                  'Мои шаблоны'.tr,
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.grey.shade700,
-                                  ),
-                                ),
-                              ),
-                            ],
-                            for (final item in custom)
-                              ListTile(
-                                leading: Icon(
-                                  Icons.chat_bubble_outline,
-                                  color: AppColors.primary,
-                                ),
-                                title: Text(item['title'] ?? ''),
-                                subtitle: Text(
-                                  item['body'] ?? '',
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                trailing: IconButton(
-                                  tooltip: 'Изменить'.tr,
-                                  icon: const Icon(Icons.edit_outlined),
-                                  onPressed: () => editCustom(item),
-                                ),
-                                onTap: () {
-                                  Navigator.pop(sheetContext);
-                                  setState(
-                                    () => _textController.text =
-                                        item['body'] ?? '',
-                                  );
-                                },
-                              ),
-                            ListTile(
-                              leading: Icon(
-                                Icons.add,
-                                color: AppColors.accent,
-                              ),
-                              title: Text(
-                                'Добавить шаблон'.tr,
-                                style: const TextStyle(fontWeight: FontWeight.w700),
-                              ),
-                              onTap: addCustom,
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView(
+                      controller: scrollController,
+                      children: [
+                        for (final item in builtins)
+                          ListTile(
+                            leading: Icon(item.icon, color: item.color),
+                            title: Text(item.title.tr),
+                            subtitle: Text(
+                              templates[item.key] ?? '',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            const SizedBox(height: 12),
-                          ],
-                        ),
-                      ),
-                    ],
-                  );
-                },
+                            onTap: () async {
+                              Navigator.pop(sheetContext);
+                              final text = await _resolveTemplate(
+                                templates[item.key] ?? '',
+                              );
+                              if (onSelect != null) {
+                                onSelect(text);
+                              } else {
+                                if (!mounted) return;
+                                setState(() => _textController.text = text);
+                              }
+                            },
+                          ),
+                        if (custom.isNotEmpty) ...[
+                          const Divider(height: 20),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                            child: Text(
+                              'Мои шаблоны'.tr,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w800,
+                                color: Colors.grey.shade700,
+                              ),
+                            ),
+                          ),
+                        ],
+                        for (final item in custom)
+                          ListTile(
+                            leading: Icon(
+                              Icons.chat_bubble_outline,
+                              color: AppColors.primary,
+                            ),
+                            title: Text(item['title'] ?? ''),
+                            subtitle: Text(
+                              item['body'] ?? '',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            onTap: () async {
+                              Navigator.pop(sheetContext);
+                              final text = await _resolveTemplate(
+                                item['body'] ?? '',
+                              );
+                              if (onSelect != null) {
+                                onSelect(text);
+                              } else {
+                                if (!mounted) return;
+                                setState(() => _textController.text = text);
+                              }
+                            },
+                          ),
+                        const SizedBox(height: 12),
+                      ],
+                    ),
+                  ),
+                ],
               );
             },
           ),
         );
       },
     );
-  }
-
-  Future<({String title, String body, bool delete})?> _editTemplateDialog({
-    required String title,
-    required String body,
-    required bool canEditTitle,
-    bool allowDelete = false,
-  }) async {
-    final titleCtrl = TextEditingController(text: title);
-    final bodyCtrl = TextEditingController(text: body);
-    final result = await showDialog<({String title, String body, bool delete})>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text(
-            canEditTitle && title.trim().isEmpty
-                ? 'Новый шаблон'.tr
-                : 'Изменить шаблон'.tr,
-          ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (canEditTitle) ...[
-                  TextField(
-                    controller: titleCtrl,
-                    textCapitalization: TextCapitalization.sentences,
-                    decoration: InputDecoration(
-                      labelText: 'Название'.tr,
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                TextField(
-                  controller: bodyCtrl,
-                  minLines: 3,
-                  maxLines: 8,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: InputDecoration(
-                    labelText: 'Текст'.tr,
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            if (allowDelete)
-              TextButton(
-                onPressed: () => Navigator.pop(
-                  context,
-                  (title: '', body: '', delete: true),
-                ),
-                child: Text(
-                  'Удалить'.tr,
-                  style: const TextStyle(color: Colors.red),
-                ),
-              ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Отмена'.tr),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(
-                  context,
-                  (
-                    title: titleCtrl.text.trim(),
-                    body: bodyCtrl.text.trim(),
-                    delete: false,
-                  ),
-                );
-              },
-              child: Text('Сохранить'.tr),
-            ),
-          ],
-        );
-      },
-    );
-    titleCtrl.dispose();
-    bodyCtrl.dispose();
-    return result;
   }
 
   @override
@@ -1592,6 +1505,39 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   ),
                 ),
               ),
+            // Оператор мог зарезать SMS уже после отправки (Twilio 30007).
+            // Без этой пометки такое сообщение выглядело доставленным.
+            if (message.deliveryFailed) ...[
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFD32F2F),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.error_outline,
+                      size: 14,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        '${'Не доставлено'.tr}: ${message.failureReason}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 4),
             Align(
               alignment: Alignment.centerRight,
@@ -1689,7 +1635,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (sheetContext) {
-        return _ComposeMessageSheet(
+        return ComposeMessageSheet(
           initialText: _textController.text,
           channel: _channel,
           sending: _isSending,
@@ -1972,7 +1918,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               IconButton(
                 icon: const Icon(Icons.library_books),
                 color: AppColors.primary,
-                tooltip: 'Шаблоны'.tr,
+                tooltip: context.tr('Выбрать шаблон', 'Choose template'),
                 onPressed: _showSmsTemplates,
               ),
               Expanded(
@@ -2039,7 +1985,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 }
 
-class _ComposeMessageSheet extends StatefulWidget {
+class ComposeMessageSheet extends StatefulWidget {
   final String initialText;
   final ConversationChannel channel;
   final bool sending;
@@ -2047,7 +1993,8 @@ class _ComposeMessageSheet extends StatefulWidget {
   final Future<void> Function() onSend;
   final Future<void> Function(DateTime sendAt)? onSchedule;
 
-  const _ComposeMessageSheet({
+  const ComposeMessageSheet({
+    super.key,
     required this.initialText,
     required this.channel,
     required this.sending,
@@ -2057,10 +2004,10 @@ class _ComposeMessageSheet extends StatefulWidget {
   });
 
   @override
-  State<_ComposeMessageSheet> createState() => _ComposeMessageSheetState();
+  State<ComposeMessageSheet> createState() => _ComposeMessageSheetState();
 }
 
-class _ComposeMessageSheetState extends State<_ComposeMessageSheet> {
+class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
   late final TextEditingController _controller;
   final GlobalKey _polishKey = GlobalKey();
   bool _polishing = false;

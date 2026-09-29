@@ -1,11 +1,29 @@
 rules_version = '2';
 
-// Доступ к базе только для вошедших пользователей приложения (Firebase Auth).
-// Cloud Functions работают через Admin SDK и правила обходят.
+// Доступ к базе — только аккаунт владельца, по uid.
+//
+// Раньше здесь стояло `request.auth != null`, и этого было мало: провайдер
+// email+password позволяет любому желающему завести аккаунт через публичный
+// REST API Firebase (web API key лежит прямо внутри APK). Такой аккаунт
+// проходил проверку `auth != null` и получал полный доступ к базе клиентов,
+// счетов, переписки и записей звонков.
+//
+// Cloud Functions ходят через Admin SDK и правила обходят, поэтому телефонный
+// секретарь, SMS, Stripe и еженедельная копия от этого не зависят.
+//
+// Второй телефон владельцу менять правила не требует — это тот же аккаунт.
+// Если появится второй мастер, его uid добавляется в owners().
 service cloud.firestore {
   match /databases/{database}/documents {
+    function owners() {
+      return ['Ew8vDgXvuMMwt9gYQUOi7rujNxO2'];
+    }
+    function isOwner() {
+      return request.auth != null && request.auth.uid in owners();
+    }
+
     match /{document=**} {
-      allow read, write: if request.auth != null;
+      allow read, write: if isOwner();
     }
   }
 }

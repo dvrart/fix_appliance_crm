@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'firestore_service.dart';
+import '../core/api_keys.dart';
 import '../core/app_commands.dart';
 import '../core/constants.dart';
 import '../models/job.dart';
+import 'auth_service.dart';
 import 'client_service.dart';
 import 'network_status_service.dart';
 import 'offline_queue_service.dart';
@@ -218,91 +222,11 @@ class JobService {
     return Job.fromMap(doc.data() as Map<String, dynamic>, doc.id);
   }
 
-  static final _creatingFromCall = <String>{};
-
-  static String _textOf(Map<String, dynamic>? data, List<String> keys) {
-    if (data == null) return '';
-    for (final key in keys) {
-      final value = (data[key] ?? '').toString().trim();
-      if (value.isNotEmpty) return value;
-    }
-    return '';
-  }
-
-  static String _historyText(CallRecord call) {
-    final history = call.aiReception?['history'];
-    if (history is! List) return '';
-    final bits = <String>[];
-    for (final item in history) {
-      if (item is Map && (item['text'] ?? '').toString().trim().isNotEmpty) {
-        bits.add(item['text'].toString());
-      }
-    }
-    return bits.join('\n');
-  }
-
-  static String _callText(CallRecord call) {
-    return [
-      call.transcription ?? '',
-      call.transcriptionEn ?? '',
-      call.transcriptionRu ?? '',
-      _historyText(call),
-    ].join('\n');
-  }
-
-  static String _inferAppliance(String text) {
-    final t = text.toLowerCase();
-    if (RegExp(r'dish\s*wash|посудомое').hasMatch(t)) return 'Dishwasher';
-    if (RegExp(r'\b(washer|washing machine|стиральн)').hasMatch(t)) {
-      return 'Washer';
-    }
-    if (RegExp(r'\b(dryer|сушильн)').hasMatch(t)) return 'Dryer';
-    if (RegExp(r'\b(fridge|refrigerator|холодильн)').hasMatch(t))
-      return 'Fridge';
-    if (RegExp(r'\b(freezer|морозил)').hasMatch(t)) return 'Freezer';
-    if (RegExp(r'\b(microwave|микроволн)').hasMatch(t)) return 'Microwave';
-    if (RegExp(r'\b(cooktop|cook top|варочн)').hasMatch(t)) return 'Cooktop';
-    if (RegExp(r'\b(stove|range|плит)').hasMatch(t)) return 'Stove';
-    if (RegExp(r'\b(oven|духовк)').hasMatch(t)) return 'Oven';
-    return '';
-  }
-
-  static bool _looksLikeRepairCall(CallRecord call) {
-    if (call.serviceDeclined) return false;
-    final extracted =
-        call.extractedData ??
-        ((call.aiReception?['extracted'] is Map)
-            ? Map<String, dynamic>.from(call.aiReception!['extracted'] as Map)
-            : <String, dynamic>{});
-    if (call.aiReception?['createJob'] == true) return true;
-    if (_textOf(extracted, const [
-      'appliance_type',
-      'applianceType',
-    ]).isNotEmpty) {
-      return true;
-    }
-    if (_textOf(extracted, const [
-      'problem_description',
-      'problem',
-    ]).isNotEmpty) {
-      return true;
-    }
-    final text = _callText(call);
-    if (_inferAppliance(text).isNotEmpty) return true;
-    return RegExp(
-          r'(repair|broken|not working|leak|appointment|visit|washer|dryer|fridge|dishwasher|ремонт|сломал|не работает)',
-          caseSensitive: false,
-        ).hasMatch(text) &&
-        text.length > 80;
-  }
-
-  static DateTime? _visitFromExtracted(Map<String, dynamic> extracted) {
-    final date = _textOf(extracted, const ['scheduled_date', 'scheduledDate']);
-    final time = _textOf(extracted, const ['scheduled_time', 'scheduledTime']);
-    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(date)) return null;
-    final clock = time.isEmpty ? '09:00' : time;
-    return DateTime.tryParse('$date $clock');
-  }
+  // Здесь лежал разбор звонка для автосоздания заявки:
+  // _creatingFromCall, _textOf, _historyText, _callText, _inferAppliance,
+  // _looksLikeRepairCall, _visitFromExtracted. Автосоздание отключено
+  // (заявку заводит владелец с экрана разбора звонка), и весь этот код
+  // год лежал мёртвым, заглушая настоящие предупреждения анализатора.
 
   static String _applianceKey(String raw) {
     final t = raw.trim().toLowerCase().replaceAll('ё', 'е');
@@ -382,6 +306,43 @@ class JobService {
   /// Auto-recovery of missing call jobs is disabled — no longer auto-creating.
   static Future<void> recoverMissingCallJobs() async {
     // No-op: auto-creation from calls is disabled.
+  }
+
+  /// Соединить две заявки: данные [dropId] переезжают в [keepId], дубляж
+  /// закрывается. Сервер делает то же самое сам для входящих черновиков —
+  /// здесь мастер подтверждает случай, который автоматика не трогает.
+  static Future<bool> mergeDuplicate({
+    required String keepId,
+    required String dropId,
+  }) async {
+    if (keepId.trim().isEmpty || dropId.trim().isEmpty || keepId == dropId) {
+      return false;
+    }
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$kFirebaseFunctionsUrl/mergeDuplicateJobs'),
+            headers: await AuthService.headers(),
+            body: json.encode({'keepId': keepId, 'dropId': dropId}),
+          )
+          .timeout(const Duration(seconds: 45));
+      if (response.statusCode == 200) {
+        final body = json.decode(response.body);
+        return body is Map && body['ok'] == true;
+      }
+      debugPrint('mergeDuplicate: сервер вернул ${response.statusCode}');
+    } catch (e) {
+      debugPrint('mergeDuplicate: $e');
+    }
+    return false;
+  }
+
+  /// «Не дубляж»: убрать метку и больше её не предлагать.
+  static Future<void> dismissDuplicateHint(String id) async {
+    await update(id, {
+      'duplicateDismissed': true,
+      'possibleDuplicateOfJobId': '',
+    });
   }
 
   /// Создать заявку. Id берём сами, а не у `add()`: без сети `add()` ждёт
@@ -527,6 +488,13 @@ class JobService {
     });
   }
 
+  /// Метка оплаты на заявке: `none` / `paid` / `partial` / `unpaid`.
+  /// По ней в списках видно, кто ещё не заплатил, поэтому закрыта тестом
+  /// (`test/job_money_test.dart`).
+  @visibleForTesting
+  static String paymentStatusOf(List<Map<String, dynamic>> documents) =>
+      _paymentStatus(documents);
+
   static String _paymentStatus(List<Map<String, dynamic>> documents) {
     var invoiced = 0.0;
     var paid = 0.0;
@@ -543,19 +511,26 @@ class JobService {
   }
 
   /// Добавить фото
+  ///
+  /// Досылка идёт только через `arrayUnion`. Раньше на ошибке в очередь
+  /// вставала правка `{'attachments': [одно фото]}`, а очередь делает
+  /// `update()` — то есть заменяла массив целиком и стирала все остальные
+  /// снимки заявки. Подпись клиента по плохой связи так уносила все фото.
   static Future<void> addAttachment(
     String id,
     Map<String, dynamic> attachment,
   ) async {
     try {
-      await _ref.doc(id).update({
-        'attachments': FieldValue.arrayUnion([attachment]),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      await settleWrite(
+        _ref.doc(id).update({
+          'attachments': FieldValue.arrayUnion([attachment]),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }),
+      );
     } catch (e) {
-      await OfflineQueueService.enqueueJobUpdate(id, {
-        'attachments': [attachment],
-      });
+      await OfflineQueueService.enqueueJobArrayUnion(id, 'attachments', [
+        attachment,
+      ]);
     }
   }
 
@@ -622,7 +597,6 @@ class JobService {
   static Future<void> delete(String id) async {
     AppCommands.reactAngry();
     await _blockSourceCall(id);
-    final job = await getById(id);
     await settleWrite(
       _ref.doc(id).update({
         'deletedAt': FieldValue.serverTimestamp(),
@@ -651,7 +625,6 @@ class JobService {
 
   static Future<void> deleteForever(String id) async {
     await _blockSourceCall(id);
-    final job = await getById(id);
     final messagesSnapshot = await FirestoreService.jobMessagesRef(id).get();
     for (final doc in messagesSnapshot.docs) {
       await doc.reference.delete();

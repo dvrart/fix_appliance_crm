@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import '../core/app_commands.dart';
 import 'firestore_service.dart';
 import 'network_status_service.dart';
@@ -97,15 +98,21 @@ class WarehouseService {
     );
   }
 
-  /// Изменить количество (списание/приход)
+  /// Изменить количество (списание/приход).
+  ///
+  /// Только `FieldValue.increment`. Раньше здесь был read-modify-write
+  /// (`getById`, потом `update` абсолютным числом) — два списания подряд, две
+  /// машины или чтение из офлайн-кэша съедали одно из них, и склад расходился
+  /// с реальностью. Инкремент складывается на сервере и копится в офлайне.
+  ///
+  /// Количество может уйти в минус, и это специально: минус означает «деталь
+  /// поставили, а на складе её не числилось». Тихо прижать к нулю значило бы
+  /// спрятать ошибку учёта — в списке такая позиция горит красным.
   static Future<void> adjustQuantity(String id, int delta) async {
-    final item = await getById(id);
-    if (item == null) return;
-
-    final newQuantity = (item.quantity + delta).clamp(0, 999999);
+    if (id.trim().isEmpty || delta == 0) return;
     await settleWrite(
       _ref.doc(id).update({
-        'quantity': newQuantity,
+        'quantity': FieldValue.increment(delta),
         'updatedAt': FieldValue.serverTimestamp(),
       }),
     );
@@ -126,19 +133,54 @@ class WarehouseService {
     Map<String, dynamic> doc, {
     required bool reverse,
   }) async {
-    if ((doc['type'] ?? '') == 'Estimate') return;
-    if (doc['stockApplied'] == true && !reverse) return;
-    if (doc['stockApplied'] != true && reverse) return;
-    final items = doc['items'];
-    if (items is! List) return;
-    for (final item in items) {
-      if (item is! Map) continue;
-      final warehouseId = item['warehouseItemId'] as String?;
-      if (warehouseId == null || warehouseId.isEmpty) continue;
-      final qty = (item['qty'] as num?)?.toInt() ?? 1;
-      await adjustQuantity(warehouseId, reverse ? qty : -qty);
+    if (!shouldApplyStock(doc, reverse: reverse)) return;
+    final deltas = stockDeltas(doc, reverse: reverse);
+    for (final entry in deltas.entries) {
+      await adjustQuantity(entry.key, entry.value);
     }
     doc['stockApplied'] = !reverse;
+  }
+
+  /// Смета склад не двигает; списать дважды или вернуть неспи́санное нельзя.
+  @visibleForTesting
+  static bool shouldApplyStock(
+    Map<String, dynamic> doc, {
+    required bool reverse,
+  }) {
+    if ((doc['type'] ?? '') == 'Estimate') return false;
+    if (doc['stockApplied'] == true && !reverse) return false;
+    if (doc['stockApplied'] != true && reverse) return false;
+    return true;
+  }
+
+  /// Сколько и с каких позиций склада снимает документ. Чистая функция:
+  /// ошибка здесь тихо расходит склад с реальностью, поэтому закрыта тестом.
+  /// Одна и та же деталь в двух строках счёта складывается в одну правку.
+  @visibleForTesting
+  static Map<String, int> stockDeltas(
+    Map<String, dynamic> doc, {
+    required bool reverse,
+  }) {
+    final out = <String, int>{};
+    final items = doc['items'];
+    if (items is! List) return out;
+    for (final item in items) {
+      if (item is! Map) continue;
+      final id = (item['warehouseItemId'] ?? '').toString().trim();
+      if (id.isEmpty) continue;
+      final qty = _asQty(item['qty']);
+      if (qty == 0) continue;
+      out[id] = (out[id] ?? 0) + (reverse ? qty : -qty);
+    }
+    out.removeWhere((_, delta) => delta == 0);
+    return out;
+  }
+
+  /// Количество в строке счёта. Пустое — одна штука, как в построителе счёта.
+  static int _asQty(dynamic raw) {
+    if (raw == null) return 1;
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw.toString().trim()) ?? 1;
   }
 
   /// В корзину на 30 дней

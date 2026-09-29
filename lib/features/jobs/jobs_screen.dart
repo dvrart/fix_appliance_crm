@@ -10,6 +10,7 @@ import '../../shared/widgets/job_status_filter_bar.dart';
 import 'job_details/job_details_screen.dart';
 import 'basket_screen.dart';
 import 'route_map_view.dart';
+import '../../services/error_log_service.dart';
 
 class JobsScreen extends StatefulWidget {
   final bool? showRouteMap;
@@ -50,6 +51,7 @@ class _JobsScreenState extends State<JobsScreen> {
   @override
   void initState() {
     super.initState();
+    ErrorLogService.markScreen('Заявки');
     _origin = _companyToday;
     _routeDate = _origin;
     _syncFromParent();

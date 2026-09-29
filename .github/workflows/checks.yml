@@ -1,0 +1,93 @@
+# Проверки на каждый push и pull request.
+#
+# Зачем: тесты в проекте есть и они зелёные, но запускались только когда кто-то
+# вспоминал их запустить. Один живой пример цены этого — в релизную сборку
+# попали строки `minifyEnabled true` на синтаксисе Groovy в файле Kotlin DSL,
+# и `flutter build apk --release` перестал собираться вообще. Сборка APK ниже
+# поймала бы это в первую же минуту.
+#
+# Почему --no-fatal-infos: предупреждения и ошибки валят сборку, а подсказки
+# стиля (prefer_const_constructors и подобные) — нет. На момент настройки
+# предупреждений и ошибок ноль, так что любое новое сразу видно.
+name: Проверки
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  flutter:
+    name: Приложение (анализ, тесты, сборка APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.4
+          channel: stable
+          cache: true
+
+      # Ключи в репозитории не лежат (lib/core/api_keys.dart в .gitignore),
+      # поэтому подставляем образец — он нужен только чтобы код скомпилировался.
+      - name: Заглушка ключей
+        run: cp lib/core/api_keys.example.dart lib/core/api_keys.dart
+
+      - run: flutter pub get
+
+      - name: Анализ
+        run: flutter analyze --no-fatal-infos
+
+      - name: Тесты
+        run: flutter test --reporter expanded
+
+      # Собираем именно release: отладочная сборка не заметила бы ни поломки
+      # build.gradle.kts, ни правил ProGuard.
+      - name: Сборка релизного APK
+        run: flutter build apk --release
+
+  functions:
+    name: Сервер (тесты Cloud Functions)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+
+      - run: npm ci
+
+      - name: Тесты
+        run: npm test
+
+  rules:
+    name: Правила доступа (Firestore и Storage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Правила — единственная защита базы клиентов: саморегистрация в проекте
+      # открыта, а web API key лежит внутри APK. Здесь проверяется главное:
+      # доступ привязан к uid владельца, а не к «любому вошедшему».
+      - name: Доступ привязан к uid, а не к любому входу
+        run: |
+          set -e
+          for f in firestore.rules storage.rules; do
+            if grep -Eq 'allow[^;]*:\s*if\s+request\.auth\s*!=\s*null\s*;' "$f"; then
+              echo "$f: правило пускает любой вошедший аккаунт — так база была открыта всем"
+              exit 1
+            fi
+            grep -q 'request.auth.uid in owners()' "$f" || {
+              echo "$f: нет проверки uid владельца"
+              exit 1
+            }
+          done
+          echo "оба файла правил привязаны к uid владельца"

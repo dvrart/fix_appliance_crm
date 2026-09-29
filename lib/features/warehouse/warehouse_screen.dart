@@ -14,6 +14,8 @@ import '../../models/warehouse_item.dart';
 import '../../services/ai_service.dart';
 import '../../services/error_log_service.dart';
 import '../../services/network_status_service.dart';
+import '../../services/part_image_service.dart';
+import '../../services/part_supersession_service.dart';
 import '../../services/warehouse_service.dart';
 import '../../shared/widgets/appliance_picture.dart';
 import '../../shared/widgets/app_bar_save.dart';
@@ -272,10 +274,26 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     bool isUploadingPhoto = false;
     bool isUsed = isEditing && data['isUsed'] == true;
 
+    // Картинка детали из интернета. Стикер это не заменяет — фото стикера
+    // остаётся своим полем, картинка живёт рядом.
+    String? webImageUrl = isEditing ? data['webImageUrl'] : null;
+    String webImageSource = isEditing ? '${data['webImageSource'] ?? ''}' : '';
+    // Предложение, которое FIX ещё не принял: файл уже лежит в Storage,
+    // поэтому при отказе и при закрытии окна его надо убрать.
+    PartImageFind? webSuggestion;
+    bool webSearching = false;
+    String webAskedFor = '';
+    final webSkip = <String>[];
+
     Timer? debounce;
     DocumentSnapshot? foundDuplicate;
     DocumentSnapshot? foundSubstitute;
     String substituteWhy = '';
+    // Живой каталог сказал «это разные детали» для пары, которую склад
+    // посчитал заменой. Карточку замены не показываем и не перелинковываем.
+    bool substituteRefuted = false;
+    // Какие пары уже опровергнуты в этом диалоге: «part|other».
+    final refutedPairs = <String>{};
     bool isCheckingDuplicate = false;
     bool isAiThinking = false;
     bool interchangeTouched = isEditing &&
@@ -324,6 +342,8 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   foundDuplicate = null;
                   foundSubstitute = null;
                   substituteWhy = '';
+                  substituteRefuted = false;
+                  refutedPairs.clear();
                 });
                 return;
               }
@@ -338,6 +358,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 if (match != null) {
                   foundSubstitute = null;
                   substituteWhy = '';
+                  substituteRefuted = false;
                 }
                 isCheckingDuplicate = false;
                 if (match != null && !isEditing) {
@@ -378,6 +399,47 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               interchangeAuto = true;
             }
 
+            /// Сверить пару «foundSubstitute заменяет part» с живым
+            /// каталогом. «Разные детали» — прячем карточку замены: нельзя
+            /// ни приписывать к ней количество, ни сшивать номера в обе
+            /// карточки. Промолчал каталог — оставляем как было (подвал и
+            /// офлайн важнее интернет-справки).
+            Future<void> verifySubstitute(String part) async {
+              final doc = foundSubstitute;
+              if (doc == null || isEditing) return;
+              final data = doc.data() as Map<String, dynamic>? ?? {};
+              final other = '${data['partNumber'] ?? ''}'.trim();
+              if (other.isEmpty) return;
+              final key = '$part|${WarehouseItem.normalizePart(other)}';
+              if (refutedPairs.contains(key)) {
+                setDialogState(() {
+                  foundSubstitute = null;
+                  substituteWhy = '';
+                  substituteRefuted = true;
+                });
+                return;
+              }
+              final verdict = await PartSupersessionService.check(part, other);
+              if (!context.mounted) return;
+              // За время запроса поле могли переписать или замену пересчитать.
+              if (foundSubstitute?.id != doc.id) return;
+              if (partNumController.text.trim().toUpperCase() != part) return;
+              if (verdict == SupersessionVerdict.different) {
+                refutedPairs.add(key);
+                setDialogState(() {
+                  foundSubstitute = null;
+                  substituteWhy = '';
+                  substituteRefuted = true;
+                });
+              } else if (verdict == SupersessionVerdict.replaces &&
+                  substituteWhy.isNotEmpty &&
+                  !substituteWhy.contains('каталог')) {
+                setDialogState(() {
+                  substituteWhy = '$substituteWhy · ${'проверено каталогом'.tr}';
+                });
+              }
+            }
+
             Future<void> suggestReplacements() async {
               if (!context.mounted) return;
               final part = partNumController.text.trim().toUpperCase();
@@ -385,6 +447,8 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 setDialogState(() {
                   foundSubstitute = null;
                   substituteWhy = '';
+                  substituteRefuted = false;
+                  refutedPairs.clear();
                 });
                 return;
               }
@@ -405,7 +469,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 setDialogState(() {
                   foundSubstitute = local?.$1;
                   substituteWhy = local?.$2 ?? '';
+                  substituteRefuted = false;
                 });
+                await verifySubstitute(part);
               }
 
               if (interchangeTouched || part == interchangeAskedFor) return;
@@ -418,9 +484,25 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 model: modelController.text.trim(),
               );
               if (!context.mounted) return;
+              // В колонку «Заменяет номера» попадают только те догадки ИИ,
+              // которые подтвердил живой каталог (или родной префикс):
+              // голая догадка уже записывала туда чужие детали.
+              final approved = await PartSupersessionService.verifiedOnly(
+                part,
+                guessed,
+              );
+              if (!context.mounted) return;
               if (!interchangeTouched &&
                   partNumController.text.trim().toUpperCase() == part) {
-                writeInterchange(guessed, part);
+                writeInterchange(approved, part);
+              }
+
+              bool refuted(DocumentSnapshot doc) {
+                final data = doc.data() as Map<String, dynamic>? ?? {};
+                return refutedPairs.contains(
+                  '$part|'
+                  '${WarehouseItem.normalizePart('${data['partNumber']}')}',
+                );
               }
 
               DocumentSnapshot? aiMatch;
@@ -431,7 +513,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   extraNumbers:
                       WarehouseItem.parseInterchange(interchangeController.text),
                 );
-                if (local != null) {
+                if (local != null && !refuted(local.$1)) {
                   aiMatch = local.$1;
                   aiWhy = local.$2;
                 } else {
@@ -468,20 +550,46 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   if (result.isNotEmpty) {
                     final id = result.keys.first;
                     for (final doc in stock) {
-                      if (doc.id != id) continue;
+                      if (doc.id != id || refuted(doc)) continue;
                       aiMatch = doc;
                       aiWhy = result[id]!.trim().isEmpty
                           ? 'подсказал ИИ'.tr
                           : result[id]!;
                       break;
                     }
-                    if (aiMatch != null && !interchangeTouched) {
-                      final data =
-                          aiMatch.data() as Map<String, dynamic>? ?? {};
-                      writeInterchange(
-                        ['${data['partNumber'] ?? ''}'],
-                        part,
-                      );
+                  }
+                }
+
+                // Любой кандидат на замену проверяем у живого каталога —
+                // то, что FIX попросил: подставленный номер должен быть
+                // реальной заменой, а не догадкой.
+                if (aiMatch != null) {
+                  final data = aiMatch.data() as Map<String, dynamic>? ?? {};
+                  final other = '${data['partNumber'] ?? ''}'.trim();
+                  SupersessionVerdict verdict = SupersessionVerdict.unknown;
+                  if (other.isNotEmpty) {
+                    verdict = await PartSupersessionService.check(part, other);
+                  }
+                  if (!context.mounted) return;
+                  // Пока шёл запрос, поле могли переписать — чужой вердикт
+                  // не применяем.
+                  if (partNumController.text.trim().toUpperCase() != part) {
+                    aiMatch = null;
+                    aiWhy = '';
+                  } else if (verdict == SupersessionVerdict.different) {
+                    refutedPairs.add(
+                      '$part|${WarehouseItem.normalizePart(other)}',
+                    );
+                    aiMatch = null;
+                    aiWhy = '';
+                    substituteRefuted = true;
+                  } else if (verdict == SupersessionVerdict.replaces ||
+                      verdict == SupersessionVerdict.same) {
+                    if (aiWhy.isNotEmpty && !aiWhy.contains('каталог')) {
+                      aiWhy = '$aiWhy · ${'проверено каталогом'.tr}';
+                    }
+                    if (!interchangeTouched && other.isNotEmpty) {
+                      writeInterchange([other], part);
                     }
                   }
                 }
@@ -493,6 +601,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 if (aiMatch != null && foundDuplicate == null) {
                   foundSubstitute = aiMatch;
                   substituteWhy = aiWhy;
+                  substituteRefuted = false;
                 }
               });
             }
@@ -552,17 +661,6 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               );
             }
 
-            void onFieldChanged() {
-              markDirty();
-              guessCategory();
-              if (isEditing) return;
-              if (debounce?.isActive ?? false) debounce!.cancel();
-              debounce = Timer(const Duration(milliseconds: 600), () async {
-                await checkDuplicate(partNumController.text);
-                await suggestReplacements();
-              });
-            }
-
             /// Залить готовый файл в Storage и поставить его фото детали.
             /// [quiet] — не ругаться, если не вышло (фото со сканера
             /// необязательное).
@@ -601,6 +699,157 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   ),
                 );
               }
+            }
+
+            /// Попросить ИИ найти в интернете картинку этой детали.
+            ///
+            /// Сам поиск идёт на сервере (`findPartImage`): он выбирает снимок,
+            /// показывает его Gemini и кладёт победителя в наш Storage. Тут
+            /// только показываем предложение — в карточку оно попадёт лишь
+            /// после зелёной галочки.
+            Future<void> findWebImage({bool again = false}) async {
+              if (webSearching) return;
+              final part = partNumController.text.trim().toUpperCase();
+              final name = nameController.text.trim();
+              if (part.length < 4 && name.length < 4) {
+                if (again && context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Впишите номер или название детали'.tr),
+                      backgroundColor: Colors.orange.shade800,
+                    ),
+                  );
+                }
+                return;
+              }
+              final key = '$part|${name.toLowerCase()}';
+              if (!again) {
+                // Сами ищем один раз на набор полей и только когда картинки
+                // ещё нет — иначе каждая буква тянет запрос.
+                if (key == webAskedFor) return;
+                if (webImageUrl != null || webSuggestion != null) return;
+              }
+              webAskedFor = key;
+
+              if (again && webSuggestion != null) {
+                final old = webSuggestion!;
+                webSkip.add(
+                  old.originalUrl.isEmpty ? old.imageUrl : old.originalUrl,
+                );
+                unawaited(PartImageService.discard(old.imageUrl));
+                webSuggestion = null;
+              }
+              setDialogState(() => webSearching = true);
+
+              final found = await PartImageService.find(
+                partNumber: part,
+                name: name,
+                model: modelController.text.trim(),
+                skip: webSkip,
+              );
+              if (_gone || !context.mounted) {
+                // Окно закрыли, пока искали — файл никому не нужен.
+                if (found != null) unawaited(PartImageService.discard(found.imageUrl));
+                return;
+              }
+              setDialogState(() {
+                webSearching = false;
+                webSuggestion = found;
+              });
+              if (found == null && again) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'Картинку не нашёл — сфотографируйте деталь сами'.tr,
+                    ),
+                    backgroundColor: Colors.orange.shade800,
+                  ),
+                );
+              }
+            }
+
+            void acceptWebImage() {
+              final found = webSuggestion;
+              if (found == null) return;
+              setDialogState(() {
+                webImageUrl = found.imageUrl;
+                webImageSource = found.sourceUrl.isNotEmpty
+                    ? found.sourceUrl
+                    : found.sourceHost;
+                webSuggestion = null;
+                formDirty = true;
+              });
+            }
+
+            void rejectWebImage() {
+              final found = webSuggestion;
+              if (found == null) return;
+              webSkip.add(
+                found.originalUrl.isEmpty ? found.imageUrl : found.originalUrl,
+              );
+              unawaited(PartImageService.discard(found.imageUrl));
+              setDialogState(() => webSuggestion = null);
+            }
+
+            /// Тап по плитке с картинкой из интернета.
+            Future<void> webImageMenu() async {
+              if (webImageUrl == null) {
+                await findWebImage(again: true);
+                return;
+              }
+              final action = await showModalBottomSheet<String>(
+                context: context,
+                builder: (sheet) => SafeArea(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        leading: const Icon(
+                          Icons.image_search,
+                          color: Color(0xFF14557F),
+                        ),
+                        title: Text('Поискать другую картинку'.tr),
+                        onTap: () => Navigator.pop(sheet, 'again'),
+                      ),
+                      ListTile(
+                        leading: const Icon(
+                          Icons.delete_outline,
+                          color: Colors.redAccent,
+                        ),
+                        title: Text('Убрать картинку'.tr),
+                        onTap: () => Navigator.pop(sheet, 'remove'),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+              if (action == null) return;
+              final old = webImageUrl;
+              setDialogState(() {
+                webImageUrl = null;
+                webImageSource = '';
+                formDirty = true;
+              });
+              // Сохранённую картинку из Storage не стираем: карточка могла
+              // быть записана раньше и ссылка ещё может понадобиться.
+              if (action == 'again') {
+                if (old != null && !isEditing) {
+                  unawaited(PartImageService.discard(old));
+                }
+                await findWebImage(again: true);
+              }
+            }
+
+            void onFieldChanged() {
+              markDirty();
+              guessCategory();
+              if (isEditing) return;
+              if (debounce?.isActive ?? false) debounce!.cancel();
+              debounce = Timer(const Duration(milliseconds: 600), () async {
+                await checkDuplicate(partNumController.text);
+                await suggestReplacements();
+                await findWebImage();
+              });
             }
 
             /// Снять или выбрать картинку и залить её в Storage.
@@ -772,6 +1021,8 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   interchangeController.text,
                 ),
                 'imageUrl': localImageUrl,
+                'webImageUrl': webImageUrl,
+                'webImageSource': webImageSource,
                 'updatedAt': FieldValue.serverTimestamp(),
               };
 
@@ -785,12 +1036,16 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   final exact = foundDuplicate != null;
                   final old =
                       existing.data() as Map<String, dynamic>? ?? {};
-                  final oldQty =
-                      int.tryParse('${old['quantity'] ?? 0}') ?? 0;
                   final oldImage = '${old['imageUrl'] ?? ''}'.trim();
                   final newImage = (localImageUrl ?? '').trim();
+                  final oldWeb = '${old['webImageUrl'] ?? ''}'.trim();
+                  final newWeb = (webImageUrl ?? '').trim();
                   // Новая карточка часто без фото — не затираем старое.
                   if (newImage.isEmpty) saveData.remove('imageUrl');
+                  if (newWeb.isEmpty) {
+                    saveData.remove('webImageUrl');
+                    saveData.remove('webImageSource');
+                  }
                   final mergedInter = WarehouseItem.parseInterchange([
                     ...WarehouseItem.parseInterchange(old['interchange']),
                     ...WarehouseItem.parseInterchange(
@@ -803,9 +1058,13 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                       existing.reference.set({
                         ...saveData,
                         'interchange': mergedInter,
-                        'quantity': oldQty + quantity,
+                        // Инкремент, а не oldQty + quantity: снимок дубля
+                        // мог устареть, пока владелец заполнял карточку.
+                        'quantity': FieldValue.increment(quantity),
                         if (newImage.isEmpty && oldImage.isNotEmpty)
                           'imageUrl': oldImage,
+                        if (newWeb.isEmpty && oldWeb.isNotEmpty)
+                          'webImageUrl': oldWeb,
                         'createdAt':
                             old['createdAt'] ?? FieldValue.serverTimestamp(),
                         'deletedAt': FieldValue.delete(),
@@ -816,9 +1075,13 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                     // количество, фото если новое, и список замен.
                     await settleWrite(
                       existing.reference.set({
-                        'quantity': oldQty + quantity,
+                        'quantity': FieldValue.increment(quantity),
                         'interchange': mergedInter,
                         if (newImage.isNotEmpty) 'imageUrl': newImage,
+                        if (newWeb.isNotEmpty) ...{
+                          'webImageUrl': newWeb,
+                          'webImageSource': webImageSource,
+                        },
                         'createdAt':
                             old['createdAt'] ?? FieldValue.serverTimestamp(),
                         'deletedAt': FieldValue.delete(),
@@ -940,9 +1203,44 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                         draftQty:
                             int.tryParse(quantityController.text) ?? 0,
                         draftUsed: isUsed,
-                        draftImage: localImageUrl,
+                        draftImage: webImageUrl ?? localImageUrl,
                         isSubstitute: foundDuplicate == null,
                         why: substituteWhy,
+                      ),
+
+                    if (!isEditing &&
+                        substituteRefuted &&
+                        foundDuplicate == null &&
+                        foundSubstitute == null)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFDEBEC),
+                          border: Border.all(color: Colors.red.shade200),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.error_outline,
+                              size: 18,
+                              color: Colors.red.shade700,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Каталог показывает эту деталь отдельно — '
+                                'такую же на полке не подставляю.'.tr,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.red.shade900,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
 
                     if (isCheckingDuplicate && !isEditing)
@@ -1161,6 +1459,15 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                     ),
                     const SizedBox(height: 16),
 
+                    if (webSearching || webSuggestion != null)
+                      _webImageOffer(
+                        found: webSuggestion,
+                        searching: webSearching,
+                        onAccept: acceptWebImage,
+                        onReject: rejectWebImage,
+                        onAgain: () => findWebImage(again: true),
+                      ),
+
                     Row(
                       children: [
                         Expanded(
@@ -1170,7 +1477,15 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                             onTap: pickPhotoSource,
                           ),
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _webImageTile(
+                            imageUrl: webImageUrl,
+                            searching: webSearching,
+                            onTap: webSearching ? null : webImageMenu,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
                         Expanded(
                           child: _actionTile(
                             icon: Icons.auto_awesome,
@@ -1234,6 +1549,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                         partNumController.text,
                                       );
                                       await suggestReplacements();
+                                      await findWebImage();
                                       return;
                                     }
 
@@ -1436,6 +1752,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                         partNumController.text,
                                       );
                                       await suggestReplacements();
+                                      await findWebImage();
                                     } else {
                                       if (context.mounted)
                                         ScaffoldMessenger.of(
@@ -1524,6 +1841,12 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       // Отложенный поиск дубля не должен стрелять по закрытому окну.
       debounce?.cancel();
       categoryDebounce?.cancel();
+      // Непринятая картинка так и лежит в Storage — убираем за собой.
+      final pending = webSuggestion;
+      if (pending != null) {
+        webSuggestion = null;
+        unawaited(PartImageService.discard(pending.imageUrl));
+      }
     });
   }
 
@@ -1591,7 +1914,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   price: double.tryParse('${old['price'] ?? 0}') ?? 0,
                   qty: int.tryParse('${old['quantity'] ?? 0}') ?? 0,
                   used: old['isUsed'] == true,
-                  imageUrl: old['imageUrl']?.toString(),
+                  imageUrl: '${old['webImageUrl'] ?? ''}'.trim().isNotEmpty
+                      ? '${old['webImageUrl']}'
+                      : old['imageUrl']?.toString(),
                   color: const Color(0xFF14557F),
                 ),
               ),
@@ -1785,6 +2110,199 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     );
   }
 
+  /// Плитка «Картинка» — фото детали, найденное в интернете.
+  Widget _webImageTile({
+    required String? imageUrl,
+    required bool searching,
+    required VoidCallback? onTap,
+  }) {
+    return _tileShell(
+      onTap: onTap,
+      background: Colors.grey.shade200,
+      border: Colors.grey.shade400,
+      image: imageUrl,
+      child: searching
+          ? const CircularProgressIndicator(
+              strokeWidth: 2.4,
+              color: Color(0xFFFCC520),
+            )
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  imageUrl == null ? Icons.image_search : Icons.image,
+                  size: 22,
+                  color: imageUrl == null ? Colors.black54 : Colors.white,
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  imageUrl == null ? 'Найти фото'.tr : 'Картинка'.tr,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.bold,
+                    color: imageUrl == null ? Colors.black54 : Colors.white,
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  /// Что ИИ принёс из интернета. Сохранится только после зелёной галочки.
+  Widget _webImageOffer({
+    required PartImageFind? found,
+    required bool searching,
+    required VoidCallback onAccept,
+    required VoidCallback onReject,
+    required VoidCallback onAgain,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEFF6FF),
+        border: Border.all(color: const Color(0xFF14557F).withValues(alpha: 0.35)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: searching || found == null
+          ? Row(
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.2,
+                    color: Color(0xFF14557F),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'ИИ ищет фото детали в интернете…'.tr,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      color: Color(0xFF14557F),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'ИИ нашёл фото этой детали'.tr,
+                  style: const TextStyle(
+                    color: Color(0xFF14557F),
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  [
+                    if (found.sourceHost.isNotEmpty) found.sourceHost,
+                    if (found.why.isNotEmpty) found.why,
+                  ].join(' · '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11.5, color: Colors.black54),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        color: Colors.white,
+                        child: Image(
+                          image: thumbImage(found.imageUrl, width: 320),
+                          height: 92,
+                          width: 92,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) => const SizedBox(
+                            height: 92,
+                            width: 92,
+                            child: Icon(Icons.broken_image_outlined),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            'Сохранить её в карточку? Фото стикера останется.'.tr,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              _offerButton(
+                                icon: Icons.check,
+                                color: const Color(0xFF008F3B),
+                                onTap: onAccept,
+                              ),
+                              const SizedBox(width: 8),
+                              _offerButton(
+                                icon: Icons.close,
+                                color: Colors.red.shade600,
+                                onTap: onReject,
+                              ),
+                              const Spacer(),
+                              TextButton.icon(
+                                onPressed: onAgain,
+                                icon: const Icon(Icons.refresh, size: 16),
+                                label: Text(
+                                  'Поискать ещё'.tr,
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFF14557F),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _offerButton({
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: color,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(7),
+          child: Icon(icon, size: 20, color: Colors.white),
+        ),
+      ),
+    );
+  }
+
   Widget _actionTile({
     required IconData icon,
     required String label,
@@ -1893,14 +2411,23 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     );
   }
 
+  /// Кнопки «+ / −» в списке. Инкремент, а не `currentQty + change`: число в
+  /// снимке может быть устаревшим, и два быстрых нажатия теряли одно. Плюс
+  /// `settleWrite` — без сети сырой `update()` не завершался и кнопка висела.
   Future<void> _updateQuantity(
     DocumentReference ref,
     int currentQty,
     int change,
   ) async {
-    final newQty = currentQty + change;
-    if (newQty < 0) return;
-    await ref.update({'quantity': newQty});
+    if (change == 0) return;
+    // Минусом ниже нуля вручную не уводим: это жест «ошибся», а не учёт.
+    if (change < 0 && currentQty + change < 0) return;
+    await settleWrite(
+      ref.update({
+        'quantity': FieldValue.increment(change),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }),
+    );
   }
 
   Future<void> _deleteItem(DocumentReference ref) async {
@@ -2198,14 +2725,21 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                     final String name = '${data['name'] ?? ''}';
                     final String partNumber = data['partNumber'] ?? '';
                     final String modelNumber = data['modelNumber'] ?? '';
-                    final String imageUrl = data['imageUrl'] ?? '';
+                    // В списке главной идёт каталожная картинка: на ней видно
+                    // деталь, а на стикере — только буквы.
+                    final String imageUrl =
+                        '${data['webImageUrl'] ?? ''}'.trim().isNotEmpty
+                            ? '${data['webImageUrl']}'
+                            : '${data['imageUrl'] ?? ''}';
                     final String category = data['category'] ?? 'Универсальное';
                     final double price =
                         double.tryParse(data['price'].toString()) ?? 0.0;
                     final int quantity =
                         int.tryParse(data['quantity'].toString()) ?? 0;
 
-                    Color statusColor = quantity == 0
+                    // Минус — недостача: деталь поставили, а на складе её не
+                    // числилось. Показываем красным, как и ноль, а не жёлтым.
+                    Color statusColor = quantity <= 0
                         ? Colors.red
                         : (quantity <= 2 ? Colors.orange : Colors.green);
 
