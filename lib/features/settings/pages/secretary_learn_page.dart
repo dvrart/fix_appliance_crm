@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../shared/widgets/confirm_action_sheet.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
@@ -353,32 +354,17 @@ class _ErrorCardState extends State<_ErrorCard> {
   }
 
   Future<void> _delete() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(context.tr('Удалить запись?', 'Delete record?')),
-        content: Text(
-          context.tr(
-            'Удалить эту запись разбора звонка?',
-            'Delete this call review record?',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text(context.tr('Отмена', 'Cancel')),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(
-              context.tr('Удалить', 'Delete'),
-              style: const TextStyle(color: Colors.red),
-            ),
-          ),
-        ],
+    final ok = await showConfirmCancelSheet(
+      context,
+      title: context.tr('Удалить запись?', 'Delete record?'),
+      message: context.tr(
+        'Удалить эту запись разбора звонка?',
+        'Delete this call review record?',
       ),
+      confirmLabel: context.tr('Удалить', 'Delete'),
+      cancelLabel: context.tr('Отмена', 'Cancel'),
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
 
     setState(() => _busy = true);
     try {

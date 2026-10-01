@@ -136,15 +136,8 @@ function compactKnown(session) {
     );
   }
   if (extracted.problem_description) have.push(`problem ${extracted.problem_description}`);
-  if (extracted.slot_ok === false) {
-    have.push(
-      `wanted ${[extracted.scheduled_date, extracted.scheduled_time].filter(Boolean).join(' ')} but that 2-hour window is TAKEN — offer ${extracted.slot_alts || 'another time the same day'}`
-    );
-  } else if (extracted.scheduled_date || extracted.scheduled_time) {
-    have.push(
-      `visit ${[extracted.scheduled_date, extracted.scheduled_time].filter(Boolean).join(' ')}`
-    );
-  }
+  const wish = [extracted.preferred_time, extracted.scheduled_date, extracted.scheduled_time].filter(Boolean).join(' ');
+  if (wish) have.push(`would like ${wish} (a wish only — the technician confirms the time)`);
   if (extracted.wants_callback) have.push('live callback requested');
   if (extracted.has_job_site) {
     const who = [extracted.contact_on_site_name, extracted.contact_on_site_phone]
@@ -156,17 +149,8 @@ function compactKnown(session) {
   if (!extracted.client_name) need.push('first name');
   if (!extracted.problem_description) need.push('what broke');
   if (!extracted.appliance_type || !extracted.brand) need.push('kind and brand');
-  if (
-    !extracted.wants_callback &&
-    (!extracted.scheduled_date ||
-      !extracted.scheduled_time ||
-      extracted.slot_ok === false)
-  ) {
-    need.push(
-      extracted.has_job_site
-        ? 'day AND clock time — they gave another repair address, do not hang up, book the visit'
-        : 'day and time'
-    );
+  if (!extracted.wants_callback && !wish) {
+    need.push('what day and time would suit them (do not book — the technician will contact them)');
   }
   if (!extracted.wants_callback && !extracted.address) {
     need.push(
@@ -201,7 +185,6 @@ Known client: ${session.clientName || 'new'}
 Known address: ${session.knownAddress || 'none'}
 ${session.openJobBrief || 'Caller schedule is not loaded. Do not guess whether there is a booking.'}
 Visits: ${visitDays}, ${hours} Toronto. ${closedDays}
-${session.calendarBrief || ''}
 ${profile.priceLine || ''}
 ${area ? `Service area: ${area}` : 'Service area map is not set — do not refuse from memory.'}
 ${profile.awayLine || ''}
@@ -215,13 +198,13 @@ LIVE CALENDAR — server facts take priority over any transcript or earlier snap
 - A lookup or cancellation is not a new repair order. Do not collect repair details or create a new job unless the caller explicitly asks for a separate repair.
 - For cancellation, call cancel_appointment, ask its exact confirmation question, wait for the caller's explicit yes, then call it again with confirmed=true. Say it is cancelled ONLY after status=cancelled. On an error say you could not verify the change; never pretend it was saved.
 - If there is more than one visit, ask which one. Never cancel another visit or every visit by guessing.
-- Before accepting a proposed NEW time call check_availability. This checks availability, not a saved booking. Existing-visit rescheduling must be agreed with the technician or handled by SMS; do not claim it has already been moved.
+- You do NOT book new visits and cannot see the shop calendar. For a new repair ask what day and time would suit them and say the technician will contact them to set the exact time. Never say a time is free, taken, booked or confirmed. Existing-visit rescheduling must be agreed with the technician or handled by SMS; do not claim it has already been moved.
 - Do not read internal job IDs or visit IDs aloud. Keep personal calendar event details private.
 
 SERVICE AREA — the map decides, never your memory:
 - The towns listed above are only the well-known ones. The zone also holds villages, hamlets and rural roads that are not named there.
 - For any other place — a village, a postal code, a street address, a town you are unsure about — call check_service_area BEFORE you say anything about travelling there.
-- inside=true: say yes, we come out there, and carry on with the booking. inside=false: politely say we don't travel that far, done=true, createJob=false. inside=null: ask for the postal code, take the order anyway, and say the technician will confirm the trip.
+- inside=true: say yes, we come out there, and carry on with the order. inside=false: politely say we don't travel that far, done=true, createJob=false. inside=null: ask for the postal code, take the order anyway, and say the technician will confirm the trip.
 - Never tell a caller we do not serve their place unless check_service_area answered inside=false.
 
 HOW YOU SOUND — you are on a phone, not reading:
@@ -300,18 +283,6 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
         },
       },
       {
-        name: 'check_availability',
-        description: 'Check a proposed NEW visit time against the current CRM jobs and personal calendar events. Checks only; does not book a visit.',
-        parameters: {
-          type: 'OBJECT',
-          properties: {
-            date: { type: 'STRING', description: 'YYYY-MM-DD in Toronto.' },
-            time: { type: 'STRING', description: 'HH:mm, 24-hour Toronto time.' },
-          },
-          required: ['date', 'time'],
-        },
-      },
-      {
         name: 'check_service_area',
         description: 'Ask the map whether a place is inside the technician\'s service area. Use it for any town, village, postal code or address you are not sure about, before saying anything about travelling there. Never answer coverage from memory.',
         parameters: {
@@ -362,7 +333,6 @@ Known client: ${session.clientName || 'new'}
 Known address: ${session.knownAddress || 'none'}
 ${session.openJobBrief || 'Caller schedule is not loaded. Do not guess whether there is a booking.'}
 Visits: ${profile.workDaysLabel || 'Monday–Friday'}, ${profile.workHours || '7 a.m. to 9 p.m.'}
-${session.calendarBrief || ''}
 
 ${profile.instructions}
 
@@ -414,9 +384,10 @@ ${voiceFacts.EXTRACT_CARD_RULES}
 appliance_type must be Russian: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
 brand: the make they named (Samsung, LG, Whirlpool, GE, Bosch…). Never invent a brand. Not the model number.
 Today is ${today} in America/Toronto.
+preferred_time: when the caller would like the visit, in their own words, short English ("Wednesday after 2 p.m.", "any weekday morning"). A wish only — nothing is booked on this call.
 scheduled_date must be YYYY-MM-DD. "tomorrow" = the next calendar day after ${today}. Never leave the date empty if they named a day.
 scheduled_time must be HH:mm 24-hour. "11:00", "at 11", "eleven o'clock" → 11:00. A bare "2", "at 2", "two", "around two" on a repair call → 14:00. But if they said a.m. or morning, keep the hour exactly as spoken: "10 a.m." → 10:00, NEVER 22:00. Only add 12 hours when they said p.m., afternoon, or evening about that same hour. Never leave time empty if they named a clock time.
-client_name: a normal short given name as spoken (Artem, Amelia). NEVER a phonetic mash. NEVER a mood or filler: good, fine, okay, thanks, well, sure. "I'm good" / "sounds good" is not a name. If they already said a real first name, keep that spelling.
+client_name: the CALLER's own short given name as they said it (Amelia, David). Only from "Caller" turns or the caller's answer to "what's your name?" — never a name you (the assistant) said about yourself, and never the technician the caller asks for. NEVER a phonetic mash. NEVER a mood or filler: good, fine, okay, thanks, well, sure. "I'm good" / "sounds good" is not a name. If they already said a real first name, keep that spelling.
 address: the REPAIR address (where the technician drives). Street number + street name. null if mumbled.
 owner_address: the caller's home if it is different from the repair address.
 has_job_site=true if the repair is not at the caller's own home (tenant, rental, another house).
@@ -426,11 +397,11 @@ wants_callback=true if they asked to speak to a live person, the technician, the
 appointment_intent: lookup, cancel, reschedule, new_repair, or none. Use new_repair ONLY if the CALLER explicitly requested a separate new repair, never from the assistant reading existing job facts. An appointment lookup/cancellation/reschedule is not a new order: createJob=false. Dates mentioned in an old booking or a cancellation are NOT a new scheduled_date/time.
 service_declined=true if we cannot take a NEW job: outside the service area, not a household appliance (laptop/computer/phone), or we told them we don't do that work. Then createJob=false. Cancellation of an existing visit is handled by the calendar tool, not by this flag.
 Return STRICT JSON only:
-{"appointment_intent":"none","client_name":null,"address":null,"city":null,"postal_code":null,"owner_address":null,"appliance_type":null,"brand":null,"model":null,"problem_description":null,"scheduled_date":null,"scheduled_time":null,"wants_callback":false,"has_job_site":false,"contact_on_site_name":null,"contact_on_site_phone":null,"notes":null,"service_declined":false,"decline_reason":null,"done":false,"createJob":false}
+{"appointment_intent":"none","client_name":null,"address":null,"city":null,"postal_code":null,"owner_address":null,"appliance_type":null,"brand":null,"model":null,"problem_description":null,"scheduled_date":null,"scheduled_time":null,"preferred_time":null,"wants_callback":false,"has_job_site":false,"contact_on_site_name":null,"contact_on_site_phone":null,"notes":null,"service_declined":false,"decline_reason":null,"done":false,"createJob":false}
 
-done=true ONLY if the caller said goodbye/bye/that's all, or they declined "anything else". Never because they said thanks, okay, yes, or the visit is already booked. Never for a laptop, computer, or something we don't repair.
+done=true ONLY if the caller said goodbye/bye/that's all, or they declined "anything else". Never because they said thanks, okay, or yes. Never for a laptop, computer, or something we don't repair.
 createJob=true if we should create a repair job (enough info OR live callback OR angry with some details). NEVER if service_declined. Not for a laptop/computer unless they also have a household appliance.
-Enough info for a booked visit = first name + address + problem + type/brand + day and time.
+Enough info for a job = first name + address + problem + type/brand. The time they would like is nice to have; the technician sets the actual visit.
 Live callback = createJob true even without address or time. Do not wait for model, serial, or where the appliance sits.
 
 Known: ${JSON.stringify(session.extracted || {})}
@@ -1083,7 +1054,7 @@ function cancellationConfirmed(session, pending) {
 }
 
 async function runAppointmentTool(session, name, args = {}) {
-  if (!['get_caller_appointments', 'cancel_appointment', 'check_availability', 'check_service_area'].includes(name)) {
+  if (!['get_caller_appointments', 'cancel_appointment', 'check_service_area'].includes(name)) {
     return { ok: false, error: 'unknown_tool' };
   }
   if (session.closed) return { ok: false, error: 'call_inactive' };
@@ -1092,21 +1063,6 @@ async function runAppointmentTool(session, name, args = {}) {
     if (name === 'check_service_area') {
       if (!deps.checkServiceArea) return { ok: false, error: 'no_map' };
       return await withCalendarDeadline(deps.checkServiceArea(String(args.place || '')));
-    }
-    if (name === 'check_availability') {
-      const date = String(args.date || '');
-      const time = String(args.time || '');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
-        return { ok: false, error: 'invalid_time' };
-      }
-      const [y, m, d] = date.split('-').map(Number);
-      const [h, min] = time.split(':').map(Number);
-      const start = voiceFacts.fromTorontoWallClock(y, m, d, h, min);
-      const parts = voiceFacts.torontoParts(start);
-      if (voiceFacts.torontoTodayYmd(start) !== date || parts.h !== h || parts.min !== min) {
-        return { ok: false, error: 'invalid_time' };
-      }
-      return { ...(await withCalendarDeadline(deps.checkBookingSlot(start, {}))), checkedAt: new Date().toISOString(), booked: false };
     }
     session.appointmentOnly = true;
     session.extracted = { ...(session.extracted || {}), appointment_only: !voiceFacts.hasNewRepairRequest(session.history) };
@@ -1192,30 +1148,9 @@ async function handleLiveToolCall(session, message) {
   }
 }
 
-async function checkLiveSlot(session) {
-  if (!deps || !deps.checkBookingSlot) return;
-  const extracted = session.extracted || {};
-  if (extracted.wants_callback || appointmentOnly(session)) return;
-  if (!extracted.scheduled_date || !extracted.scheduled_time) return;
-  const start = voiceFacts.parseScheduledAtDate(extracted);
-  if (!start) return;
-  const key = `${extracted.scheduled_date}|${extracted.scheduled_time}`;
-  if (session.slotKey === key && extracted.slot_ok != null) return;
-  session.slotKey = key;
-  try {
-    const check = await deps.checkBookingSlot(start, {});
-    extracted.slot_ok = check.ok;
-    extracted.slot_alts = check.ok ? '' : check.altSpeech;
-    extracted.slot_blocked = check.ok ? '' : check.wantedLabel;
-  } catch (error) {
-    console.warn('voiceLive slot:', error.message);
-  }
-}
-
 async function handleLiveTurnComplete(session) {
   flushPartials(session);
   applyLocalExtract(session);
-  await checkLiveSlot(session);
   const userText = lastHistoryText(session, 'user');
   const asstText = lastHistoryText(session, 'assistant');
   if (voiceFacts.looksOutOfScopeItem(userText) && !session.scopedNudge) {
@@ -1493,15 +1428,7 @@ async function hydrateCall(session, callSid, fromNumber) {
   const { callsRef, findClientByPhone } = deps;
   session.callSid = callSid || session.callSid;
   session.fromNumber = fromNumber || session.fromNumber;
-  const [snap, calendarBrief] = await Promise.all([
-    session.callSid ? callsRef.doc(session.callSid).get() : Promise.resolve(null),
-    deps.calendarBrief
-      ? deps.calendarBrief().catch((error) => {
-          console.warn('voiceLive calendar:', error.message);
-          return '';
-        })
-      : Promise.resolve(''),
-  ]);
+  const snap = session.callSid ? await callsRef.doc(session.callSid).get() : null;
   const data = snap && snap.exists ? snap.data() || {} : {};
   const reception = data.aiReception || {};
   const known = await findClientByPhone(data.fromNumber || session.fromNumber);
@@ -1531,7 +1458,6 @@ async function hydrateCall(session, callSid, fromNumber) {
     session.extracted.client_name = session.clientName;
   }
   session.fromNumber = data.fromNumber || session.fromNumber;
-  session.calendarBrief = calendarBrief || '';
   const lastGreeting = [...session.history].find((item) => item && item.role === 'assistant');
   if (lastGreeting && lastGreeting.text) session.greeting = lastGreeting.text;
   if (session.callSid) sessions.set(session.callSid, session);

@@ -78,7 +78,7 @@ adb -s R5CW421KFXH shell am start -n com.example.fix_appliance_crm/.MainActivity
 Не возвращайте затирание. Если дойдёт до настоящего обучения — эти поля надо **читать** и
 подмешивать в серверный промпт, а не обнулять.
 
-Owner does **not** rewrite the phone secretary from the app. Coach chat was removed. Errors go to **Настройки → Ошибки секретаря** (`SecretaryLearnPage`); FIX copies the pack and sends it here so the agent can patch prompt/functions. Live prompt is **server-only**: `DEFAULT_VOICE_INSTRUCTIONS` + shop hours + calendar + service-area map. App greeting, collect checkboxes, `extraRules`, and `learnedRules` are **not** injected into Live. The greeting itself is also improvised: no canned line is sent to the stream (`twimlGeminiLiveStream` passes `greeting` only for the live handoff "The technician had to step away…"); `greetLive` in `functions/voice_relay.js` tells her to greet in her own words, a little differently every call. Do not re-add `DEFAULT_VOICE_GREETING` as a script anchor for Live — FIX asked for a human, off-script hello (2026-09-20).
+Owner does **not** rewrite the phone secretary from the app. Coach chat was removed. Errors go to **Настройки → Ошибки секретаря** (`SecretaryLearnPage`); FIX copies the pack and sends it here so the agent can patch prompt/functions. Live prompt is **server-only**: `DEFAULT_VOICE_INSTRUCTIONS` + shop hours + caller's own visits + service-area map (no shop-wide calendar — she does not book). App greeting, collect checkboxes, `extraRules`, and `learnedRules` are **not** injected into Live. The greeting itself is also improvised: no canned line is sent to the stream (`twimlGeminiLiveStream` passes `greeting` only for the live handoff "The technician had to step away…"); `greetLive` in `functions/voice_relay.js` tells her to greet in her own words, a little differently every call. Do not re-add `DEFAULT_VOICE_GREETING` as a script anchor for Live — FIX asked for a human, off-script hello (2026-09-20).
 
 ## Secretary behavior (current, Aug 23 2026)
 
@@ -86,14 +86,16 @@ Company on the phone: **FixApplianceCA**. Polite, easy, a little erudite. Answer
 
 - Do **not** inject fake user turns (`steerCollectAfterTurn`) after every reply — that made her not listen.
 - After confirm: model-sticker photo, then “anything else?”, then **Have a good day**. Do **not hang up**. Wait until the caller says goodbye. `end_call` is ignored.
-- Visits **Monday–Friday 7:00 a.m. – 9:00 p.m.** Toronto, last start **7:00 p.m.** Sunday: **no visit** — still take the order, offer a weekday. **Saturday: never say we are closed.** She says we do work Saturdays but every window is already booked, and offers next week (`closedDaysSpeech` in `functions/voice_facts.js`, used by `getAiAnswerSettings` and `calendarBrief`; SMS wording in `smsBusyReply`). The server still refuses to book a Saturday. Public holidays: take the order; the technician must agree. Secretary answers **24/7**.
+- Visits **Monday–Friday 7:00 a.m. – 9:00 p.m.** Toronto, last start **7:00 p.m.** Sunday: **no visit** — still take the order, ask which weekday suits them. **Saturday: never say we are closed.** She says we do work Saturdays but every window is already booked, and asks which day next week suits them (`closedDaysSpeech` in `functions/voice_facts.js`, used by `getAiAnswerSettings` and `calendarBrief`; SMS wording in `smsBusyReply`). The server still refuses to book a Saturday. Public holidays: take the order; the technician must agree. Secretary answers **24/7**.
 - We repair washers, dryers, dishwashers, gas ovens, electric ovens, **electric** cooktops, fridges, freezers, microwaves. Not gas cooktops, TVs, laptops, phones.
 - Old client: use their name; ask if the repair is at the address on file. New site → job site + who will be there + phone. Ask who is home only if it is not the owner’s house.
 - After “I’ll pass this to the tech”, ask photo, then anything else, then Have a good day. The caller hangs up.
 - Do not hang up the instant they give another repair address; keep talking.
-- **Calendar:** each visit is **2 hours**, one job per window (`functions/schedule.js`). Secretary sees a live calendar brief. If 2:00 p.m. is taken, do **not** book it — offer another time the **same day** first. Server refuses busy slots on job create (`resolveJobSchedule`). SMS reschedule uses the same check (`visit_sms.js` `tryMoveVisit`).
+- **Секретарь визиты НЕ назначает (28.09.2026, решение FIX).** Она только спрашивает, когда клиенту удобно, и говорит, что мастер свяжется и согласует время. Никаких «записала на 2», «время свободно/занято», «see you then». Что сделано: из Live-промпта убран общий `calendarBrief` (занятые/свободные окна) и инструмент `check_availability`, удалён `checkLiveSlot`; из deps `index.js` убраны `calendarBrief`/`checkBookingSlot`. Правила в `DEFAULT_VOICE_INSTRUCTIONS`, `VOICE_CALL_FLOW`/`VOICE_LIVE_FLOW`, текстовом `nextAiVoiceTurn` и `compactKnown` переписаны. Экстракция пишет пожелание в `preferred_time` (плюс `scheduled_date/time`, если назван конкретный день/час). Заявка со звонка, который принимала ИИ (`callData.answeredBy === 'ai'`), создаётся **без визита** (`resolveJobSchedule(..., { noBooking })`, `patchDraftJobFromCall(..., { noBooking })`), а в описание пишется строка «Удобное время: ср 30.09 14:00 (Wednesday afternoon)» (`preferredTimeLine`/`withPreferredTimeLine`); в `aiReviewNotes` — «Секретарь время не назначала». Звонки, где ответил мастер, по-прежнему ставят визит из записи. `hasEnoughForJob` больше не требует дня и часа. Прощание при пожелании времени — «Our technician will contact you». Просмотр и отмена **существующих** визитов (`get_caller_appointments`, `cancel_appointment`) остались. `schedule.calendarBrief`/`checkSlot` живы — ими пользуются SMS (`visit_sms.js` `tryMoveVisit`) и тесты.
 
 Spoken first name (e.g. Amelia) must go on the **client card** (`fullName`), not only the job. Do not leave `Клиент` / `Клиент +1…`. Helpers: `usableClientName` / `isPlaceholderClientName` in `functions/voice_facts.js`, `applyPersonNameToClient` in `functions/index.js`. Opening a job or client card also copies a real name from the job onto a placeholder client.
+
+**Имя клиента ≠ имя мастера/секретаря (30.09.2026).** В заявку и карточку уезжало «Artem» (мастер представился «меня зовут Артём», или клиент спросил «можно Артёма?») или имя, которым представилась секретарь. Причины: разбор записи (`processRecordingWithAiOnce`) отдавал весь диалог одной репликой `role:'user'`, а `nameFromHistory` искал «my name is / this is / I'm» во всех репликах, включая секретаря. Что сделано в `voice_facts.js`: `historyFromTranscript` разбирает «Моё:/ИИ:/Me:/AI:» → `assistant`, «Клиент:/Client:» → `user`; `selfIntroducedNames` собирает, как представилась каждая сторона; `isShopPersonName` отбрасывает имена мастерской (`SHOP_PEOPLE_NAMES` = artem/artyom/artiom, Артём через транслит, опечатки на 1 букву + как представилась сторона мастерской), если звонящий **сам** так не представился (тёзка Артём остаётся). Встроено в `nameFromHistory`/`pickClientName`/`mergeExtracted`. В промптах (`EXTRACT_CARD_RULES`, извлечение Live, текстовый режим, разбор записи и второй проход) — client_name только из реплик клиента. Тесты: `functions/voice_names.test.js`.
 
 **Контакт на адресе = клиент, если другого человека не назвали (22.09.2026).** Звонок с «я буду» оставлял `jobSiteName`/`jobSitePhone` пустыми — карточка показывала «Контакт на адресе» без имени. Теперь `voiceFacts.onSiteContactFrom(extracted, ownerName, ownerPhone)` подставляет имя и телефон клиента, если явно не назван другой человек; `explicit=true` только для другого человека (другое имя или номер). Фолбэк вшит в создание заявки, `patchDraftJobFromCall`, контакты локации карточки клиента, `applyInboundAddressToClient` и email/website-заявку. Позже названный реальный человек заменяет фолбэк, а существующий записанный контакт фолбэк не затирает. В extraction-промптах (Live `voice_relay.js`, текстовый режим и SMS/email в `index.js`): «I'll be there»/«me»/«my husband» без имени → null. Live-секретарю: «клиент будет сам — не переспрашивать имя». В приложении `JobDetailsController.contactName/contactPhone` и карточка «Где работа» (`details_tab._sitePiece`) тоже падают на данные клиента. Тесты: `voice_facts.test.js` («onSiteContactFrom…»).
 
@@ -215,6 +217,25 @@ Twilio принимает SMS (`queued`) и только потом присыл
 FIX заводит в Настройки → Каталог → Статусы; цвет оттуда подхватывается везде сам.
 Проверка: `test/status_service_test.dart`.
 
+Карточка календаря — «тихая» (29.09.2026, выбор FIX после трёх вариантов): **никаких
+подписей статуса и крупных знаков на всю карточку, штриховки нет.** Главное — логотип
+техники, статус несёт цвет. Закрытая заявка (готово/отменено) приглушается до
+`kCalendarClosedOpacity` = 0.55, у отменённой имя зачёркнуто. В углу одна маленькая отметка
+`CalendarStatusBadge` (`lib/shared/widgets/calendar_hatch.dart`): зелёная галочка в белом
+кружке — готово, красный крест — отменено, у остальных крошечное эмодзи
+`calendarStatusEmoji(status)`: 🧰 Вызов, 🔧 В работе, 💲 Депозит, 🔄 Перенос, 📦 Ожидание
+запчасти, 🔌 Установка, 📞 Позвонить, 🔁 Повторный визит, 📅 Повтор; свои статусы — по ключевому
+слову, иначе 📌. На широкой карточке отметка стоит первой в строке с именем, на узкой — в
+левом верхнем углу. `CalendarHatchPaint`/`HatchedCalendarCard(hatch:)` живы, но календарь
+`hatch` больше не передаёт; `JobStatusFrame` никем не используется.
+
+**Цвет карточки идёт только за статусом заявки (29.09.2026).** Раньше `_appointmentColor` и
+`calendarHatchFor(visitDone:)` красили визит с `outcome == done` в «Завершено», даже если
+статус потом сменили на «Позвонить» / «Установка» — визит остаётся «сделанным» после
+`markAllScheduledDone`, и цвет не менялся ни на что, кроме «Ожидание запчасти» / «Перенос» /
+«Отменено» (для них были явные исключения). Теперь `visit.isDone` на цвет и отметку не влияет;
+`_visitDragLocked` тоже смотрит на статус заявки, а на исход визита — только если заявки нет.
+
 ## Статус «Депозит» (Sep 20 2026)
 
 Базовый статус `JobStatuses.deposit` = **«Депозит»**, янтарный `0xFFFFB300` (как янтарная
@@ -235,6 +256,46 @@ FIX заводит в Настройки → Каталог → Статусы; 
   `functions/visit_sms.js` все автозаписи `status: 'Перенос'` идут через `rescheduleStatus(job)`.
 - Деплой серверной части: `firebase deploy --only functions:stripeWebhook,functions:stripePaymentComplete,functions:completeTerminalPayment,functions:incomingSms,functions:onJobWritten`
 - Проверка: `test/job_deposit_test.dart`, `test/status_service_test.dart`.
+
+## Вебхук Stripe: секрет разъехался (29.09.2026)
+
+Stripe прислал письмо «Webhook delivery issues» — живые события отбивались с 400. В логах
+`stripeWebhook signature error: No signatures found matching the expected signature`. Тело
+запроса было ни при чём: подписанное локальным `STRIPE_WEBHOOK_SECRET` событие функция
+принимала (200), то есть задеплоенный секрет совпадал с `functions/.env`, а вот **signing
+secret самого endpoint в Stripe разъехался** с ним. Не доставлено 4 события, из них живые
+деньги: checkout `cs_live_b1oF…` на **$212.40** (заявка `sItOwNRIYrAycgMmDnUU`, 25.09) и
+tap-to-pay `pi_3UEvK5…` на **$350** (`NlQfKX9dlwmbuqYyBT0J`, 12.09). Tap to Pay пишется
+из приложения (`completeTerminalPayment`), ссылка — только вебхуком или кнопкой «Проверить
+оплату» (`checkStripePayment`).
+
+Починка: старый endpoint `we_1U600aD…` удалён, создан `we_1UKssPD…` на тот же URL, его секрет
+записан в `functions/.env`, задеплоен `stripeWebhook`, проверен подписанным событием (200).
+В список событий добавлен **`refund.created`** — обработчик в коде был, а Stripe его не слал.
+
+Как диагностировать в следующий раз (ключ берётся из `functions/.env`, в репозитории его нет):
+
+- `stripe.webhookEndpoints.list()` — какие endpoint живы и какие события включены;
+- `stripe.events.list({ delivery_success: false })` — что не доехало и на какие заявки;
+- POST на `https://us-central1-fix-appliance-crm.cloudfunctions.net/stripeWebhook` с телом
+  `{"type":"ping.probe"}` и заголовком `Stripe-Signature: t=…,v1=HMAC-SHA256(t + "." + body)`
+  на локальном секрете: 200 — секрет на сервере тот же, что в `.env`; 400 — деплой отстал.
+  Тип `ping.probe` уходит в `default` и ничего не меняет.
+
+Секрет endpoint отдаётся **только при создании**, поэтому восстановить его нельзя — можно
+либо взять в Dashboard, либо пересоздать endpoint (так и сделано).
+
+## Приём карты: Interac debit (28.09.2026)
+
+Дебетовая карта клиента не проходила ни через Tap to Pay, ни через терминал:
+`createTerminalPaymentIntent` (`functions/stripe.js`) создавал PaymentIntent только с
+`card_present`, а канадский дебет идёт по **Interac** → нужен `interac_present`. Теперь
+`['card_present', 'interac_present']`; если Stripe отвергнет Interac (не включён в аккаунте),
+сервер повторит с одним `card_present`, чтобы кредитки не сломались. Вебхук
+(`handlePaymentIntentSucceeded`) тоже знает `interac_present`. Не убирайте.
+В приложении `StripeTerminalService.collectWithDialog` возвращает **причину отказа**
+(`null` = успех), и окно «The payment did not go through» показывает её под заголовком —
+раньше причина уходила только в `debugPrint`.
 
 ## UI notes
 
@@ -574,6 +635,20 @@ The warehouse dialog used to be the worst offline screen in the app; do not undo
   lookups go through `_lookupPartNumber` (6s timeout, null on failure).
 - Text controllers and the debounce `Timer` are disposed in `whenComplete` on the dialog.
 
+**Несколько фото на карточке (29.09.2026).** Кроме `imageUrl` и `webImageUrl` карточка
+держит массив `photos` — остальные свои снимки (`WarehouseItem.photos`,
+`parsePhotos`, `galleryOf`/`galleryUrls`). `imageUrl` остаётся первым: он на плитке
+в списке и в сравнении дублей, `photos` его не содержит. Убрали первое фото — на его
+место встаёт первый из `photos`, иначе карточка со снимками выглядит пустой.
+В списке склада **тап по миниатюре** открывает `FullScreenGallery` (тот же
+просмотрщик, что в заявках), тап по остальной карточке по-прежнему открывает
+редактор; на миниатюре счётчик, когда снимков больше одного. Внутри карточки под
+плитками — полоса всех снимков: «+» добавляет, тап открывает просмотр, долгий тап
+убирает (для каталожной картинки долгий тап зовёт её меню, чтобы не дублировать
+`PartImageService.discard`). При объединении карточек снимки обеих складываются, и
+старое первое фото уходит в `photos`, а не теряется. Тесты: группа «фотографии
+карточки» в `test/warehouse_stock_test.dart`.
+
 **Картинка детали из интернета (Sep 20 2026).** Карточка склада держит два снимка:
 `imageUrl` — своё фото/стикер, `webImageUrl` (+ `webImageSource`) — каталожное фото,
 которое нашёл ИИ. В списке склада главной идёт **картинка из интернета**, стикер — запасной.
@@ -646,6 +721,7 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 - Phone shade: FCM is **data-only** on Android (`functions/notify.js`) so the Twilio FCM service can always draw the tray. White `ic_stat_notify` icon. Deploy functions that call `notifyMaster` (SMS, calls, jobs, Gmail, visit confirm, estimate). Samsung: first launch may ask to ignore battery optimization.
 - Job **ДЕТАЛИ**: status 50% | client 50%. Next row: **Где работа** | **Запись разговора** (source chip Телефон/Почта/SMS/Сайт + call date/time). Unconfirmed auto job: green **Подтвердить** and red **Отменить** (trash). Several calls open a list. Visit date row: clock + date | yellow **Добавить** | confirm button with text. Call green `#008F3B`. Calendar double-tap passes slot time into create job. Manual visit confirm / reschedule sends SMS ack. Deploy `onJobWritten`.
 - Bell **Звонки ↔ Заявки**: haptic as soon as the swipe crosses the midpoint, not after the tab animation ends.
+- **«Перенос визита» из меню статусов = новая заявка (30.09.2026, решение FIX).** Раньше `addFollowUpVisit` добавлял визит в ту же заявку, и вся карточка уезжала на новую дату. Теперь `JobDetailsController.rescheduleToNewJob` → `JobService.createRescheduledFrom`: старая заявка остаётся на своей дате (визиты закрыты как выполненные, статус «Перенос», если `canMarkRescheduled`), на новую дату создаётся отдельная заявка с выбранным статусом (Диагностика→Вызов / Установка / Повторный визит), `repeatOfJobId` = старая (в карточке ссылка «Исходная заявка»). Копируются клиент, адрес, техника, описание; деньги, документы и фото — нет. SMS-галочка шлёт подтверждение уже по новой заявке (`_resendVisitBookingSms(visit, jobId:)`), затем открывается новая карточка. Правка даты существующего визита и перетаскивание в календаре по-прежнему двигают визит внутри заявки (ниже).
 - Status **Перенос**: one repair = one job card. First date on an empty job does **not** change status. A second visit, or moving a visit to another day (card, calendar drag, «Добавить»), writes `status: Перенос` — on the job-card green check draft, immediately from calendar/route. Not for Готово / Отмена / Установка. After **Ожидание запчасти**, a new visit (or day move) writes **Установка**; older visits still show as **Перенос** on the calendar via `displayStatusForVisit`. Status id **Повтор** shows as **Перенесено** (new job after a closed repair, `createRepeatFrom`). **Установка** color is indigo (`#3F51B5`), not pink-red. Route map markers and stop chips use the visit status color, not a numbered palette.
 - Job **Описание**: details tile is the original white card. Opening it has two swipe tabs — **Решение проблемы** (green) and **Описание проблемы** (red).
 - Right bell shade: do **not** `setState` the main screen when the end drawer opens (that stuttered the slide). Bell handle lives in the dock stack like the menu handle.
@@ -818,3 +894,82 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 - Тесты: `functions/job_dedupe.test.js` (16). Деплой: `firebase deploy --only functions:onJobWritten,functions:mergeDuplicateJobs,functions:syncGmailInbox,functions:retryStuckCallAi,functions:recoverStuckCallJobs`.
 
 - Проверка: `npm --prefix functions test` (107 тестов на Node 22.20.0); `flutter test --no-pub test/job_visit_sms_test.dart` (56). Реальный Gemini проверен на синтетическом lookup и подтверждённой отмене с in-memory backend, **без записи в production**. Обновлены 15 функций голос/SMS/Gmail/recovery и установлен release APK на `R5CW421KFXH`. Для shared-calendar изменений обновлять также `onJobWritten`, `sendVisitReminders`, `retryStuckCallAi`, `recoverStuckCallJobs`, `syncGmailInbox`, `sendSms`, `smsStatusCallback`, кроме основного набора голосовых функций.
+
+## Визиты в карточке заявки: «Дата визита» и «Перенос визита» (29.09.2026)
+
+`details_tab._editVisit({existing, correction, followUp})`, решение FIX:
+- Нажатие на блок **«Дата визита»** = `correction`: правит дату/время **этого же** визита (`ctrl.updateVisit(visit, correction: true)`) — без статуса «Перенос»/«Установка», подтверждение визита не трогается, SMS по умолчанию выключено.
+- **Меню статусов → «Перенос визита»** = `followUp`: всегда **новый** визит на новое число (`ctrl.addFollowUpVisit`). Прежние запланированные визиты закрываются как `done` и остаются на календаре (там их рисует «Перенос» через `displayStatusForVisit`). Статус заявки выбирается чипами: Диагностика → «Вызов», Установка, Повторный визит. Не возвращайте перенос существующего визита в этот пункт.
+
+## «Нужно изменить статус заявки?» после отъезда (28.09.2026)
+
+`OnTheWayService` (GPS: отъехал от клиента на N км) спрашивал про статус, даже если его уже поменяли у клиента (депозит ставится сам — `markDepositTaken`). Хранил снимок заявки на момент приезда, поэтому ещё и показывал старый статус. Теперь `_trackStatusChanges` на каждом `sync` помнит статус каждой заявки дня (`on_way_seen_status_<день>` в prefs): статус сменился — заявка идёт в `_statusPrompted`, висящий вопрос снимается вместе с уведомлением (`LocalNotificationService.cancelLeaveStatus`), `_originJob`/`pendingStatus` заменяются свежими копиями. Спрашивает только когда статус за визит не трогали.
+
+## Подписки, сеть и серверные гонки (29.09.2026)
+
+- Потоки Firestore в основных экранах и колокольчике создаются один раз на `State`, а не при каждом `build`. В переписке `_bindStreams` вызывается при смене получателя/канала/параметров, но не при наборе текста. Не заменять это глобальным broadcast-потоком без replay: новый подписчик может не получить начальные данные.
+- `FieldAssistantHost` всегда возвращает один и тот же `Stack`, даже без баннера. Переход `child` → `Stack(child)` пересоздавал весь основной интерфейс и терял открытый экран. После асинхронного bootstrap проверяется `mounted`, иначе подписка на заявки создавалась уже после `dispose`.
+- `getWithTimeout` в `network_status_service.dart`: 12 секунд на GET вместе с телом ответа, HTTP-клиент закрывается и при таймауте. Используется картами, адресным поиском, определением часового пояса и картинками PDF. Стартовые серверные настройки больше не блокируют показ приложения. `CalendarEventService.save` и `ScheduledMessageService.schedule` используют `settleWrite`.
+- В HTTP-функциях `requireAppUser` проверяет не только токен, но и `APP_OWNER_UIDS` в `functions/auth_guard.js`. Добавляя второго мастера, обновлять список здесь **и** `owners()` в Firestore/Storage. Тесты: `functions/auth_guard.test.js`.
+- `processScheduledMessages` получает данные из результата успешно завершённой транзакции. Нельзя выносить `claimed = true` за её результат: при повторе callback после конфликта оставалось старое true и уходило второе/отменённое SMS. В транзакции заново проверяются статус и время, отправляется свежий текст/получатель. Pending читаются страницами: первая страница из 50 будущих сообщений не должна блокировать уже наступившую отправку. За запуск отправляется не более 50 сообщений. Тесты в `functions/ingress.test.js` используют только заглушки Firestore и Twilio.
+- Регрессии интерфейса/офлайна: `test/runtime_performance_test.dart`; таймауты и закрытие HTTP-клиента: `test/network_requests_test.dart`. Запуск: `flutter test --no-pub --reporter expanded`.
+- По подтверждению владельца удалены неиспользуемые `global_search_delegate.dart` и `job_status_frame.dart`. Действующий поиск — `GlobalSearchOverlay`; оформление календаря остаётся в `calendar_hatch.dart`.
+- Окружение Windows: старый `JAVA_HOME=C:\Program Files\Android\Android Studio\jbr` теперь неполный (`lib/jvm.cfg` отсутствует). Исправный JDK — `C:\Program Files\Android\Android Studio1\jbr` (проверен `java -version`); Flutter выбирает его сам, что видно в `flutter doctor -v`. Для прямого запуска `gradlew.bat` задавать этот `JAVA_HOME` в окружении команды, сохраняя `GRADLE_USER_HOME=C:\gradle`. Глобальные настройки не менялись.
+- Проверено и развёрнуто 29.09.2026: 270 Flutter-тестов, 185 Node-тестов на Node 22.20.0, `flutter analyze --no-pub --no-fatal-infos` без ошибок/предупреждений, нативные `:app:testDebugUnitTest`, release APK. APK установлен на `R5CW421KFXH`; просмотр календаря/клиентов/склада/отчётов, поиск и прокрутка проверены, новых Flutter/Android Error в журнале запуска нет. Развёрнуты 22 HTTP-функции, использующие `requireAppUser`, и `processScheduledMessages`; голосовые Live/Twilio webhooks не обновлялись в этом деплое. Все 22 HTTP-функции проверены без токена (401; `shortenLink` проверять POST, GET у него штатно 405). Запрос `getStripeBalance` с телефона после деплоя — 200; свежий журнал планировщика показывает регулярные успешные проходы. Реальные тестовые сообщения, звонки и платежи не создавались. Длительный нагрузочный прогон этим не заменяется.
+
+## Сквозные цепочки звонка и оплаты (29.09.2026)
+
+Обе цепочки закрыты тестами на заглушках Twilio/Stripe/Gemini/Firestore, без реальных
+звонков и денег: `functions/call_flow.test.js` (входящий → мастер не взял → Live →
+`aiRelayComplete` → запись → `processQueuedCallRecording` → клиент + заявка без визита +
+уведомление; повтор триггера; повторный звонок того же клиента; звонок мастера с визитом;
+отказ и удалённый звонок) и `functions/stripe.test.js` (ссылка Checkout → вебхуки в любом
+порядке и дубли → одна запись, чаевые отдельно; Tap to Pay; возврат). Что исправлено:
+
+- **Платёж Stripe не пропадает под записью приложения.** Карточка сохраняет `documents`
+  целиком (`JobService.updateDocuments`), и оплата, записанная вебхуком пока телефон был без
+  сети, стиралась очередью Firestore. `functions/payment_guard.js` +
+  `restoreStripePaymentsIfLost` в `onJobWritten` возвращают платежи с id Stripe (сессия,
+  PaymentIntent, инвойс, возврат), пропавшие между `before` и `after`; повторный триггер уже
+  ничего не чинит. Наличные и целиком удалённый документ не трогаются.
+- Серверные правки `doc.stripe` (`createStripePayment`, `createTerminalPaymentIntent`,
+  истёкшая ссылка в `checkStripePayment`) идут транзакцией `patchJobDocument`, а не
+  записью прочитанного ранее массива.
+- Оплата засчитывается только при `payment_status: paid` (`sessionIsPaid`): страница
+  «спасибо» и проверка из приложения раньше принимали `status: complete` без денег.
+- `invoice.paid`, пришедший раньше `checkout.session.completed`, теперь тоже даёт метку
+  «Stripe (deposit)» и отдельную строку чаевых (`tipFromMetadata`).
+- Уведомление владельцу — только на первую запись оплаты; повтор вебхука, `checkStripePayment`
+  и страница «спасибо» его больше не дублируют (`duplicate` в `recordStripePayment`).
+- Полный возврат оплаченного счёта ставит `refunded` и `suggestCancel`: раньше `invoiceDocPaid`
+  при обнулившихся платежах и `stripe.status: paid` подставлял полную сумму, и выходило
+  `partially_refunded` (`paidBefore` в `recordDocumentRefund`).
+- После звонка секретаря разбор записи ждал 9 с заявку от Live-релея, который заявки не
+  создаёт; ожидание пропускается при `aiReception.done`.
+
+Развёрнуто: Stripe-функции, `onJobWritten`, `processQueuedCallRecording`,
+`processCallRecording`, `recoverStuckCallJobs`, `aiRelayComplete`, `recordingComplete`.
+`aiVoiceRelay` не трогался. Оба новых файла добавлены в `npm test` (198 тестов).
+
+## Календарь: линия «сейчас» (30.09.2026)
+
+`lib/features/calendar/now_time_overlay.dart` — красная плашка с текущим временем (жирно) на шкале часов и линия через все дни (в колонке сегодня — толще, с точкой). Рисуется поверх SfCalendar в день/неделя/5 дней, только если сегодня на экране. Позицию берёт из вертикального `Scrollable` внутри календаря (ищет видимую страницу из трёх), обновляется по `ScrollNotification` и раз в 20 с. Встроенный `showCurrentTimeIndicator` выключен, чтобы не было двух линий; обычные метки часов — w500/black54.
+
+
+## Переходы: карточки удалённых записей снимаются со стека (30.09.2026)
+
+`lib/shared/stale_routes.dart` (`StaleRoutes`). Было: заявка → клиент → та же заявка → «Отменить» → попадаешь в клиента, а «Назад» возвращает в отменённую заявку. Теперь `JobDetailsScreen` и `ClientDetailsScreen` регистрируются (`watchJob`/`watchClient`), и когда запись уходит в корзину или удаляется — все её карточки снимаются со всех навигаторов (глубокие `removeRoute`, верхняя `pop`); под ними остаётся живой экран или корень вкладки. Срабатывает из кнопок удаления/«Отменить»/соединения дублей и из снимка Firestore (удалили в другом месте или на другом устройстве). Закрываем только при переходе «живая → корзина»: карточку, открытую из корзины, не трогаем. Пока `serverTimestamp` не подтверждён, `deletedAt` в локальном снимке `null` — см. `StaleRoutes.isTrashed`. Не возвращайте `Navigator.pop` после удаления: он закрывает только верхнюю копию. Тест: `test/stale_routes_test.dart`.
+
+
+## Удобство одной рукой: главное внизу (30.09.2026)
+
+Решение FIX: всё, что жмут часто, — в нижней части экрана, под большим пальцем.
+
+- **Дата и время** — только `lib/core/utils/app_date_picker.dart`: `AppDateTimePanel` (месяц + сразу под ним барабан времени, без второго окна), `showAppDateTimeSheet` (дата+время, галочка внизу), `showAppDateSheet` (только дата, нажатие на число закрывает окно), `showAppDateRangeSheet` (период, отпуск). `showAppTimePicker` теперь тоже нижнее окно. **Не возвращайте `showDatePicker`/`showDateRangePicker`** и цепочку «сначала дата, потом отдельное окно времени». В окне визита (`details_tab._editVisit`) календарь и кнопка «Заказ принят/Сохранить» прибиты к низу; заметка/пресеты/SMS прокручиваются выше; при открытой клавиатуре календарь прячется, остаётся строка с датой.
+- **Подтверждения** («Удалить?», «Соединить?», «Объединить?» и т.д.) — `showConfirmCancelSheet` из `confirm_action_sheet.dart`, не `AlertDialog`. Формы с полями ввода и справки остались диалогами.
+- **Карточка заявки** (решение FIX, 30.09.2026): внизу **только** вкладки ДЕТАЛИ/ФИНАНСЫ/ЧАТ. Кнопки «Сохранить» нет — правки сохраняются по «Назад» через `showUnsavedChangesDialog` («Подтвердить / Продолжить / Не сохранять»). Корзина удаления — в правом верхнем углу.
+- **Клиенты / Склад**: поиск и «+» внизу; режим выбора — `SelectionActionBar` внизу.
+- **Фото детали на складе** (30.09.2026): в окне детали одна кнопка «+» под полосой снимков. Она открывает снизу квадрат «Сканировать и добавить» (камера → ИИ/OCR заполняет поля, снимок уходит в фото) и справа «Добавить фото» (галерея, несколько сразу) и «Сделать фото». Плиток «Фото» / «Найти фото» / «Сканер ИИ» больше нет. Картинку из интернета (`PartImageService.find`) ищем сами: при наборе номера/названия и один раз при открытии старой карточки без снимков. Найденное **сразу** встаёт в полосу (значок глобуса), без «принять/отклонить». Не сохранили карточку — новая картинка убирается из Storage в `whenComplete`. Долгое нажатие на снимок: «Сделать фото по умолчанию» (поле `coverUrl`, звёздочка) / «Поискать другую картинку» (только у картинки из интернета) / «Убрать фото». `WarehouseItem.galleryOf(coverUrl: …)` ставит обложку первой, только если такой снимок ещё есть в карточке; первый снимок галереи и есть картинка в списке склада и `displayImageUrl`.
+- **Карточка клиента**: «Удалить» / «Новый ремонт» / «Изменить» — нижняя полоса.
+- **Переписка**: «Карточка», «Имя и адрес в карточку», «Позвонить» — в строке SMS/Email над полем ввода; при выборе сообщений панель действий встаёт вместо поля ввода.
+- Тест: `test/app_date_picker_test.dart`.

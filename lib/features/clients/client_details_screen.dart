@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
@@ -11,6 +13,8 @@ import '../calls/call_screen.dart';
 import '../messages/conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../models/job.dart';
+import '../../shared/stale_routes.dart';
+import '../../shared/widgets/confirm_action_sheet.dart';
 import 'edit_client_sheet.dart';
 
 class ClientDetailsScreen extends StatefulWidget {
@@ -30,15 +34,62 @@ class ClientDetailsScreen extends StatefulWidget {
 class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _historyTabs;
+  late final _callsStream = TwilioService.streamAll();
+  Stream<DocumentSnapshot>? _clientStream;
+  late Stream<List<Job>> _jobsStream;
+  StreamSubscription<DocumentSnapshot>? _goneSub;
 
   @override
   void initState() {
     super.initState();
     _historyTabs = TabController(length: 2, vsync: this);
+    _bindClient();
+  }
+
+  void _bindClient() {
+    _clientStream = widget.clientId.isEmpty
+        ? null
+        : FirestoreService.clientsRef.doc(widget.clientId).snapshots();
+    _jobsStream = JobService.streamByClient(widget.clientId);
+    _watchGone();
+  }
+
+  /// Клиента удалили или отправили в корзину (здесь, при объединении
+  /// дублей, на другом устройстве) — снимаем все его карточки со стека.
+  /// Карточку, открытую уже из корзины, не закрываем.
+  void _watchGone() {
+    _goneSub?.cancel();
+    final id = widget.clientId;
+    StaleRoutes.watchClient(id, this);
+    if (id.isEmpty) return;
+    var seenAlive = false;
+    _goneSub = FirestoreService.clientsRef.doc(id).snapshots().listen((snap) {
+      final data = snap.exists ? snap.data() as Map<String, dynamic>? : null;
+      if (data == null) {
+        if (seenAlive || !snap.metadata.isFromCache) {
+          StaleRoutes.dropClient(id);
+        }
+      } else if (!StaleRoutes.isTrashed(data, snap.metadata)) {
+        seenAlive = true;
+      } else if (seenAlive) {
+        StaleRoutes.dropClient(id);
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant ClientDetailsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.clientId != widget.clientId) {
+      StaleRoutes.unwatchClient(oldWidget.clientId, this);
+      _bindClient();
+    }
   }
 
   @override
   void dispose() {
+    _goneSub?.cancel();
+    StaleRoutes.unwatchClient(widget.clientId, this);
     _historyTabs.dispose();
     super.dispose();
   }
@@ -150,33 +201,18 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
   }
 
   Future<void> _deleteClient(String name) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      useRootNavigator: true,
-      builder: (context) => AlertDialog(
-        title: Text('Удалить клиента?'.tr),
-        content: Text('$name\n\n${'Карточка будет удалена. Заявки в календаре останутся.'.tr}'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: Text('Удалить'.tr),
-          ),
-        ],
-      ),
+    final confirm = await showConfirmCancelSheet(
+      context,
+      title: 'Удалить клиента?'.tr,
+      message:
+          '$name\n\n${'Карточка будет удалена. Заявки в календаре останутся.'.tr}',
+      confirmLabel: 'Удалить'.tr,
     );
-    if (confirm != true) return;
+    if (!confirm || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
-    await ClientService.delete(widget.clientId);
-    if (!mounted) return;
-    Navigator.pop(context);
+    final clientId = widget.clientId;
+    await ClientService.delete(clientId);
+    StaleRoutes.dropClient(clientId);
     messenger.showSnackBar(
       SnackBar(
         content: Text('Клиент удалён'.tr),
@@ -208,9 +244,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot>(
-      stream: widget.clientId.isNotEmpty
-          ? FirestoreService.clientsRef.doc(widget.clientId).snapshots()
-          : null,
+      stream: _clientStream,
       builder: (context, snapshot) {
         final data = snapshot.data?.data() as Map<String, dynamic>? ?? widget.clientData;
         final name = _extractClientName(data);
@@ -223,12 +257,61 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         final topInset = MediaQuery.viewPaddingOf(context).top;
 
         return Scaffold(
-          floatingActionButton: FloatingActionButton.extended(
-            onPressed: () => _openNewJob(name, phone, address, email: email, company: company),
-            backgroundColor: AppColors.accent,
-            foregroundColor: Colors.black,
-            icon: const Icon(Icons.add),
-            label: Text('Новый ремонт'.tr),
+          // «Изменить», «Новый ремонт» и «Удалить» — внизу, под большим пальцем.
+          bottomNavigationBar: SafeArea(
+            minimum: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+            child: Row(
+              children: [
+                IconButton.filledTonal(
+                  tooltip: 'Удалить клиента'.tr,
+                  iconSize: 26,
+                  style: IconButton.styleFrom(
+                    minimumSize: const Size(52, 52),
+                    foregroundColor: Colors.red,
+                    backgroundColor: Colors.red.withValues(alpha: 0.1),
+                  ),
+                  onPressed: () => _deleteClient(name),
+                  icon: const Icon(Icons.delete_outline),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: SizedBox(
+                    height: 52,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _openNewJob(name, phone, address, email: email, company: company),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accent,
+                        foregroundColor: Colors.black,
+                        elevation: 2,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      icon: const Icon(Icons.add),
+                      label: Text(
+                        'Новый ремонт'.tr,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                IconButton.filledTonal(
+                  tooltip: 'Изменить'.tr,
+                  iconSize: 26,
+                  style: IconButton.styleFrom(
+                    minimumSize: const Size(52, 52),
+                    foregroundColor: AppColors.primary,
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.1),
+                  ),
+                  onPressed: () => _editClientDialog(data),
+                  icon: const Icon(Icons.edit),
+                ),
+              ],
+            ),
           ),
           body: NestedScrollView(
             headerSliverBuilder: (context, innerBoxIsScrolled) => [
@@ -245,23 +328,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                   ),
                   child: Column(
                     children: [
-                      SizedBox(height: topInset),
-                      Row(
-                        children: [
-                          _headerIcon(
-                            icon: Icons.delete,
-                            color: Colors.red,
-                            tooltip: 'Удалить клиента'.tr,
-                            onTap: () => _deleteClient(name),
-                          ),
-                          const Spacer(),
-                          _headerIcon(
-                            icon: Icons.edit,
-                            tooltip: 'Изменить'.tr,
-                            onTap: () => _editClientDialog(data),
-                          ),
-                        ],
-                      ),
+                      SizedBox(height: topInset + 12),
                       CircleAvatar(
                         radius: 28,
                         backgroundColor: Colors.white,
@@ -385,28 +452,6 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         );
       },
     );
-  }
-
-  Widget _headerIcon({
-    required IconData icon,
-    required VoidCallback onTap,
-    Color color = Colors.white,
-    String? tooltip,
-  }) {
-    final button = Material(
-      color: Colors.transparent,
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onTap,
-        child: SizedBox(
-          width: 44,
-          height: 44,
-          child: Icon(icon, color: color),
-        ),
-      ),
-    );
-    if (tooltip == null) return button;
-    return Tooltip(message: tooltip, child: button);
   }
 
   Widget _buildActionButton({
@@ -549,7 +594,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
   Widget _buildCallHistory(Map<String, dynamic> data) {
     final phones = _phoneKeys(data);
     return StreamBuilder<List<CallRecord>>(
-      stream: TwilioService.streamAll(),
+      stream: _callsStream,
       builder: (context, snapshot) {
         final calls = [
           for (final call in snapshot.data ?? const <CallRecord>[])
@@ -610,7 +655,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
 
   Widget _buildJobsHistory() {
     return StreamBuilder<List<Job>>(
-      stream: JobService.streamByClient(widget.clientId),
+      stream: _jobsStream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());

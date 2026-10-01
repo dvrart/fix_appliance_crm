@@ -1,3 +1,4 @@
+import 'package:fix_appliance_crm/models/warehouse_item.dart';
 import 'package:fix_appliance_crm/services/warehouse_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -126,6 +127,82 @@ void main() {
       expect(WarehouseService.shouldApplyStock(doc, reverse: true), isFalse);
       doc['stockApplied'] = true;
       expect(WarehouseService.shouldApplyStock(doc, reverse: true), isTrue);
+    });
+  });
+
+  group('фотографии карточки', () {
+    test('первым идёт снимок с плитки, повторов нет', () {
+      expect(
+        WarehouseItem.galleryOf(
+          imageUrl: 'a.jpg',
+          webImageUrl: 'web.jpg',
+          photos: ['b.jpg', 'a.jpg', 'web.jpg'],
+        ),
+        ['web.jpg', 'a.jpg', 'b.jpg'],
+      );
+    });
+
+    test('без каталожной картинки первым идёт своё фото', () {
+      expect(
+        WarehouseItem.galleryOf(imageUrl: 'a.jpg', photos: ['b.jpg']),
+        ['a.jpg', 'b.jpg'],
+      );
+    });
+
+    test('пустые поля не попадают в галерею', () {
+      expect(
+        WarehouseItem.galleryOf(
+          imageUrl: '',
+          webImageUrl: '   ',
+          photos: ['', 'b.jpg'],
+        ),
+        ['b.jpg'],
+      );
+    });
+
+    test('обложка, выбранная долгим нажатием, идёт первой и в списке', () {
+      final item = WarehouseItem.fromMap(
+        {
+          'name': 'Насос',
+          'price': 10,
+          'imageUrl': 'a.jpg',
+          'webImageUrl': 'web.jpg',
+          'photos': ['b.jpg'],
+          'coverUrl': 'b.jpg',
+        },
+        'w1',
+      );
+      expect(item.galleryUrls, ['b.jpg', 'web.jpg', 'a.jpg']);
+      expect(item.displayImageUrl, 'b.jpg');
+    });
+
+    test('обложка удалённого снимка не показывается', () {
+      expect(
+        WarehouseItem.galleryOf(
+          coverUrl: 'gone.jpg',
+          imageUrl: 'a.jpg',
+          webImageUrl: 'web.jpg',
+        ),
+        ['web.jpg', 'a.jpg'],
+      );
+    });
+
+    test('старый документ без photos читается', () {
+      final item = WarehouseItem.fromMap(
+        {'name': 'Ремень', 'imageUrl': 'a.jpg', 'price': 10},
+        'w1',
+      );
+      expect(item.photos, isEmpty);
+      expect(item.galleryUrls, ['a.jpg']);
+    });
+
+    test('список фото из документа: мусор и повторы отсеиваются', () {
+      expect(
+        WarehouseItem.parsePhotos(['a.jpg', ' a.jpg ', '', 'b.jpg']),
+        ['a.jpg', 'b.jpg'],
+      );
+      expect(WarehouseItem.parsePhotos(null), isEmpty);
+      expect(WarehouseItem.parsePhotos('a.jpg'), ['a.jpg']);
     });
   });
 }

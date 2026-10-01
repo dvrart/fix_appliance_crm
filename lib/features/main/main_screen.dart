@@ -73,7 +73,6 @@ class _MainScreenState extends State<MainScreen>
       _TabNavObserver(_syncRoot),
     ];
     OfflineQueueService.flush();
-    unawaited(JobService.recoverMissingCallJobs());
     unawaited(JobService.completeLegacyJobsIfNeeded());
     AppCommands.selectTab.addListener(_onSelectTabCommand);
     AppCommands.commsTab.addListener(_onCommsTabChanged);

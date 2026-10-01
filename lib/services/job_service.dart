@@ -359,7 +359,30 @@ class JobService {
   }
 
   /// Новая заявка: тот же клиент, техника и неисправность после готового ремонта.
-  static Future<String> createRepeatFrom(Job original) async {
+  static Future<String> createRepeatFrom(Job original) =>
+      create(_followUpOf(original, status: JobStatuses.repeat));
+
+  /// «Перенос визита»: исходная заявка остаётся на своей дате, а на новую
+  /// дату — отдельная заявка с выбранным статусом и ссылкой на исходную.
+  static Future<String> createRescheduledFrom(
+    Job original, {
+    required JobVisit visit,
+    required String status,
+  }) {
+    return create(
+      _followUpOf(
+        original,
+        status: status,
+      ).copyWith(
+        visits: [visit],
+        scheduledAt: visit.startAt,
+        durationMinutes: visit.durationMinutes,
+        needsReview: original.needsReview,
+      ),
+    );
+  }
+
+  static Job _followUpOf(Job original, {required String status}) {
     final appliances = original.appliances
         .map(
           (item) => JobAppliance(
@@ -371,7 +394,7 @@ class JobService {
           ),
         )
         .toList();
-    final job = Job(
+    return Job(
       id: '',
       clientId: original.clientId,
       clientName: original.clientName,
@@ -384,14 +407,13 @@ class JobService {
       jobSiteEmail: original.jobSiteEmail,
       appliances: appliances,
       description: original.description,
-      status: JobStatuses.repeat,
+      status: status,
       priority: original.priority,
       city: original.city,
       createdAt: DateTime.now(),
       durationMinutes: original.durationMinutes,
       repeatOfJobId: original.id,
     );
-    return create(job);
   }
 
   /// Обновить заявку

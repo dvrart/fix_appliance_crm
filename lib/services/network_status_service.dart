@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import '../core/constants.dart';
 import 'auth_service.dart';
@@ -122,6 +123,19 @@ Future<void> settleWrite(
         debugPrint('Отложенная запись не прошла: $error');
       }),
     );
+  }
+}
+
+Future<http.Response> getWithTimeout(
+  Uri url, {
+  Map<String, String>? headers,
+  Duration timeout = const Duration(seconds: 12),
+}) async {
+  final client = http.Client();
+  try {
+    return await client.get(url, headers: headers).timeout(timeout);
+  } finally {
+    client.close();
   }
 }
 

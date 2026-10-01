@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/utils/app_date_picker.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/constants.dart';
@@ -112,12 +113,12 @@ class _WorkDaysSettingsPageState extends State<WorkDaysSettingsPage> {
 
   Future<void> _addHoliday() async {
     final now = DateTime.now();
-    final picked = await showDatePicker(
+    final picked = await showAppDateSheet(
       context: context,
-      initialDate: now,
+      initial: now,
       firstDate: DateTime(now.year - 1),
       lastDate: DateTime(now.year + 3),
-      helpText: context.tr('Выходной день', 'Day off'),
+      title: context.tr('Выходной день', 'Day off'),
     );
     if (picked == null || !mounted) return;
     final key = SettingsService.ymd(picked);
@@ -130,12 +131,11 @@ class _WorkDaysSettingsPageState extends State<WorkDaysSettingsPage> {
 
   Future<void> _addVacation() async {
     final now = DateTime.now();
-    final range = await showDateRangePicker(
+    final range = await showAppDateRangeSheet(
       context: context,
       firstDate: DateTime(now.year - 1),
       lastDate: DateTime(now.year + 3),
-      helpText: context.tr('Отпуск', 'Vacation'),
-      saveText: context.tr('Готово', 'Done'),
+      title: context.tr('Отпуск', 'Vacation'),
     );
     if (range == null || !mounted) return;
     setState(() {

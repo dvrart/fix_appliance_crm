@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import '../../../shared/widgets/confirm_action_sheet.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/constants.dart';
@@ -66,7 +67,7 @@ class ReviewBellButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
       builder:
-          (jobs, pending, processing, emailOffers, _, smsOffers, failedSms) {
+          (jobs, pending, processing, emailOffers, smsOffers, failedSms) {
         final count = inboxCount(
           jobs: jobs,
           pending: pending,
@@ -223,7 +224,7 @@ class ReviewBellPickleIcon extends StatelessWidget {
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
       builder:
-          (jobs, pending, processing, emailOffers, _, smsOffers, failedSms) {
+          (jobs, pending, processing, emailOffers, smsOffers, failedSms) {
         final count = ReviewBellButton.inboxCount(
           jobs: jobs,
           pending: pending,
@@ -681,29 +682,17 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
         if (item.onClear != null) item,
     ];
     if (clearable.isEmpty || _clearing) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(context.tr('Очистить уведомления', 'Clear notifications')),
-        content: Text(
-          context.tr(
-            'Убрать их с колокольчика? Разборы секретаря в скрипт не попадут.',
-            'Remove them from the bell? Secretary reviews will not enter the script.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: Text(context.tr('Отмена', 'Cancel')),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: Text(context.tr('Очистить', 'Clear')),
-          ),
-        ],
+    final ok = await showConfirmCancelSheet(
+      context,
+      title: context.tr('Очистить уведомления', 'Clear notifications'),
+      message: context.tr(
+        'Убрать их с колокольчика? Разборы секретаря в скрипт не попадут.',
+        'Remove them from the bell? Secretary reviews will not enter the script.',
       ),
+      confirmLabel: context.tr('Очистить', 'Clear'),
+      cancelLabel: context.tr('Отмена', 'Cancel'),
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     setState(() => _clearing = true);
     try {
       await Future.wait([for (final item in clearable) item.onClear!()]);
@@ -747,7 +736,7 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
       builder:
-          (jobs, pendingAll, processing, emailOffers, _, smsOffers, failedSms) {
+          (jobs, pendingAll, processing, emailOffers, smsOffers, failedSms) {
         final items = _items(
           jobs: jobs,
           pending: pendingAll,
@@ -958,13 +947,12 @@ class _BellCard extends StatelessWidget {
   }
 }
 
-class _ReviewInboxStreams extends StatelessWidget {
+class _ReviewInboxStreams extends StatefulWidget {
   final Widget Function(
     List<Job> jobs,
     List<CallRecord> pending,
     List<CallRecord> processing,
     List<SmsMessage> emailOffers,
-    List<Job> waitingParts,
     List<SmsMessage> smsOffers,
     List<SmsMessage> failedSms,
   ) builder;
@@ -972,42 +960,44 @@ class _ReviewInboxStreams extends StatelessWidget {
   const _ReviewInboxStreams({required this.builder});
 
   @override
+  State<_ReviewInboxStreams> createState() => _ReviewInboxStreamsState();
+}
+
+class _ReviewInboxStreamsState extends State<_ReviewInboxStreams> {
+  late final _jobs = JobService.streamNeedsReview();
+  late final _pending = TwilioService.getPendingReviewCalls();
+  late final _processing = TwilioService.getAiProcessingCalls();
+  late final _emailOffers = SmsService.streamEmailOffers();
+  late final _smsOffers = SmsService.streamSmsOffers();
+  late final _failedSms = SmsService.streamFailedOutbound();
+
+  @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<Job>>(
-      stream: JobService.streamNeedsReview(),
+      stream: _jobs,
       builder: (context, jobsSnap) {
         return StreamBuilder<List<CallRecord>>(
-          stream: TwilioService.getPendingReviewCalls(),
+          stream: _pending,
           builder: (context, pendingSnap) {
             return StreamBuilder<List<CallRecord>>(
-              stream: TwilioService.getAiProcessingCalls(),
+              stream: _processing,
               builder: (context, processingSnap) {
                 return StreamBuilder<List<SmsMessage>>(
-                  stream: SmsService.streamEmailOffers(),
+                  stream: _emailOffers,
                   builder: (context, offersSnap) {
-                    return StreamBuilder<List<Job>>(
-                      stream: JobService.streamByStatus(
-                        JobStatuses.waitingPart,
-                      ),
-                      builder: (context, partsSnap) {
+                    return StreamBuilder<List<SmsMessage>>(
+                      stream: _smsOffers,
+                      builder: (context, smsOffersSnap) {
                         return StreamBuilder<List<SmsMessage>>(
-                          stream: SmsService.streamSmsOffers(),
-                          builder: (context, smsOffersSnap) {
-                            return StreamBuilder<List<SmsMessage>>(
-                              stream: SmsService.streamFailedOutbound(),
-                              builder: (context, failedSnap) {
-                                return builder(
-                                  jobsSnap.data ?? const <Job>[],
-                                  pendingSnap.data ?? const <CallRecord>[],
-                                  processingSnap.data ??
-                                      const <CallRecord>[],
-                                  offersSnap.data ?? const <SmsMessage>[],
-                                  partsSnap.data ?? const <Job>[],
-                                  smsOffersSnap.data ??
-                                      const <SmsMessage>[],
-                                  failedSnap.data ?? const <SmsMessage>[],
-                                );
-                              },
+                          stream: _failedSms,
+                          builder: (context, failedSnap) {
+                            return widget.builder(
+                              jobsSnap.data ?? const <Job>[],
+                              pendingSnap.data ?? const <CallRecord>[],
+                              processingSnap.data ?? const <CallRecord>[],
+                              offersSnap.data ?? const <SmsMessage>[],
+                              smsOffersSnap.data ?? const <SmsMessage>[],
+                              failedSnap.data ?? const <SmsMessage>[],
                             );
                           },
                         );

@@ -53,8 +53,10 @@ class JobStatuses {
     cancelled,
   ];
 
-  /// Не предлагаем вручную: «В работе» убран, «Перенос» ставится сам.
-  static const List<String> hideFromPicker = [inProgress, rescheduled];
+  /// Не предлагаем вручную: «В работе» убран, «Перенос» ставится сам,
+  /// «Повтор» («Перенесено») ставит только createRepeatFrom — перенос визита
+  /// делается пунктом «Перенос визита» в меню статусов.
+  static const List<String> hideFromPicker = [inProgress, rescheduled, repeat];
 
   static String defaultLabel(String status) {
     switch (status) {

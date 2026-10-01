@@ -1,12 +1,12 @@
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
 import '../core/constants.dart';
 import 'maps_service.dart';
+import 'network_status_service.dart';
 
 class GeoTimeInfo {
   final String timeZoneId;
@@ -187,7 +187,7 @@ class AppTimeService {
     });
 
     try {
-      final response = await http.get(uri);
+      final response = await getWithTimeout(uri);
       if (response.statusCode == 200) {
         final data = json.decode(response.body) as Map<String, dynamic>;
         if (data['status'] == 'OK') {

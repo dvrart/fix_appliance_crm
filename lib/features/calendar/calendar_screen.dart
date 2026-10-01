@@ -28,6 +28,7 @@ import '../../shared/widgets/calendar_hatch.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
 import '../../shared/widgets/visit_confirm_badge.dart';
 import 'visit_link_overlay.dart';
+import 'now_time_overlay.dart';
 import 'calendar_event_sheet.dart';
 import '../../services/error_log_service.dart';
 
@@ -41,6 +42,7 @@ class CalendarScreen extends StatefulWidget {
 class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   final CalendarController _calendarController = CalendarController();
   final VisitLinkHub _visitLinkHub = VisitLinkHub();
+  final NowLineController _nowLine = NowLineController();
   final GlobalKey _visitLinkOverlayKey = GlobalKey();
   StreamSubscription? _configSub;
   StreamSubscription? _eventsSub;
@@ -70,6 +72,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   final ValueNotifier<double> _slotHeight = ValueNotifier<double>(-1);
   final ValueNotifier<bool> _pinching = ValueNotifier<bool>(false);
   late final Stream<QuerySnapshot> _jobsSnap;
+  late final _statusesStream = StatusService.streamDefs();
   int? _pinchId1;
   int? _pinchId2;
   Offset? _pinchP1;
@@ -126,34 +129,39 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
         .collection('settings')
         .doc('config')
         .snapshots()
-        .listen((doc) {
-      if (!mounted) return;
-      final data = doc.data() ?? <String, dynamic>{};
-      AppTimeService.applyConfig(data);
-      final defaultView = SettingsService.readDefaultCalendarView(data);
-      setState(() {
-        _scheduleConfig = data;
-        _firstDayOfWeek = (data['firstDayOfWeek'] as num?)?.toInt() ?? 1;
-        _workStartMinutes = SettingsService.readWorkStartMinutes(data);
-        _workEndMinutes = SettingsService.readWorkEndMinutes(data);
-        _defaultDurationMinutes = SettingsService.readJobDurationMinutes(data);
-        _defaultViewMode = defaultView;
-        // Неделя и 5 дней — отдельные виды. Не схлопывать week в workWeek.
-        _isLoadingSettings = false;
-      });
-      if (!_appliedDefaultView) {
-        _appliedDefaultView = true;
-        _selectCalendarMode(defaultView);
-      } else {
-        _publishHomeState();
-      }
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && !_showList) _scrollWorkHoursIntoView();
-      });
-    }, onError: (e) {
-      debugPrint('Ошибка загрузки настроек: $e');
-      if (mounted) setState(() => _isLoadingSettings = false);
-    });
+        .listen(
+          (doc) {
+            if (!mounted) return;
+            final data = doc.data() ?? <String, dynamic>{};
+            AppTimeService.applyConfig(data);
+            final defaultView = SettingsService.readDefaultCalendarView(data);
+            setState(() {
+              _scheduleConfig = data;
+              _firstDayOfWeek = (data['firstDayOfWeek'] as num?)?.toInt() ?? 1;
+              _workStartMinutes = SettingsService.readWorkStartMinutes(data);
+              _workEndMinutes = SettingsService.readWorkEndMinutes(data);
+              _defaultDurationMinutes = SettingsService.readJobDurationMinutes(
+                data,
+              );
+              _defaultViewMode = defaultView;
+              // Неделя и 5 дней — отдельные виды. Не схлопывать week в workWeek.
+              _isLoadingSettings = false;
+            });
+            if (!_appliedDefaultView) {
+              _appliedDefaultView = true;
+              _selectCalendarMode(defaultView);
+            } else {
+              _publishHomeState();
+            }
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted && !_showList) _scrollWorkHoursIntoView();
+            });
+          },
+          onError: (e) {
+            debugPrint('Ошибка загрузки настроек: $e');
+            if (mounted) setState(() => _isLoadingSettings = false);
+          },
+        );
   }
 
   @override
@@ -164,6 +172,8 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     _slotHeight.dispose();
     _pinching.dispose();
     _visitLinkHub.dispose();
+    _nowLine.dispose();
+    _calendarController.dispose();
     super.dispose();
   }
 
@@ -179,6 +189,14 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   }
 
   bool get _visitLinksEnabled => _visitLinksViewOk && _showVisitLinks;
+
+  bool get _nowLineViewOk {
+    final view = _calendarController.view;
+    return !_showList &&
+        (view == CalendarView.day ||
+            view == CalendarView.week ||
+            view == CalendarView.workWeek);
+  }
 
   Future<void> _loadVisitLinksPref() async {
     final prefs = await SharedPreferences.getInstance();
@@ -223,20 +241,26 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   }
 
   List<TimeRegion> _nonWorkingRegions() {
+    final today = DateTime.now();
     final stamp = Object.hash(
       _workStartMinutes,
       _workEndMinutes,
       SettingsService.readWorkDays(_scheduleConfig).join(','),
       SettingsService.readHolidayDates(_scheduleConfig).join(','),
-      SettingsService.readVacationRanges(_scheduleConfig).length,
+      Object.hashAll(SettingsService.readVacationRanges(_scheduleConfig)),
+      today.year,
+      today.month,
+      today.day,
     );
     if (stamp == _regionsStamp && _cachedRegions.isNotEmpty) {
       return _cachedRegions;
     }
     _regionsStamp = stamp;
-    final today = DateTime.now();
-    final startDay = DateTime(today.year, today.month, today.day)
-        .subtract(const Duration(days: 60));
+    final startDay = DateTime(
+      today.year,
+      today.month,
+      today.day,
+    ).subtract(const Duration(days: 60));
     final regions = <TimeRegion>[];
 
     for (var i = 0; i < 150; i++) {
@@ -294,7 +318,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     if (status == JobStatuses.waitingPart) {
       return StatusService.colorOf(JobStatuses.waitingPart);
     }
-    if (visit.isDone || JobStatuses.isCompletedStatus(status)) {
+    if (JobStatuses.isCompletedStatus(status)) {
       return StatusService.colorOf(JobStatuses.completed);
     }
     return StatusService.colorOf(status);
@@ -310,19 +334,19 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   static DateTime _snapToQuarterHour(DateTime time) {
     final base = DateTime(time.year, time.month, time.day);
     final minutes = time.difference(base).inMinutes;
-    final snapped =
-        ((minutes / kDragSnapMinutes).round()) * kDragSnapMinutes;
+    final snapped = ((minutes / kDragSnapMinutes).round()) * kDragSnapMinutes;
     return base.add(Duration(minutes: snapped));
   }
 
   /// Пункт 19: «Готово» и «Отменено» двигать нельзя — работа уже закрыта.
   /// Заявки в работе тащить можно, но с подтверждением переноса.
   bool _visitDragLocked(Job? job, JobVisit? visit) {
-    if (visit != null && (visit.isDone || visit.isCancelled)) return true;
     final status = (job?.status ?? '').trim();
-    if (status.isEmpty) return false;
-    return JobStatuses.isCompletedStatus(status) ||
-        JobStatuses.isCancelledStatus(status);
+    if (status.isNotEmpty) {
+      return JobStatuses.isCompletedStatus(status) ||
+          JobStatuses.isCancelledStatus(status);
+    }
+    return visit != null && (visit.isDone || visit.isCancelled);
   }
 
   void _warnDragLocked() {
@@ -414,16 +438,18 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
       final view = mode == 'day'
           ? CalendarView.day
           : mode == 'week'
-              ? CalendarView.week
-              : mode == 'month'
-                  ? CalendarView.month
-                  : CalendarView.workWeek;
+          ? CalendarView.week
+          : mode == 'month'
+          ? CalendarView.month
+          : CalendarView.workWeek;
       _calendarController.view = view;
       _slotHeight.value = -1;
     });
     _publishHomeState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !_showList && _calendarController.view != CalendarView.month) {
+      if (mounted &&
+          !_showList &&
+          _calendarController.view != CalendarView.month) {
         _scrollWorkHoursIntoView();
       }
     });
@@ -573,7 +599,8 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     if (!_visitLinksEnabled) return;
     final now = DateTime.now();
     if (_lastVisitLinkBump != null &&
-        now.difference(_lastVisitLinkBump!) < const Duration(milliseconds: 40)) {
+        now.difference(_lastVisitLinkBump!) <
+            const Duration(milliseconds: 40)) {
       return;
     }
     _lastVisitLinkBump = now;
@@ -626,718 +653,1241 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     return Stack(
       children: [
         Column(
-      children: [
-        // --- ВЕРХНЯЯ ПАНЕЛЬ С ВЫБОРОМ ВИДА ---
-        Container(
-          height: 56,
-          padding: const EdgeInsets.fromLTRB(12, 0, 8, 0),
-          color: AppColors.primary,
-          child: Row(
-            children: [
-              _viewButton(),
-              const Spacer(),
-              const DeliveryVanButton(color: Colors.white, iconSize: 28),
-            ],
-          ),
-        ),
-
-        // --- САМ КАЛЕНДАРЬ И ЕГО ДАННЫЕ ---
-        Expanded(
-          child: _showList
-              ? JobsScreen(
-                  showRouteMap: _showRouteMap,
-                  routeDate: _focusDate,
-                  onRouteDateChanged: (value) => setState(() => _focusDate = value),
-                  hideRouteDateBar: !_showRouteMap,
-                  onFilterChanged: (_) {},
-                  showStatusFilters: false,
-                )
-              : StreamBuilder<List<JobStatusDef>>(
-            stream: StatusService.streamDefs(),
-            builder: (context, statusSnap) {
-              return StreamBuilder<QuerySnapshot>(
-            stream: _jobsSnap,
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return Center(child: Text('Ошибка загрузки'.tr));
-              }
-              if (!snapshot.hasData) {
-                return const AppLoading();
-              }
-
-              List<Appointment> appointments = [];
-              final activeAppointmentIds = <String>{};
-              final docsById = <String, QueryDocumentSnapshot>{};
-              var unscheduledCount = 0;
-              for (final doc in snapshot.data!.docs) {
-                docsById[doc.id] = doc;
-                final data = doc.data() as Map<String, dynamic>;
-                Job job;
-                try {
-                  job = Job.fromMap(data, doc.id);
-                } catch (_) {
-                  continue;
-                }
-                if (!_showJobOnCalendar(job)) {
-                  continue;
-                }
-                if (job.isUnscheduled) {
-                  unscheduledCount++;
-                  continue;
-                }
-                activeAppointmentIds.addAll(
-                  job.activeVisits.map(
-                    (visit) => JobVisit.appointmentId(doc.id, visit.id),
-                  ),
-                );
-                for (final visit in job.coalescedVisits) {
-                  final minutes = visit.durationMinutes > 0
-                      ? visit.durationMinutes
-                      : _defaultDurationMinutes;
-                  appointments.add(
-                    Appointment(
-                      startTime: visit.startAt,
-                      endTime: visit.startAt.add(
-                        Duration(minutes: minutes.clamp(15, 8 * 60)),
-                      ),
-                      color: _appointmentColor(job, visit),
-                      id: JobVisit.appointmentId(doc.id, visit.id),
-                      notes: visit.note,
-                    ),
-                  );
-                }
-              }
-              for (final event in _events) {
-                activeAppointmentIds.add(CalendarEvent.appointmentIdOf(event.id));
-                appointments.add(
-                  Appointment(
-                    startTime: event.startAt,
-                    endTime: event.endAt,
-                    subject: '',
-                    color: event.priority.color,
-                    id: CalendarEvent.appointmentIdOf(event.id),
-                    notes: event.photoUrl,
-                  ),
-                );
-              }
-
-              final jobAppointments = [
-                for (final app in appointments)
-                  if (!CalendarEvent.isAppointmentId(app.id)) app,
-              ];
-              final linkCatalog = VisitLinkCatalog.fromAppointments(
-                jobAppointments,
-                visibleStart: calendarVisibleStart(
-                  displayDate: _calendarController.displayDate,
-                  view: _calendarController.view,
-                  firstDayOfWeek: _firstDayOfWeek,
-                ),
-                visibleDays: calendarVisibleDayCount(_calendarController.view),
-              );
-              _linkCatalog = linkCatalog;
-
-              return Column(
+          children: [
+            // --- ВЕРХНЯЯ ПАНЕЛЬ С ВЫБОРОМ ВИДА ---
+            Container(
+              height: 56,
+              padding: const EdgeInsets.fromLTRB(12, 0, 8, 0),
+              color: AppColors.primary,
+              child: Row(
                 children: [
-                  if (unscheduledCount > 0)
-                    Material(
-                      color: const Color(0xFFE3F2FD),
-                      child: InkWell(
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const UnscheduledJobsScreen(),
-                            ),
-                          );
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 10,
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.event_busy,
-                                  color: Colors.blue.shade800, size: 20),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  '$unscheduledCount ${'без даты визита'.tr}',
-                                  style: TextStyle(
-                                    color: Colors.blue.shade900,
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 13,
-                                  ),
+                  _viewButton(),
+                  const Spacer(),
+                  const DeliveryVanButton(color: Colors.white, iconSize: 28),
+                ],
+              ),
+            ),
+
+            // --- САМ КАЛЕНДАРЬ И ЕГО ДАННЫЕ ---
+            Expanded(
+              child: _showList
+                  ? JobsScreen(
+                      showRouteMap: _showRouteMap,
+                      routeDate: _focusDate,
+                      onRouteDateChanged: (value) =>
+                          setState(() => _focusDate = value),
+                      hideRouteDateBar: !_showRouteMap,
+                      onFilterChanged: (_) {},
+                      showStatusFilters: false,
+                    )
+                  : StreamBuilder<List<JobStatusDef>>(
+                      stream: _statusesStream,
+                      builder: (context, statusSnap) {
+                        return StreamBuilder<QuerySnapshot>(
+                          stream: _jobsSnap,
+                          builder: (context, snapshot) {
+                            if (snapshot.hasError) {
+                              return Center(child: Text('Ошибка загрузки'.tr));
+                            }
+                            if (!snapshot.hasData) {
+                              return const AppLoading();
+                            }
+
+                            List<Appointment> appointments = [];
+                            final activeAppointmentIds = <String>{};
+                            final docsById = <String, QueryDocumentSnapshot>{};
+                            var unscheduledCount = 0;
+                            for (final doc in snapshot.data!.docs) {
+                              docsById[doc.id] = doc;
+                              final data = doc.data() as Map<String, dynamic>;
+                              Job job;
+                              try {
+                                job = Job.fromMap(data, doc.id);
+                              } catch (_) {
+                                continue;
+                              }
+                              if (!_showJobOnCalendar(job)) {
+                                continue;
+                              }
+                              if (job.isUnscheduled) {
+                                unscheduledCount++;
+                                continue;
+                              }
+                              activeAppointmentIds.addAll(
+                                job.activeVisits.map(
+                                  (visit) =>
+                                      JobVisit.appointmentId(doc.id, visit.id),
                                 ),
-                              ),
-                              Icon(Icons.chevron_right,
-                                  color: Colors.blue.shade800, size: 20),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  Expanded(
-                    child: LayoutBuilder(
-                builder: (context, constraints) {
-                  _calendarViewHeight = constraints.maxHeight;
-                  return Listener(
-                    onPointerDown: _onPointerDown,
-                    onPointerMove: _onPointerMove,
-                    onPointerUp: _onPointerUp,
-                    onPointerCancel: _onPointerUp,
-                    child: ValueListenableBuilder<double>(
-                      valueListenable: _slotHeight,
-                      builder: (context, height, _) {
-                        final slotHeight =
-                            height < 0 ? _fittedSlotHeight : height;
-                        return ValueListenableBuilder<bool>(
-                          valueListenable: _pinching,
-                          builder: (context, pinching, _) {
-                            return RepaintBoundary(
-                              child: NotificationListener<ScrollNotification>(
-                                onNotification: (notification) {
-                                  if (_visitLinksEnabled) {
-                                    _visitLinkHub.bump();
-                                  }
-                                  return false;
-                                },
-                                child: Stack(
-                                  key: _visitLinkOverlayKey,
-                                  clipBehavior: Clip.hardEdge,
-                                  children: [
-                                    Positioned.fill(
-                                      child: SfCalendar(
-                controller: _calendarController,
-                firstDayOfWeek: _firstDayOfWeek,
-                backgroundColor: Colors.white,
-                headerHeight: _calendarHeaderHeight,
-                viewHeaderHeight: _calendarViewHeaderHeight,
-                specialRegions: _nonWorkingRegions(),
-                timeRegionBuilder: (context, details) {
-                  return Container(
-                    width: details.bounds.width,
-                    height: details.bounds.height,
-                    color: _nonWorkingHourColor,
-                  );
-                },
-                dataSource: JobDataSource(appointments),
-                onViewChanged: (details) {
-                  // При перелистывании build не перезапускается — держим
-                  // границы каталога актуальными, иначе линии к карточкам
-                  // соседней недели не рисуются.
-                  final visibleDates = details.visibleDates;
-                  if (visibleDates.isNotEmpty) {
-                    _linkCatalog?.updateVisibleRange(
-                      visibleDates.first,
-                      visibleDates.last,
-                    );
-                  }
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted && _visitLinksEnabled) {
-                      _visitLinkHub.bump();
-                    } else if (mounted) {
-                      _visitLinkHub.clear();
-                    }
-                  });
-                },
-
-                // --- ПЕРЕТАСКИВАНИЕ ЗАЯВОК ДЛЯ ПЕРЕНОСА ДАТЫ/ВРЕМЕНИ ---
-                allowDragAndDrop: !pinching,
-                dragAndDropSettings: const DragAndDropSettings(
-                  allowNavigation: true,
-                  allowScroll: true,
-                  showTimeIndicator: true,
-                ),
-                // Пункт 19: заявка «взялась» — короткая вибрация, чтобы палец
-                // понимал, что дальше карточка едет за ним.
-                onDragStart: (AppointmentDragStartDetails details) {
-                  _lastDragSnap = null;
-                  AppFeedback.haptic();
-                },
-                onDragUpdate: (AppointmentDragUpdateDetails details) {
-                  final draggingTime = details.draggingTime;
-                  if (draggingTime == null) return;
-                  final snapped = _snapToQuarterHour(draggingTime);
-                  if (_lastDragSnap != null &&
-                      _lastDragSnap!.isAtSameMomentAs(snapped)) {
-                    return;
-                  }
-                  _lastDragSnap = snapped;
-                  AppFeedback.haptic();
-                },
-                onDragEnd: (AppointmentDragEndDetails details) async {
-                  final appointment = details.appointment;
-                  final dropped = details.droppingTime;
-                  if (appointment is! Appointment || dropped == null) return;
-                  final newTime = _snapToQuarterHour(dropped);
-
-                  if (CalendarEvent.isAppointmentId(appointment.id)) {
-                    final eventId =
-                        CalendarEvent.idFromAppointment(appointment.id);
-                    CalendarEvent? event;
-                    for (final item in _events) {
-                      if (item.id == eventId) {
-                        event = item;
-                        break;
-                      }
-                    }
-                    if (event == null) return;
-                    try {
-                      await CalendarEventService.save(
-                        event.copyWith(startAt: newTime),
-                      );
-                    } catch (e) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('${'Не удалось сохранить'.tr}: $e'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                    return;
-                  }
-
-                  final jobId = JobVisit.jobIdFromAppointment(appointment.id);
-                  final visitId = JobVisit.visitIdFromAppointment(appointment.id);
-
-                  // Пункт 19: выполненную работу не переносим.
-                  final lockDoc = docsById[jobId];
-                  if (lockDoc != null) {
-                    Job? lockJob;
-                    try {
-                      lockJob = Job.fromMap(
-                        lockDoc.data() as Map<String, dynamic>,
-                        jobId,
-                      );
-                    } catch (_) {}
-                    final lockVisit = lockJob == null
-                        ? null
-                        : JobVisit.matchForAppointment(
-                            lockJob.coalescedVisits,
-                            visitId,
-                            appointment.startTime,
-                          );
-                    if (_visitDragLocked(lockJob, lockVisit)) {
-                      _warnDragLocked();
-                      return;
-                    }
-                  }
-
-                  final duration = appointment.endTime.difference(appointment.startTime);
-                  final newEnd = newTime.add(duration);
-                  final overlaps = appointments.any((other) {
-                    if (other.id.toString() == appointment.id.toString()) return false;
-                    if (!activeAppointmentIds.contains(other.id.toString())) {
-                      return false;
-                    }
-                    return newTime.isBefore(other.endTime) &&
-                        newEnd.isAfter(other.startTime);
-                  });
-                  if (overlaps) {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'Это время пересекается с другой заявкой'.tr,
-                          ),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                    _snapCardBack();
-                    return;
-                  }
-
-                  // Пункт 19: перенос сохраняем только после подтверждения.
-                  if (!mounted) return;
-                  final approved = await showConfirmCancelSheet(
-                    context,
-                    title: 'Перенести заявку?'.tr,
-                    message:
-                        '${DateFormat('EEEE, d MMMM', AppLocale.instance.dateLocale).format(appointment.startTime)}'
-                        ' · ${DateFormat('HH:mm').format(appointment.startTime)}'
-                        '\n↓\n'
-                        '${DateFormat('EEEE, d MMMM', AppLocale.instance.dateLocale).format(newTime)}'
-                        ' · ${DateFormat('HH:mm').format(newTime)}',
-                    confirmLabel: 'Перенести'.tr,
-                  );
-                  if (!approved) {
-                    _snapCardBack();
-                    return;
-                  }
-
-                  // Load config for working hours validation
-                  final config = await SettingsService.loadConfig();
-                  final workStart = SettingsService.readWorkStartMinutes(config);
-                  final workEnd = SettingsService.readWorkEndMinutes(config);
-                  final durationMins = duration.inMinutes.clamp(15, 8 * 60);
-                  final newTimeInToronto = AppTimeService.bookingWallClock(newTime);
-                  final newMinutes = newTimeInToronto.hour * 60 + newTimeInToronto.minute;
-                  final isWorkDay = SettingsService.isVisitDay(config, newTime);
-                  if (!isWorkDay || newMinutes < workStart || newMinutes + durationMins > workEnd) {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Это время за пределами рабочего расписания'.tr),
-                          backgroundColor: Colors.orange.shade800,
-                        ),
-                      );
-                    }
-                    _snapCardBack();
-                    return;
-                  }
-
-                  try {
-                    final jobDoc = docsById[jobId];
-                    if (jobDoc == null) return;
-                    final job = Job.fromMap(
-                      jobDoc.data() as Map<String, dynamic>,
-                      jobId,
-                    );
-                    final visits = [...job.coalescedVisits];
-                    final minutes = duration.inMinutes.clamp(15, 8 * 60);
-                    final idx = visits.indexWhere((v) => v.id == visitId);
-                    final dayChanged =
-                        !JobVisit.isSameDay(appointment.startTime, newTime);
-                    if (idx >= 0) {
-                      visits[idx] = visits[idx].copyWith(
-                        startAt: newTime,
-                        durationMinutes: minutes,
-                        clearSms: dayChanged,
-                      );
-                    } else {
-                      visits.add(
-                        JobVisit(
-                          id: visitId,
-                          startAt: newTime,
-                          durationMinutes: minutes,
-                        ),
-                      );
-                    }
-                    await JobService.saveVisits(
-                      jobId,
-                      visits,
-                      defaultDuration: job.durationMinutes,
-                      markRescheduled:
-                          dayChanged &&
-                          job.status != JobStatuses.waitingPart,
-                      markInstall:
-                          dayChanged &&
-                          job.status == JobStatuses.waitingPart,
-                      currentStatus: job.status,
-                    );
-
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            '${'Заявка перенесена на'.tr} ${DateFormat('d MMMM, HH:mm', AppLocale.instance.dateLocale).format(newTime)}',
-                          ),
-                          backgroundColor: Colors.green,
-                        ),
-                      );
-                    }
-                  } catch (e) {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('${'Не удалось перенести заявку'.tr}: $e'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                  }
-                },
-
-                // --- СТИЛИЗАЦИЯ ШАПКИ (ЖИРНЫЕ ДАТЫ И ДНИ) ---
-                viewHeaderStyle: const ViewHeaderStyle(
-                  dateTextStyle: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                    color: Colors.black87,
-                  ),
-                  dayTextStyle: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                    color: Colors.black54,
-                  ),
-                ),
-
-                // --- СТИЛИЗАЦИЯ ВРЕМЕНИ И МАСШТАБА ---
-                timeSlotViewSettings: TimeSlotViewSettings(
-                  startHour: 0,
-                  endHour: 24,
-                  timeInterval: const Duration(hours: 1),
-                  timeFormat: 'HH:mm',
-                  timeIntervalHeight: slotHeight,
-                  timeRulerSize: 52,
-                  timeTextStyle: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
-                    color: Colors.black87,
-                  ),
-                ),
-                monthViewSettings: const MonthViewSettings(
-                  showAgenda: false,
-                  appointmentDisplayMode:
-                      MonthAppointmentDisplayMode.appointment,
-                ),
-                onTap: (CalendarTapDetails details) {
-                  // 1. Месяц -> День (Один клик)
-                  if (_calendarController.view == CalendarView.month &&
-                      details.targetElement == CalendarElement.calendarCell) {
-                    setState(() {
-                      _calendarController.displayDate = details.date;
-                      _calendarController.view = CalendarView.day;
-                    });
-                    return;
-                  }
-
-                  // ИГНОРИРУЕМ ТАПЫ ПО ЗАЯВКАМ ТУТ (обрабатываются в appointmentBuilder)
-                  if (details.targetElement == CalendarElement.appointment) {
-                    return;
-                  }
-
-                  // 2. Двойной клик по пустому месту: заявка или мероприятие
-                  if (details.targetElement == CalendarElement.calendarCell &&
-                      details.date != null) {
-                    final now = DateTime.now();
-                    if (_lastTapTime != null &&
-                        now.difference(_lastTapTime!).inMilliseconds < 500 &&
-                        _lastTapDate == details.date) {
-                      _lastTapTime = null;
-                      _onEmptySlot(details.date!);
-                    } else {
-                      _lastTapTime = now;
-                      _lastTapDate = details.date;
-                    }
-                  }
-                },
-
-                // --- ЗДЕСЬ МЫ РИСУЕМ НАШИ НОВЫЕ КРАСИВЫЕ КАРТОЧКИ ---
-                appointmentBuilder: (context, calendarAppointmentDetails) {
-                  final Appointment app =
-                      calendarAppointmentDetails.appointments.first;
-                  final bounds = calendarAppointmentDetails.bounds;
-                  if (CalendarEvent.isAppointmentId(app.id)) {
-                    return _eventAppointmentCard(app, bounds);
-                  }
-
-                  final jobId = JobVisit.jobIdFromAppointment(app.id);
-                  final originalJobDoc = docsById[jobId];
-                  if (originalJobDoc == null) {
-                    return const SizedBox.shrink();
-                  }
-                  final jobData = originalJobDoc.data() as Map<String, dynamic>;
-
-                  // Определяем адрес для логики имени
-                  final bool hasJobSite = jobData['hasJobSite'] == true;
-
-                  final String applianceType =
-                      jobData['applianceType'] ?? 'Техника'.tr;
-
-                  // Определяем Имя и Описание для одинарного клика
-                  final String clientName =
-                      hasJobSite &&
-                          jobData['jobSiteName'] != null &&
-                          jobData['jobSiteName'].toString().isNotEmpty
-                      ? jobData['jobSiteName']
-                      : (jobData['clientName'] ?? 'Клиент'.tr);
-                  Job? parsedJob;
-                  try {
-                    parsedJob = Job.fromMap(jobData, jobId);
-                  } catch (_) {}
-                  final type = (parsedJob?.applianceType.isNotEmpty == true)
-                      ? parsedJob!.applianceType
-                      : applianceType;
-                  final visitId = JobVisit.visitIdFromAppointment(app.id);
-                  JobVisit? visit;
-                  if (parsedJob != null) {
-                    visit = JobVisit.matchForAppointment(
-                      parsedJob.coalescedVisits,
-                      visitId,
-                      app.startTime,
-                    );
-                  }
-                  final displayStatus = parsedJob?.displayStatusForVisit(visit) ??
-                      (jobData['status'] ?? '').toString();
-                  final hatch = calendarHatchFor(
-                    status: displayStatus,
-                    visitDone: visit?.isDone == true &&
-                        displayStatus != JobStatuses.rescheduled &&
-                        displayStatus != JobStatuses.waitingPart,
-                  );
-                  final hatchIcon = calendarHatchIcon(hatch);
-                  final fiveDay =
-                      _calendarController.view == CalendarView.workWeek;
-                  final logoSize = bounds.width < 56
-                      ? (bounds.shortestSide - 6).clamp(28.0, 72.0)
-                      : (bounds.height - 6).clamp(32.0, 64.0);
-                  final showName =
-                      !fiveDay && bounds.width >= 56 && bounds.height >= 26;
-                  final radius = BorderRadius.circular(
-                    _calendarController.view == CalendarView.month ? 4 : 8,
-                  );
-
-                  // Обертка: один тап открывает заявку
-                  return VisitLinkReporter(
-                    hub: _visitLinkHub,
-                    appointmentId: app.id.toString(),
-                    jobId: jobId,
-                    startAt: app.startTime,
-                    color: app.color,
-                    enabled: _visitLinksEnabled,
-                    child: SizedBox(
-                    width: bounds.width,
-                    height: bounds.height,
-                    child: GestureDetector(
-                    onTap: () {
-                      AppFeedback.pleasant();
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => JobDetailsScreen(
-                            jobId: jobId,
-                            clientId: jobData['clientId'] ?? '',
-                            jobData: jobData,
-                          ),
-                        ),
-                      );
-                    },
-                    // Пункт 19: перехватываем долгое нажатие на выполненной
-                    // работе, иначе календарь поднимет карточку и начнёт
-                    // перенос. onDragEnd такой перенос всё равно отклонит, но
-                    // карточка не должна даже отрываться.
-                    onLongPress: _visitDragLocked(parsedJob, visit)
-                        ? () {
-                            AppFeedback.haptic();
-                            _warnDragLocked();
-                          }
-                        : null,
-                    child: HatchedCalendarCard(
-                      color: app.color,
-                      borderRadius: radius,
-                      hatch: hatch,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: showName
-                            ? Row(
-                                children: [
-                                  if (!fiveDay) ...[
-                                    VisitConfirmBadge.mark(visit, size: 16),
-                                    const SizedBox(width: 3),
-                                    if (hatchIcon != null) ...[
-                                      Icon(hatchIcon, color: Colors.white, size: 14),
-                                      const SizedBox(width: 3),
-                                    ],
-                                  ],
-                                  Expanded(
-                                    child: Text(
-                                      clientName,
-                                      maxLines: bounds.height >= 48 ? 2 : 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 12,
-                                        height: 1.15,
-                                        decoration: hatch ==
-                                                CalendarHatchStyle.cancelled
-                                            ? TextDecoration.lineThrough
-                                            : null,
+                              );
+                              for (final visit in job.coalescedVisits) {
+                                final minutes = visit.durationMinutes > 0
+                                    ? visit.durationMinutes
+                                    : _defaultDurationMinutes;
+                                appointments.add(
+                                  Appointment(
+                                    startTime: visit.startAt,
+                                    endTime: visit.startAt.add(
+                                      Duration(
+                                        minutes: minutes.clamp(15, 8 * 60),
                                       ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  ApplianceLogo(
-                                    type: type,
-                                    size: logoSize,
-                                    onDark: true,
-                                  ),
-                                  if (!fiveDay &&
-                                      visit != null &&
-                                      visit.effectiveConfirmStatus ==
-                                          JobVisit.confirmConfirmed) ...[
-                                    const SizedBox(width: 3),
-                                    const Icon(
-                                      Icons.check_circle,
-                                      color: Colors.white,
-                                      size: 14,
+                                    color: _appointmentColor(job, visit),
+                                    id: JobVisit.appointmentId(
+                                      doc.id,
+                                      visit.id,
                                     ),
-                                  ] else if (!fiveDay &&
-                                      visit != null &&
-                                      visit.effectiveConfirmStatus.isNotEmpty) ...[
-                                    const SizedBox(width: 3),
-                                    const Icon(
-                                      Icons.sms_failed,
-                                      color: Colors.white,
-                                      size: 14,
-                                    ),
-                                  ],
-                                ],
-                              )
-                            : Center(
-                                child: ApplianceLogo(
-                                  type: type,
-                                  size: logoSize,
-                                  onDark: true,
+                                    notes: visit.note,
+                                  ),
+                                );
+                              }
+                            }
+                            for (final event in _events) {
+                              activeAppointmentIds.add(
+                                CalendarEvent.appointmentIdOf(event.id),
+                              );
+                              appointments.add(
+                                Appointment(
+                                  startTime: event.startAt,
+                                  endTime: event.endAt,
+                                  subject: '',
+                                  color: event.priority.color,
+                                  id: CalendarEvent.appointmentIdOf(event.id),
+                                  notes: event.photoUrl,
                                 ),
-                              ),
-                      ),
-                    ),
-                    ),
-                  ),
-                  );
-                },
-                                      ),
-                                    ),
-                                    if (_visitLinksEnabled)
-                                      Positioned.fill(
-                                        child: IgnorePointer(
-                                          child: CustomPaint(
-                                            painter: VisitLinkPainter(
-                                              hub: _visitLinkHub,
-                                              overlayKey: _visitLinkOverlayKey,
-                                              catalog: linkCatalog,
-                                              timeRulerWidth:
-                                                  _calendarController.view ==
-                                                          CalendarView.month
-                                                      ? 0
-                                                      : 52,
-                                            ),
+                              );
+                            }
+
+                            final jobAppointments = [
+                              for (final app in appointments)
+                                if (!CalendarEvent.isAppointmentId(app.id)) app,
+                            ];
+                            final linkCatalog =
+                                VisitLinkCatalog.fromAppointments(
+                                  jobAppointments,
+                                  visibleStart: calendarVisibleStart(
+                                    displayDate:
+                                        _calendarController.displayDate,
+                                    view: _calendarController.view,
+                                    firstDayOfWeek: _firstDayOfWeek,
+                                  ),
+                                  visibleDays: calendarVisibleDayCount(
+                                    _calendarController.view,
+                                  ),
+                                );
+                            _linkCatalog = linkCatalog;
+
+                            return Column(
+                              children: [
+                                if (unscheduledCount > 0)
+                                  Material(
+                                    color: const Color(0xFFE3F2FD),
+                                    child: InkWell(
+                                      onTap: () {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                const UnscheduledJobsScreen(),
                                           ),
+                                        );
+                                      },
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 14,
+                                          vertical: 10,
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              Icons.event_busy,
+                                              color: Colors.blue.shade800,
+                                              size: 20,
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: Text(
+                                                '$unscheduledCount ${'без даты визита'.tr}',
+                                                style: TextStyle(
+                                                  color: Colors.blue.shade900,
+                                                  fontWeight: FontWeight.w700,
+                                                  fontSize: 13,
+                                                ),
+                                              ),
+                                            ),
+                                            Icon(
+                                              Icons.chevron_right,
+                                              color: Colors.blue.shade800,
+                                              size: 20,
+                                            ),
+                                          ],
                                         ),
                                       ),
-                                    if (_visitLinksViewOk)
-                                      Positioned(
-                                        left: 6,
-                                        top: _calendarHeaderHeight +
-                                            (_calendarViewHeaderHeight - 36) /
-                                                2,
-                                        child: _visitLinksToggle(),
-                                      ),
-                                  ],
+                                    ),
+                                  ),
+                                Expanded(
+                                  child: LayoutBuilder(
+                                    builder: (context, constraints) {
+                                      _calendarViewHeight =
+                                          constraints.maxHeight;
+                                      return Listener(
+                                        onPointerDown: _onPointerDown,
+                                        onPointerMove: _onPointerMove,
+                                        onPointerUp: _onPointerUp,
+                                        onPointerCancel: _onPointerUp,
+                                        child: ValueListenableBuilder<double>(
+                                          valueListenable: _slotHeight,
+                                          builder: (context, height, _) {
+                                            final slotHeight = height < 0
+                                                ? _fittedSlotHeight
+                                                : height;
+                                            return ValueListenableBuilder<bool>(
+                                              valueListenable: _pinching,
+                                              builder: (context, pinching, _) {
+                                                return RepaintBoundary(
+                                                  child: NotificationListener<ScrollNotification>(
+                                                    onNotification:
+                                                        (notification) {
+                                                          if (_visitLinksEnabled) {
+                                                            _visitLinkHub
+                                                                .bump();
+                                                          }
+                                                          _nowLine.onScroll(
+                                                            notification,
+                                                          );
+                                                          return false;
+                                                        },
+                                                    child: Stack(
+                                                      key: _visitLinkOverlayKey,
+                                                      clipBehavior:
+                                                          Clip.hardEdge,
+                                                      children: [
+                                                        Positioned.fill(
+                                                          child: SfCalendar(
+                                                            controller:
+                                                                _calendarController,
+                                                            firstDayOfWeek:
+                                                                _firstDayOfWeek,
+                                                            backgroundColor:
+                                                                Colors.white,
+                                                            headerHeight:
+                                                                _calendarHeaderHeight,
+                                                            viewHeaderHeight:
+                                                                _calendarViewHeaderHeight,
+                                                            specialRegions:
+                                                                _nonWorkingRegions(),
+                                                            timeRegionBuilder:
+                                                                (
+                                                                  context,
+                                                                  details,
+                                                                ) {
+                                                                  return Container(
+                                                                    width: details
+                                                                        .bounds
+                                                                        .width,
+                                                                    height: details
+                                                                        .bounds
+                                                                        .height,
+                                                                    color:
+                                                                        _nonWorkingHourColor,
+                                                                  );
+                                                                },
+                                                            dataSource:
+                                                                JobDataSource(
+                                                                  appointments,
+                                                                ),
+                                                            onViewChanged: (details) {
+                                                              // При перелистывании build не перезапускается — держим
+                                                              // границы каталога актуальными, иначе линии к карточкам
+                                                              // соседней недели не рисуются.
+                                                              final visibleDates =
+                                                                  details
+                                                                      .visibleDates;
+                                                              _nowLine
+                                                                      .visibleDates
+                                                                      .value =
+                                                                  List.of(
+                                                                    visibleDates,
+                                                                  );
+                                                              if (visibleDates
+                                                                  .isNotEmpty) {
+                                                                _linkCatalog
+                                                                    ?.updateVisibleRange(
+                                                                      visibleDates
+                                                                          .first,
+                                                                      visibleDates
+                                                                          .last,
+                                                                    );
+                                                              }
+                                                              WidgetsBinding.instance.addPostFrameCallback((
+                                                                _,
+                                                              ) {
+                                                                if (mounted &&
+                                                                    _visitLinksEnabled) {
+                                                                  _visitLinkHub
+                                                                      .bump();
+                                                                } else if (mounted) {
+                                                                  _visitLinkHub
+                                                                      .clear();
+                                                                }
+                                                              });
+                                                            },
+
+                                                            // --- ПЕРЕТАСКИВАНИЕ ЗАЯВОК ДЛЯ ПЕРЕНОСА ДАТЫ/ВРЕМЕНИ ---
+                                                            allowDragAndDrop:
+                                                                !pinching,
+                                                            dragAndDropSettings:
+                                                                const DragAndDropSettings(
+                                                                  allowNavigation:
+                                                                      true,
+                                                                  allowScroll:
+                                                                      true,
+                                                                  showTimeIndicator:
+                                                                      true,
+                                                                ),
+                                                            // Пункт 19: заявка «взялась» — короткая вибрация, чтобы палец
+                                                            // понимал, что дальше карточка едет за ним.
+                                                            onDragStart:
+                                                                (
+                                                                  AppointmentDragStartDetails
+                                                                  details,
+                                                                ) {
+                                                                  _lastDragSnap =
+                                                                      null;
+                                                                  AppFeedback.haptic();
+                                                                },
+                                                            onDragUpdate:
+                                                                (
+                                                                  AppointmentDragUpdateDetails
+                                                                  details,
+                                                                ) {
+                                                                  final draggingTime =
+                                                                      details
+                                                                          .draggingTime;
+                                                                  if (draggingTime ==
+                                                                      null)
+                                                                    return;
+                                                                  final snapped =
+                                                                      _snapToQuarterHour(
+                                                                        draggingTime,
+                                                                      );
+                                                                  if (_lastDragSnap !=
+                                                                          null &&
+                                                                      _lastDragSnap!
+                                                                          .isAtSameMomentAs(
+                                                                            snapped,
+                                                                          )) {
+                                                                    return;
+                                                                  }
+                                                                  _lastDragSnap =
+                                                                      snapped;
+                                                                  AppFeedback.haptic();
+                                                                },
+                                                            onDragEnd:
+                                                                (
+                                                                  AppointmentDragEndDetails
+                                                                  details,
+                                                                ) async {
+                                                                  final appointment =
+                                                                      details
+                                                                          .appointment;
+                                                                  final dropped =
+                                                                      details
+                                                                          .droppingTime;
+                                                                  if (appointment
+                                                                          is! Appointment ||
+                                                                      dropped ==
+                                                                          null)
+                                                                    return;
+                                                                  final newTime =
+                                                                      _snapToQuarterHour(
+                                                                        dropped,
+                                                                      );
+
+                                                                  if (CalendarEvent.isAppointmentId(
+                                                                    appointment
+                                                                        .id,
+                                                                  )) {
+                                                                    final eventId =
+                                                                        CalendarEvent.idFromAppointment(
+                                                                          appointment
+                                                                              .id,
+                                                                        );
+                                                                    CalendarEvent?
+                                                                    event;
+                                                                    for (final item
+                                                                        in _events) {
+                                                                      if (item.id ==
+                                                                          eventId) {
+                                                                        event =
+                                                                            item;
+                                                                        break;
+                                                                      }
+                                                                    }
+                                                                    if (event ==
+                                                                        null)
+                                                                      return;
+                                                                    try {
+                                                                      await CalendarEventService.save(
+                                                                        event.copyWith(
+                                                                          startAt:
+                                                                              newTime,
+                                                                        ),
+                                                                      );
+                                                                    } catch (
+                                                                      e
+                                                                    ) {
+                                                                      if (!mounted)
+                                                                        return;
+                                                                      ScaffoldMessenger.of(
+                                                                        context,
+                                                                      ).showSnackBar(
+                                                                        SnackBar(
+                                                                          content: Text(
+                                                                            '${'Не удалось сохранить'.tr}: $e',
+                                                                          ),
+                                                                          backgroundColor:
+                                                                              Colors.red,
+                                                                        ),
+                                                                      );
+                                                                    }
+                                                                    return;
+                                                                  }
+
+                                                                  final jobId =
+                                                                      JobVisit.jobIdFromAppointment(
+                                                                        appointment
+                                                                            .id,
+                                                                      );
+                                                                  final visitId =
+                                                                      JobVisit.visitIdFromAppointment(
+                                                                        appointment
+                                                                            .id,
+                                                                      );
+
+                                                                  // Пункт 19: выполненную работу не переносим.
+                                                                  final lockDoc =
+                                                                      docsById[jobId];
+                                                                  if (lockDoc !=
+                                                                      null) {
+                                                                    Job?
+                                                                    lockJob;
+                                                                    try {
+                                                                      lockJob = Job.fromMap(
+                                                                        lockDoc.data()
+                                                                            as Map<
+                                                                              String,
+                                                                              dynamic
+                                                                            >,
+                                                                        jobId,
+                                                                      );
+                                                                    } catch (
+                                                                      _
+                                                                    ) {}
+                                                                    final lockVisit =
+                                                                        lockJob ==
+                                                                            null
+                                                                        ? null
+                                                                        : JobVisit.matchForAppointment(
+                                                                            lockJob.coalescedVisits,
+                                                                            visitId,
+                                                                            appointment.startTime,
+                                                                          );
+                                                                    if (_visitDragLocked(
+                                                                      lockJob,
+                                                                      lockVisit,
+                                                                    )) {
+                                                                      _warnDragLocked();
+                                                                      return;
+                                                                    }
+                                                                  }
+
+                                                                  final duration = appointment
+                                                                      .endTime
+                                                                      .difference(
+                                                                        appointment
+                                                                            .startTime,
+                                                                      );
+                                                                  final newEnd =
+                                                                      newTime.add(
+                                                                        duration,
+                                                                      );
+                                                                  final overlaps = appointments.any((
+                                                                    other,
+                                                                  ) {
+                                                                    if (other.id
+                                                                            .toString() ==
+                                                                        appointment
+                                                                            .id
+                                                                            .toString())
+                                                                      return false;
+                                                                    if (!activeAppointmentIds
+                                                                        .contains(
+                                                                          other
+                                                                              .id
+                                                                              .toString(),
+                                                                        )) {
+                                                                      return false;
+                                                                    }
+                                                                    return newTime.isBefore(
+                                                                          other
+                                                                              .endTime,
+                                                                        ) &&
+                                                                        newEnd.isAfter(
+                                                                          other
+                                                                              .startTime,
+                                                                        );
+                                                                  });
+                                                                  if (overlaps) {
+                                                                    if (mounted) {
+                                                                      ScaffoldMessenger.of(
+                                                                        context,
+                                                                      ).showSnackBar(
+                                                                        SnackBar(
+                                                                          content: Text(
+                                                                            'Это время пересекается с другой заявкой'.tr,
+                                                                          ),
+                                                                          backgroundColor:
+                                                                              Colors.red,
+                                                                        ),
+                                                                      );
+                                                                    }
+                                                                    _snapCardBack();
+                                                                    return;
+                                                                  }
+
+                                                                  // Пункт 19: перенос сохраняем только после подтверждения.
+                                                                  if (!mounted)
+                                                                    return;
+                                                                  final approved = await showConfirmCancelSheet(
+                                                                    context,
+                                                                    title:
+                                                                        'Перенести заявку?'
+                                                                            .tr,
+                                                                    message:
+                                                                        '${DateFormat('EEEE, d MMMM', AppLocale.instance.dateLocale).format(appointment.startTime)}'
+                                                                        ' · ${DateFormat('HH:mm').format(appointment.startTime)}'
+                                                                        '\n↓\n'
+                                                                        '${DateFormat('EEEE, d MMMM', AppLocale.instance.dateLocale).format(newTime)}'
+                                                                        ' · ${DateFormat('HH:mm').format(newTime)}',
+                                                                    confirmLabel:
+                                                                        'Перенести'
+                                                                            .tr,
+                                                                  );
+                                                                  if (!approved) {
+                                                                    _snapCardBack();
+                                                                    return;
+                                                                  }
+
+                                                                  // Load config for working hours validation
+                                                                  final config =
+                                                                      await SettingsService.loadConfig();
+                                                                  final workStart =
+                                                                      SettingsService.readWorkStartMinutes(
+                                                                        config,
+                                                                      );
+                                                                  final workEnd =
+                                                                      SettingsService.readWorkEndMinutes(
+                                                                        config,
+                                                                      );
+                                                                  final durationMins =
+                                                                      duration
+                                                                          .inMinutes
+                                                                          .clamp(
+                                                                            15,
+                                                                            8 *
+                                                                                60,
+                                                                          );
+                                                                  final newTimeInToronto =
+                                                                      AppTimeService.bookingWallClock(
+                                                                        newTime,
+                                                                      );
+                                                                  final newMinutes =
+                                                                      newTimeInToronto
+                                                                              .hour *
+                                                                          60 +
+                                                                      newTimeInToronto
+                                                                          .minute;
+                                                                  final isWorkDay =
+                                                                      SettingsService.isVisitDay(
+                                                                        config,
+                                                                        newTime,
+                                                                      );
+                                                                  if (!isWorkDay ||
+                                                                      newMinutes <
+                                                                          workStart ||
+                                                                      newMinutes +
+                                                                              durationMins >
+                                                                          workEnd) {
+                                                                    if (mounted) {
+                                                                      ScaffoldMessenger.of(
+                                                                        context,
+                                                                      ).showSnackBar(
+                                                                        SnackBar(
+                                                                          content: Text(
+                                                                            'Это время за пределами рабочего расписания'.tr,
+                                                                          ),
+                                                                          backgroundColor: Colors
+                                                                              .orange
+                                                                              .shade800,
+                                                                        ),
+                                                                      );
+                                                                    }
+                                                                    _snapCardBack();
+                                                                    return;
+                                                                  }
+
+                                                                  try {
+                                                                    final jobDoc =
+                                                                        docsById[jobId];
+                                                                    if (jobDoc ==
+                                                                        null)
+                                                                      return;
+                                                                    final job = Job.fromMap(
+                                                                      jobDoc.data()
+                                                                          as Map<
+                                                                            String,
+                                                                            dynamic
+                                                                          >,
+                                                                      jobId,
+                                                                    );
+                                                                    final visits = [
+                                                                      ...job
+                                                                          .coalescedVisits,
+                                                                    ];
+                                                                    final minutes = duration
+                                                                        .inMinutes
+                                                                        .clamp(
+                                                                          15,
+                                                                          8 * 60,
+                                                                        );
+                                                                    final idx = visits.indexWhere(
+                                                                      (v) =>
+                                                                          v.id ==
+                                                                          visitId,
+                                                                    );
+                                                                    final dayChanged = !JobVisit.isSameDay(
+                                                                      appointment
+                                                                          .startTime,
+                                                                      newTime,
+                                                                    );
+                                                                    if (idx >=
+                                                                        0) {
+                                                                      visits[idx] = visits[idx].copyWith(
+                                                                        startAt:
+                                                                            newTime,
+                                                                        durationMinutes:
+                                                                            minutes,
+                                                                        clearSms:
+                                                                            dayChanged,
+                                                                      );
+                                                                    } else {
+                                                                      visits.add(
+                                                                        JobVisit(
+                                                                          id: visitId,
+                                                                          startAt:
+                                                                              newTime,
+                                                                          durationMinutes:
+                                                                              minutes,
+                                                                        ),
+                                                                      );
+                                                                    }
+                                                                    await JobService.saveVisits(
+                                                                      jobId,
+                                                                      visits,
+                                                                      defaultDuration:
+                                                                          job.durationMinutes,
+                                                                      markRescheduled:
+                                                                          dayChanged &&
+                                                                          job.status !=
+                                                                              JobStatuses.waitingPart,
+                                                                      markInstall:
+                                                                          dayChanged &&
+                                                                          job.status ==
+                                                                              JobStatuses.waitingPart,
+                                                                      currentStatus:
+                                                                          job.status,
+                                                                    );
+
+                                                                    if (mounted) {
+                                                                      ScaffoldMessenger.of(
+                                                                        context,
+                                                                      ).showSnackBar(
+                                                                        SnackBar(
+                                                                          content: Text(
+                                                                            '${'Заявка перенесена на'.tr} ${DateFormat('d MMMM, HH:mm', AppLocale.instance.dateLocale).format(newTime)}',
+                                                                          ),
+                                                                          backgroundColor:
+                                                                              Colors.green,
+                                                                        ),
+                                                                      );
+                                                                    }
+                                                                  } catch (e) {
+                                                                    if (mounted) {
+                                                                      ScaffoldMessenger.of(
+                                                                        context,
+                                                                      ).showSnackBar(
+                                                                        SnackBar(
+                                                                          content: Text(
+                                                                            '${'Не удалось перенести заявку'.tr}: $e',
+                                                                          ),
+                                                                          backgroundColor:
+                                                                              Colors.red,
+                                                                        ),
+                                                                      );
+                                                                    }
+                                                                  }
+                                                                },
+
+                                                            // --- СТИЛИЗАЦИЯ ШАПКИ (ЖИРНЫЕ ДАТЫ И ДНИ) ---
+                                                            viewHeaderStyle: const ViewHeaderStyle(
+                                                              dateTextStyle:
+                                                                  TextStyle(
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .bold,
+                                                                    fontSize:
+                                                                        18,
+                                                                    color: Colors
+                                                                        .black87,
+                                                                  ),
+                                                              dayTextStyle: TextStyle(
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .bold,
+                                                                fontSize: 13,
+                                                                color: Colors
+                                                                    .black54,
+                                                              ),
+                                                            ),
+
+                                                            // --- СТИЛИЗАЦИЯ ВРЕМЕНИ И МАСШТАБА ---
+                                                            timeSlotViewSettings: TimeSlotViewSettings(
+                                                              startHour: 0,
+                                                              endHour: 24,
+                                                              timeInterval:
+                                                                  const Duration(
+                                                                    hours: 1,
+                                                                  ),
+                                                              timeFormat:
+                                                                  'HH:mm',
+                                                              timeIntervalHeight:
+                                                                  slotHeight,
+                                                              timeRulerSize: 52,
+                                                              // Часы обычным шрифтом: жирным выделено только «сейчас»
+                                                              // (NowTimeOverlay).
+                                                              timeTextStyle:
+                                                                  const TextStyle(
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .w500,
+                                                                    fontSize:
+                                                                        12,
+                                                                    color: Colors
+                                                                        .black54,
+                                                                  ),
+                                                            ),
+                                                            showCurrentTimeIndicator:
+                                                                false,
+                                                            monthViewSettings:
+                                                                const MonthViewSettings(
+                                                                  showAgenda:
+                                                                      false,
+                                                                  appointmentDisplayMode:
+                                                                      MonthAppointmentDisplayMode
+                                                                          .appointment,
+                                                                ),
+                                                            onTap:
+                                                                (
+                                                                  CalendarTapDetails
+                                                                  details,
+                                                                ) {
+                                                                  // 1. Месяц -> День (Один клик)
+                                                                  if (_calendarController
+                                                                              .view ==
+                                                                          CalendarView
+                                                                              .month &&
+                                                                      details.targetElement ==
+                                                                          CalendarElement
+                                                                              .calendarCell) {
+                                                                    setState(() {
+                                                                      _calendarController
+                                                                          .displayDate = details
+                                                                          .date;
+                                                                      _calendarController
+                                                                          .view = CalendarView
+                                                                          .day;
+                                                                    });
+                                                                    return;
+                                                                  }
+
+                                                                  // ИГНОРИРУЕМ ТАПЫ ПО ЗАЯВКАМ ТУТ (обрабатываются в appointmentBuilder)
+                                                                  if (details
+                                                                          .targetElement ==
+                                                                      CalendarElement
+                                                                          .appointment) {
+                                                                    return;
+                                                                  }
+
+                                                                  // 2. Двойной клик по пустому месту: заявка или мероприятие
+                                                                  if (details.targetElement ==
+                                                                          CalendarElement
+                                                                              .calendarCell &&
+                                                                      details.date !=
+                                                                          null) {
+                                                                    final now =
+                                                                        DateTime.now();
+                                                                    if (_lastTapTime !=
+                                                                            null &&
+                                                                        now
+                                                                                .difference(
+                                                                                  _lastTapTime!,
+                                                                                )
+                                                                                .inMilliseconds <
+                                                                            500 &&
+                                                                        _lastTapDate ==
+                                                                            details.date) {
+                                                                      _lastTapTime =
+                                                                          null;
+                                                                      _onEmptySlot(
+                                                                        details
+                                                                            .date!,
+                                                                      );
+                                                                    } else {
+                                                                      _lastTapTime =
+                                                                          now;
+                                                                      _lastTapDate =
+                                                                          details
+                                                                              .date;
+                                                                    }
+                                                                  }
+                                                                },
+
+                                                            // --- ЗДЕСЬ МЫ РИСУЕМ НАШИ НОВЫЕ КРАСИВЫЕ КАРТОЧКИ ---
+                                                            appointmentBuilder:
+                                                                (
+                                                                  context,
+                                                                  calendarAppointmentDetails,
+                                                                ) {
+                                                                  final Appointment
+                                                                  app = calendarAppointmentDetails
+                                                                      .appointments
+                                                                      .first;
+                                                                  final bounds =
+                                                                      calendarAppointmentDetails
+                                                                          .bounds;
+                                                                  if (CalendarEvent.isAppointmentId(
+                                                                    app.id,
+                                                                  )) {
+                                                                    return _eventAppointmentCard(
+                                                                      app,
+                                                                      bounds,
+                                                                    );
+                                                                  }
+
+                                                                  final jobId =
+                                                                      JobVisit.jobIdFromAppointment(
+                                                                        app.id,
+                                                                      );
+                                                                  final originalJobDoc =
+                                                                      docsById[jobId];
+                                                                  if (originalJobDoc ==
+                                                                      null) {
+                                                                    return const SizedBox.shrink();
+                                                                  }
+                                                                  final jobData =
+                                                                      originalJobDoc
+                                                                              .data()
+                                                                          as Map<
+                                                                            String,
+                                                                            dynamic
+                                                                          >;
+
+                                                                  // Определяем адрес для логики имени
+                                                                  final bool
+                                                                  hasJobSite =
+                                                                      jobData['hasJobSite'] ==
+                                                                      true;
+
+                                                                  final String
+                                                                  applianceType =
+                                                                      jobData['applianceType'] ??
+                                                                      'Техника'
+                                                                          .tr;
+
+                                                                  // Определяем Имя и Описание для одинарного клика
+                                                                  final String
+                                                                  clientName =
+                                                                      hasJobSite &&
+                                                                          jobData['jobSiteName'] !=
+                                                                              null &&
+                                                                          jobData['jobSiteName']
+                                                                              .toString()
+                                                                              .isNotEmpty
+                                                                      ? jobData['jobSiteName']
+                                                                      : (jobData['clientName'] ??
+                                                                            'Клиент'.tr);
+                                                                  Job?
+                                                                  parsedJob;
+                                                                  try {
+                                                                    parsedJob =
+                                                                        Job.fromMap(
+                                                                          jobData,
+                                                                          jobId,
+                                                                        );
+                                                                  } catch (_) {}
+                                                                  final type =
+                                                                      (parsedJob
+                                                                              ?.applianceType
+                                                                              .isNotEmpty ==
+                                                                          true)
+                                                                      ? parsedJob!
+                                                                            .applianceType
+                                                                      : applianceType;
+                                                                  final visitId =
+                                                                      JobVisit.visitIdFromAppointment(
+                                                                        app.id,
+                                                                      );
+                                                                  JobVisit?
+                                                                  visit;
+                                                                  if (parsedJob !=
+                                                                      null) {
+                                                                    visit = JobVisit.matchForAppointment(
+                                                                      parsedJob
+                                                                          .coalescedVisits,
+                                                                      visitId,
+                                                                      app.startTime,
+                                                                    );
+                                                                  }
+                                                                  final displayStatus =
+                                                                      parsedJob
+                                                                          ?.displayStatusForVisit(
+                                                                            visit,
+                                                                          ) ??
+                                                                      (jobData['status'] ??
+                                                                              '')
+                                                                          .toString();
+                                                                  // Карточка идёт за статусом заявки. Визит, отмеченный
+                                                                  // «сделан» при прошлом «Завершено», не должен держать
+                                                                  // серый цвет, когда статус уже сменили.
+                                                                  final hatch =
+                                                                      calendarHatchFor(
+                                                                        status:
+                                                                            displayStatus,
+                                                                      );
+                                                                  final fiveDay =
+                                                                      _calendarController
+                                                                          .view ==
+                                                                      CalendarView
+                                                                          .workWeek;
+                                                                  // Тихая карточка: главное — логотип техники. Статус несёт
+                                                                  // цвет; закрытая заявка приглушается, а в углу одна
+                                                                  // маленькая отметка — галочка, крест или эмодзи статуса.
+                                                                  final resultMark =
+                                                                      hatch ==
+                                                                              CalendarHatchStyle.completed ||
+                                                                          hatch ==
+                                                                              CalendarHatchStyle.cancelled
+                                                                      ? hatch
+                                                                      : null;
+                                                                  final statusEmoji =
+                                                                      resultMark ==
+                                                                          null
+                                                                      ? calendarStatusEmoji(
+                                                                          displayStatus,
+                                                                        )
+                                                                      : null;
+                                                                  final logoSize =
+                                                                      bounds.width <
+                                                                          56
+                                                                      ? (bounds.shortestSide -
+                                                                                6)
+                                                                            .clamp(
+                                                                              28.0,
+                                                                              72.0,
+                                                                            )
+                                                                      : (bounds.height -
+                                                                                6)
+                                                                            .clamp(
+                                                                              32.0,
+                                                                              64.0,
+                                                                            );
+                                                                  final showName =
+                                                                      !fiveDay &&
+                                                                      bounds.width >=
+                                                                          56 &&
+                                                                      bounds.height >=
+                                                                          26;
+                                                                  final showBadge =
+                                                                      CalendarStatusBadge.has(
+                                                                        hatch:
+                                                                            resultMark,
+                                                                        emoji:
+                                                                            statusEmoji,
+                                                                      ) &&
+                                                                      bounds.width >=
+                                                                          20 &&
+                                                                      bounds.height >=
+                                                                          16;
+                                                                  final badge =
+                                                                      showBadge
+                                                                      ? CalendarStatusBadge(
+                                                                          hatch:
+                                                                              resultMark,
+                                                                          emoji:
+                                                                              statusEmoji,
+                                                                        )
+                                                                      : null;
+                                                                  final radius =
+                                                                      BorderRadius.circular(
+                                                                        _calendarController.view ==
+                                                                                CalendarView.month
+                                                                            ? 4
+                                                                            : 8,
+                                                                      );
+
+                                                                  // Обертка: один тап открывает заявку
+                                                                  return VisitLinkReporter(
+                                                                    hub:
+                                                                        _visitLinkHub,
+                                                                    appointmentId: app
+                                                                        .id
+                                                                        .toString(),
+                                                                    jobId:
+                                                                        jobId,
+                                                                    startAt: app
+                                                                        .startTime,
+                                                                    color: app
+                                                                        .color,
+                                                                    enabled:
+                                                                        _visitLinksEnabled,
+                                                                    child: SizedBox(
+                                                                      width: bounds
+                                                                          .width,
+                                                                      height: bounds
+                                                                          .height,
+                                                                      child: GestureDetector(
+                                                                        onTap: () {
+                                                                          AppFeedback.pleasant();
+                                                                          Navigator.push(
+                                                                            context,
+                                                                            MaterialPageRoute(
+                                                                              builder:
+                                                                                  (
+                                                                                    context,
+                                                                                  ) => JobDetailsScreen(
+                                                                                    jobId: jobId,
+                                                                                    clientId:
+                                                                                        jobData['clientId'] ??
+                                                                                        '',
+                                                                                    jobData: jobData,
+                                                                                  ),
+                                                                            ),
+                                                                          );
+                                                                        },
+                                                                        // Пункт 19: перехватываем долгое нажатие на выполненной
+                                                                        // работе, иначе календарь поднимет карточку и начнёт
+                                                                        // перенос. onDragEnd такой перенос всё равно отклонит, но
+                                                                        // карточка не должна даже отрываться.
+                                                                        onLongPress:
+                                                                            _visitDragLocked(
+                                                                              parsedJob,
+                                                                              visit,
+                                                                            )
+                                                                            ? () {
+                                                                                AppFeedback.haptic();
+                                                                                _warnDragLocked();
+                                                                              }
+                                                                            : null,
+                                                                        // Закрыли заявку — тускнеют все её выезды, в том
+                                                                        // числе старые «Перенос».
+                                                                        child: Opacity(
+                                                                          opacity:
+                                                                              resultMark ==
+                                                                                      null &&
+                                                                                  !JobStatuses.isClosed(
+                                                                                    parsedJob?.status ??
+                                                                                        '',
+                                                                                  )
+                                                                              ? 1
+                                                                              : kCalendarClosedOpacity,
+                                                                          child: HatchedCalendarCard(
+                                                                            color:
+                                                                                app.color,
+                                                                            borderRadius:
+                                                                                radius,
+                                                                            child: Stack(
+                                                                              children: [
+                                                                                Padding(
+                                                                                  padding: const EdgeInsets.symmetric(
+                                                                                    horizontal: 4,
+                                                                                  ),
+                                                                                  child: showName
+                                                                                      ? Row(
+                                                                                          children: [
+                                                                                            if (badge !=
+                                                                                                null) ...[
+                                                                                              badge,
+                                                                                              const SizedBox(
+                                                                                                width: 3,
+                                                                                              ),
+                                                                                            ],
+                                                                                            if (!fiveDay) ...[
+                                                                                              VisitConfirmBadge.mark(
+                                                                                                visit,
+                                                                                                size: 16,
+                                                                                              ),
+                                                                                              const SizedBox(
+                                                                                                width: 3,
+                                                                                              ),
+                                                                                            ],
+                                                                                            Expanded(
+                                                                                              child: Text(
+                                                                                                clientName,
+                                                                                                maxLines:
+                                                                                                    bounds.height >=
+                                                                                                        48
+                                                                                                    ? 2
+                                                                                                    : 1,
+                                                                                                overflow: TextOverflow.ellipsis,
+                                                                                                style: TextStyle(
+                                                                                                  color: Colors.white,
+                                                                                                  fontWeight: FontWeight.w700,
+                                                                                                  fontSize: 12,
+                                                                                                  height: 1.15,
+                                                                                                  decoration:
+                                                                                                      hatch ==
+                                                                                                          CalendarHatchStyle.cancelled
+                                                                                                      ? TextDecoration.lineThrough
+                                                                                                      : null,
+                                                                                                ),
+                                                                                              ),
+                                                                                            ),
+                                                                                            const SizedBox(
+                                                                                              width: 4,
+                                                                                            ),
+                                                                                            ApplianceLogo(
+                                                                                              type: type,
+                                                                                              size: logoSize,
+                                                                                              onDark: true,
+                                                                                            ),
+                                                                                            if (!fiveDay &&
+                                                                                                visit !=
+                                                                                                    null &&
+                                                                                                visit.effectiveConfirmStatus ==
+                                                                                                    JobVisit.confirmConfirmed) ...[
+                                                                                              const SizedBox(
+                                                                                                width: 3,
+                                                                                              ),
+                                                                                              const Icon(
+                                                                                                Icons.check_circle,
+                                                                                                color: Colors.white,
+                                                                                                size: 14,
+                                                                                              ),
+                                                                                            ] else if (!fiveDay &&
+                                                                                                visit !=
+                                                                                                    null &&
+                                                                                                visit.effectiveConfirmStatus.isNotEmpty) ...[
+                                                                                              const SizedBox(
+                                                                                                width: 3,
+                                                                                              ),
+                                                                                              const Icon(
+                                                                                                Icons.sms_failed,
+                                                                                                color: Colors.white,
+                                                                                                size: 14,
+                                                                                              ),
+                                                                                            ],
+                                                                                          ],
+                                                                                        )
+                                                                                      : Center(
+                                                                                          child: ApplianceLogo(
+                                                                                            type: type,
+                                                                                            size: logoSize,
+                                                                                            onDark: true,
+                                                                                          ),
+                                                                                        ),
+                                                                                ),
+                                                                                if (badge !=
+                                                                                        null &&
+                                                                                    !showName)
+                                                                                  Positioned(
+                                                                                    left: 3,
+                                                                                    top: 2,
+                                                                                    child: badge,
+                                                                                  ),
+                                                                              ],
+                                                                            ),
+                                                                          ),
+                                                                        ),
+                                                                      ),
+                                                                    ),
+                                                                  );
+                                                                },
+                                                          ),
+                                                        ),
+                                                        if (_nowLineViewOk)
+                                                          Positioned.fill(
+                                                            child: NowTimeOverlay(
+                                                              controller:
+                                                                  _nowLine,
+                                                              overlayKey:
+                                                                  _visitLinkOverlayKey,
+                                                              slotHeight:
+                                                                  slotHeight,
+                                                            ),
+                                                          ),
+                                                        if (_visitLinksEnabled)
+                                                          Positioned.fill(
+                                                            child: IgnorePointer(
+                                                              child: CustomPaint(
+                                                                painter: VisitLinkPainter(
+                                                                  hub:
+                                                                      _visitLinkHub,
+                                                                  overlayKey:
+                                                                      _visitLinkOverlayKey,
+                                                                  catalog:
+                                                                      linkCatalog,
+                                                                  timeRulerWidth:
+                                                                      _calendarController
+                                                                              .view ==
+                                                                          CalendarView
+                                                                              .month
+                                                                      ? 0
+                                                                      : 52,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        if (_visitLinksViewOk)
+                                                          Positioned(
+                                                            left: 6,
+                                                            top:
+                                                                _calendarHeaderHeight +
+                                                                (_calendarViewHeaderHeight -
+                                                                        36) /
+                                                                    2,
+                                                            child:
+                                                                _visitLinksToggle(),
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                );
+                                              },
+                                            );
+                                          },
+                                        ),
+                                      );
+                                    },
+                                  ),
                                 ),
-                              ),
+                              ],
                             );
                           },
                         );
                       },
                     ),
-                  );
-                },
-                    ),
-                  ),
-                ],
-              );
-            },
-          );
-            },
-          ),
-        ),
-      ],
+            ),
+          ],
         ),
       ],
     );
@@ -1368,12 +1918,18 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                 ),
                 const SizedBox(height: 12),
                 ListTile(
-                  leading: const Icon(Icons.build_outlined, color: Color(0xFF14557F)),
+                  leading: const Icon(
+                    Icons.build_outlined,
+                    color: Color(0xFF14557F),
+                  ),
                   title: Text('Заявка'.tr),
                   onTap: () => Navigator.pop(sheetContext, 'job'),
                 ),
                 ListTile(
-                  leading: const Icon(Icons.event_note, color: Color(0xFF5C6BC0)),
+                  leading: const Icon(
+                    Icons.event_note,
+                    color: Color(0xFF5C6BC0),
+                  ),
                   title: Text('Мероприятие'.tr),
                   subtitle: Text('Текст, время и фото'.tr),
                   onTap: () => Navigator.pop(sheetContext, 'event'),
@@ -1423,11 +1979,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
           ),
         ),
         child: Center(
-          child: Icon(
-            Icons.flag,
-            color: Colors.white,
-            size: logoSize,
-          ),
+          child: Icon(Icons.flag, color: Colors.white, size: logoSize),
         ),
       ),
     );

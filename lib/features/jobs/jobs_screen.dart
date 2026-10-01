@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/utils/app_date_picker.dart';
 import 'package:intl/intl.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
@@ -46,6 +47,7 @@ class _JobsScreenState extends State<JobsScreen> {
   late DateTime _routeDate;
   late final PageController _pageController;
   late final Stream<List<Job>> _jobsStream = JobService.streamAll();
+  late final _statusesStream = StatusService.streamDefs();
   bool _suppressPageSync = false;
 
   @override
@@ -167,9 +169,9 @@ class _JobsScreenState extends State<JobsScreen> {
   }
 
   Future<void> _pickRouteDate() async {
-    final picked = await showDatePicker(
+    final picked = await showAppDateSheet(
       context: context,
-      initialDate: _routeDate,
+      initial: _routeDate,
       firstDate: DateTime.now().subtract(const Duration(days: 365)),
       lastDate: DateTime.now().add(const Duration(days: 365)),
     );
@@ -242,7 +244,7 @@ class _JobsScreenState extends State<JobsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: StreamBuilder<List<JobStatusDef>>(
-        stream: StatusService.streamDefs(),
+        stream: _statusesStream,
         builder: (context, _) {
           return Column(
             children: [

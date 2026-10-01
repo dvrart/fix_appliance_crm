@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../../../core/app_feedback.dart';
 import '../../../../core/constants.dart';
-import '../../../../core/utils/app_time_picker.dart';
+import '../../../../core/utils/app_date_picker.dart';
 import '../../../../core/utils/thumb_image.dart';
 import '../../../../models/client.dart';
 import '../../../../models/job.dart';
@@ -20,6 +20,7 @@ import '../editors/call_recording_page.dart';
 import '../editors/source_email_page.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/utils/formatters.dart';
+import '../../../../shared/stale_routes.dart';
 import '../../../../shared/widgets/app_bar_save.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
 import '../../../../shared/widgets/visit_confirm_badge.dart';
@@ -41,6 +42,7 @@ class _DetailsTabState extends State<DetailsTab> {
   JobDetailsController get ctrl => widget.controller;
   List<Job> _relatedJobs = const [];
   Job? _originalJob;
+
   /// Вторая заявка с того же номера: дубляж, который сервер не стал соединять
   /// сам, либо та, в которую эту уже слили.
   Job? _twinJob;
@@ -54,7 +56,11 @@ class _DetailsTabState extends State<DetailsTab> {
   String get _bookingPhone {
     final site = ctrl.jobSitePhone.trim();
     final owner = (ctrl.jobData['clientPhone'] ?? '').toString().trim();
-    return ctrl.hasJobSite && site.isNotEmpty ? site : owner.isNotEmpty ? owner : site;
+    return ctrl.hasJobSite && site.isNotEmpty
+        ? site
+        : owner.isNotEmpty
+        ? owner
+        : site;
   }
 
   @override
@@ -258,6 +264,30 @@ class _DetailsTabState extends State<DetailsTab> {
                         ],
                       ),
                     ),
+                    ListTile(
+                      leading: Icon(
+                        Icons.update,
+                        color: StatusService.colorOf(JobStatuses.rescheduled),
+                      ),
+                      title: Text(
+                        'Перенос визита'.tr,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF1A1A1A),
+                        ),
+                      ),
+                      subtitle: Text(
+                        'Новая дата, время и что делаем'.tr,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        _editVisit(followUp: true);
+                      },
+                    ),
+                    const Divider(height: 1),
                     Flexible(
                       child: ListView.builder(
                         shrinkWrap: true,
@@ -317,7 +347,16 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  Future<void> _editVisit([JobVisit? existing]) async {
+  /// [correction] — «Дата визита»: правим дату/время этого визита без переноса.
+  /// [followUp] — «Перенос визита» из меню статусов: ещё один визит на новое
+  /// число и выбор статуса заявки.
+  Future<void> _editVisit({
+    JobVisit? existing,
+    bool correction = false,
+    bool followUp = false,
+  }) async {
+    correction = correction && existing != null;
+    followUp = followUp && existing == null;
     final now = DateTime.now();
     final last = ctrl.visits.isNotEmpty ? ctrl.visits.last.startAt : now;
     var startAt =
@@ -333,11 +372,23 @@ class _DetailsTabState extends State<DetailsTab> {
       startAt = now.add(const Duration(days: 1));
     }
     var duration = existing?.durationMinutes ?? ctrl.durationMinutes;
-    var note = existing?.note ?? '';
+    const followUpStatuses = {
+      'Диагностика': JobStatuses.call,
+      'Установка': JobStatuses.install,
+      'Повторный визит': JobStatuses.repeatVisit,
+    };
+    var visitStatus = ctrl.currentStatus == JobStatuses.waitingPart
+        ? 'Установка'
+        : 'Повторный визит';
+    var note = existing?.note ?? (followUp ? visitStatus : '');
     var outcome = existing?.outcome ?? JobVisit.scheduled;
     final noteCtrl = TextEditingController(text: note);
+    final canSms = _bookingPhone.isNotEmpty && !ctrl.needsReview;
+    var sendSms = canSms && !correction;
 
-    const presets = ['Диагностика', 'Установка', 'Повторный выезд'];
+    final presets = followUp
+        ? followUpStatuses.keys.toList()
+        : const ['Диагностика', 'Установка', 'Повторный выезд'];
 
     final saved = await showModalBottomSheet<bool>(
       context: context,
@@ -350,88 +401,57 @@ class _DetailsTabState extends State<DetailsTab> {
         return KeyboardAvoidingSheet(
           child: StatefulBuilder(
             builder: (context, setSheet) {
-              Future<void> pickDate() async {
-                final picked = await showDatePicker(
-                  context: context,
-                  initialDate: startAt.isBefore(now) ? now : startAt,
-                  firstDate: DateTime(now.year - 1),
-                  lastDate: DateTime(now.year + 2),
-                );
-                if (picked == null) return;
-                setSheet(() {
-                  startAt = DateTime(
-                    picked.year,
-                    picked.month,
-                    picked.day,
-                    startAt.hour,
-                    startAt.minute,
-                  );
-                });
-              }
-
-              Future<void> pickTime() async {
-                final picked = await showAppTimePicker(
-                  context: context,
-                  initialTime: TimeOfDay.fromDateTime(startAt),
-                  helpText: 'Выберите время'.tr,
-                );
-                if (picked == null) return;
-                setSheet(() {
-                  startAt = DateTime(
-                    startAt.year,
-                    startAt.month,
-                    startAt.day,
-                    picked.hour,
-                    picked.minute,
-                  );
-                });
-              }
-
+              final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
               return SafeArea(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                   child: Column(
-                    mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text(
-                        existing == null ? 'Добавить визит'.tr : 'Визит'.tr,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18,
-                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              correction
+                                  ? 'Дата визита'.tr
+                                  : existing == null && !followUp
+                                  ? 'Новый визит'.tr
+                                  : 'Перенос визита'.tr,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 18,
+                              ),
+                            ),
+                          ),
+                          if (existing != null)
+                            Tooltip(
+                              message: 'Отправить SMS повторно'.tr,
+                              child: Material(
+                                color: const Color(0xFFE8F5E9),
+                                shape: const CircleBorder(),
+                                child: InkWell(
+                                  customBorder: const CircleBorder(),
+                                  onTap: () => _resendVisitBookingSms(existing),
+                                  child: const Padding(
+                                    padding: EdgeInsets.all(8),
+                                    child: Icon(
+                                      Icons.sms_outlined,
+                                      size: 20,
+                                      color: Color(0xFF008F3B),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
-                      const SizedBox(height: 12),
-                      ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(
-                          Icons.calendar_month,
-                          color: AppColors.primary,
-                        ),
-                        title: Text(
-                          DateFormat(
-                            'd MMM yyyy',
-                            AppLocale.instance.dateLocale,
-                          ).format(startAt),
-                        ),
-                        trailing: const Icon(
-                          Icons.edit,
-                          size: 18,
-                          color: Colors.grey,
-                        ),
-                        onTap: pickDate,
-                      ),
-                      ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.schedule, color: AppColors.primary),
-                        title: Text(DateFormat('HH:mm').format(startAt)),
-                        trailing: const Icon(
-                          Icons.edit,
-                          size: 18,
-                          color: Colors.grey,
-                        ),
-                        onTap: pickTime,
-                      ),
+                      const SizedBox(height: 4),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
                       Row(
                         children: [
                           Icon(Icons.timer_outlined, color: AppColors.primary),
@@ -484,37 +504,6 @@ class _DetailsTabState extends State<DetailsTab> {
                         ],
                       ),
                       const SizedBox(height: 8),
-                      if (existing != null) ...[
-                        SizedBox(
-                          height: 44,
-                          child: ElevatedButton.icon(
-                            onPressed: () => _resendVisitBookingSms(existing),
-                            icon: const Icon(Icons.sms_outlined, size: 20),
-                            label: Text(
-                              'Отправить SMS с подтверждением визита'.tr,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w800,
-                                fontSize: 13,
-                                height: 1.1,
-                              ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF008F3B),
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                              ),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                      ],
                       TextField(
                         controller: noteCtrl,
                         decoration: InputDecoration(
@@ -525,6 +514,18 @@ class _DetailsTabState extends State<DetailsTab> {
                         onChanged: (value) => note = value,
                       ),
                       const SizedBox(height: 8),
+                      if (followUp)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Text(
+                            'Статус'.tr,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                        ),
                       Wrap(
                         spacing: 8,
                         runSpacing: 8,
@@ -532,7 +533,9 @@ class _DetailsTabState extends State<DetailsTab> {
                           for (final preset in presets)
                             Builder(
                               builder: (context) {
-                                final selected = note.trim() == preset;
+                                final selected = followUp
+                                    ? visitStatus == preset
+                                    : note.trim() == preset;
                                 return ChoiceChip(
                                   label: Text(
                                     trAny(preset),
@@ -554,14 +557,32 @@ class _DetailsTabState extends State<DetailsTab> {
                                   ),
                                   onSelected: (_) {
                                     noteCtrl.text = preset;
-                                    setSheet(() => note = preset);
+                                    setSheet(() {
+                                      note = preset;
+                                      if (followUp) visitStatus = preset;
+                                    });
                                   },
                                 );
                               },
                             ),
                         ],
                       ),
-                      if (JobStatuses.shouldMarkInstallOnReturnVisit(
+                      if (followUp)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: Text(
+                            'Эта заявка останется на своей дате со статусом «Перенос», а на новую дату создастся отдельная заявка.'
+                                .tr,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: Color(0xFF3D3D3D),
+                            ),
+                          ),
+                        )
+                      else if (correction)
+                        const SizedBox.shrink()
+                      else if (JobStatuses.shouldMarkInstallOnReturnVisit(
                             currentStatus: ctrl.currentStatus,
                             isNewVisit: existing == null,
                           ) ||
@@ -615,17 +636,34 @@ class _DetailsTabState extends State<DetailsTab> {
                           },
                         ),
                       ],
-                      const SizedBox(height: 12),
-                      Center(
-                        child: RoundActionButton(
-                          color: const Color(0xFF22C55E),
-                          icon: Icons.check_rounded,
-                          tooltip: 'Сохранить'.tr,
-                          onTap: () {
-                            note = noteCtrl.text.trim();
-                            Navigator.pop(sheetContext, true);
-                          },
+                      CheckboxListTile(
+                        value: sendSms,
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: Text(
+                          'Отправить SMS с подтверждением визита'.tr,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                            color: Color(0xFF1A1A1A),
+                          ),
                         ),
+                        subtitle: canSms
+                            ? null
+                            : Text(
+                                _bookingPhone.isEmpty
+                                    ? 'Нет телефона для SMS'.tr
+                                    : 'Сначала нажмите «Проверено» — потом можно слать SMS.'
+                                          .tr,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.orange.shade800,
+                                ),
+                              ),
+                        onChanged: canSms
+                            ? (value) =>
+                                  setSheet(() => sendSms = value ?? false)
+                            : null,
                       ),
                       if (existing != null && existing.isScheduled)
                         TextButton(
@@ -638,6 +676,53 @@ class _DetailsTabState extends State<DetailsTab> {
                             style: const TextStyle(color: Colors.red),
                           ),
                         ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const Divider(height: 12),
+                      Text(
+                        appDateTimeLabel(startAt),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      if (!keyboardOpen)
+                        AppDateTimePanel(
+                          value: startAt,
+                          firstDate: DateTime(now.year - 1),
+                          lastDate: DateTime(now.year + 2),
+                          onChanged: (v) => setSheet(() => startAt = v),
+                        ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        height: 52,
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            note = noteCtrl.text.trim();
+                            Navigator.pop(sheetContext, true);
+                          },
+                          icon: const Icon(Icons.check_circle, size: 22),
+                          label: Text(
+                            correction ? 'Сохранить'.tr : 'Заказ принят'.tr,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 16,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF22C55E),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -651,7 +736,7 @@ class _DetailsTabState extends State<DetailsTab> {
     Future<void>.delayed(const Duration(milliseconds: 350), noteCtrl.dispose);
     if (saved != true) return;
 
-    final visit = existing == null
+    final base = existing == null
         ? JobVisit.create(
             startAt: startAt,
             durationMinutes: duration,
@@ -663,10 +748,41 @@ class _DetailsTabState extends State<DetailsTab> {
             note: note,
             outcome: outcome,
           );
-    if (existing == null) {
+    // Кнопка «Заказ принят»: визит сразу помечается подтверждённым.
+    final visit = outcome == JobVisit.scheduled && !correction
+        ? base.withManualConfirm(JobVisit.confirmConfirmed)
+        : base;
+    if (followUp) {
+      final newJobId = await ctrl.rescheduleToNewJob(
+        visit,
+        followUpStatuses[visitStatus]!,
+      );
+      if (!mounted) return;
+      if (newJobId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Не удалось создать заявку на новую дату'.tr),
+            backgroundColor: Colors.orange.shade800,
+          ),
+        );
+        return;
+      }
+      if (sendSms && visit.isScheduled) {
+        await _resendVisitBookingSms(visit, jobId: newJobId);
+        if (!mounted) return;
+      }
+      final newJob = await JobService.getById(newJobId);
+      if (newJob != null && mounted) _openJobCard(newJob);
+      return;
+    } else if (existing == null) {
       await ctrl.addVisit(visit);
     } else {
-      await ctrl.updateVisit(visit);
+      await ctrl.updateVisit(visit, correction: correction);
+    }
+    // Подтверждение и SMS требуют записи в базу, как в updateVisitConfirm.
+    if (!await ctrl.commitChanges() || !mounted) return;
+    if (sendSms && visit.isScheduled) {
+      await _resendVisitBookingSms(visit);
     }
   }
 
@@ -700,10 +816,7 @@ class _DetailsTabState extends State<DetailsTab> {
             Expanded(child: _photosTile()),
           ],
         ),
-        if (fromEmail) ...[
-          const SizedBox(height: 8),
-          _emailTile(),
-        ],
+        if (fromEmail) ...[const SizedBox(height: 8), _emailTile()],
       ],
     );
   }
@@ -811,10 +924,10 @@ class _DetailsTabState extends State<DetailsTab> {
       value: emailSubject.isNotEmpty
           ? emailSubject
           : (emailFrom.isNotEmpty
-              ? emailFrom
-              : (emailPreview.isNotEmpty
-                  ? emailPreview
-                  : context.tr('Открыть письмо', 'Open the email'))),
+                ? emailFrom
+                : (emailPreview.isNotEmpty
+                      ? emailPreview
+                      : context.tr('Открыть письмо', 'Open the email'))),
       onTap: () => openSourceEmailSheet(
         context,
         jobData: ctrl.jobData,
@@ -845,7 +958,9 @@ class _DetailsTabState extends State<DetailsTab> {
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: onTap,
-        onLongPress: canCopy ? () => AppFeedback.copy(context, valueToCopy) : null,
+        onLongPress: canCopy
+            ? () => AppFeedback.copy(context, valueToCopy)
+            : null,
         borderRadius: BorderRadius.circular(12),
         child: Container(
           width: double.infinity,
@@ -1026,8 +1141,9 @@ class _DetailsTabState extends State<DetailsTab> {
             ctrl.jobSiteAddress.trim().isEmpty);
     final clientName = (ctrl.jobData['clientName'] ?? '').toString().trim();
     final clientPhone = (ctrl.jobData['clientPhone'] ?? '').toString().trim();
-    final clientAddress =
-        (ctrl.jobData['clientAddress'] ?? '').toString().trim();
+    final clientAddress = (ctrl.jobData['clientAddress'] ?? '')
+        .toString()
+        .trim();
     final clientEmail = ctrl.clientEmail.trim();
 
     final nameCtrl = TextEditingController(
@@ -1194,8 +1310,11 @@ class _DetailsTabState extends State<DetailsTab> {
                       padding: const EdgeInsets.only(bottom: 8),
                       child: Row(
                         children: [
-                          const Icon(Icons.error_outline,
-                              color: Colors.red, size: 18),
+                          const Icon(
+                            Icons.error_outline,
+                            color: Colors.red,
+                            size: 18,
+                          ),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
@@ -1433,8 +1552,7 @@ class _DetailsTabState extends State<DetailsTab> {
         ? 'there'
         : ctrl.contactName.trim();
     final address = ctrl.workAddress.trim();
-    final template =
-        templates['job_done'] ?? SettingsService.defaultJobDoneSms;
+    final template = templates['job_done'] ?? SettingsService.defaultJobDoneSms;
     var body = template
         .replaceAll('{name}', name)
         .replaceAll('{date}', '')
@@ -1470,8 +1588,9 @@ class _DetailsTabState extends State<DetailsTab> {
 
   Widget _buildStatusButton() {
     final color = ctrl.getStatusColor();
-    final onColor =
-        color.computeLuminance() > 0.55 ? Colors.black : Colors.white;
+    final onColor = color.computeLuminance() > 0.55
+        ? Colors.black
+        : Colors.white;
     return ElevatedButton(
       onPressed: _showStatusMenu,
       style: ElevatedButton.styleFrom(
@@ -1527,7 +1646,9 @@ class _DetailsTabState extends State<DetailsTab> {
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           onTap: _openClientCard,
-          onLongPress: name.isNotEmpty ? () => AppFeedback.copy(context, name) : null,
+          onLongPress: name.isNotEmpty
+              ? () => AppFeedback.copy(context, name)
+              : null,
           borderRadius: BorderRadius.circular(12),
           child: Container(
             width: double.infinity,
@@ -1578,10 +1699,10 @@ class _DetailsTabState extends State<DetailsTab> {
 
   Future<void> _openClientCard() async {
     var clientId = ctrl.clientId.trim();
-    final name    = (ctrl.jobData['clientName']    ?? '').toString().trim();
-    final phone   = (ctrl.jobData['clientPhone']   ?? '').toString().trim();
+    final name = (ctrl.jobData['clientName'] ?? '').toString().trim();
+    final phone = (ctrl.jobData['clientPhone'] ?? '').toString().trim();
     final address = (ctrl.jobData['clientAddress'] ?? '').toString().trim();
-    final email   = ctrl.clientEmail.trim();
+    final email = ctrl.clientEmail.trim();
 
     // Если заявка не привязана к карточке клиента — найти по телефону
     // или создать новую карточку и сразу привязать к заявке.
@@ -1618,11 +1739,11 @@ class _DetailsTabState extends State<DetailsTab> {
         builder: (context) => ClientDetailsScreen(
           clientId: clientId,
           clientData: {
-            'name':    name,
+            'name': name,
             'fullName': name,
-            'phone':   phone,
+            'phone': phone,
             'address': address,
-            'email':   email,
+            'email': email,
           },
         ),
       ),
@@ -1648,11 +1769,10 @@ class _DetailsTabState extends State<DetailsTab> {
     final timeOnly = current == null
         ? '—'
         : DateFormat('HH:mm').format(current.startAt);
-    final iconColor =
-        current == null ? Colors.orange.shade800 : AppColors.primary;
-    final dateColor =
-        current == null ? Colors.orange.shade800 : Colors.black;
-    const addSize = 48.0;
+    final iconColor = current == null
+        ? Colors.orange.shade800
+        : AppColors.primary;
+    final dateColor = current == null ? Colors.orange.shade800 : Colors.black;
 
     return IntrinsicHeight(
       child: Row(
@@ -1660,143 +1780,127 @@ class _DetailsTabState extends State<DetailsTab> {
         children: [
           Expanded(
             flex: 7,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-              decoration: BoxDecoration(
-                color: visits.isNotEmpty
-                    ? AppColors.primary.withOpacity(0.06)
-                    : Colors.orange.withOpacity(0.08),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: visits.isNotEmpty
-                      ? AppColors.primary.withOpacity(0.25)
-                      : Colors.orange.withOpacity(0.4),
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Дата визита'.tr,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.primary,
+                onTap: () => current == null
+                    ? _editVisit()
+                    : _editVisit(existing: current, correction: true),
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+                  decoration: BoxDecoration(
+                    color: visits.isNotEmpty
+                        ? AppColors.primary.withOpacity(0.06)
+                        : Colors.orange.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: visits.isNotEmpty
+                          ? AppColors.primary.withOpacity(0.25)
+                          : Colors.orange.withOpacity(0.4),
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  Row(
+                  child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: InkWell(
-                          onTap: () => _editVisit(current),
-                          borderRadius: BorderRadius.circular(8),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              vertical: 1,
-                              horizontal: 2,
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.calendar_month_rounded,
-                                      size: 18,
-                                      color: iconColor,
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Flexible(
-                                      child: Text(
-                                        dateOnly,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
+                      Text(
+                        'Дата визита'.tr,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 1,
+                                horizontal: 2,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.calendar_month_rounded,
+                                        size: 18,
+                                        color: iconColor,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Flexible(
+                                        child: Text(
+                                          dateOnly,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w800,
+                                            fontSize: 13,
+                                            color: dateColor,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.access_time_rounded,
+                                        size: 18,
+                                        color: iconColor,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        timeOnly,
                                         style: TextStyle(
                                           fontWeight: FontWeight.w800,
                                           fontSize: 13,
                                           color: dateColor,
                                         ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 2),
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.access_time_rounded,
-                                      size: 18,
-                                      color: iconColor,
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      timeOnly,
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.w800,
-                                        fontSize: 13,
-                                        color: dateColor,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
+                                    ],
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                        ),
+                          if (previous.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 6, top: 2),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  for (final visit in previous)
+                                    _buildPreviousVisitChip(visit),
+                                ],
+                              ),
+                            ),
+                        ],
                       ),
-                      if (previous.isNotEmpty)
+                      if (ctrl.currentStatus == JobStatuses.waitingPart &&
+                          !visits.any((visit) => visit.isScheduled))
                         Padding(
-                          padding: const EdgeInsets.only(left: 6, top: 2),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              for (final visit in previous)
-                                _buildPreviousVisitChip(visit),
-                            ],
-                          ),
-                        ),
-                      const SizedBox(width: 6),
-                      SizedBox(
-                        width: addSize,
-                        height: addSize,
-                        child: Material(
-                          color: AppColors.accent,
-                          borderRadius: BorderRadius.circular(12),
-                          child: InkWell(
-                            onTap: () {
-                              AppFeedback.haptic();
-                              _editVisit();
-                            },
-                            borderRadius: BorderRadius.circular(12),
-                            child: const Icon(
-                              Icons.add_rounded,
-                              size: 26,
-                              color: Colors.black,
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            'Ожидание запчасти — дату возврата ставить не нужно. Когда запчасть приедет — статус → «Перенос визита».'
+                                .tr,
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                              color: Colors.orange.shade800,
                             ),
                           ),
                         ),
-                      ),
                     ],
                   ),
-                  if (ctrl.currentStatus == JobStatuses.waitingPart &&
-                      !visits.any((visit) => visit.isScheduled))
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Text(
-                        'Ожидание запчасти — дату возврата ставить не нужно. Добавьте визит, когда запчасть приедет.'
-                            .tr,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
-                          color: Colors.orange.shade800,
-                        ),
-                      ),
-                    ),
-                ],
+                ),
               ),
             ),
           ),
@@ -1834,10 +1938,7 @@ class _DetailsTabState extends State<DetailsTab> {
 
   Future<void> _pickVisitConfirm(JobVisit visit) async {
     final current = visit.effectiveConfirmStatus;
-    final picked = await VisitConfirmBadge.pick(
-      context,
-      current: current,
-    );
+    final picked = await VisitConfirmBadge.pick(context, current: current);
     if (!mounted || picked == null || picked == current) return;
     await ctrl.updateVisitConfirm(visit, picked);
   }
@@ -1858,7 +1959,12 @@ class _DetailsTabState extends State<DetailsTab> {
   JobVisit? get _pendingSmsVisit {
     for (final visit in ctrl.visits) {
       if (visit.isActiveSlot &&
-          ['pending', 'approved', 'sending', 'error'].contains(visit.bookingSmsState)) {
+          [
+            'pending',
+            'approved',
+            'sending',
+            'error',
+          ].contains(visit.bookingSmsState)) {
         return visit;
       }
     }
@@ -1916,7 +2022,8 @@ class _DetailsTabState extends State<DetailsTab> {
                 : approved
                 ? '${'Нажмите «Продолжить», чтобы завершить отправку'.tr}: $when'
                 : failed
-                ? (visit.smsBooking['error'] ?? 'Не удалось отправить SMS'.tr).toString()
+                ? (visit.smsBooking['error'] ?? 'Не удалось отправить SMS'.tr)
+                      .toString()
                 : '${'Подтверждение визита ещё не отправлено'.tr}: $when',
             style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
           ),
@@ -1925,9 +2032,17 @@ class _DetailsTabState extends State<DetailsTab> {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: busy || unknown ? null : () => _resendVisitBookingSms(visit),
+                  onPressed: busy || unknown
+                      ? null
+                      : () => _resendVisitBookingSms(visit),
                   icon: const Icon(Icons.send_rounded, size: 20),
-                  label: Text(approved ? 'Продолжить'.tr : failed ? 'Повторить'.tr : 'Отправить'.tr),
+                  label: Text(
+                    approved
+                        ? 'Продолжить'.tr
+                        : failed
+                        ? 'Повторить'.tr
+                        : 'Отправить'.tr,
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF22C55E),
                     foregroundColor: Colors.white,
@@ -1938,7 +2053,9 @@ class _DetailsTabState extends State<DetailsTab> {
               const SizedBox(width: 8),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: busy || unknown || approved ? null : () => _dismissPendingSms(visit),
+                  onPressed: busy || unknown || approved
+                      ? null
+                      : () => _dismissPendingSms(visit),
                   icon: const Icon(Icons.close_rounded, size: 20),
                   label: Text('Не отправлять'.tr),
                   style: ElevatedButton.styleFrom(
@@ -1957,8 +2074,10 @@ class _DetailsTabState extends State<DetailsTab> {
 
   JobVisit? _currentBookingVisit(JobVisit expected) {
     for (final visit in ctrl.visits) {
-      if (visit.id == expected.id && visit.isActiveSlot &&
-          AppTimeService.bookingSlotKey(visit.startAt) == AppTimeService.bookingSlotKey(expected.startAt)) {
+      if (visit.id == expected.id &&
+          visit.isActiveSlot &&
+          AppTimeService.bookingSlotKey(visit.startAt) ==
+              AppTimeService.bookingSlotKey(expected.startAt)) {
         return visit;
       }
     }
@@ -1978,7 +2097,8 @@ class _DetailsTabState extends State<DetailsTab> {
       final ok = await showConfirmCancelSheet(
         context,
         title: 'Не отправлять SMS?'.tr,
-        message: 'Подтверждение для этого времени визита не будет отправлено.'.tr,
+        message:
+            'Подтверждение для этого времени визита не будет отправлено.'.tr,
         confirmLabel: 'Не отправлять'.tr,
       );
       if (!ok || !mounted) return;
@@ -1987,15 +2107,17 @@ class _DetailsTabState extends State<DetailsTab> {
       visit = current;
       final slotKey = AppTimeService.bookingSlotKey(visit.startAt);
       // copyWith не умеет обнулять smsBookingPendingAt, но сервер смотрит на флаг.
-      await ctrl.updateVisit(visit.copyWith(
-        smsBookingPending: false,
-        smsBookingSlotKey: slotKey,
-        smsBooking: {
-          'state': 'rejected',
-          'slotKey': slotKey,
-          'decidedAt': DateTime.now(),
-        },
-      ));
+      await ctrl.updateVisit(
+        visit.copyWith(
+          smsBookingPending: false,
+          smsBookingSlotKey: slotKey,
+          smsBooking: {
+            'state': 'rejected',
+            'slotKey': slotKey,
+            'decidedAt': DateTime.now(),
+          },
+        ),
+      );
       await ctrl.commitChanges();
     } finally {
       if (mounted) setState(() => _bookingBusy = false);
@@ -2006,7 +2128,7 @@ class _DetailsTabState extends State<DetailsTab> {
     final label =
         '${DateFormat('d MMM', AppLocale.instance.dateLocale).format(visit.startAt)} · ${DateFormat('HH:mm').format(visit.startAt)}';
     return InkWell(
-      onTap: () => _editVisit(visit),
+      onTap: () => _editVisit(existing: visit),
       borderRadius: BorderRadius.circular(4),
       child: Text(
         label,
@@ -2023,11 +2145,18 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  Future<void> _resendVisitBookingSms(JobVisit visit) async {
+  /// [jobId] — визит из другой заявки (новая заявка после «Перенос визита»):
+  /// он уже записан, в черновике этой карточки его нет.
+  Future<void> _resendVisitBookingSms(JobVisit visit, {String? jobId}) async {
     if (_bookingBusy || visit.bookingSmsState == 'sending') return;
-    if (visit.bookingSmsState == 'error' && visit.smsBooking['retryAllowed'] == false) {
+    if (visit.bookingSmsState == 'error' &&
+        visit.smsBooking['retryAllowed'] == false) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Результат отправки неизвестен — сначала проверьте переписку.'.tr)),
+        SnackBar(
+          content: Text(
+            'Результат отправки неизвестен — сначала проверьте переписку.'.tr,
+          ),
+        ),
       );
       return;
     }
@@ -2036,9 +2165,11 @@ class _DetailsTabState extends State<DetailsTab> {
     if (phone.isEmpty || ctrl.needsReview) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(phone.isEmpty
-              ? 'Нет телефона для SMS'.tr
-              : 'Сначала нажмите «Проверено» — потом можно слать SMS.'.tr),
+          content: Text(
+            phone.isEmpty
+                ? 'Нет телефона для SMS'.tr
+                : 'Сначала нажмите «Проверено» — потом можно слать SMS.'.tr,
+          ),
           backgroundColor: Colors.orange.shade800,
         ),
       );
@@ -2047,12 +2178,16 @@ class _DetailsTabState extends State<DetailsTab> {
     setState(() => _bookingBusy = true);
     try {
       final templates = await SettingsService.loadSmsTemplates();
-      final name = ctrl.contactName.trim().isEmpty ? 'there' : ctrl.contactName.trim();
+      final name = ctrl.contactName.trim().isEmpty
+          ? 'there'
+          : ctrl.contactName.trim();
       final clock = AppTimeService.bookingWallClock(visit.startAt);
       final date = DateFormat('MMMM d', 'en_US').format(clock);
       final time = DateFormat('HH:mm').format(clock);
       final slotKey = AppTimeService.bookingSlotKey(visit.startAt);
-      final template = templates['booking_confirm'] ?? SettingsService.defaultBookingConfirmSms;
+      final template =
+          templates['booking_confirm'] ??
+          SettingsService.defaultBookingConfirmSms;
       final body = template
           .replaceAll('{name}', name)
           .replaceAll('{date}', date)
@@ -2074,19 +2209,31 @@ class _DetailsTabState extends State<DetailsTab> {
         confirmLabel: 'Отправить'.tr,
       );
       if (!confirmed || !mounted) return;
-      final current = _currentBookingVisit(visit);
+      final current = jobId == null ? _currentBookingVisit(visit) : visit;
       if (current == null || current.bookingSmsState == 'sending') return;
       visit = current;
-      if (ctrl.isCommitting || !await ctrl.commitChanges()) return;
+      if (jobId == null &&
+          (ctrl.isCommitting || !await ctrl.commitChanges())) {
+        return;
+      }
       final key = '${visit.id}|$slotKey';
-      if (visit.bookingSmsState == 'approved' && visit.smsBooking['requestId'] is String) {
+      if (visit.bookingSmsState == 'approved' &&
+          visit.smsBooking['requestId'] is String) {
         _bookingRequestIds[key] = visit.smsBooking['requestId'] as String;
       } else if (visit.bookingSmsState == 'sent' ||
-          (visit.bookingSmsState == 'error' && visit.smsBooking['retryAllowed'] == true)) {
+          (visit.bookingSmsState == 'error' &&
+              visit.smsBooking['retryAllowed'] == true)) {
         _bookingRequestIds.remove(key);
       }
-      final requestId = _bookingRequestIds.putIfAbsent(key, () => FirebaseFirestore.instance
-          .collection('companies').doc(kCompanyId).collection('messages').doc().id);
+      final requestId = _bookingRequestIds.putIfAbsent(
+        key,
+        () => FirebaseFirestore.instance
+            .collection('companies')
+            .doc(kCompanyId)
+            .collection('messages')
+            .doc()
+            .id,
+      );
       // Пункт 18: если клиент уже подтвердил заказ, отправка SMS не должна
       // сбрасывать статус обратно в «Заказ не принят».
       final ok = await SmsService.sendSms(
@@ -2094,7 +2241,7 @@ class _DetailsTabState extends State<DetailsTab> {
         body: body,
         clientId: ctrl.clientId,
         visitBooking: {
-          'jobId': ctrl.jobId,
+          'jobId': jobId ?? ctrl.jobId,
           'visitId': visit.id,
           'slotKey': slotKey,
           'requestId': requestId,
@@ -2104,9 +2251,11 @@ class _DetailsTabState extends State<DetailsTab> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(ok
-              ? 'SMS с подтверждением визита отправлено'.tr
-              : SmsService.failureText()),
+          content: Text(
+            ok
+                ? 'SMS с подтверждением визита отправлено'.tr
+                : SmsService.failureText(),
+          ),
           backgroundColor: ok ? Colors.green : Colors.orange.shade800,
         ),
       );
@@ -2190,54 +2339,54 @@ class _DetailsTabState extends State<DetailsTab> {
 
   Widget _reviewBanner() {
     return Container(
-              width: double.infinity,
-              margin: EdgeInsets.zero,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.orange.shade50,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.orange.shade300),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _reviewBannerText(),
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+      width: double.infinity,
+      margin: EdgeInsets.zero,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.orange.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _reviewBannerText(),
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () => ctrl.markReviewed(),
+                  icon: const Icon(Icons.check_rounded),
+                  label: Text('Подтвердить'.tr),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF22C55E),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: () => ctrl.markReviewed(),
-                          icon: const Icon(Icons.check_rounded),
-                          label: Text('Подтвердить'.tr),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF22C55E),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _rejectUnconfirmedJob,
-                          icon: const Icon(Icons.close_rounded),
-                          label: Text('Отменить'.tr),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFDC2626),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+                ),
               ),
-            );
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _rejectUnconfirmedJob,
+                  icon: const Icon(Icons.close_rounded),
+                  label: Text('Отменить'.tr),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFDC2626),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   /// Тот же номер и меньше двух суток между заявками. Входящие черновики
@@ -2274,9 +2423,7 @@ class _DetailsTabState extends State<DetailsTab> {
           ),
           const SizedBox(height: 4),
           Text(
-            mergedInto
-                ? subtitle
-                : '${'Тот же номер'.tr} · $subtitle',
+            mergedInto ? subtitle : '${'Тот же номер'.tr} · $subtitle',
             style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
           ),
           const SizedBox(height: 12),
@@ -2352,7 +2499,9 @@ class _DetailsTabState extends State<DetailsTab> {
         ctrl.visits.any((visit) => visit.outcome != JobVisit.cancelled) ||
         ctrl.scheduledAt != null;
     final twinHasVisit =
-        twin.coalescedVisits.any((visit) => visit.outcome != JobVisit.cancelled) ||
+        twin.coalescedVisits.any(
+          (visit) => visit.outcome != JobVisit.cancelled,
+        ) ||
         twin.scheduledAt != null;
     if (mineHasVisit != twinHasVisit) return mineHasVisit;
     return false;
@@ -2360,42 +2509,32 @@ class _DetailsTabState extends State<DetailsTab> {
 
   Future<void> _mergeWithTwin(Job twin) async {
     final keepCurrent = _keepCurrentJob(twin);
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Соединить заявки?'.tr),
-        content: Text(
-          keepCurrent
-              ? 'Данные второй заявки перейдут сюда, она закроется.'.tr
-              : 'Данные этой заявки перейдут во вторую, эта закроется.'.tr,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text('Соединить'.tr),
-          ),
-        ],
-      ),
+    final confirmed = await showConfirmCancelSheet(
+      context,
+      title: 'Соединить заявки?'.tr,
+      message: keepCurrent
+          ? 'Данные второй заявки перейдут сюда, она закроется.'.tr
+          : 'Данные этой заявки перейдут во вторую, эта закроется.'.tr,
+      confirmLabel: 'Соединить'.tr,
     );
-    if (confirmed != true || !mounted) return;
+    if (!confirmed || !mounted) return;
     setState(() => _mergeBusy = true);
+    final dropId = keepCurrent ? twin.id : ctrl.jobId;
     final ok = await JobService.mergeDuplicate(
       keepId: keepCurrent ? ctrl.jobId : twin.id,
-      dropId: keepCurrent ? twin.id : ctrl.jobId,
+      dropId: dropId,
     );
-    if (!mounted) return;
-    setState(() => _mergeBusy = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(ok ? 'Заявки соединены'.tr : 'Не удалось соединить'.tr),
-      ),
-    );
-    // Эту заявку закрыли как дубль — смотреть больше нечего.
-    if (ok && !keepCurrent) Navigator.pop(context);
+    if (mounted) {
+      setState(() => _mergeBusy = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ok ? 'Заявки соединены'.tr : 'Не удалось соединить'.tr),
+        ),
+      );
+    }
+    // Дубль закрыт — смотреть больше нечего: снимаем все его карточки,
+    // включая эту, если закрыли её.
+    if (ok) StaleRoutes.dropJob(dropId);
   }
 
   Widget _routeButton() {
@@ -2409,7 +2548,9 @@ class _DetailsTabState extends State<DetailsTab> {
           : 'Проложить маршрут'.tr,
       child: _contactActionButton(
         onPressed: () => MapsService.openNavigator(address),
-        onLongPress: address.isNotEmpty ? () => AppFeedback.copy(context, address) : null,
+        onLongPress: address.isNotEmpty
+            ? () => AppFeedback.copy(context, address)
+            : null,
         background: AppColors.accent,
         foreground: Colors.black,
         child: Row(
@@ -2462,7 +2603,9 @@ class _DetailsTabState extends State<DetailsTab> {
     final phone = _bestContactPhone();
     return _contactActionButton(
       onPressed: _callSelected,
-      onLongPress: phone.isNotEmpty ? () => AppFeedback.copy(context, phone) : null,
+      onLongPress: phone.isNotEmpty
+          ? () => AppFeedback.copy(context, phone)
+          : null,
       background: const Color(0xFF008F3B),
       foreground: Colors.white,
       child: const Icon(Icons.phone, size: 28, color: Colors.white),
@@ -2473,7 +2616,9 @@ class _DetailsTabState extends State<DetailsTab> {
     final phone = _bestContactPhone();
     return _contactActionButton(
       onPressed: _smsSelected,
-      onLongPress: phone.isNotEmpty ? () => AppFeedback.copy(context, phone) : null,
+      onLongPress: phone.isNotEmpty
+          ? () => AppFeedback.copy(context, phone)
+          : null,
       background: const Color(0xFF1E88E5),
       foreground: Colors.white,
       child: const Icon(Icons.sms, size: 28, color: Colors.white),
@@ -2568,33 +2713,17 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 
   Future<void> _rejectUnconfirmedJob() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Отменить заявку?'.tr),
-        content: Text(
-          'Заявка попадёт в корзину на 30 дней.'.tr,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Нет'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFDC2626),
-              foregroundColor: Colors.white,
-            ),
-            child: Text('Отменить'.tr),
-          ),
-        ],
-      ),
+    final confirm = await showConfirmCancelSheet(
+      context,
+      title: 'Отменить заявку?'.tr,
+      message: 'Заявка попадёт в корзину на 30 дней.'.tr,
+      confirmLabel: 'Отменить'.tr,
+      cancelLabel: 'Нет'.tr,
     );
-    if (confirm != true || !mounted) return;
+    if (!confirm || !mounted) return;
+    final jobId = ctrl.jobId;
     await ctrl.rejectUnconfirmed();
-    if (!mounted) return;
-    Navigator.of(context).pop();
+    StaleRoutes.dropJob(jobId);
   }
 
   DateTime? _callWhen(Map<String, dynamic> item) {
@@ -2612,11 +2741,7 @@ class _DetailsTabState extends State<DetailsTab> {
     final items = ctrl.callItems;
     if (items.isEmpty) return;
     if (items.length == 1) {
-      await openCallRecordingSheet(
-        context,
-        items.last,
-        jobId: ctrl.jobId,
-      );
+      await openCallRecordingSheet(context, items.last, jobId: ctrl.jobId);
       return;
     }
     final chosen = await showModalBottomSheet<Map<String, dynamic>>(
@@ -2646,7 +2771,9 @@ class _DetailsTabState extends State<DetailsTab> {
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: Icon(
-                      _callInbound(item) ? Icons.call_received : Icons.call_made,
+                      _callInbound(item)
+                          ? Icons.call_received
+                          : Icons.call_made,
                       color: _callInbound(item)
                           ? const Color(0xFF008F3B)
                           : AppColors.primary,
@@ -2658,9 +2785,7 @@ class _DetailsTabState extends State<DetailsTab> {
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                     subtitle: Text(
-                      _callInbound(item)
-                          ? 'Клиент звонил'.tr
-                          : 'Мы звонили'.tr,
+                      _callInbound(item) ? 'Клиент звонил'.tr : 'Мы звонили'.tr,
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => Navigator.pop(sheetContext, item),
@@ -2679,9 +2804,9 @@ class _DetailsTabState extends State<DetailsTab> {
     final clientName = (ctrl.jobData['clientName'] ?? '').toString().trim();
     final siteName = ctrl.hasJobSite
         ? (ctrl.jobSiteName.isEmpty
-            // Другого человека на месте не назвали — там сам клиент.
-            ? (clientName.isEmpty ? 'Контакт на адресе'.tr : clientName)
-            : ctrl.jobSiteName)
+              // Другого человека на месте не назвали — там сам клиент.
+              ? (clientName.isEmpty ? 'Контакт на адресе'.tr : clientName)
+              : ctrl.jobSiteName)
         : (clientName.isEmpty ? 'Клиент'.tr : clientName);
     return _compactSiteNameCard(name: siteName, onTap: _editJobSite);
   }
@@ -2697,7 +2822,7 @@ class _DetailsTabState extends State<DetailsTab> {
       onTap: lastCall != null
           ? _openJobCalls
           : (_jobSource() == 'email' || _jobSource() == 'website'
-              ? () => openSourceEmailSheet(
+                ? () => openSourceEmailSheet(
                     context,
                     jobData: ctrl.jobData,
                     jobId: ctrl.jobId,
@@ -2705,15 +2830,15 @@ class _DetailsTabState extends State<DetailsTab> {
                     clientName: (ctrl.jobData['clientName'] ?? '').toString(),
                     clientEmail: ctrl.clientEmail,
                   )
-              : null),
+                : null),
     );
   }
 
-  Widget _compactSiteNameCard({
-    required String name,
-    VoidCallback? onTap,
-  }) {
-    final canCopy = name.isNotEmpty && name != 'Клиент'.tr && name != 'Контакт на адресе'.tr;
+  Widget _compactSiteNameCard({required String name, VoidCallback? onTap}) {
+    final canCopy =
+        name.isNotEmpty &&
+        name != 'Клиент'.tr &&
+        name != 'Контакт на адресе'.tr;
     return Material(
       color: Colors.white,
       borderRadius: BorderRadius.circular(12),
@@ -2799,8 +2924,10 @@ class _DetailsTabState extends State<DetailsTab> {
               if (sourceLabel.isNotEmpty) ...[
                 const SizedBox(height: 6),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: sourceColor.withValues(alpha: 0.14),
                     borderRadius: BorderRadius.circular(99),
@@ -2958,13 +3085,20 @@ class _DetailsTabState extends State<DetailsTab> {
             color: Colors.white,
             borderRadius: BorderRadius.circular(12),
             boxShadow: const [
-              BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2)),
+              BoxShadow(
+                color: Colors.black12,
+                blurRadius: 4,
+                offset: Offset(0, 2),
+              ),
             ],
           ),
           child: Column(
             children: [
               for (var i = 0; i < _changes.length; i++)
-                _buildChangeRow(_changes[i], showDivider: i < _changes.length - 1),
+                _buildChangeRow(
+                  _changes[i],
+                  showDivider: i < _changes.length - 1,
+                ),
             ],
           ),
         ),
@@ -2974,38 +3108,61 @@ class _DetailsTabState extends State<DetailsTab> {
 
   String _changeLabel(JobChangeEvent e) {
     switch (e.event) {
-      case 'created': return '${'Создана'.tr}: ${e.data['detail'] ?? ''}';
-      case 'status_changed': return '${e.data['from'] ?? ''} → ${e.data['to'] ?? ''}';
-      case 'client_name_set': return '${'Имя'.tr}: ${e.data['value'] ?? ''}';
-      case 'visit_added': return '${'Визит добавлен'.tr}: ${e.data['slot'] ?? ''}';
-      case 'visit_moved': return '${'Визит перенесён'.tr}: ${e.data['from'] ?? ''} → ${e.data['to'] ?? ''}';
-      case 'visit_confirmed': return '${'Клиент подтвердил'.tr}: ${e.data['slot'] ?? ''}';
-      case 'visit_cancelled': return '${'Клиент отменил'.tr}: ${e.data['slot'] ?? ''}';
-      case 'payment_recorded': return '${'Оплата'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''} (${e.data['method'] ?? ''})';
-      case 'tip_recorded': return '${'Чаевые'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''}';
-      case 'refund_recorded': return '${'Возврат'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''}';
-      case 'invoice_fully_paid': return 'Счёт полностью оплачен'.tr;
-      case 'merged_duplicate': return '${'Соединено с дубляжом'.tr}${e.data['detail'] == null || e.data['detail'].toString().isEmpty ? '' : ': ${trAny(e.data['detail'])}'}';
-      case 'merged_into': return 'Дубляж — соединено с другой заявкой'.tr;
-      default: return e.event;
+      case 'created':
+        return '${'Создана'.tr}: ${e.data['detail'] ?? ''}';
+      case 'status_changed':
+        return '${e.data['from'] ?? ''} → ${e.data['to'] ?? ''}';
+      case 'client_name_set':
+        return '${'Имя'.tr}: ${e.data['value'] ?? ''}';
+      case 'visit_added':
+        return '${'Визит добавлен'.tr}: ${e.data['slot'] ?? ''}';
+      case 'visit_moved':
+        return '${'Визит перенесён'.tr}: ${e.data['from'] ?? ''} → ${e.data['to'] ?? ''}';
+      case 'visit_confirmed':
+        return '${'Клиент подтвердил'.tr}: ${e.data['slot'] ?? ''}';
+      case 'visit_cancelled':
+        return '${'Клиент отменил'.tr}: ${e.data['slot'] ?? ''}';
+      case 'payment_recorded':
+        return '${'Оплата'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''} (${e.data['method'] ?? ''})';
+      case 'tip_recorded':
+        return '${'Чаевые'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''}';
+      case 'refund_recorded':
+        return '${'Возврат'.tr} \$${(e.data['amount'] as num?)?.toStringAsFixed(0) ?? ''}';
+      case 'invoice_fully_paid':
+        return 'Счёт полностью оплачен'.tr;
+      case 'merged_duplicate':
+        return '${'Соединено с дубляжом'.tr}${e.data['detail'] == null || e.data['detail'].toString().isEmpty ? '' : ': ${trAny(e.data['detail'])}'}';
+      case 'merged_into':
+        return 'Дубляж — соединено с другой заявкой'.tr;
+      default:
+        return e.event;
     }
   }
 
   String _byLabel(String by) {
     switch (by) {
-      case 'secretary': return 'Секретарь'.tr;
-      case 'sms': return 'SMS'.tr;
-      case 'email': return 'Почта'.tr;
-      case 'stripe': return 'Stripe';
-      case 'client': return 'Клиент'.tr;
-      default: return 'Вы'.tr;
+      case 'secretary':
+        return 'Секретарь'.tr;
+      case 'sms':
+        return 'SMS'.tr;
+      case 'email':
+        return 'Почта'.tr;
+      case 'stripe':
+        return 'Stripe';
+      case 'client':
+        return 'Клиент'.tr;
+      default:
+        return 'Вы'.tr;
     }
   }
 
   Widget _buildChangeRow(JobChangeEvent e, {required bool showDivider}) {
     final label = _changeLabel(e);
     final by = _byLabel(e.by);
-    final time = DateFormat('d MMM HH:mm', AppLocale.instance.dateLocale).format(e.at);
+    final time = DateFormat(
+      'd MMM HH:mm',
+      AppLocale.instance.dateLocale,
+    ).format(e.at);
     return Column(
       children: [
         Padding(
@@ -3015,7 +3172,10 @@ class _DetailsTabState extends State<DetailsTab> {
               Expanded(
                 child: Text(
                   label,
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ),
               const SizedBox(width: 8),

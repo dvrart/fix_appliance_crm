@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../core/constants.dart';
-import '../../core/utils/app_time_picker.dart';
+import '../../core/utils/app_date_picker.dart';
 import '../../services/ai_service.dart';
 import '../../services/client_service.dart';
 import '../../services/job_service.dart';
@@ -160,27 +160,23 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
     }
   }
 
-  Future<void> _pickDate() async {
-    final date = await showDatePicker(
+  /// Дата и время в одном окне — и плитка даты, и плитка времени открывают его.
+  Future<void> _pickDateTime() async {
+    final now = DateTime.now();
+    final day = _scheduledDate ?? now;
+    final time = _scheduledTime ?? TimeOfDay.fromDateTime(now);
+    final picked = await showAppDateTimeSheet(
       context: context,
-      initialDate: _scheduledDate ?? DateTime.now(),
-      firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(const Duration(days: 365)),
+      initial: DateTime(day.year, day.month, day.day, time.hour, time.minute),
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365)),
+      title: 'Дата и время визита'.tr,
     );
-    if (date != null) {
-      setState(() => _scheduledDate = date);
-    }
-  }
-
-  Future<void> _pickTime() async {
-    final time = await showAppTimePicker(
-      context: context,
-      initialTime: _scheduledTime ?? TimeOfDay.now(),
-      helpText: 'Выберите время'.tr,
-    );
-    if (time != null) {
-      setState(() => _scheduledTime = time);
-    }
+    if (picked == null || !mounted) return;
+    setState(() {
+      _scheduledDate = DateTime(picked.year, picked.month, picked.day);
+      _scheduledTime = TimeOfDay.fromDateTime(picked);
+    });
   }
 
   bool get _isEmailOffer => (widget.sourceMessageId ?? '').trim().isNotEmpty;
@@ -644,7 +640,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
                   children: [
                     Expanded(
                       child: GestureDetector(
-                        onTap: _pickDate,
+                        onTap: _pickDateTime,
                         child: Container(
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
@@ -673,7 +669,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: GestureDetector(
-                        onTap: _pickTime,
+                        onTap: _pickDateTime,
                         child: Container(
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(

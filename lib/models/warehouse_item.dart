@@ -14,12 +14,20 @@ class WarehouseItem {
   final int? minQuantity;
   final String? imageUrl;
 
+  /// Остальные свои снимки детали. [imageUrl] — первый, он же на плитке;
+  /// здесь лежат добавленные позже, в порядке добавления.
+  final List<String> photos;
+
   /// Картинка детали, которую ИИ нашёл в интернете (каталожное фото).
   /// Своё фото стикера живёт отдельно в [imageUrl].
   final String? webImageUrl;
 
   /// Магазин, откуда картинка.
   final String? webImageSource;
+
+  /// Фото по умолчанию: его FIX выбрал долгим нажатием, оно стоит в списке
+  /// склада и первым в галерее. Пусто — берём каталожное, потом своё.
+  final String? coverUrl;
   final String? other; // доп. информация
   final bool isUsed; // б/у или новая
 
@@ -42,8 +50,10 @@ class WarehouseItem {
     this.quantity = 0,
     this.minQuantity,
     this.imageUrl,
+    this.photos = const [],
     this.webImageUrl,
     this.webImageSource,
+    this.coverUrl,
     this.other,
     this.isUsed = false,
     this.interchange = const [],
@@ -55,11 +65,69 @@ class WarehouseItem {
   bool get isDeleted => deletedAt != null;
 
   /// Что показывать в списке: каталожная картинка красивее стикера.
+  /// Обложка, если её выбрали, иначе каталожная картинка, иначе своё фото.
   String? get displayImageUrl {
-    final web = webImageUrl?.trim();
-    if (web != null && web.isNotEmpty) return web;
-    final own = imageUrl?.trim();
-    return own == null || own.isEmpty ? null : own;
+    final urls = galleryUrls;
+    return urls.isEmpty ? null : urls.first;
+  }
+
+  /// Все снимки карточки для просмотра: первым идёт тот, что на плитке.
+  List<String> get galleryUrls => galleryOf(
+        coverUrl: coverUrl,
+        imageUrl: imageUrl,
+        webImageUrl: webImageUrl,
+        photos: photos,
+      );
+
+  /// То же, но по сырым полям документа — список склада работает с ними
+  /// напрямую, без модели.
+  static List<String> galleryOf({
+    String? coverUrl,
+    String? imageUrl,
+    String? webImageUrl,
+    List<String> photos = const [],
+  }) {
+    final out = <String>[];
+    void add(String? raw) {
+      final url = (raw ?? '').trim();
+      if (url.isEmpty || out.contains(url)) return;
+      out.add(url);
+    }
+
+    // Обложку берём, только если сам снимок ещё в карточке.
+    final cover = (coverUrl ?? '').trim();
+    if (cover.isNotEmpty &&
+        (cover == (webImageUrl ?? '').trim() ||
+            cover == (imageUrl ?? '').trim() ||
+            photos.any((p) => p.trim() == cover))) {
+      add(cover);
+    }
+    add(webImageUrl);
+    add(imageUrl);
+    for (final photo in photos) {
+      add(photo);
+    }
+    return out;
+  }
+
+  /// Список своих фото из документа. Пустые строки и повторы выкидываем:
+  /// битая ссылка в галерее выглядит как потерянный снимок.
+  static List<String> parsePhotos(dynamic raw) {
+    final out = <String>[];
+    void add(String value) {
+      final url = value.trim();
+      if (url.isEmpty || out.contains(url)) return;
+      out.add(url);
+    }
+
+    if (raw is List) {
+      for (final item in raw) {
+        add('$item');
+      }
+    } else if (raw is String) {
+      add(raw);
+    }
+    return out;
   }
 
   static const trashKeepDays = 30;
@@ -158,8 +226,10 @@ class WarehouseItem {
       quantity: _asInt(map['quantity']),
       minQuantity: map['minQuantity'] == null ? null : _asInt(map['minQuantity']),
       imageUrl: map['imageUrl'],
+      photos: parsePhotos(map['photos']),
       webImageUrl: map['webImageUrl'],
       webImageSource: map['webImageSource'],
+      coverUrl: map['coverUrl'],
       other: map['other'],
       isUsed: map['isUsed'] == true,
       interchange: parseInterchange(map['interchange']),
@@ -187,8 +257,10 @@ class WarehouseItem {
       'quantity': quantity,
       'minQuantity': minQuantity,
       'imageUrl': imageUrl,
+      'photos': photos,
       'webImageUrl': webImageUrl,
       'webImageSource': webImageSource,
+      'coverUrl': coverUrl,
       'other': other,
       'isUsed': isUsed,
       'interchange': interchange,
@@ -208,8 +280,10 @@ class WarehouseItem {
     int? quantity,
     int? minQuantity,
     String? imageUrl,
+    List<String>? photos,
     String? webImageUrl,
     String? webImageSource,
+    String? coverUrl,
     String? other,
     bool? isUsed,
     List<String>? interchange,
@@ -229,8 +303,10 @@ class WarehouseItem {
       quantity: quantity ?? this.quantity,
       minQuantity: minQuantity ?? this.minQuantity,
       imageUrl: imageUrl ?? this.imageUrl,
+      photos: photos ?? this.photos,
       webImageUrl: webImageUrl ?? this.webImageUrl,
       webImageSource: webImageSource ?? this.webImageSource,
+      coverUrl: coverUrl ?? this.coverUrl,
       other: other ?? this.other,
       isUsed: isUsed ?? this.isUsed,
       interchange: interchange ?? this.interchange,

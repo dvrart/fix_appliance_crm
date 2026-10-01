@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../shared/widgets/confirm_action_sheet.dart';
 
 import '../../core/app_commands.dart';
 import '../../core/constants.dart';
@@ -104,31 +105,15 @@ class _BasketScreenState extends State<BasketScreen>
   }
 
   Future<bool?> _confirmForever(String title) {
-    return showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(
-          context.tr(
-            'Это уже нельзя будет отменить.',
-            'This cannot be undone.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(context.tr('Отмена', 'Cancel')),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: Text(context.tr('Удалить навсегда', 'Delete forever')),
-          ),
-        ],
+    return showConfirmCancelSheet(
+      context,
+      title: title,
+      message: context.tr(
+        'Это уже нельзя будет отменить.',
+        'This cannot be undone.',
       ),
+      confirmLabel: context.tr('Удалить навсегда', 'Delete forever'),
+      cancelLabel: context.tr('Отмена', 'Cancel'),
     );
   }
 

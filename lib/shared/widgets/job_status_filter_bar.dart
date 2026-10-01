@@ -5,7 +5,7 @@ import '../../core/l10n/app_locale.dart';
 import '../../services/settings_service.dart';
 import '../../services/status_service.dart';
 
-class JobStatusFilterBar extends StatelessWidget {
+class JobStatusFilterBar extends StatefulWidget {
   final String selectedId;
   final ValueChanged<String> onSelected;
 
@@ -16,18 +16,26 @@ class JobStatusFilterBar extends StatelessWidget {
   });
 
   @override
+  State<JobStatusFilterBar> createState() => _JobStatusFilterBarState();
+}
+
+class _JobStatusFilterBarState extends State<JobStatusFilterBar> {
+  late final _configStream = SettingsService.watchConfig();
+  late final _statusesStream = StatusService.streamDefs();
+
+  @override
   Widget build(BuildContext context) {
     return Container(
       height: 60,
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
       child: StreamBuilder<Map<String, dynamic>>(
-        stream: SettingsService.watchConfig(),
+        stream: _configStream,
         builder: (context, configSnap) {
           final quick = SettingsService.readListQuickFilters(
             configSnap.data ?? const <String, dynamic>{},
           );
           return StreamBuilder<List<JobStatusDef>>(
-            stream: StatusService.streamDefs(),
+            stream: _statusesStream,
             builder: (context, statusSnap) {
               final filters = SettingsService.buildJobListFilters(
                 statusSnap.data ?? const [],
@@ -41,18 +49,18 @@ class JobStatusFilterBar extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 4),
                       child: FilterChip(
                         label: Text(trAny(filter.label)),
-                        selected: selectedId == filter.id,
+                        selected: widget.selectedId == filter.id,
                         selectedColor: AppColors.accent,
                         checkmarkColor: Colors.black,
                         labelStyle: TextStyle(
-                          color: selectedId == filter.id
+                          color: widget.selectedId == filter.id
                               ? Colors.black
                               : Colors.black87,
-                          fontWeight: selectedId == filter.id
+                          fontWeight: widget.selectedId == filter.id
                               ? FontWeight.bold
                               : FontWeight.normal,
                         ),
-                        onSelected: (_) => onSelected(filter.id),
+                        onSelected: (_) => widget.onSelected(filter.id),
                       ),
                     ),
                 ],

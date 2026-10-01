@@ -2,7 +2,6 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -13,6 +12,7 @@ import '../core/utils/formatters.dart';
 import '../models/document_settings.dart';
 import '../shared/widgets/keyboard_safe.dart';
 import 'job_service.dart';
+import 'network_status_service.dart';
 import 'outbound_media_service.dart';
 import 'settings_service.dart';
 import 'short_link_service.dart';
@@ -447,7 +447,7 @@ class DocumentTemplateService {
     pw.ImageProvider? logo;
     if (settings.invoiceShowLogo && settings.logoUrl.startsWith('http')) {
       try {
-        final response = await http.get(Uri.parse(settings.logoUrl));
+        final response = await getWithTimeout(Uri.parse(settings.logoUrl));
         if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
           logo = pw.MemoryImage(response.bodyBytes);
         }
@@ -456,9 +456,7 @@ class DocumentTemplateService {
     pw.ImageProvider? signatureImage;
     if (data.signatureUrl.startsWith('http')) {
       try {
-        final response = await http
-            .get(Uri.parse(data.signatureUrl))
-            .timeout(const Duration(seconds: 12));
+        final response = await getWithTimeout(Uri.parse(data.signatureUrl));
         if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
           signatureImage = pw.MemoryImage(response.bodyBytes);
         }

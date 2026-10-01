@@ -41,6 +41,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
   List<Map<String, dynamic>> _latestClients = [];
 
   final ScrollController _scrollController = ScrollController();
+  final TextEditingController _searchCtrl = TextEditingController();
   late final Stream<QuerySnapshot> _clientsStream;
   late final bool Function() _dismissSelection;
 
@@ -66,6 +67,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
     AppCommands.removeSelectionGuard(_dismissSelection);
     _selected.dispose();
     _scrollController.dispose();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
@@ -98,31 +100,14 @@ class _ClientsScreenState extends State<ClientsScreen> {
   Future<void> _deleteSelected() async {
     final ids = _selected.value;
     if (ids == null || ids.isEmpty) return;
-    final confirm = await showDialog<bool>(
-      context: context,
-      useRootNavigator: true,
-      builder: (context) => AlertDialog(
-        title: Text('Удалить клиентов?'.tr),
-        content: Text(
+    final confirm = await showConfirmCancelSheet(
+      context,
+      title: 'Удалить клиентов?'.tr,
+      message:
           '${ids.length} ${'выбрано'.tr}\n\n${'Карточки будут удалены. Заявки в календаре останутся.'.tr}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: Text('Удалить'.tr),
-          ),
-        ],
-      ),
+      confirmLabel: 'Удалить'.tr,
     );
-    if (confirm != true) return;
+    if (!confirm) return;
     await ClientService.deleteMany(ids);
     if (!mounted) return;
     _exitSelect();
@@ -192,27 +177,14 @@ class _ClientsScreenState extends State<ClientsScreen> {
                       : await ClientService.searchByPhone(phone));
               if (existing.isNotEmpty) {
                 final client = existing.first;
-                final open = await showDialog<bool>(
-                  context: context,
-                  useRootNavigator: true,
-                  builder: (context) => AlertDialog(
-                    title: Text('Клиент с этим номером уже есть'.tr),
-                    content: Text(
+                final open = await showConfirmCancelSheet(
+                  context,
+                  title: 'Клиент с этим номером уже есть'.tr,
+                  message:
                       '${client.fullName.isEmpty ? 'Без имени'.tr : client.fullName}\n${client.phone}\n\n${'Открыть карточку?'.tr}',
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: Text('Отмена'.tr),
-                      ),
-                      ElevatedButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        child: Text('Открыть'.tr),
-                      ),
-                    ],
-                  ),
+                  confirmLabel: 'Открыть'.tr,
                 );
-                if (open == true && context.mounted) {
+                if (open && context.mounted) {
                   if (sheetContext.mounted) Navigator.pop(sheetContext);
                   Navigator.push(
                     context,
@@ -674,21 +646,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
       builder: (context, _) {
         return Scaffold(
       backgroundColor: Colors.grey.shade100,
-      floatingActionButton: ValueListenableBuilder<Set<String>?>(
-        valueListenable: _selected,
-        builder: (context, selected, _) {
-          if (selected != null) return const SizedBox.shrink();
-          return FloatingActionButton(
-            heroTag: 'clients-add',
-            backgroundColor: AppColors.accent,
-            foregroundColor: AppColors.primary,
-            elevation: 4,
-            onPressed: _showAddClientDialog,
-            child: const Icon(Icons.add, size: 34),
-          );
-        },
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -696,17 +653,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
         elevation: 0,
         scrolledUnderElevation: 0,
         automaticallyImplyLeading: false,
-        leading: ValueListenableBuilder<Set<String>?>(
-          valueListenable: _selected,
-          builder: (context, selected, _) {
-            if (selected == null) return const SizedBox.shrink();
-            return IconButton(
-              icon: const Icon(Icons.close),
-              tooltip: 'Отмена'.tr,
-              onPressed: _exitSelect,
-            );
-          },
-        ),
         title: ValueListenableBuilder<Set<String>?>(
           valueListenable: _selected,
           builder: (context, selected, _) {
@@ -747,29 +693,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
           },
         ),
         actions: [
-          ValueListenableBuilder<Set<String>?>(
-            valueListenable: _selected,
-            builder: (context, selected, _) {
-              if (selected == null) {
-                return const SizedBox.shrink();
-              }
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'Выбрать все'.tr,
-                    onPressed: () => _enterSelect(all: true),
-                    icon: const Icon(Icons.select_all),
-                  ),
-                  IconButton(
-                    tooltip: 'Удалить'.tr,
-                    onPressed: selected.isEmpty ? null : _deleteSelected,
-                    icon: const Icon(Icons.delete_outline),
-                  ),
-                ],
-              );
-            },
-          ),
           ValueListenableBuilder<Set<String>?>(
             valueListenable: _selected,
             builder: (context, selected, _) {
@@ -837,9 +760,37 @@ class _ClientsScreenState extends State<ClientsScreen> {
       ),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
+          Expanded(child: _buildClientList()),
+          // Поиск, «+» и действия выбора — внизу, под большим пальцем.
+          ValueListenableBuilder<Set<String>?>(
+            valueListenable: _selected,
+            builder: (context, selected, _) {
+              if (selected != null) {
+                return SelectionActionBar(
+                  count: selected.length,
+                  onCancel: _exitSelect,
+                  onSelectAll: () => _enterSelect(all: true),
+                  onDelete: _deleteSelected,
+                );
+              }
+              return _buildSearchBar();
+            },
+          ),
+        ],
+      ),
+    );
+      },
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+      child: Row(
+        children: [
+          Expanded(
             child: TextField(
+              controller: _searchCtrl,
               decoration: InputDecoration(
                 hintText: 'Поиск по любой информации в карточке...'.tr,
                 hintMaxLines: 1,
@@ -867,9 +818,26 @@ class _ClientsScreenState extends State<ClientsScreen> {
               },
             ),
           ),
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 52,
+            height: 52,
+            child: FloatingActionButton(
+              heroTag: 'clients-add',
+              backgroundColor: AppColors.accent,
+              foregroundColor: AppColors.primary,
+              elevation: 2,
+              onPressed: _showAddClientDialog,
+              child: const Icon(Icons.add, size: 32),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-          Expanded(
-            child: StreamBuilder<QuerySnapshot>(
+  Widget _buildClientList() {
+    return StreamBuilder<QuerySnapshot>(
               stream: _clientsStream,
               builder: (context, snapshot) {
                 if (!snapshot.hasData &&
@@ -959,7 +927,8 @@ class _ClientsScreenState extends State<ClientsScreen> {
                       padding: const EdgeInsets.only(
                         left: 16,
                         right: 32,
-                        bottom: 88,
+                        top: 8,
+                        bottom: 8,
                       ),
                       itemCount: clients.length,
                       itemExtent: 80.0,
@@ -1001,12 +970,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
                   ],
                 );
               },
-            ),
-          ),
-        ],
-      ),
-    );
-      },
-    );
+            );
   }
 }

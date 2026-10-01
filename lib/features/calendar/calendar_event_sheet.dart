@@ -2,10 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:intl/intl.dart';
 
 import '../../core/l10n/app_locale.dart';
-import '../../core/utils/app_time_picker.dart';
+import '../../core/utils/app_date_picker.dart';
 import '../../models/calendar_event.dart';
 import '../../services/calendar_event_service.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
@@ -42,6 +41,7 @@ class _CalendarEventSheet extends StatefulWidget {
 class _CalendarEventSheetState extends State<_CalendarEventSheet> {
   late final TextEditingController _title;
   late DateTime _startAt;
+  late String _eventId;
   int _duration = 60;
   String _photoUrl = '';
   String? _localPhoto;
@@ -52,6 +52,7 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
   void initState() {
     super.initState();
     final event = widget.event;
+    _eventId = event?.id ?? '';
     _title = TextEditingController(text: event?.title ?? '');
     _startAt = event?.startAt ?? widget.startAt ?? DateTime.now();
     _duration = event?.durationMinutes ?? 60;
@@ -65,41 +66,15 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
     super.dispose();
   }
 
-  Future<void> _pickDate() async {
-    final date = await showDatePicker(
+  Future<void> _pickDateTime() async {
+    final picked = await showAppDateTimeSheet(
       context: context,
-      initialDate: _startAt,
+      initial: _startAt,
       firstDate: DateTime(2020),
       lastDate: DateTime(2040),
     );
-    if (date == null || !mounted) return;
-    setState(() {
-      _startAt = DateTime(
-        date.year,
-        date.month,
-        date.day,
-        _startAt.hour,
-        _startAt.minute,
-      );
-    });
-  }
-
-  Future<void> _pickTime() async {
-    final time = await showAppTimePicker(
-      context: context,
-      initialTime: TimeOfDay(hour: _startAt.hour, minute: _startAt.minute),
-      helpText: 'Время'.tr,
-    );
-    if (time == null || !mounted) return;
-    setState(() {
-      _startAt = DateTime(
-        _startAt.year,
-        _startAt.month,
-        _startAt.day,
-        time.hour,
-        time.minute,
-      );
-    });
+    if (picked == null || !mounted) return;
+    setState(() => _startAt = picked);
   }
 
   Future<void> _pickPhoto() async {
@@ -122,10 +97,9 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
     }
     setState(() => _busy = true);
     try {
-      var id = widget.event?.id ?? '';
-      id = await CalendarEventService.save(
+      _eventId = await CalendarEventService.save(
         CalendarEvent(
-          id: id,
+          id: _eventId,
           title: title,
           startAt: _startAt,
           durationMinutes: _duration,
@@ -136,12 +110,12 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
       var photoUrl = _photoUrl;
       if (_localPhoto != null) {
         photoUrl = await CalendarEventService.uploadPhoto(
-          eventId: id,
+          eventId: _eventId,
           localPath: _localPhoto!,
         );
         await CalendarEventService.save(
           CalendarEvent(
-            id: id,
+            id: _eventId,
             title: title,
             startAt: _startAt,
             durationMinutes: _duration,
@@ -166,7 +140,7 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
   }
 
   Future<void> _delete() async {
-    final id = widget.event?.id ?? '';
+    final id = _eventId;
     if (id.isEmpty) {
       Navigator.pop(context);
       return;
@@ -186,11 +160,6 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final dateLabel = DateFormat(
-      'd MMMM yyyy',
-      AppLocale.instance.dateLocale,
-    ).format(_startAt);
-    final timeLabel = DateFormat('HH:mm').format(_startAt);
     final preview = _localPhoto ?? _photoUrl;
     final bottom = MediaQuery.of(context).viewInsets.bottom;
     return Padding(
@@ -263,20 +232,41 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
               ],
             ),
             const SizedBox(height: 12),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.event, color: Color(0xFF14557F)),
-              title: Text(dateLabel),
-              subtitle: Text('День'.tr),
-              onTap: _busy ? null : _pickDate,
+            GestureDetector(
+              onTap: _busy ? null : _pickPhoto,
+              child: Container(
+                height: 140,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.black12),
+                  image: preview.isEmpty
+                      ? null
+                      : DecorationImage(
+                          image: ResizeImage(
+                            preview.startsWith('http')
+                                ? NetworkImage(preview)
+                                : FileImage(File(preview)) as ImageProvider,
+                            width: 720,
+                            policy: ResizeImagePolicy.fit,
+                          ),
+                          fit: BoxFit.cover,
+                        ),
+                ),
+                child: preview.isEmpty
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.add_a_photo_outlined,
+                              color: Colors.grey.shade600, size: 32),
+                          const SizedBox(height: 6),
+                          Text('Фото'.tr, style: TextStyle(color: Colors.grey.shade700)),
+                        ],
+                      )
+                    : null,
+              ),
             ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.schedule, color: Color(0xFF14557F)),
-              title: Text(timeLabel),
-              subtitle: Text('Время'.tr),
-              onTap: _busy ? null : _pickTime,
-            ),
+            const SizedBox(height: 8),
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.timer_outlined, color: Color(0xFF14557F)),
@@ -298,38 +288,18 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
                 ),
               ),
             ),
-            const SizedBox(height: 8),
-            GestureDetector(
-              onTap: _busy ? null : _pickPhoto,
-              child: Container(
-                height: 140,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Colors.black12),
-                  image: preview.isEmpty
-                      ? null
-                      : DecorationImage(
-                          image: preview.startsWith('http')
-                              ? NetworkImage(preview)
-                              : FileImage(File(preview)) as ImageProvider,
-                          fit: BoxFit.cover,
-                        ),
-                ),
-                child: preview.isEmpty
-                    ? Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.add_a_photo_outlined,
-                              color: Colors.grey.shade600, size: 32),
-                          const SizedBox(height: 6),
-                          Text('Фото'.tr, style: TextStyle(color: Colors.grey.shade700)),
-                        ],
-                      )
-                    : null,
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.event, color: Color(0xFF14557F)),
+              title: Text(
+                appDateTimeLabel(_startAt),
+                style: const TextStyle(fontWeight: FontWeight.w700),
               ),
+              subtitle: Text('Дата и время'.tr),
+              trailing: const Icon(Icons.edit, size: 18, color: Colors.grey),
+              onTap: _busy ? null : _pickDateTime,
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 12),
             if (_busy)
               const Padding(
                 padding: EdgeInsets.only(bottom: 12),

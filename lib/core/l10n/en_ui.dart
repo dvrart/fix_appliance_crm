@@ -375,6 +375,10 @@ const Map<String, String> kEnglishUi = {
       '“Rescheduled” is set automatically when you book a new visit after a part.',
   'После сохранения статус станет «Перенос».':
       'After saving, the status will become “Rescheduled”.',
+  'Эта заявка останется на своей дате со статусом «Перенос», а на новую дату создастся отдельная заявка.':
+      'This job stays on its date as “Rescheduled”, and a separate job is created for the new date.',
+  'Не удалось создать заявку на новую дату':
+      'Could not create the job for the new date',
   'Сам, после нового визита': 'Automatic, after a new visit',
   'Больше не используется': 'No longer used',
   'Налог по умолчанию': 'Default tax',
@@ -437,6 +441,19 @@ const Map<String, String> kEnglishUi = {
   'Дата визита': 'Visit date',
   'Выберите дату': 'Choose a date',
   'Выберите время': 'Choose a time',
+  'Дата и время': 'Date and time',
+  'Период': 'Period',
+  'Ещё': 'More',
+  'Сделать фото по умолчанию': 'Make default photo',
+  'Его видно в списке склада': 'It shows in the warehouse list',
+  'Сканировать и добавить': 'Scan and add',
+  'ИИ заполнит номер и название': 'AI fills in number and name',
+  'Добавить фото': 'Add photos',
+  'Загружаю фото…': 'Uploading photo…',
+  'Тап — посмотреть, долгий тап — фото по умолчанию или убрать':
+      'Tap to view, long-press to make default or remove',
+  'Нажмите первый день': 'Tap the first day',
+  'нажмите последний день': 'tap the last day',
   'Дата и время визита': 'Visit date and time',
   'Техника находится по другому адресу': 'The appliance is at another address',
   'КОНТАКТ НА МЕСТЕ (JOB SITE)': 'JOB SITE CONTACT',
@@ -590,6 +607,10 @@ const Map<String, String> kEnglishUi = {
   'Заменяет номера (через запятую)': 'Replaces part numbers (comma separated)',
   'Снять заново': 'Take a new photo',
   'Убрать фото': 'Remove photo',
+  'Добавить ещё фото': 'Add another photo',
+  'Фотографии детали': 'Part photos',
+  'Можно добавить несколько снимков': 'You can add several photos',
+  'Тап — посмотреть, долгий тап — убрать': 'Tap to view, long-press to remove',
   'Выбрать картинку': 'Pick a picture',
   'Сделать фото': 'Take photo',
   'Выбрать из галереи': 'Choose from gallery',
@@ -1282,6 +1303,7 @@ const Map<String, String> kEnglishUi = {
   'Телефон не увидел NFC. Включите NFC в настройках Android.':
       'The phone did not see NFC. Turn on NFC in Android settings.',
   'Оплата отменена': 'Payment cancelled',
+  'Экран закрыт': 'Screen closed',
   'Включите NFC в настройках телефона и попробуйте снова.':
       'Turn on NFC in phone settings and try again.',
   'Этот телефон не поддерживает приём карты через NFC.':
@@ -1333,8 +1355,12 @@ const Map<String, String> kEnglishUi = {
   'След. визит': 'Next visit',
   'Не запланировано — нажмите «Добавить», чтобы назначить':
       'Not scheduled — tap Add to set a visit',
-  'Ожидание запчасти — дату возврата ставить не нужно. Добавьте визит, когда запчасть приедет.':
-      'Waiting for a part — no return date needed. Add a visit when the part arrives.',
+  'Ожидание запчасти — дату возврата ставить не нужно. Когда запчасть приедет — статус → «Перенос визита».':
+      'Waiting for a part — no return date needed. When the part arrives: status → "Reschedule visit".',
+  'Новый визит': 'New visit',
+  'Отправить SMS повторно': 'Resend SMS',
+  'Назначить дату и время визита': 'Set visit date and time',
+  'Новая дата, время и что делаем': 'New date, time and what we do',
   'Дата следующего визита не нужна, пока нет запчасти. Когда она приедет — добавьте визит. Заявка в очереди запчастей (фургон).':
       'No next visit date is needed until the part arrives. Then add a visit. The job is in the parts queue (van).',
   'Электронный адрес': 'Email',

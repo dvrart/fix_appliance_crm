@@ -20,17 +20,26 @@ import '../../features/settings/settings_screen.dart';
 import '../../features/settings/widgets/company_logo.dart';
 import '../unsaved_navigation_gate.dart';
 
-class CustomDrawer extends StatelessWidget {
+class CustomDrawer extends StatefulWidget {
   /// Закрывает панель и завершается, когда анимация закрытия доиграла.
   /// Без него панель считается системным `Scaffold.drawer`.
   final Future<void> Function()? onClose;
 
   const CustomDrawer({super.key, this.onClose});
 
+  @override
+  State<CustomDrawer> createState() => _CustomDrawerState();
+}
+
+class _CustomDrawerState extends State<CustomDrawer> {
+  late final _documentSettings = SettingsService.watchDocumentSettings();
+  late final _config = SettingsService.watchConfig();
+  late final _jobs = JobService.streamAll();
+
   /// Сначала полностью убираем панель, и только потом открываем экран —
   /// иначе два разнонаправленных слайда накладываются друг на друга.
   Future<void> _dismiss(BuildContext context) async {
-    final close = onClose;
+    final close = widget.onClose;
     if (close != null) {
       await close();
       return;
@@ -70,7 +79,7 @@ class CustomDrawer extends StatelessWidget {
           child: Column(
             children: [
               StreamBuilder<DocumentSettings>(
-                stream: SettingsService.watchDocumentSettings(),
+                stream: _documentSettings,
                 builder: (context, snapshot) {
                   final docs = snapshot.data;
                   final name = docs?.companyName ?? 'Fix Appliance';
@@ -138,7 +147,7 @@ class CustomDrawer extends StatelessWidget {
               ),
               Expanded(
                 child: StreamBuilder<Map<String, dynamic>>(
-                  stream: SettingsService.watchConfig(),
+                  stream: _config,
                   builder: (context, snapshot) {
                     final config = snapshot.data ?? <String, dynamic>{};
                     final tiles = <Widget>[
@@ -285,7 +294,7 @@ class CustomDrawer extends StatelessWidget {
 
   Widget _buildQuickStats(BuildContext context) {
     return StreamBuilder<List<Job>>(
-      stream: JobService.streamAll(),
+      stream: _jobs,
       builder: (context, snapshot) {
         final jobs = snapshot.data ?? [];
         final now = DateTime.now();

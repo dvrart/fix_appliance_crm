@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../shared/widgets/confirm_action_sheet.dart';
 
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
@@ -165,31 +166,14 @@ class _ClientsDuplicatesScreenState extends State<ClientsDuplicatesScreen> {
 
   Future<void> _deleteSelected() async {
     if (_selectedIds.isEmpty) return;
-    final confirm = await showDialog<bool>(
-      context: context,
-      useRootNavigator: true,
-      builder: (context) => AlertDialog(
-        title: Text('Удалить клиентов?'.tr),
-        content: Text(
+    final confirm = await showConfirmCancelSheet(
+      context,
+      title: 'Удалить клиентов?'.tr,
+      message:
           '${_selectedIds.length} ${'выбрано'.tr}\n\n${'Карточки попадут в корзину на 30 дней.'.tr}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: Text('Удалить'.tr),
-          ),
-        ],
-      ),
+      confirmLabel: 'Удалить'.tr,
     );
-    if (confirm != true) return;
+    if (!confirm) return;
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final blocked = await JobService.clientIdsWithJobs(_selectedIds);
@@ -240,33 +224,16 @@ class _ClientsDuplicatesScreenState extends State<ClientsDuplicatesScreen> {
         .toList();
     if (mergeIds.isEmpty) return;
 
-    final confirm = await showDialog<bool>(
-      context: context,
-      useRootNavigator: true,
-      builder: (context) => AlertDialog(
-        title: Text('Объединить клиентов?'.tr),
-        content: Text(
+    final confirm = await showConfirmCancelSheet(
+      context,
+      title: 'Объединить клиентов?'.tr,
+      message:
           '${mergeIds.length + 1} ${'карточек будут объединены в одну.'.tr}\n'
           '${'Заявки, адреса и заметки перейдут к основной карточке.'.tr}\n'
           '${'История звонков и SMS останется в приложении (по номеру телефона).'.tr}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-            ),
-            child: Text('Объединить'.tr),
-          ),
-        ],
-      ),
+      confirmLabel: 'Объединить'.tr,
     );
-    if (confirm != true || !mounted) return;
+    if (!confirm || !mounted) return;
 
     setState(() => _merging = true);
     var moved = 0;

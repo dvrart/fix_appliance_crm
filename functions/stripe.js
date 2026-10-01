@@ -123,6 +123,44 @@ function calcDocTotals(doc) {
   return { items, taxRate, subtotal, tax, total, paid, due };
 }
 
+/**
+ * Правка одного документа заявки транзакцией. Раньше функции читали заявку,
+ * меняли копию массива и писали его целиком — параллельная запись из
+ * приложения или вебхука по соседнему документу терялась.
+ */
+async function patchJobDocument(jobId, index, mutate) {
+  const jobRef = jobsRef.doc(jobId);
+  let patched = null;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(jobRef);
+    if (!snap.exists) return;
+    const job = snap.data() || {};
+    const documents = Array.isArray(job.documents) ? [...job.documents] : [];
+    if (index < 0 || index >= documents.length) return;
+    const doc = { ...documents[index] };
+    mutate(doc, job);
+    documents[index] = doc;
+    tx.update(jobRef, {
+      documents,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    patched = doc;
+  });
+  return patched;
+}
+
+function sessionIsPaid(session) {
+  return Boolean(session) &&
+    (session.payment_status === 'paid' || session.payment_status === 'no_payment_required');
+}
+
+function tipFromMetadata(metadata, amount) {
+  const dueCents = Number((metadata && metadata.dueCents) || 0);
+  return dueCents > 0
+    ? Math.max(0, amount - fromCents(dueCents))
+    : fromCents((metadata && metadata.tipCents) || 0);
+}
+
 function alreadyRecorded(doc, ids, amount) {
   const payments = Array.isArray(doc.payments) ? doc.payments : [];
   if (payments.some((p) =>
@@ -656,7 +694,7 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
       }
     })();
 
-    doc.stripe = {
+    const stripeInfo = {
       mode: kindNorm,
       status: 'open',
       url: publicUrl,
@@ -670,10 +708,9 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
       shortCode,
       createdAt: new Date().toISOString(),
     };
-    documents[index] = doc;
-    await jobsRef.doc(jobId).update({
-      documents,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    await patchJobDocument(jobId, index, (current) => {
+      if (kindNorm === 'invoice' && current.type === 'Estimate') current.type = 'Invoice';
+      current.stripe = stripeInfo;
     });
 
     let sms = { sent: false };
@@ -795,37 +832,44 @@ exports.createTerminalPaymentIntent = functions.https.onRequest(async (req, res)
 
     await expirePreviousCheckout(doc);
 
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: chargeCents,
-      currency: CURRENCY,
-      payment_method_types: ['card_present'],
-      capture_method: 'automatic',
-      description: `Fix Appliance — ${job.clientName || 'customer'}`.trim(),
-      payment_method_options: {
-        card_present: {},
-      },
-      metadata: {
-        jobId,
-        documentIndex: String(index),
-        companyId: COMPANY_ID,
-        kind: 'tap_to_pay',
-        dueCents: String(baseCents),
-        tipCents: String(tipCents),
-      },
-    });
+    const createIntent = (types) =>
+      stripe.paymentIntents.create({
+        amount: chargeCents,
+        currency: CURRENCY,
+        payment_method_types: types,
+        capture_method: 'automatic',
+        description: `Fix Appliance — ${job.clientName || 'customer'}`.trim(),
+        payment_method_options: {
+          card_present: {},
+        },
+        metadata: {
+          jobId,
+          documentIndex: String(index),
+          companyId: COMPANY_ID,
+          kind: 'tap_to_pay',
+          dueCents: String(baseCents),
+          tipCents: String(tipCents),
+        },
+      });
+    // Канадская дебетовая карта идёт через Interac: без interac_present Stripe её отклоняет.
+    let paymentIntent;
+    try {
+      paymentIntent = await createIntent(['card_present', 'interac_present']);
+    } catch (error) {
+      if (error && error.type !== 'StripeInvalidRequestError') throw error;
+      console.warn('interac_present unavailable, card_present only:', error.message);
+      paymentIntent = await createIntent(['card_present']);
+    }
 
-    doc.stripe = {
-      ...(doc.stripe || {}),
-      mode: 'tap_to_pay',
-      status: 'collecting',
-      paymentIntentId: paymentIntent.id,
-      amount: fromCents(chargeCents),
-      createdAt: new Date().toISOString(),
-    };
-    documents[index] = doc;
-    await jobsRef.doc(jobId).update({
-      documents,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    await patchJobDocument(jobId, index, (current) => {
+      current.stripe = {
+        ...(current.stripe || {}),
+        mode: 'tap_to_pay',
+        status: 'collecting',
+        paymentIntentId: paymentIntent.id,
+        amount: fromCents(chargeCents),
+        createdAt: new Date().toISOString(),
+      };
     });
 
     res.json({
@@ -1111,6 +1155,9 @@ async function recordDocumentRefund({
       return;
     }
 
+    // Остаток считаем от суммы до возврата: пока `stripe.status` ещё `paid`,
+    // `invoiceDocPaid` для обнулившихся платежей подставил бы полную сумму счёта.
+    const paidBefore = invoiceDocPaid(doc);
     const payments = Array.isArray(doc.payments) ? [...doc.payments] : [];
     payments.push({
       amount: -refundAmount,
@@ -1121,7 +1168,7 @@ async function recordDocumentRefund({
     });
     doc.payments = payments;
 
-    const paid = invoiceDocPaid(doc);
+    const paid = Math.max(0, paidBefore - refundAmount);
     netPaid = paid;
     const prevStripe = doc.stripe && typeof doc.stripe === 'object' ? doc.stripe : {};
     doc.stripe = {
@@ -1173,6 +1220,7 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
   const index = Number(documentIndex);
   const jobRef = jobsRef.doc(jobId);
   let recorded = false;
+  let duplicate = false;
   let shouldSuggestComplete = false;
   let isDeposit = false;
   let clientName = '';
@@ -1185,7 +1233,8 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
     const documents = Array.isArray(job.documents) ? [...job.documents] : [];
     if (index < 0 || index >= documents.length) return;
     const doc = { ...documents[index] };
-    if (alreadyRecorded(doc, ids, amount)) {
+    duplicate = alreadyRecorded(doc, ids, amount);
+    if (duplicate) {
       recorded = true;
       return;
     }
@@ -1233,7 +1282,9 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
     recorded = true;
   });
 
-  if (recorded) {
+  // Повторная доставка вебхука, проверка из приложения и страница «спасибо»
+  // приходят по одной оплате по нескольку раз — уведомление только на первую.
+  if (recorded && !duplicate) {
     try {
       const dollars = Number(amount).toFixed(2);
       if (shouldSuggestComplete) {
@@ -1263,16 +1314,13 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
 }
 
 async function handleCheckoutCompleted(session) {
+  if (!sessionIsPaid(session)) return false;
   const metadata = session.metadata || {};
   const jobId = metadata.jobId || session.client_reference_id;
   const documentIndex = metadata.documentIndex !== undefined ? metadata.documentIndex : 0;
   const amount = fromCents(session.amount_total);
-  const dueCents = Number(metadata.dueCents || 0);
-  const tip =
-    dueCents > 0
-      ? Math.max(0, amount - fromCents(dueCents))
-      : fromCents(metadata.tipCents || 0);
-  await recordStripePayment({
+  const tip = tipFromMetadata(metadata, amount);
+  return recordStripePayment({
     jobId,
     documentIndex,
     amount,
@@ -1495,39 +1543,42 @@ async function handleRefundCreated(refund) {
 async function handlePaymentIntentSucceeded(pi) {
   const metadata = pi.metadata || {};
   const types = Array.isArray(pi.payment_method_types) ? pi.payment_method_types : [];
-  if (metadata.kind !== 'tap_to_pay' && !types.includes('card_present')) return;
+  if (
+    metadata.kind !== 'tap_to_pay' &&
+    !types.includes('card_present') &&
+    !types.includes('interac_present')
+  ) {
+    return;
+  }
   if (!metadata.jobId) return;
   const amount = fromCents(pi.amount_received || pi.amount);
-  const dueCents = Number(metadata.dueCents || 0);
-  const tip =
-    dueCents > 0
-      ? Math.max(0, amount - fromCents(dueCents))
-      : fromCents(metadata.tipCents || 0);
   await recordStripePayment({
     jobId: metadata.jobId,
     documentIndex: metadata.documentIndex,
     amount,
-    tip,
+    tip: tipFromMetadata(metadata, amount),
     ids: [pi.id].filter(Boolean),
     methodLabel: metadata.kind === 'tap_to_pay' ? 'Stripe (card present)' : 'Stripe',
   });
 }
 
 async function handleInvoicePaid(invoice) {
+  if (invoice.status && invoice.status !== 'paid') return false;
+  // Checkout-created invoices inherit invoice_data.metadata, so the deposit
+  // label and the tip split stay the same whichever webhook arrives first.
   const metadata = invoice.metadata || {};
-  let jobId = metadata.jobId;
-  let documentIndex = metadata.documentIndex;
-  if (!jobId && invoice.id) {
-    // Checkout-created invoices inherit invoice_data.metadata
-    jobId = metadata.jobId;
-  }
   const amount = fromCents(invoice.amount_paid);
-  await recordStripePayment({
-    jobId,
-    documentIndex,
+  const paymentIntent =
+    typeof invoice.payment_intent === 'string'
+      ? invoice.payment_intent
+      : (invoice.payment_intent && invoice.payment_intent.id) || '';
+  return recordStripePayment({
+    jobId: metadata.jobId,
+    documentIndex: metadata.documentIndex,
     amount,
-    ids: [invoice.id, invoice.payment_intent].filter(Boolean),
-    methodLabel: 'Stripe',
+    tip: tipFromMetadata(metadata, amount),
+    ids: [invoice.id, paymentIntent].filter(Boolean),
+    methodLabel: metadata.kind === 'deposit' ? 'Stripe (deposit)' : 'Stripe',
   });
 }
 
@@ -1560,10 +1611,7 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
     switch (event.type) {
       case 'checkout.session.completed':
       case 'checkout.session.async_payment_succeeded': {
-        const session = event.data.object;
-        if (session.payment_status === 'paid' || event.type === 'checkout.session.async_payment_succeeded') {
-          await handleCheckoutCompleted(session);
-        }
+        await handleCheckoutCompleted(event.data.object);
         break;
       }
       case 'invoice.paid':
@@ -1595,9 +1643,7 @@ exports.stripePaymentComplete = functions.https.onRequest(async (req, res) => {
       const stripe = getStripe();
       if (stripe) {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session && (session.payment_status === 'paid' || session.status === 'complete')) {
-          await handleCheckoutCompleted(session);
-        }
+        await handleCheckoutCompleted(session);
       }
     } catch (error) {
       console.error('stripePaymentComplete session sync error:', error.message);
@@ -1672,24 +1718,17 @@ exports.checkStripePayment = functions.https.onRequest(async (req, res) => {
     if (sessionId && sessionId.startsWith('cs_')) {
       const session = await stripe.checkout.sessions.retrieve(sessionId);
       checked = true;
-      if (session.payment_status === 'paid' || session.status === 'complete') {
+      if (sessionIsPaid(session)) {
         await handleCheckoutCompleted(session);
         paymentStatus = 'paid';
         paidAmount = fromCents(session.amount_total);
       } else if (session.status === 'expired') {
         paymentStatus = 'expired';
-        const updatedDocs = [...documents];
-        updatedDocs[index] = {
-          ...doc,
-          stripe: {
-            ...stripeInfo,
-            status: 'expired',
-          },
-        };
-        await jobsRef.doc(jobId).update({
-          documents: updatedDocs,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        await patchJobDocument(jobId, index, (current) => {
+          current.stripe = { ...(current.stripe || {}), status: 'expired' };
         });
+      } else if (session.status === 'complete') {
+        paymentStatus = 'pending';
       }
     } else if (invoiceId && invoiceId.startsWith('in_')) {
       const invoice = await stripe.invoices.retrieve(invoiceId);

@@ -658,6 +658,7 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
   if (voiceFacts.isAppointmentOnly(extracted, callData)) {
     return { jobId: null, clientId: callData.clientId || null, created: false };
   }
+  const noBooking = callData.answeredBy === 'ai';
   const claimed = await claimOrReuseCallJob(callId);
   if (claimed.existed && claimed.jobId) {
     const existingJob = await jobsRef.doc(claimed.jobId).get();
@@ -667,7 +668,7 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
         await blockCallJobCreate(callId);
         return { jobId: null, clientId: existingData.clientId || null, created: false };
       }
-      await patchDraftJobFromCall(claimed.jobId, extracted);
+      await patchDraftJobFromCall(claimed.jobId, extracted, { noBooking });
       return {
         jobId: claimed.jobId,
         clientId: claimed.clientId || existingData.clientId || null,
@@ -781,7 +782,7 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
       applianceType,
     });
     if (reusable && reusable.id) {
-      await patchDraftJobFromCall(reusable.id, extracted);
+      await patchDraftJobFromCall(reusable.id, extracted, { noBooking });
       await callsRef.doc(callId).set(
         {
           createdJobId: reusable.id,
@@ -808,11 +809,15 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
     extracted.problem_description && String(extracted.problem_description).trim(),
   ].filter(Boolean);
   const issue = issueParts.join('\n');
-  const resolved = await resolveJobSchedule(extracted);
+  const resolved = await resolveJobSchedule(extracted, { noBooking });
   const scheduleFields = resolved.fields;
   let reviewNotes = String((extracted && extracted.review_notes) || '').trim();
   if (resolved.blocked) {
     reviewNotes = [reviewNotes, schedule.reviewNote(resolved.blocked)].filter(Boolean).join('\n');
+  }
+  const wishLine = noBooking ? preferredTimeLine(extracted) : '';
+  if (noBooking) {
+    reviewNotes = [reviewNotes, 'Секретарь время не назначала — позвоните клиенту и поставьте визит.'].filter(Boolean).join('\n');
   }
 
   const jobSite = isJobSiteExtract(extracted);
@@ -851,7 +856,7 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
     brand,
     model,
     serialNumber: extracted.serial_number || '',
-    description: issue,
+    description: withPreferredTimeLine(issue, wishLine),
     status: 'Вызов',
     priority: '🟢 Обычный',
     ...scheduleFields,
@@ -886,14 +891,16 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
   return { jobId: jobRef.id, clientId, created: true };
 }
 
-async function patchDraftJobFromCall(jobId, extracted) {
+async function patchDraftJobFromCall(jobId, extracted, { noBooking = false } = {}) {
   if (!jobId || !extracted) return;
   const snap = await jobsRef.doc(jobId).get();
   if (!snap.exists) return;
   const job = snap.data() || {};
   const updates = {};
   const visits = Array.isArray(job.visits) ? job.visits : [];
-  if (!job.scheduledAt && !job.scheduledDate && visits.length === 0) {
+  if (noBooking) {
+    // Звонок принимала секретарь: расписание не трогаем, пожелание — в описание.
+  } else if (!job.scheduledAt && !job.scheduledDate && visits.length === 0) {
     const resolved = await resolveJobSchedule(extracted, { excludeJobId: jobId });
     Object.assign(updates, resolved.fields);
     if (resolved.blocked) {
@@ -941,6 +948,10 @@ async function patchDraftJobFromCall(jobId, extracted) {
   const issue = jobDescriptionFromExtract(extracted);
   if (issue) {
     updates.description = mergeJobDescription(job.description, issue);
+  }
+  const wishLine = noBooking ? preferredTimeLine(extracted) : '';
+  if (wishLine) {
+    updates.description = withPreferredTimeLine(updates.description ?? job.description, wishLine);
   }
   const phone = normalizePhone(extracted.client_phone);
   if (phone && !String(job.clientPhone || '').trim()) {
@@ -1461,23 +1472,23 @@ Never pushy. At most one repair question per reply, and only when it fits the mo
 
 We repair washers, dryers, dishwashers, gas ovens, electric ovens, electric cooktops, fridges, freezers, microwaves. Not gas cooktops, TVs, laptops, phones, or cars — say so kindly and stay on the line.
 
-You answer 24/7 and take the order any hour. Visit days and hours are in Shop hours below — that block is the truth. Each visit is 2 hours. If a window is taken, offer another time the same day first. Closed / holiday: still take the order, offer the next working day.
+You answer 24/7 and take the order any hour. Visit days and hours are in Shop hours below — that block is the truth. You do NOT book visits and you cannot see the calendar: ask what day and time would suit the caller, note it, and say the technician will contact them to set the exact time. Never confirm, promise, or suggest a specific slot, and never say a time is free or taken. Closed / holiday: still take the order and ask which working day would suit them instead.
 
-Pick up facts as they talk. Do not run a checklist. Do not re-ask. Typical things you need: first name, what broke and the brand, a day and time, where to go. If the caller is a known client or has an open job on file, greet them by name, but wait for them to explain why they are calling before referencing any open job or old address — they may be calling about something new. If they already have a home on file, ask once if the repair is at that address. Another house → that street, who will be there, that phone. If the caller will be there themselves, that name is already on the order — do not ask for it again. Ask who is home only if it is not their house. Addresses stay in English as spoken — repeat the house number and street once when they give it, and always confirm the city too.
+Pick up facts as they talk. Do not run a checklist. Do not re-ask. Typical things you need: first name, what broke and the brand, when would suit them, where to go. If the caller is a known client or has an open job on file, greet them by name, but wait for them to explain why they are calling before referencing any open job or old address — they may be calling about something new. If they already have a home on file, ask once if the repair is at that address. Another house → that street, who will be there, that phone. If the caller will be there themselves, that name is already on the order — do not ask for it again. Ask who is home only if it is not their house. Addresses stay in English as spoken — repeat the house number and street once when they give it, and always confirm the city too.
 
 When you have enough — or they want a callback — say you'll pass it to the tech. Ask them to text a model-sticker photo. Ask if anything else. If they say no, "Have a good day" right away. Do not hang up. They hang up.
 
 Live person: technician calls back in 30 minutes — do not grill for a time. Angry: someone from the shop calls in 30 minutes; stay polite. Price: only if they ask, and only the numbers under Prices. English only; understand any language.
 
-Scheduling: never open with "how about 7 AM?" or any specific early time. Instead, ask what time of day works for the caller, then offer an available slot that fits.
+Timing: never suggest a time of your own. Ask what day and time of day would work for them ("what day suits you best?"), accept whatever they say — a day, a time, "mornings", "any weekday" — and say the technician will call them to confirm the exact time. If they ask "can he come at two?", say you'll pass that on and the technician will confirm with them. Never say "you're booked", "see you then", or "that time is free".
 
 Location early: within the first two exchanges, ask for the city or area if you do not already know it. Do not discuss dates or times before you know the location is in the service area.
 
 Service area check: only decline a call if the address is clearly listed as outside the service area map. When in doubt, take the order and let the tech decide — do not refuse based on a town name from memory.
 
-Owner unavailable: if the caller asks for the owner, the technician, or "Artem", say he is out on a job and offer to take a full message or to book the repair directly. Do not end the call.
+Owner unavailable: if the caller asks for the owner, the technician, or "Artem", say he is out on a job and offer to take the repair details so he can call them back. Do not end the call.
 
-AI identity: if the caller asks whether you are an AI, a robot, a computer, or a virtual assistant, answer honestly and briefly — something like: "Yes, I'm a virtual assistant for FixApplianceCA. I have full access to the technician's calendar and I can book your visit right now. The technician will also reach out to you before the appointment to confirm all the details." Then continue with the call. Never claim to be a human or deny being a virtual assistant.
+AI identity: if the caller asks whether you are an AI, a robot, a computer, or a virtual assistant, answer honestly and briefly — something like: "Yes, I'm a virtual assistant for FixApplianceCA. I'll take down your details and when suits you, and the technician will contact you to set the time." Then continue with the call. Never claim to be a human or deny being a virtual assistant.
 
 Tenant: if the property is rented and the owner is not the one who will be home, ask for the tenant's first name and a direct phone number. "I'll be there myself" means the caller — no new name needed.
 
@@ -2133,8 +2144,8 @@ function hasEnoughForJob(extracted) {
   const problem = Boolean(extracted.appliance_type || extracted.problem_description);
   const name = Boolean(extracted.client_name);
   const address = Boolean(extracted.address) && extracted.address_uncertain !== true;
-  const when = Boolean(extracted.scheduled_date && extracted.scheduled_time);
-  return problem && name && address && when;
+  // Время визита ставит мастер — для заявки хватает пожелания клиента или даже его отсутствия.
+  return problem && name && address;
 }
 
 function hasConversationToBook(extracted, callData) {
@@ -2154,6 +2165,31 @@ function hasConversationToBook(extracted, callData) {
     callData && (callData.transcription || callData.transcriptionEn)
   );
   return voiceFacts.looksLikeRepairConversation(text);
+}
+
+const RU_WEEKDAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+
+function preferredTimeLine(extracted) {
+  const e = extracted || {};
+  const parts = [];
+  const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(e.scheduled_date || ''));
+  if (date) {
+    const weekday = new Date(Date.UTC(+date[1], +date[2] - 1, +date[3])).getUTCDay();
+    parts.push(`${RU_WEEKDAYS[weekday]} ${date[3]}.${date[2]}`);
+  }
+  const time = voiceFacts.normalizeTime(e.scheduled_time);
+  if (time) parts.push(time);
+  const wish = String(e.preferred_time || '').trim();
+  if (wish) parts.push(parts.length ? `(${wish})` : wish);
+  return parts.length ? `Удобное время: ${parts.join(' ')}` : '';
+}
+
+function withPreferredTimeLine(description, line) {
+  const base = String(description || '')
+    .replace(/^Удобное время:.*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return [base, line].filter(Boolean).join('\n\n');
 }
 
 function jobScheduleFields(extracted, durationMinutes = schedule.BOOKING_MINUTES) {
@@ -2187,7 +2223,9 @@ function jobScheduleFields(extracted, durationMinutes = schedule.BOOKING_MINUTES
 
 async function resolveJobSchedule(extracted, opts = {}) {
   const durationMinutes = await schedule.bookingDurationMinutes();
-  const start = parseScheduledAt(extracted);
+  // Секретарь визиты не назначает: время клиента — только пожелание, его
+  // пишем в описание, а визит ставит мастер после звонка клиенту.
+  const start = opts.noBooking ? null : parseScheduledAt(extracted);
   if (!start) {
     return { fields: jobScheduleFields(extracted, durationMinutes) };
   }
@@ -2839,28 +2877,28 @@ HOW TO TALK — this is the most important part:
 - If they say the repair is at another address, take that street, keep their home, keep talking. Do not hang up in that moment.
 - LIVE CALLBACK: if they want a live person / the technician to call them, do not grill for address or time. Say: "Okay, I'll pass your details along and a technician will call you back shortly."
 - If they are angry: stop collecting. Say a person from the company will call within 30 minutes. Then wait. Do not hang up.
-- If they want a visit outside shop hours, do not book it. Say we don't work then and offer a time inside the hours above. ${profile.closedDaysLabel || voiceFacts.closedDaysSpeech(['Saturday', 'Sunday'])} Public holidays: take the order; the technician must agree. Then wait. done=false.
-- THE TIME IS THEIRS TO PICK. Ask "what day and time works for you?" and wait. Do not suggest a slot, do not open with a time of your own, do not say "how about ten". Only if the time they name is taken do you say so and offer the nearest free starts that same day — and then it is their choice again.
-- If the caller says a.m. or morning, the hour stays as spoken: 10 a.m. is 10:00, never 22:00. Never put a visit outside shop hours.
+- If the time they want is outside shop hours, say we don't work then and ask what time inside the hours above would suit them. ${profile.closedDaysLabel || voiceFacts.closedDaysSpeech(['Saturday', 'Sunday'])} Public holidays: take the order; the technician must agree. Then wait. done=false.
+- YOU DO NOT BOOK VISITS and you cannot see the calendar. Ask "what day and time would suit you?" and wait. Note what they say in preferred_time and tell them the technician will contact them to confirm the exact time. Never suggest a slot, never say a time is free, taken, booked or confirmed, never say "see you then".
+- If the caller says a.m. or morning, the hour stays as spoken: 10 a.m. is 10:00, never 22:00.
 - ADDRESS: if they mention a town or a place we have on file, check the full street address right away — "is that still 7 Trinity Lane in Waterford?" Do not leave the address to the very end of the call; asking it last makes the caller think we lost their file.
 - If we cannot take the job (outside the service area, laptop/computer/phone, gas cooktop, they cancel, not a home appliance), say so in one short sentence, set createJob=false, extracted.service_declined=true, extracted.decline_reason to a short English reason. Do not create a repair job. Stay on the line. done=false.
-- When you have a name, what broke, where to go, and a working day inside shop hours — or they asked for a callback — confirm once ("I'll pass this to the tech"), createJob=true, ask for a model-sticker photo, then ask if anything else. If they say no, say "Have a good day." done=false. Do not hang up.
+- When you have a name, what broke, where to go, and when would suit them — or they asked for a callback — confirm once ("I'll pass this to the tech and he'll contact you to set the time"), createJob=true, ask for a model-sticker photo, then ask if anything else. If they say no, say "Have a good day." done=false. Do not hang up.
 - done=false. The caller hangs up. If they go quiet, wait; you may ask one short follow-up, then listen.
 - After they say nothing else, say "Have a good day." Do not say bye. Do not hang up.
 - Speak English only. Understand Russian or any other language, but never answer in it.
 - "language" in JSON is always "en".
 - appliance_type in extracted must be Russian: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
-- scheduled_date must be YYYY-MM-DD relative to Today ${today} in America/Toronto. scheduled_time must be HH:mm 24-hour. "2" / "at 2" / "two" → 14:00 unless they said morning or a.m.
-- client_name: a normal short given name as they said it. Never a phonetic spelling. Never good/fine/okay/thanks — "I'm good" is not a name.
+- preferred_time: the caller's wish in their own words, short English ("Wednesday after 2 p.m.", "any weekday morning"). It is a wish, not a booking.
+- scheduled_date / scheduled_time: only if they named a specific day / clock time. scheduled_date must be YYYY-MM-DD relative to Today ${today} in America/Toronto. scheduled_time must be HH:mm 24-hour. "2" / "at 2" / "two" → 14:00 unless they said morning or a.m.
+- client_name: the CALLER's own short given name as they said it. Never your own name, never the technician's. Never a phonetic spelling. Never good/fine/okay/thanks — "I'm good" is not a name.
 - contact_on_site_name / contact_on_site_phone: ONLY if the caller names a DIFFERENT person who will be at the repair address, with that person's name and/or phone. "I'll be there", "me", "just me", or "my husband" without a name → null. The caller's own name is not an on-site contact.
 
 Good "say" examples:
 - "Oh, the fridge isn't cooling. What brand is it?"
-- "Okay Artem — what's the address there?"
-- "Paris, perfect. What day and time works for you?"
-- "I'll pass this to the tech and he'll call you back to confirm."
-- "We don't work at 6 a.m. — we're 7 to 9. What time after 7 suits you?"
-- "Two o'clock Friday is already taken — four or five that day, or a different day?"
+- "Okay Amelia — what's the address there?"
+- "Paris, perfect. What day and time would suit you?"
+- "Friday afternoon, noted — the tech will call you to confirm the exact time."
+- "We don't work at 6 a.m. — we're 7 to 9. What time after 7 would suit you?"
 
 Bad examples (never):
 - "Thank you for providing that information. May I please have your full name?"
@@ -2897,6 +2935,7 @@ Return STRICT JSON, no markdown:
     "problem_description": null,
     "scheduled_date": null,
     "scheduled_time": null,
+    "preferred_time": null,
     "wants_callback": false,
     "contact_on_site_name": null,
     "contact_on_site_phone": null,
@@ -3248,7 +3287,6 @@ voiceRelay.init({
   pickLongestTranscript,
   saveRelayHost,
   torontoTodayYmd: voiceFacts.torontoTodayYmd,
-  calendarBrief: () => schedule.calendarBrief(),
   voiceOpenJobBrief,
   loadCallerSchedule: (caller) => schedule.loadCallerSchedule(caller),
   cancelCallerVisit: async (caller, target) => {
@@ -3260,7 +3298,6 @@ voiceRelay.init({
     }
     return result;
   },
-  checkBookingSlot: (start, opts) => schedule.checkSlot(start, opts),
   checkServiceArea: (place) => serviceArea.checkServiceArea(place),
   voiceCallFlow: voiceFacts.VOICE_CALL_FLOW,
   defaultVoiceGreeting: DEFAULT_VOICE_GREETING,
@@ -3686,6 +3723,7 @@ ${voiceFacts.EXTRACT_CARD_RULES}
 NEVER invent an address, city, postal code, brand, or model.
 If the address was mumbled, incomplete, or you would be guessing: address=null, city=null, postal_code=null, address_uncertain=true.
 If the name is phonetic garbage or a filler (good, fine, okay, thanks), set client_name=null.
+If client_name is a name the SHOP side said (technician Artem, the receptionist introducing herself, lines labelled Me/Моё/AI/ИИ) and the customer never gave it as their own, set client_name=null.
 Keep client_phone as 10 digits if present.
 appliance_type must stay Russian if known: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка.
 confidence is 0..1.
@@ -3852,6 +3890,8 @@ ${voiceFacts.EXTRACT_CARD_RULES}
 Today (America/Toronto): ${today}
 Caller phone: ${callerNumber || 'unknown'}
 Direction: ${direction === 'outbound' ? 'master called the client' : 'client called the shop'}
+Speakers: lines "${shopEn}:" / "${shopRu}:" are the shop (${answeredBy === 'master' ? 'the technician Artem' : 'the AI receptionist'}); "Client:" / "Клиент:" is the customer.
+- client_name: ONLY from what the customer said about themselves. A name in a shop line ("меня зовут Артём", "Artem speaking", the receptionist's name) is NOT the client. Unknown → null.
 - client_phone: 10 digits, default ${callerNumber || 'null'} if they did not give another
 - scheduled_date YYYY-MM-DD. tomorrow = next day after ${today}
 - scheduled_time HH:mm. "2" / "at 2" / "two" = 14:00 unless morning / a.m.
@@ -3881,20 +3921,15 @@ ${transcription || transcriptionEn || liveLabeled}`;
     } catch (error) {
       console.warn(`extract from transcript(${callId}):`, error.message);
     }
-    extracted = voiceFacts.enrichExtracted(
-      extracted,
-      [{ role: 'user', text: transcription }],
-      transcription
-    );
+    // Реплики мастерской и клиента раздельно: иначе «меня зовут Артём»
+    // мастера читалось как имя звонящего.
+    const transcriptHistory = voiceFacts.historyFromTranscript(transcription);
+    extracted = voiceFacts.enrichExtracted(extracted, transcriptHistory, transcription);
 
     try {
       const reviewed = await selfCheckCallExtract(transcription, extracted, summary);
       if (reviewed && reviewed.extracted) {
-        extracted = voiceFacts.mergeExtracted(
-          extracted,
-          reviewed.extracted,
-          [{ role: 'user', text: transcription }]
-        );
+        extracted = voiceFacts.mergeExtracted(extracted, reviewed.extracted, transcriptHistory);
         if (reviewed.address_uncertain === true) {
           extracted.address_uncertain = true;
           extracted.address = null;
@@ -3950,7 +3985,10 @@ ${transcription || transcriptionEn || liveLabeled}`;
         jobId = bySource[0].id;
       }
     }
-    if (!jobId && callData.answeredBy === 'ai') {
+    // Пока Live-релей ещё дописывает разговор, ждём его итог. Когда он уже
+    // закрыл сессию (`done`), ждать нечего — иначе заявка после каждого
+    // звонка секретаря опаздывала на девять секунд впустую.
+    if (!jobId && callData.answeredBy === 'ai' && !(callData.aiReception && callData.aiReception.done)) {
       for (let i = 0; i < 6 && !jobId; i++) {
         await new Promise((resolve) => setTimeout(resolve, 1500));
         const again = await callsRef.doc(callId).get();
@@ -4023,7 +4061,7 @@ ${transcription || transcriptionEn || liveLabeled}`;
       }
     } else if (jobId && hasSubstance && !callData.jobCreateBlocked) {
       try {
-        await patchDraftJobFromCall(jobId, extracted);
+        await patchDraftJobFromCall(jobId, extracted, { noBooking: callData.answeredBy === 'ai' });
       } catch (_) {}
     }
 
@@ -6131,36 +6169,45 @@ exports.processScheduledMessages = functions.scheduler.onSchedule(
   async () => {
     const now = admin.firestore.Timestamp.now();
     // Берём все pending — фильтр по sendAt делаем в коде, чтобы не требовать составной индекс
-    const snapshot = await scheduledMessagesRef
+    const pendingQuery = scheduledMessagesRef
       .where('status', '==', 'pending')
-      .limit(50)
-      .get();
-    console.log(`processScheduledMessages: pending=${snapshot.size}, now=${now.toDate().toISOString()}`);
-    if (snapshot.empty) return;
-
-    const due = snapshot.docs.filter((doc) => {
-      const sendAt = doc.data().sendAt;
-      if (!sendAt || !sendAt.toDate) return false;
-      const due = sendAt.toDate() <= now.toDate();
-      console.log(`  doc ${doc.id}: sendAt=${sendAt.toDate().toISOString()}, due=${due}, status=${doc.data().status}`);
-      return due;
-    });
-    console.log(`processScheduledMessages: ${due.length} due`);
+      .limit(50);
+    let query = pendingQuery;
+    let scanned = 0;
+    const due = [];
+    while (due.length < 50) {
+      const snapshot = await query.get();
+      scanned += snapshot.size;
+      for (const doc of snapshot.docs) {
+        const sendAt = doc.data().sendAt?.toDate?.();
+        if (sendAt && sendAt <= now.toDate()) due.push(doc);
+        if (due.length >= 50) break;
+      }
+      if (snapshot.size < 50 || due.length >= 50) break;
+      query = pendingQuery.startAfter(snapshot.docs[snapshot.docs.length - 1]);
+    }
+    console.log(`processScheduledMessages: scanned=${scanned}, due=${due.length}`);
     if (!due.length) return;
 
     for (const doc of due) {
-      const data = doc.data();
       // Атомарно захватить документ — чтобы не отправить дважды при повторе
-      let claimed = false;
+      let data;
       try {
-        await db.runTransaction(async (tx) => {
+        data = await db.runTransaction(async (tx) => {
           const fresh = await tx.get(doc.ref);
-          if (!fresh.exists || fresh.data().status !== 'pending') return;
+          if (!fresh.exists) return null;
+          const current = fresh.data();
+          const sendAt = current.sendAt?.toDate?.();
+          if (current.status !== 'pending' || !sendAt ||
+              !Number.isFinite(sendAt.getTime()) || sendAt > now.toDate()) return null;
           tx.update(doc.ref, { status: 'sending' });
-          claimed = true;
+          return current;
         });
-      } catch (_) {}
-      if (!claimed) continue;
+      } catch (error) {
+        console.warn('processScheduledMessages: claim failed', doc.id, error.message);
+        continue;
+      }
+      if (!data) continue;
 
       try {
         if (data.channel === 'sms') {
@@ -6174,6 +6221,8 @@ exports.processScheduledMessages = functions.scheduler.onSchedule(
             subject: String(data.subject || ''),
             mediaUrls: Array.isArray(data.mediaUrls) ? data.mediaUrls : [],
           });
+        } else {
+          throw new Error('Unsupported scheduled message channel');
         }
         await doc.ref.update({
           status: 'sent',

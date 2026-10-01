@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../shared/widgets/confirm_action_sheet.dart';
 
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
@@ -290,25 +291,13 @@ class _MessageTemplatesPageState extends State<MessageTemplatesPage> {
   Future<void> _deleteCustomTemplate(int index) async {
     if (index < 0 || index >= _customTemplates.length) return;
     final item = _customTemplates[index];
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Удалить шаблон?'.tr),
-        content: Text(item['title'] ?? item['body'] ?? ''),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(context, true),
-            child: Text('Удалить'.tr),
-          ),
-        ],
-      ),
+    final confirmed = await showConfirmCancelSheet(
+      context,
+      title: 'Удалить шаблон?'.tr,
+      message: item['title'] ?? item['body'] ?? '',
+      confirmLabel: 'Удалить'.tr,
     );
-    if (confirmed != true || !mounted) return;
+    if (!confirmed || !mounted) return;
     final next = [..._customTemplates]..removeAt(index);
     await SettingsService.saveChatCustomTemplates(next);
     if (!mounted) return;

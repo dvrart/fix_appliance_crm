@@ -554,6 +554,11 @@ class LocalNotificationService {
     );
   }
 
+  static Future<void> cancelLeaveStatus() async {
+    await initialize();
+    await _plugin.cancel(onWayNotificationId + 1);
+  }
+
   static Future<void> showInboxAlert({
     required String title,
     required String body,

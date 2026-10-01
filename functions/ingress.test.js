@@ -11,9 +11,20 @@ let notifications;
 let failWrites;
 let transactionTail;
 let mediaReads;
+let sentSms;
+let beforeTransaction;
+let retryTransaction;
 
 function snapshot(path) {
-  return { exists: store.has(path), id: path.split('/').pop(), ref: ref(path), data: () => structuredClone(store.get(path)) };
+  const stored = structuredClone(store.get(path));
+  return {
+    exists: stored !== undefined, id: path.split('/').pop(), ref: ref(path),
+    data: () => {
+      const data = structuredClone(stored);
+      if (data?.sendAt instanceof Date) data.sendAt = { toDate: () => new Date(stored.sendAt) };
+      return data;
+    },
+  };
 }
 
 function apply(path, data, merge = true) {
@@ -23,20 +34,23 @@ function apply(path, data, merge = true) {
   store.set(path, value);
 }
 
-function ref(path, filters = []) {
+function ref(path, filters = [], queryLimit = Infinity, after = '') {
   return {
     path, id: path.split('/').pop(),
     collection: (name) => ref(`${path}/${name}`),
     doc: (name = 'generated-document') => ref(`${path}/${name}`),
-    where: (field, op, value) => ref(path, [...filters, [field, op, value]]),
+    where: (field, op, value) => ref(path, [...filters, [field, op, value]], queryLimit, after),
     orderBy() { return this; },
-    limit() { return this; },
+    limit: (count) => ref(path, filters, count, after),
+    startAfter: (document) => ref(path, filters, queryLimit, document.id),
     get: async () => {
       if (path.split('/').length % 2 === 0) return snapshot(path);
       const docs = [...store.keys()]
         .filter((key) => key.startsWith(`${path}/`) && !key.slice(path.length + 1).includes('/'))
+        .sort()
         .map(snapshot)
-        .filter((doc) => filters.every(([field, op, expected]) => op !== '==' || doc.data()?.[field] === expected));
+        .filter((doc) => doc.id > after && filters.every(([field, op, expected]) => op !== '==' || doc.data()?.[field] === expected))
+        .slice(0, queryLimit);
       return { docs, empty: !docs.length, size: docs.length };
     },
     set: async (data, options) => apply(path, data, options?.merge === true),
@@ -54,27 +68,48 @@ const db = {
   collection: (name) => ref(name),
   runTransaction: (work) => {
     const result = transactionTail.then(async () => {
-      const writes = [];
-      const result = await work({
-        get: (document) => document.get(),
-        set: (document, data, options) => writes.push(() => apply(document.path, data, options?.merge === true)),
-        update: (document, data) => writes.push(() => apply(document.path, data)),
-      });
-      writes.forEach((write) => write());
-      return result;
+      if (beforeTransaction) {
+        const before = beforeTransaction;
+        beforeTransaction = null;
+        before();
+      }
+      const attempt = async (commit) => {
+        const writes = [];
+        const result = await work({
+          get: (document) => document.get(),
+          set: (document, data, options) => writes.push(() => apply(document.path, data, options?.merge === true)),
+          update: (document, data) => writes.push(() => apply(document.path, data)),
+        });
+        if (commit) writes.forEach((write) => write());
+        return result;
+      };
+      if (retryTransaction) {
+        const conflict = retryTransaction;
+        retryTransaction = null;
+        await attempt(false);
+        conflict();
+      }
+      return attempt(true);
     });
     transactionTail = result.catch(() => {});
     return result;
   },
 };
+class FakeTimestamp extends Date {
+  toDate() { return new Date(this); }
+}
 const firestore = Object.assign(() => db, {
   FieldValue: { serverTimestamp: () => new Date(), delete: () => ({ __delete: true }), increment: (value) => value },
-  Timestamp: { now: () => new Date(), fromDate: (date) => date, fromMillis: (value) => new Date(value) },
+  Timestamp: { now: () => new FakeTimestamp(), fromDate: (date) => date, fromMillis: (value) => new Date(value) },
 });
 const handler = (...args) => args.at(-1);
 const fakeTwilio = Object.assign(() => ({
   calls: Object.assign(() => ({ fetch: async () => ({ status: 'completed' }) }), { list: async () => [] }),
   recordings: { list: async () => [] },
+  messages: { create: async (payload) => {
+    sentSms.push(payload);
+    return { sid: `SM-synthetic-${sentSms.length}`, status: 'queued' };
+  } },
 }), realTwilio);
 const load = Module._load;
 Module._load = function (name) {
@@ -91,8 +126,20 @@ Module._load = function (name) {
   if (name === 'twilio') return fakeTwilio;
   return load.apply(this, arguments);
 };
-const api = require('./index');
-Module._load = load;
+const originalSid = process.env.TWILIO_ACCOUNT_SID;
+const originalToken = process.env.TWILIO_AUTH_TOKEN;
+process.env.TWILIO_ACCOUNT_SID = `AC${'0'.repeat(32)}`;
+process.env.TWILIO_AUTH_TOKEN = 'synthetic-test-token';
+let api;
+try {
+  api = require('./index');
+} finally {
+  Module._load = load;
+  if (originalSid === undefined) delete process.env.TWILIO_ACCOUNT_SID;
+  else process.env.TWILIO_ACCOUNT_SID = originalSid;
+  if (originalToken === undefined) delete process.env.TWILIO_AUTH_TOKEN;
+  else process.env.TWILIO_AUTH_TOKEN = originalToken;
+}
 
 function response() {
   return {
@@ -117,6 +164,9 @@ beforeEach(() => {
   failWrites = false;
   transactionTail = Promise.resolve();
   mediaReads = 0;
+  sentSms = [];
+  beforeTransaction = null;
+  retryTransaction = null;
 });
 
 test('concurrent SMS webhook retries persist one message and queue work before acknowledging', async () => {
@@ -176,4 +226,77 @@ test('replayed incoming webhooks preserve review state and do not send a second 
   assert.equal(call.aiStatus, 'done');
   assert.equal(notifications.length, 0);
   assert.match(res.body, /<Dial/);
+});
+
+function scheduledMessage(overrides = {}) {
+  const path = `${COMPANY}/scheduled_messages/synthetic-message`;
+  store.set(path, {
+    channel: 'sms', to: '+14165550101', body: 'Original text',
+    status: 'pending', sendAt: new Date(Date.now() - 60000), ...overrides,
+  });
+  return path;
+}
+
+test('concurrent scheduled-message workers send one SMS', async () => {
+  const path = scheduledMessage();
+  await Promise.all([api.processScheduledMessages(), api.processScheduledMessages()]);
+  assert.equal(sentSms.length, 1);
+  assert.equal(store.get(path).status, 'sent');
+});
+
+for (const status of ['cancelled', 'sending']) {
+  test(`a retried transaction cannot send a scheduled message now ${status}`, async () => {
+    const path = scheduledMessage();
+    retryTransaction = () => apply(path, { status });
+    await api.processScheduledMessages();
+    assert.equal(sentSms.length, 0);
+    assert.equal(store.get(path).status, status);
+  });
+}
+
+test('a failed claim commit never sends the scheduled message', async () => {
+  const path = scheduledMessage();
+  retryTransaction = () => { throw new Error('Synthetic commit failure'); };
+  await api.processScheduledMessages();
+  assert.equal(sentSms.length, 0);
+  assert.equal(store.get(path).status, 'pending');
+});
+
+test('scheduled sending uses the payload from the successful transaction', async () => {
+  const path = scheduledMessage();
+  beforeTransaction = () => apply(path, { body: 'Updated text', to: '+14165550109' });
+  await api.processScheduledMessages();
+  assert.equal(sentSms.length, 1);
+  assert.equal(sentSms[0].to, '+14165550109');
+  assert.match(sentSms[0].body, /Updated text/);
+  assert.doesNotMatch(sentSms[0].body, /Original text/);
+});
+
+test('a scheduled message moved to a future time is not sent from an old snapshot', async () => {
+  const path = scheduledMessage();
+  beforeTransaction = () => apply(path, { sendAt: new Date(Date.now() + 3600000) });
+  await api.processScheduledMessages();
+  assert.equal(sentSms.length, 0);
+  assert.equal(store.get(path).status, 'pending');
+});
+
+test('due messages are not starved behind a page of future scheduled messages', async () => {
+  const path = scheduledMessage();
+  for (let index = 0; index < 55; index++) {
+    store.set(`${COMPANY}/scheduled_messages/00-future-${String(index).padStart(3, '0')}`, {
+      channel: 'sms', to: '+14165550101', body: 'Future message',
+      status: 'pending', sendAt: new Date(Date.now() + 3600000),
+    });
+  }
+  await api.processScheduledMessages();
+  assert.equal(sentSms.length, 1);
+  assert.match(sentSms[0].body, /Original text/);
+  assert.equal(store.get(path).status, 'sent');
+});
+
+test('an unsupported scheduled channel is failed instead of reported as sent', async () => {
+  const path = scheduledMessage({ channel: 'unsupported' });
+  await api.processScheduledMessages();
+  assert.equal(sentSms.length, 0);
+  assert.equal(store.get(path).status, 'failed');
 });

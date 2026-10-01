@@ -26,6 +26,9 @@ class JobFilterGroupsScreen extends StatefulWidget {
 
 class _JobFilterGroupsScreenState extends State<JobFilterGroupsScreen> {
   late String _selectedId;
+  late final _configStream = SettingsService.watchConfig();
+  late final _statusesStream = StatusService.streamDefs();
+  late final _jobsStream = JobService.streamAll();
 
   @override
   void initState() {
@@ -49,20 +52,20 @@ class _JobFilterGroupsScreenState extends State<JobFilterGroupsScreen> {
         foregroundColor: Colors.white,
       ),
       body: StreamBuilder<Map<String, dynamic>>(
-        stream: SettingsService.watchConfig(),
+        stream: _configStream,
         builder: (context, configSnap) {
           final quick = SettingsService.readListQuickFilters(
             configSnap.data ?? const <String, dynamic>{},
           );
           return StreamBuilder<List<JobStatusDef>>(
-            stream: StatusService.streamDefs(),
+            stream: _statusesStream,
             builder: (context, statusSnap) {
               final filters = SettingsService.buildJobListFilters(
                 statusSnap.data ?? const [],
                 quick,
               );
               return StreamBuilder<List<Job>>(
-                stream: JobService.streamAll(),
+                stream: _jobsStream,
                 builder: (context, jobsSnap) {
                   if (!jobsSnap.hasData) {
                     return Center(

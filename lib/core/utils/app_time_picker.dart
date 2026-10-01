@@ -5,15 +5,21 @@ import 'package:flutter/services.dart';
 import '../../services/app_time_service.dart';
 import '../../core/l10n/app_locale.dart';
 
-/// Единый выбор времени: барабан часов и минут, 24 часа.
+/// Единый выбор времени: барабан часов и минут, 24 часа. Окно снизу —
+/// кнопки под большим пальцем.
 Future<TimeOfDay?> showAppTimePicker({
   required BuildContext context,
   required TimeOfDay initialTime,
   String? helpText,
 }) {
-  return showDialog<TimeOfDay>(
+  return showModalBottomSheet<TimeOfDay>(
     context: context,
     useRootNavigator: true,
+    isScrollControlled: true,
+    backgroundColor: Colors.white,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+    ),
     builder: (context) => _AppTimePickerDialog(
       initialTime: initialTime,
       title: helpText ?? 'Выберите время'.tr,
@@ -77,21 +83,30 @@ class _AppTimePickerDialogState extends State<_AppTimePickerDialog> {
       _time.minute,
     );
 
-    return Dialog(
-      backgroundColor: Colors.white,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 28),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+    return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
+        padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: BoxDecoration(
+                  color: Colors.black26,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+            ),
             Text(
               widget.title,
+              textAlign: TextAlign.center,
               style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
                 color: Colors.black,
               ),
             ),

@@ -195,8 +195,8 @@ class StripeTerminalService {
     );
   }
 
-  /// Диалог «приложите карту» + сам приём.
-  static Future<bool> collectWithDialog({
+  /// Диалог «приложите карту» + сам приём. `null` — оплата прошла, иначе причина отказа.
+  static Future<String?> collectWithDialog({
     required BuildContext context,
     required String jobId,
     required int documentIndex,
@@ -204,7 +204,7 @@ class StripeTerminalService {
     double tip = 0,
   }) async {
     final config = await SettingsService.loadConfig();
-    if (!context.mounted) return false;
+    if (!context.mounted) return 'Экран закрыт'.tr;
     final useTerminal =
         SettingsService.readCardReader(config) == SettingsService.cardReaderTerminal;
     final status = ValueNotifier<String>('Готовлю приём карты...'.tr);
@@ -284,25 +284,12 @@ class StripeTerminalService {
         onProcessing: (future) => processing = future,
       );
       await closeDialog();
-      return true;
-    } on StripeServiceException catch (e) {
-      await closeDialog();
-      if (context.mounted) {
-        debugPrint('Stripe terminal: ${e.message}');
-      }
-      return false;
-    } on TerminalException catch (e) {
-      await closeDialog();
-      if (context.mounted) {
-        debugPrint('Stripe terminal: ${_mapTerminalError(e)}');
-      }
-      return false;
+      return null;
     } catch (e) {
       await closeDialog();
-      if (context.mounted) {
-        debugPrint('Stripe terminal: $e');
-      }
-      return false;
+      final reason = e is TerminalException ? _mapTerminalError(e) : e.toString();
+      debugPrint('Stripe terminal: $reason');
+      return reason;
     } finally {
       status.dispose();
     }

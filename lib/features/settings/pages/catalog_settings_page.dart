@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../shared/widgets/confirm_action_sheet.dart';
 
 import '../../../core/app_commands.dart';
 import '../../../core/constants.dart';
@@ -190,31 +191,14 @@ class _CatalogListPageState extends State<_CatalogListPage> {
   Future<void> _deleteSelected() async {
     final items = _selected.value.toList();
     if (items.isEmpty) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Удалить'.tr),
-        content: Text(
-          '${'Удалить'.tr} ${items.length}?\n\n${items.take(5).join(', ')}'
-          '${items.length > 5 ? '…' : ''}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text('Удалить'.tr),
-          ),
-        ],
-      ),
+    final ok = await showConfirmCancelSheet(
+      context,
+      title: '${'Удалить'.tr} ${items.length}?',
+      message:
+          '${items.take(5).join(', ')}${items.length > 5 ? '…' : ''}',
+      confirmLabel: 'Удалить'.tr,
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     final remove = items.toSet();
     setState(() {
       _items = [
@@ -517,28 +501,12 @@ class _StatusListPageState extends State<_StatusListPage> {
   Future<void> _deleteSelected() async {
     final ids = _selected.value.toList();
     if (ids.isEmpty) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Удалить'.tr),
-        content: Text('${'Удалить'.tr} ${ids.length}?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text('Удалить'.tr),
-          ),
-        ],
-      ),
+    final ok = await showConfirmCancelSheet(
+      context,
+      title: '${'Удалить'.tr} ${ids.length}?',
+      confirmLabel: 'Удалить'.tr,
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     final remove = ids.toSet();
     setState(() {
       _items = [

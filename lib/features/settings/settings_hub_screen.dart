@@ -30,8 +30,17 @@ import 'widgets/settings_ui.dart';
 
 /// Настройки сгруппированы по вопросу «про что это», а не по технологии:
 /// Компания · Расписание · Клиенту · Подключения · Приложение · Данные.
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  late final _documentSettings = SettingsService.watchDocumentSettings();
+  late final _config = SettingsService.watchConfig();
+  late final _lessons = SecretaryLearnService.streamPending();
 
   void _open(BuildContext context, Widget page) {
     Navigator.push(context, MaterialPageRoute(builder: (_) => page));
@@ -51,14 +60,14 @@ class SettingsScreen extends StatelessWidget {
         automaticallyImplyLeading: false,
       ),
       body: StreamBuilder(
-        stream: SettingsService.watchDocumentSettings(),
+        stream: _documentSettings,
         builder: (context, docsSnap) {
           final docs = docsSnap.data;
           final name = docs?.companyName ?? 'Fix Appliance';
           final address = docs?.companyAddress ?? '';
 
           return StreamBuilder<Map<String, dynamic>>(
-            stream: SettingsService.watchConfig(),
+            stream: _config,
             builder: (context, configSnap) {
               final config = configSnap.data ?? <String, dynamic>{};
               final workStart = SettingsService.readWorkStartMinutes(config);
@@ -269,7 +278,7 @@ class SettingsScreen extends StatelessWidget {
                             ),
                           ),
                           StreamBuilder<List<SecretaryLesson>>(
-                            stream: SecretaryLearnService.streamPending(),
+                            stream: _lessons,
                             builder: (context, snap) {
                               final count = (snap.data ?? const <SecretaryLesson>[])
                                   .where((item) => item.isIssue)

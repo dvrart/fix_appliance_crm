@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import '../../core/utils/app_date_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
@@ -40,6 +41,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   _ReportMetrics? _latestMetrics;
   List<Expense> _expenses = const [];
   StreamSubscription<List<Expense>>? _expenseSub;
+  late final _jobsStream = FirestoreService.jobsRef.snapshots();
 
   @override
   void initState() {
@@ -175,19 +177,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 
   Future<void> _pickPeriodDate() async {
-    final picked = await showDatePicker(
+    final picked = await showAppDateSheet(
       context: context,
-      initialDate: _selectedDate,
+      initial: _selectedDate,
       firstDate: DateTime(2020),
       lastDate: DateTime.now().add(const Duration(days: 365)),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.light(primary: Color(0xFF14557F)),
-          ),
-          child: child!,
-        );
-      },
     );
     if (picked == null) return;
     setState(() => _selectedDate = picked);
@@ -409,7 +403,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
           const Divider(height: 1),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirestoreService.jobsRef.snapshots(),
+              stream: _jobsStream,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(

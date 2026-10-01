@@ -2382,7 +2382,7 @@ class _FinanceTabState extends State<FinanceTab> {
 
     setState(() => _busy = true);
     try {
-      final ok = await StripeTerminalService.collectWithDialog(
+      final error = await StripeTerminalService.collectWithDialog(
         context: context,
         jobId: ctrl.jobId,
         documentIndex: documentIndex,
@@ -2391,7 +2391,8 @@ class _FinanceTabState extends State<FinanceTab> {
       );
       if (!mounted) return;
       await _showPayResult(
-        success: ok,
+        success: error == null,
+        message: error,
         documentIndex: documentIndex,
         amount: charge,
       );
@@ -2794,6 +2795,14 @@ class _FinanceTabState extends State<FinanceTab> {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
+                if (!success && (message ?? '').trim().isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    message!.trim(),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+                  ),
+                ],
               ],
             ),
           ),

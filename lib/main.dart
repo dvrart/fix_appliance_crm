@@ -90,12 +90,14 @@ class _AppBootstrapState extends State<AppBootstrap> {
       await initializeDateFormatting('en', null);
       // Всё, что стучится в сеть. Без интернета не держим заставку: эти
       // настройки подтянутся сами, когда связь появится.
-      await _online(() async {
-        await SettingsService.ensureAiVoiceSettings();
-        await SettingsService.ensureServiceAreaLabel();
-        await SettingsService.ensureEnglishClientCopy();
-        await AppTimeService.ensureInitialized();
-      });
+      await AppTimeService.ensureInitialized();
+      for (final initialize in [
+        SettingsService.ensureAiVoiceSettings,
+        SettingsService.ensureServiceAreaLabel,
+        SettingsService.ensureEnglishClientCopy,
+      ]) {
+        unawaited(_online(initialize));
+      }
       unawaited(BackupService.runIfDue());
       if (!mounted) return;
       setState(() => _readyApp = const FixApplianceCrmApp());

@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../../shared/widgets/confirm_action_sheet.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -20,6 +22,7 @@ import '../../services/warehouse_service.dart';
 import '../../shared/widgets/appliance_picture.dart';
 import '../../shared/widgets/app_bar_save.dart';
 import '../../shared/widgets/dirty_leave_scope.dart';
+import '../jobs/job_details/widgets/full_screen_gallery.dart';
 
 class WarehouseScreen extends StatefulWidget {
   const WarehouseScreen({super.key});
@@ -30,6 +33,7 @@ class WarehouseScreen extends StatefulWidget {
 
 class _WarehouseScreenState extends State<WarehouseScreen> {
   final TextEditingController _searchController = TextEditingController();
+  late final _itemsStream = WarehouseService.ref.snapshots();
   String _searchQuery = '';
   String _selectedCategory = 'Все';
   String _sortMethod = 'Сначала новые';
@@ -271,6 +275,11 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
         ? (data['category'] ?? 'Универсальное')
         : 'Универсальное';
     String? localImageUrl = isEditing ? data['imageUrl'] : null;
+    // Остальные свои снимки. Первым фото карточки остаётся [localImageUrl] —
+    // его видно на плитке в списке.
+    final extraPhotos = WarehouseItem.parsePhotos(
+      isEditing ? data['photos'] : null,
+    )..remove((localImageUrl ?? '').trim());
     bool isUploadingPhoto = false;
     bool isUsed = isEditing && data['isUsed'] == true;
 
@@ -278,9 +287,15 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     // остаётся своим полем, картинка живёт рядом.
     String? webImageUrl = isEditing ? data['webImageUrl'] : null;
     String webImageSource = isEditing ? '${data['webImageSource'] ?? ''}' : '';
-    // Предложение, которое FIX ещё не принял: файл уже лежит в Storage,
-    // поэтому при отказе и при закрытии окна его надо убрать.
-    PartImageFind? webSuggestion;
+    // Картинка, что лежит в записанной карточке. Найденную заново, но не
+    // сохранённую, при закрытии окна убираем из Storage.
+    final savedWebImage = '${isEditing ? data['webImageUrl'] ?? '' : ''}'.trim();
+    // Что нашёл поиск в последний раз: его ссылку на магазин передаём в
+    // «поискать другую», чтобы не принести ту же картинку.
+    PartImageFind? webFound;
+    bool saved = false;
+    // Фото по умолчанию — выбирают долгим нажатием, оно стоит в списке склада.
+    String coverUrl = '${isEditing ? data['coverUrl'] ?? '' : ''}'.trim();
     bool webSearching = false;
     String webAskedFor = '';
     final webSkip = <String>[];
@@ -319,6 +334,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     // Флаг: диалог закрыт — async-колбэки не должны вызывать setDialogState
     // на уже деактивированном StatefulBuilder (→ «inactive element» error).
     bool _gone = false;
+    bool openSearchDone = false;
 
     showDialog(
       context: context,
@@ -663,8 +679,13 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
 
             /// Залить готовый файл в Storage и поставить его фото детали.
             /// [quiet] — не ругаться, если не вышло (фото со сканера
-            /// необязательное).
-            Future<void> uploadPhotoFile(File file, {bool quiet = false}) async {
+            /// необязательное). [asExtra] — добавить ещё один снимок, не
+            /// трогая первый.
+            Future<void> uploadPhotoFile(
+              File file, {
+              bool quiet = false,
+              bool asExtra = false,
+            }) async {
               setDialogState(() => isUploadingPhoto = true);
               try {
                 final fileName =
@@ -680,7 +701,11 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                     .getDownloadURL()
                     .timeout(const Duration(seconds: 15));
                 setDialogState(() {
-                  localImageUrl = url;
+                  if (asExtra && (localImageUrl ?? '').trim().isNotEmpty) {
+                    if (!extraPhotos.contains(url)) extraPhotos.add(url);
+                  } else {
+                    localImageUrl = url;
+                  }
                   isUploadingPhoto = false;
                   formDirty = true;
                 });
@@ -704,9 +729,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
             /// Попросить ИИ найти в интернете картинку этой детали.
             ///
             /// Сам поиск идёт на сервере (`findPartImage`): он выбирает снимок,
-            /// показывает его Gemini и кладёт победителя в наш Storage. Тут
-            /// только показываем предложение — в карточку оно попадёт лишь
-            /// после зелёной галочки.
+            /// показывает его Gemini и кладёт победителя в наш Storage. Что
+            /// нашлось, сразу встаёт в фото карточки (значок глобуса); не
+            /// подошло — долгое нажатие, «Убрать» или «Поискать другую».
             Future<void> findWebImage({bool again = false}) async {
               if (webSearching) return;
               final part = partNumController.text.trim().toUpperCase();
@@ -727,18 +752,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 // Сами ищем один раз на набор полей и только когда картинки
                 // ещё нет — иначе каждая буква тянет запрос.
                 if (key == webAskedFor) return;
-                if (webImageUrl != null || webSuggestion != null) return;
+                if (webImageUrl != null) return;
               }
               webAskedFor = key;
-
-              if (again && webSuggestion != null) {
-                final old = webSuggestion!;
-                webSkip.add(
-                  old.originalUrl.isEmpty ? old.imageUrl : old.originalUrl,
-                );
-                unawaited(PartImageService.discard(old.imageUrl));
-                webSuggestion = null;
-              }
               setDialogState(() => webSearching = true);
 
               final found = await PartImageService.find(
@@ -754,7 +770,13 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               }
               setDialogState(() {
                 webSearching = false;
-                webSuggestion = found;
+                if (found == null) return;
+                webFound = found;
+                webImageUrl = found.imageUrl;
+                webImageSource = found.sourceUrl.isNotEmpty
+                    ? found.sourceUrl
+                    : found.sourceHost;
+                formDirty = true;
               });
               if (found == null && again) {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -768,101 +790,68 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               }
             }
 
-            void acceptWebImage() {
-              final found = webSuggestion;
-              if (found == null) return;
-              setDialogState(() {
-                webImageUrl = found.imageUrl;
-                webImageSource = found.sourceUrl.isNotEmpty
-                    ? found.sourceUrl
-                    : found.sourceHost;
-                webSuggestion = null;
-                formDirty = true;
-              });
-            }
-
-            void rejectWebImage() {
-              final found = webSuggestion;
-              if (found == null) return;
-              webSkip.add(
-                found.originalUrl.isEmpty ? found.imageUrl : found.originalUrl,
-              );
-              unawaited(PartImageService.discard(found.imageUrl));
-              setDialogState(() => webSuggestion = null);
-            }
-
-            /// Тап по плитке с картинкой из интернета.
-            Future<void> webImageMenu() async {
-              if (webImageUrl == null) {
-                await findWebImage(again: true);
-                return;
+            /// Убрать картинку из интернета (и, если надо, поискать другую).
+            Future<void> dropWebImage({required bool searchAgain}) async {
+              final old = (webImageUrl ?? '').trim();
+              if (old.isEmpty) return;
+              final found = webFound;
+              if (found != null && found.imageUrl == old) {
+                webSkip.add(
+                  found.originalUrl.isEmpty ? found.imageUrl : found.originalUrl,
+                );
               }
-              final action = await showModalBottomSheet<String>(
-                context: context,
-                builder: (sheet) => SafeArea(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ListTile(
-                        leading: const Icon(
-                          Icons.image_search,
-                          color: Color(0xFF14557F),
-                        ),
-                        title: Text('Поискать другую картинку'.tr),
-                        onTap: () => Navigator.pop(sheet, 'again'),
-                      ),
-                      ListTile(
-                        leading: const Icon(
-                          Icons.delete_outline,
-                          color: Colors.redAccent,
-                        ),
-                        title: Text('Убрать картинку'.tr),
-                        onTap: () => Navigator.pop(sheet, 'remove'),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-              if (action == null) return;
-              final old = webImageUrl;
               setDialogState(() {
                 webImageUrl = null;
                 webImageSource = '';
+                if (coverUrl == old) coverUrl = '';
                 formDirty = true;
               });
-              // Сохранённую картинку из Storage не стираем: карточка могла
-              // быть записана раньше и ссылка ещё может понадобиться.
-              if (action == 'again') {
-                if (old != null && !isEditing) {
-                  unawaited(PartImageService.discard(old));
-                }
-                await findWebImage(again: true);
+              // Сохранённую картинку из Storage не стираем: карточка уже
+              // записана, и ссылка может понадобиться. Новую — можно.
+              if (old != savedWebImage) {
+                unawaited(PartImageService.discard(old));
               }
+              if (searchAgain) await findWebImage(again: true);
             }
 
             void onFieldChanged() {
               markDirty();
               guessCategory();
-              if (isEditing) return;
               if (debounce?.isActive ?? false) debounce!.cancel();
               debounce = Timer(const Duration(milliseconds: 600), () async {
-                await checkDuplicate(partNumController.text);
-                await suggestReplacements();
+                if (!isEditing) {
+                  await checkDuplicate(partNumController.text);
+                  await suggestReplacements();
+                }
+                // Картинку ищем сами — и для новой карточки, и для старой
+                // без картинки из интернета.
                 await findWebImage();
               });
             }
 
-            /// Снять или выбрать картинку и залить её в Storage.
-            Future<void> attachPhoto(ImageSource source) async {
-              final picker = ImagePicker();
-              final pickedFile = await picker.pickImage(
-                source: source,
+            /// «Сделать фото»: снимок с камеры уходит в фото карточки.
+            Future<void> takePhoto() async {
+              final pickedFile = await ImagePicker().pickImage(
+                source: ImageSource.camera,
                 maxWidth: 1600,
                 maxHeight: 1600,
                 imageQuality: 70,
               );
               if (pickedFile == null) return;
-              await uploadPhotoFile(File(pickedFile.path));
+              await uploadPhotoFile(File(pickedFile.path), asExtra: true);
+            }
+
+            /// «Добавить фото»: из галереи, сразу несколько снимков.
+            Future<void> pickPhotos() async {
+              final files = await ImagePicker().pickMultiImage(
+                maxWidth: 1600,
+                maxHeight: 1600,
+                imageQuality: 70,
+              );
+              for (final file in files) {
+                if (_gone || !context.mounted) return;
+                await uploadPhotoFile(File(file.path), asExtra: true);
+              }
             }
 
             /// Что ИИ прочитал со стикера — в поля карточки. Возвращает
@@ -901,90 +890,454 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               return true;
             }
 
-            /// Откуда брать снимок для сканера: камера или готовое фото.
-            Future<ImageSource?> pickScanSource() {
-              return showModalBottomSheet<ImageSource>(
-                context: context,
-                builder: (sheet) => SafeArea(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ListTile(
-                        leading: const Icon(
-                          Icons.auto_awesome,
-                          color: Color(0xFF8A6100),
-                        ),
-                        title: Text('Сфотографировать этикетку или деталь'.tr),
-                        subtitle: Text(
-                          'ИИ сам заполнит номер, название, категорию и назначение'
-                              .tr,
-                        ),
-                        onTap: () => Navigator.pop(sheet, ImageSource.camera),
-                      ),
-                      ListTile(
-                        leading: const Icon(Icons.photo_library_outlined),
-                        title: Text('Выбрать из галереи'.tr),
-                        onTap: () => Navigator.pop(sheet, ImageSource.gallery),
-                      ),
-                    ],
-                  ),
-                ),
-              );
+            /// «Сканировать и добавить»: ИИ читает этикетку и заполняет
+            /// карточку, а сам снимок встаёт в фото детали.
+            Future<void> scanSticker() async {
+                                try {
+                                  const source = ImageSource.camera;
+                                  final picker = ImagePicker();
+                                  // Полный кадр Samsung — это десятки мегабайт
+                                  // в памяти. ML Kit на таком снимке валил всё
+                                  // приложение. 1600 px хватает для этикетки.
+                                  final pickedFile = await picker.pickImage(
+                                    source: source,
+                                    maxWidth: 1600,
+                                    maxHeight: 1600,
+                                    imageQuality: 90,
+                                  );
+
+                                  if (pickedFile != null) {
+                                    setDialogState(() => isAiThinking = true);
+                                    final file = File(pickedFile.path);
+
+                                    // Сначала ИИ: он понимает, что за деталь,
+                                    // для чего и к какой технике. OCR ниже —
+                                    // запасной ход без сети.
+                                    final aiScan = await AiService.readPartSticker(
+                                      imageBytes: await file.readAsBytes(),
+                                      categories: _categories
+                                          .where((c) => c['name'] != 'Все')
+                                          .map((c) => c['name']!)
+                                          .toList(),
+                                    );
+                                    if (!context.mounted) return;
+                                    if (aiScan != null && applyAiScan(aiScan)) {
+                                      setDialogState(() => isAiThinking = false);
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            aiScan.purpose ??
+                                                'ИИ разобрал этикетку ✨'.tr,
+                                          ),
+                                          backgroundColor: Colors.green,
+                                        ),
+                                      );
+                                      // Снимок годится и как фото детали —
+                                      // грузим фоном, не держим кнопку.
+                                      unawaited(
+                                        uploadPhotoFile(
+                                          file,
+                                          quiet: true,
+                                          asExtra: true,
+                                        ),
+                                      );
+                                      await checkDuplicate(
+                                        partNumController.text,
+                                      );
+                                      await suggestReplacements();
+                                      await findWebImage();
+                                      return;
+                                    }
+
+                                    final inputImage = InputImage.fromFilePath(
+                                      pickedFile.path,
+                                    );
+                                    final textRecognizer = TextRecognizer(
+                                      script: TextRecognitionScript.latin,
+                                    );
+                                    final RecognizedText recognizedText;
+                                    try {
+                                      recognizedText = await textRecognizer
+                                          .processImage(inputImage)
+                                          .timeout(const Duration(seconds: 25));
+                                    } finally {
+                                      // Не закрыть распознаватель = утечка в
+                                      // нативной памяти и вылет на 2–3-м скане.
+                                      await textRecognizer.close();
+                                    }
+
+                                    if (recognizedText.text.isNotEmpty) {
+                                      // =======================================================
+                                      // ОБНОВЛЕННЫЙ ОФФЛАЙН ПАРСЕР ДЛЯ APPLIANCE REPAIR
+                                      // =======================================================
+                                      String parsedName = '';
+                                      String parsedPart = '';
+                                      String parsedModel = '';
+                                      String parsedBarcode = '';
+
+                                      List<String> lines = recognizedText.text
+                                          .split('\n');
+
+                                      // Обновленная база парт-номеров (Whirlpool, Samsung, LG, GE, Frigidaire, Bosch, Midea и др.)
+                                      final partRegex = RegExp(
+                                        r'\b(W\d{8}|WPW\d{8}|W10\d{6}|WP\d+|DC\d{2}-\d{5}[A-Z]?|DA\d{2}-\d{5}[A-Z]?|DG\d{2}-\d{5}[A-Z]?|DE\d{2}-\d{5}[A-Z]?|DB\d{2}-\d{5}[A-Z]?|AP\d{6,7}|PS\d{6,7}|EAP\d{6,7}|WR\d{2}X\d{5}|WB\d{2}X\d{5}|WE\d{2}X\d{5}|WD\d{2}X\d{5}|WH\d{2}X\d{5}|530\d{7}|316\d{6}|240\d{6}|241\d{6}|242\d{6}|134\d{6}|137\d{6}|80\d{6}|A00\d{6}|EBR\d{8}|EAX\d{8}|EAY\d{8}|EBT\d{8}|EBU\d{8}|00\d{6}|120\d{5,6})\b',
+                                      );
+
+                                      // Регулярка для моделей техники (например WF45M5100AW/A5, RF263BEAESG, WRF535SWHZ00)
+                                      final modelRegex = RegExp(
+                                        r'\b([A-Z]{1,4}\d{2,5}[A-Z0-9]+(-[A-Z0-9]+)?(/[A-Z0-9]+)?)\b',
+                                      );
+
+                                      final barcodeRegex = RegExp(
+                                        r'\b(\d{11,14}|X00[A-Z0-9]{7,9})\b',
+                                      );
+                                      final nameKeywords = RegExp(
+                                        r'\b(DOOR|SWITCH|PUMP|MOTOR|VALVE|BOARD|HEATER|ELEMENT|THERMOSTAT|GASKET|SEAL|BELT|FILTER|KNOB|HANDLE|SENSOR|RELAY|ASSEMBLY|ASSY|SVU|ICE MAKER|DRAIN)\b',
+                                      );
+
+                                      for (String line in lines) {
+                                        String upperLine = line
+                                            .toUpperCase()
+                                            .trim();
+
+                                        // 1. Ищем Part Number
+                                        if (upperLine.contains('PART:') ||
+                                            upperLine.contains('P/N:') ||
+                                            upperLine.contains('P/N')) {
+                                          String possiblePart = upperLine
+                                              .split(
+                                                RegExp(
+                                                  r'(PART:|P/N:|P/N|PART)',
+                                                ),
+                                              )
+                                              .last
+                                              .trim()
+                                              .split(' ')
+                                              .first;
+                                          if (possiblePart.isNotEmpty)
+                                            parsedPart = possiblePart;
+                                        }
+                                        if (parsedPart.isEmpty &&
+                                            partRegex.hasMatch(upperLine)) {
+                                          parsedPart = partRegex
+                                              .firstMatch(upperLine)!
+                                              .group(0)!;
+                                        }
+
+                                        // 2. Ищем Barcode
+                                        if (barcodeRegex.hasMatch(upperLine) &&
+                                            !partRegex.hasMatch(upperLine)) {
+                                          parsedBarcode = barcodeRegex
+                                              .firstMatch(upperLine)!
+                                              .group(0)!;
+                                        }
+
+                                        // 3. Ищем Model Number
+                                        if (upperLine.contains('MODEL:') ||
+                                            upperLine.contains('MOD:') ||
+                                            upperLine.contains('MOD ') ||
+                                            upperLine.contains('FOR MODEL')) {
+                                          String possibleModel = upperLine
+                                              .split(
+                                                RegExp(
+                                                  r'(MODEL:|MOD:|MOD |\bFOR MODEL\b)',
+                                                ),
+                                              )
+                                              .last
+                                              .trim()
+                                              .split(' ')
+                                              .first;
+                                          if (possibleModel.isNotEmpty &&
+                                              possibleModel.length > 4)
+                                            parsedModel = possibleModel;
+                                        }
+
+                                        // Если явного слова MODEL нет, ищем по специфической структуре номера модели
+                                        if (parsedModel.isEmpty &&
+                                            modelRegex.hasMatch(upperLine)) {
+                                          String match = modelRegex
+                                              .firstMatch(upperLine)!
+                                              .group(0)!;
+                                          // Убеждаемся, что это не короткое случайное слово, не штрихкод и не парт-номер
+                                          if (match.length > 6 &&
+                                              !partRegex.hasMatch(match) &&
+                                              !barcodeRegex.hasMatch(match)) {
+                                            parsedModel = match;
+                                          }
+                                        }
+
+                                        // 4. Ищем Название
+                                        if (nameKeywords.hasMatch(upperLine) &&
+                                            parsedName.isEmpty) {
+                                          String cleanName = line
+                                              .replaceAll(partRegex, '')
+                                              .replaceAll(modelRegex, '')
+                                              .replaceAll(
+                                                RegExp(
+                                                  r'(Part:|P/N:|Model:|Mod:|Barcode:)',
+                                                  caseSensitive: false,
+                                                ),
+                                                '',
+                                              )
+                                              .trim();
+                                          if (cleanName.length > 3)
+                                            parsedName = cleanName;
+                                        }
+                                      }
+
+                                      // Если имя не нашли по ключевым словам, берем первую адекватную строку
+                                      if (parsedName.isEmpty) {
+                                        for (String l in lines) {
+                                          if (l.trim().length > 5 &&
+                                              !barcodeRegex.hasMatch(l) &&
+                                              !partRegex.hasMatch(l) &&
+                                              !modelRegex.hasMatch(
+                                                l.toUpperCase(),
+                                              ) &&
+                                              !l.toUpperCase().contains(
+                                                'PART',
+                                              )) {
+                                            parsedName = l.trim();
+                                            break;
+                                          }
+                                        }
+                                      }
+
+                                      // Убираем возможный мусор, оставляя буквы, цифры, дефисы и слэши
+                                      parsedPart = parsedPart.replaceAll(
+                                        RegExp(r'[^A-Z0-9-]'),
+                                        '',
+                                      );
+                                      parsedModel = parsedModel.replaceAll(
+                                        RegExp(r'[^A-Z0-9-/]'),
+                                        '',
+                                      );
+
+                                      setDialogState(() {
+                                        if (parsedName.isNotEmpty)
+                                          nameController.text = parsedName;
+                                        if (parsedPart.isNotEmpty)
+                                          partNumController.text = parsedPart;
+                                        if (parsedModel.isNotEmpty)
+                                          modelController.text = parsedModel;
+                                        if (parsedBarcode.isNotEmpty)
+                                          barcodeController.text =
+                                              parsedBarcode;
+                                        formDirty = true;
+                                      });
+
+                                      // Снимаем блокировку до похода в базу:
+                                      // иначе «Сохранить» остаётся серым, пока
+                                      // ищется дубль, и кнопка кажется мёртвой.
+                                      setDialogState(() => isAiThinking = false);
+                                      guessCategory();
+                                      unawaited(
+                                        uploadPhotoFile(
+                                          file,
+                                          quiet: true,
+                                          asExtra: true,
+                                        ),
+                                      );
+
+                                      if (context.mounted)
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              'Этикетка успешно отсканирована! ✨'.tr,
+                                            ),
+                                            backgroundColor: Colors.green,
+                                          ),
+                                        );
+
+                                      await checkDuplicate(
+                                        partNumController.text,
+                                      );
+                                      await suggestReplacements();
+                                      await findWebImage();
+                                    } else {
+                                      if (context.mounted)
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              'Текст не найден на фото'.tr,
+                                            ),
+                                          ),
+                                        );
+                                    }
+                                    setDialogState(() => isAiThinking = false);
+                                  }
+                                } catch (e, stack) {
+                                  ErrorLogService.record(
+                                    e,
+                                    stack,
+                                    kind: 'сканер этикетки',
+                                  );
+                                  setDialogState(() => isAiThinking = false);
+                                  if (context.mounted)
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('${'Ошибка сканера'.tr}: $e'),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                }
+
             }
 
-            Future<void> pickPhotoSource() async {
-              if (localImageUrl != null) {
-                final remove = await showModalBottomSheet<bool>(
-                  context: context,
-                  builder: (sheet) => SafeArea(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        ListTile(
-                          leading: const Icon(Icons.photo_camera),
-                          title: Text('Снять заново'.tr),
-                          onTap: () => Navigator.pop(sheet, false),
-                        ),
-                        ListTile(
-                          leading: const Icon(
-                            Icons.delete_outline,
-                            color: Colors.redAccent,
-                          ),
-                          title: Text('Убрать фото'.tr),
-                          onTap: () => Navigator.pop(sheet, true),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-                if (remove == null) return;
-                if (remove) {
-                  setDialogState(() => localImageUrl = null);
-                  return;
-                }
-              }
-              if (!context.mounted) return;
-              final source = await showModalBottomSheet<ImageSource>(
+            /// Все снимки карточки в том порядке, что видит FIX: первым —
+            /// фото по умолчанию.
+            List<String> currentGallery() => WarehouseItem.galleryOf(
+              coverUrl: coverUrl,
+              imageUrl: localImageUrl,
+              webImageUrl: webImageUrl,
+              photos: extraPhotos,
+            );
+
+            /// Долгое нажатие на снимок: сделать его фото по умолчанию
+            /// (оно в списке склада), поискать другую картинку из интернета
+            /// или убрать снимок.
+            Future<void> photoMenu(String url) async {
+              final isWeb = url == (webImageUrl ?? '').trim();
+              final gallery = currentGallery();
+              final isCover = gallery.isNotEmpty && gallery.first == url;
+              final action = await showModalBottomSheet<String>(
                 context: context,
+                useRootNavigator: true,
                 builder: (sheet) => SafeArea(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (!isCover)
+                        ListTile(
+                          leading: const Icon(
+                            Icons.star_rounded,
+                            color: Color(0xFFFCC520),
+                          ),
+                          title: Text('Сделать фото по умолчанию'.tr),
+                          subtitle: Text('Его видно в списке склада'.tr),
+                          onTap: () => Navigator.pop(sheet, 'cover'),
+                        ),
+                      if (isWeb)
+                        ListTile(
+                          leading: const Icon(
+                            Icons.image_search,
+                            color: Color(0xFF14557F),
+                          ),
+                          title: Text('Поискать другую картинку'.tr),
+                          onTap: () => Navigator.pop(sheet, 'again'),
+                        ),
                       ListTile(
-                        leading: const Icon(Icons.photo_camera),
-                        title: Text('Сделать фото'.tr),
-                        onTap: () => Navigator.pop(sheet, ImageSource.camera),
-                      ),
-                      ListTile(
-                        leading: const Icon(Icons.photo_library_outlined),
-                        title: Text('Выбрать картинку'.tr),
-                        onTap: () => Navigator.pop(sheet, ImageSource.gallery),
+                        leading: const Icon(
+                          Icons.delete_outline,
+                          color: Colors.redAccent,
+                        ),
+                        title: Text('Убрать фото'.tr),
+                        onTap: () => Navigator.pop(sheet, 'remove'),
                       ),
                     ],
                   ),
                 ),
               );
-              if (source != null) await attachPhoto(source);
+              switch (action) {
+                case 'cover':
+                  setDialogState(() {
+                    coverUrl = url;
+                    formDirty = true;
+                  });
+                case 'again':
+                  await dropWebImage(searchAgain: true);
+                case 'remove':
+                  if (isWeb) {
+                    await dropWebImage(searchAgain: false);
+                    return;
+                  }
+                  setDialogState(() {
+                    if (url == (localImageUrl ?? '').trim()) {
+                      // Убрали первое своё фото — на его место встаёт
+                      // следующее, иначе снимки «теряются».
+                      localImageUrl =
+                          extraPhotos.isEmpty ? null : extraPhotos.removeAt(0);
+                    } else {
+                      extraPhotos.remove(url);
+                    }
+                    if (coverUrl == url) coverUrl = '';
+                    formDirty = true;
+                  });
+              }
+            }
+
+            /// Одна кнопка «+»: снизу квадрат «Сканировать и добавить»,
+            /// справа от него «Добавить фото» и «Сделать фото».
+            Future<void> openAddSheet() async {
+              final action = await showModalBottomSheet<String>(
+                context: context,
+                useRootNavigator: true,
+                backgroundColor: Colors.white,
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+                ),
+                builder: (sheet) => SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                    child: SizedBox(
+                      height: 196,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(
+                            child: _addChoice(
+                              icon: Icons.document_scanner_outlined,
+                              label: 'Сканировать и добавить'.tr,
+                              hint: 'ИИ заполнит номер и название'.tr,
+                              color: Colors.green.shade600,
+                              big: true,
+                              onTap: () => Navigator.pop(sheet, 'scan'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Expanded(
+                                  child: _addChoice(
+                                    icon: Icons.photo_library_outlined,
+                                    label: 'Добавить фото'.tr,
+                                    color: const Color(0xFF14557F),
+                                    onTap: () => Navigator.pop(sheet, 'gallery'),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Expanded(
+                                  child: _addChoice(
+                                    icon: Icons.photo_camera,
+                                    label: 'Сделать фото'.tr,
+                                    color: const Color(0xFF14557F),
+                                    onTap: () => Navigator.pop(sheet, 'camera'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+              if (!context.mounted) return;
+              switch (action) {
+                case 'scan':
+                  await scanSticker();
+                case 'gallery':
+                  await pickPhotos();
+                case 'camera':
+                  await takePhoto();
+              }
             }
 
             Future<bool> saveItem({bool merge = false, bool pop = true}) async {
@@ -1021,8 +1374,10 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   interchangeController.text,
                 ),
                 'imageUrl': localImageUrl,
+                'photos': List<String>.from(extraPhotos),
                 'webImageUrl': webImageUrl,
                 'webImageSource': webImageSource,
+                'coverUrl': coverUrl,
                 'updatedAt': FieldValue.serverTimestamp(),
               };
 
@@ -1042,6 +1397,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   final newWeb = (webImageUrl ?? '').trim();
                   // Новая карточка часто без фото — не затираем старое.
                   if (newImage.isEmpty) saveData.remove('imageUrl');
+                  if (coverUrl.isEmpty) saveData.remove('coverUrl');
                   if (newWeb.isEmpty) {
                     saveData.remove('webImageUrl');
                     saveData.remove('webImageSource');
@@ -1053,11 +1409,23 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                     ),
                     if (!exact) partNumber,
                   ]);
+                  // Снимки обеих карточек складываются. Старое первое фото
+                  // не теряем: на плитку встаёт новое, старое уходит в
+                  // галерею.
+                  final mergedPhotos = WarehouseItem.parsePhotos([
+                    ...WarehouseItem.parsePhotos(old['photos']),
+                    ...extraPhotos,
+                    if (newImage.isNotEmpty &&
+                        oldImage.isNotEmpty &&
+                        oldImage != newImage)
+                      oldImage,
+                  ])..remove(newImage.isEmpty ? oldImage : newImage);
                   if (exact) {
                     await settleWrite(
                       existing.reference.set({
                         ...saveData,
                         'interchange': mergedInter,
+                        'photos': mergedPhotos,
                         // Инкремент, а не oldQty + quantity: снимок дубля
                         // мог устареть, пока владелец заполнял карточку.
                         'quantity': FieldValue.increment(quantity),
@@ -1077,7 +1445,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                       existing.reference.set({
                         'quantity': FieldValue.increment(quantity),
                         'interchange': mergedInter,
+                        'photos': mergedPhotos,
                         if (newImage.isNotEmpty) 'imageUrl': newImage,
+                        if (coverUrl.isNotEmpty) 'coverUrl': coverUrl,
                         if (newWeb.isNotEmpty) ...{
                           'webImageUrl': newWeb,
                           'webImageSource': webImageSource,
@@ -1150,12 +1520,24 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 return false;
               }
 
+              saved = true;
               if (!context.mounted) return false;
               // После записи открываем «Все», иначе новая категория
               // прячет карточку за другим фильтром.
               setState(() => _selectedCategory = 'Все');
               if (pop) Navigator.pop(context);
               return true;
+            }
+
+            // Старая карточка совсем без снимков: один раз при открытии
+            // пробуем найти картинку в интернете — кнопки «Найти фото» нет.
+            if (!openSearchDone) {
+              openSearchDone = true;
+              if (isEditing && currentGallery().isEmpty) {
+                WidgetsBinding.instance.addPostFrameCallback(
+                  (_) => findWebImage(),
+                );
+              }
             }
 
             return DirtyLeaveScope(
@@ -1203,7 +1585,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                         draftQty:
                             int.tryParse(quantityController.text) ?? 0,
                         draftUsed: isUsed,
-                        draftImage: webImageUrl ?? localImageUrl,
+                        draftImage: currentGallery().firstOrNull,
                         isSubstitute: foundDuplicate == null,
                         why: substituteWhy,
                       ),
@@ -1459,333 +1841,24 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    if (webSearching || webSuggestion != null)
-                      _webImageOffer(
-                        found: webSuggestion,
-                        searching: webSearching,
-                        onAccept: acceptWebImage,
-                        onReject: rejectWebImage,
-                        onAgain: () => findWebImage(again: true),
-                      ),
-
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _photoTile(
-                            imageUrl: localImageUrl,
-                            uploading: isUploadingPhoto,
-                            onTap: pickPhotoSource,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _webImageTile(
-                            imageUrl: webImageUrl,
-                            searching: webSearching,
-                            onTap: webSearching ? null : webImageMenu,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _actionTile(
-                            icon: Icons.auto_awesome,
-                            label: isAiThinking
-                                ? 'ИИ читает…'.tr
-                                : 'Сканер ИИ'.tr,
-                            color: Colors.green.shade600,
-                            busy: isAiThinking,
-                            onTap: isAiThinking
-                            ? null
-                            : () async {
-                                try {
-                                  final source = await pickScanSource();
-                                  if (source == null) return;
-                                  final picker = ImagePicker();
-                                  // Полный кадр Samsung — это десятки мегабайт
-                                  // в памяти. ML Kit на таком снимке валил всё
-                                  // приложение. 1600 px хватает для этикетки.
-                                  final pickedFile = await picker.pickImage(
-                                    source: source,
-                                    maxWidth: 1600,
-                                    maxHeight: 1600,
-                                    imageQuality: 90,
-                                  );
-
-                                  if (pickedFile != null) {
-                                    setDialogState(() => isAiThinking = true);
-                                    final file = File(pickedFile.path);
-
-                                    // Сначала ИИ: он понимает, что за деталь,
-                                    // для чего и к какой технике. OCR ниже —
-                                    // запасной ход без сети.
-                                    final aiScan = await AiService.readPartSticker(
-                                      imageBytes: await file.readAsBytes(),
-                                      categories: _categories
-                                          .where((c) => c['name'] != 'Все')
-                                          .map((c) => c['name']!)
-                                          .toList(),
-                                    );
-                                    if (!context.mounted) return;
-                                    if (aiScan != null && applyAiScan(aiScan)) {
-                                      setDialogState(() => isAiThinking = false);
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                            aiScan.purpose ??
-                                                'ИИ разобрал этикетку ✨'.tr,
-                                          ),
-                                          backgroundColor: Colors.green,
-                                        ),
-                                      );
-                                      // Снимок годится и как фото детали —
-                                      // грузим фоном, не держим кнопку.
-                                      if (localImageUrl == null &&
-                                          !isUploadingPhoto) {
-                                        unawaited(
-                                          uploadPhotoFile(file, quiet: true),
-                                        );
-                                      }
-                                      await checkDuplicate(
-                                        partNumController.text,
-                                      );
-                                      await suggestReplacements();
-                                      await findWebImage();
-                                      return;
-                                    }
-
-                                    final inputImage = InputImage.fromFilePath(
-                                      pickedFile.path,
-                                    );
-                                    final textRecognizer = TextRecognizer(
-                                      script: TextRecognitionScript.latin,
-                                    );
-                                    final RecognizedText recognizedText;
-                                    try {
-                                      recognizedText = await textRecognizer
-                                          .processImage(inputImage)
-                                          .timeout(const Duration(seconds: 25));
-                                    } finally {
-                                      // Не закрыть распознаватель = утечка в
-                                      // нативной памяти и вылет на 2–3-м скане.
-                                      await textRecognizer.close();
-                                    }
-
-                                    if (recognizedText.text.isNotEmpty) {
-                                      // =======================================================
-                                      // ОБНОВЛЕННЫЙ ОФФЛАЙН ПАРСЕР ДЛЯ APPLIANCE REPAIR
-                                      // =======================================================
-                                      String parsedName = '';
-                                      String parsedPart = '';
-                                      String parsedModel = '';
-                                      String parsedBarcode = '';
-
-                                      List<String> lines = recognizedText.text
-                                          .split('\n');
-
-                                      // Обновленная база парт-номеров (Whirlpool, Samsung, LG, GE, Frigidaire, Bosch, Midea и др.)
-                                      final partRegex = RegExp(
-                                        r'\b(W\d{8}|WPW\d{8}|W10\d{6}|WP\d+|DC\d{2}-\d{5}[A-Z]?|DA\d{2}-\d{5}[A-Z]?|DG\d{2}-\d{5}[A-Z]?|DE\d{2}-\d{5}[A-Z]?|DB\d{2}-\d{5}[A-Z]?|AP\d{6,7}|PS\d{6,7}|EAP\d{6,7}|WR\d{2}X\d{5}|WB\d{2}X\d{5}|WE\d{2}X\d{5}|WD\d{2}X\d{5}|WH\d{2}X\d{5}|530\d{7}|316\d{6}|240\d{6}|241\d{6}|242\d{6}|134\d{6}|137\d{6}|80\d{6}|A00\d{6}|EBR\d{8}|EAX\d{8}|EAY\d{8}|EBT\d{8}|EBU\d{8}|00\d{6}|120\d{5,6})\b',
-                                      );
-
-                                      // Регулярка для моделей техники (например WF45M5100AW/A5, RF263BEAESG, WRF535SWHZ00)
-                                      final modelRegex = RegExp(
-                                        r'\b([A-Z]{1,4}\d{2,5}[A-Z0-9]+(-[A-Z0-9]+)?(/[A-Z0-9]+)?)\b',
-                                      );
-
-                                      final barcodeRegex = RegExp(
-                                        r'\b(\d{11,14}|X00[A-Z0-9]{7,9})\b',
-                                      );
-                                      final nameKeywords = RegExp(
-                                        r'\b(DOOR|SWITCH|PUMP|MOTOR|VALVE|BOARD|HEATER|ELEMENT|THERMOSTAT|GASKET|SEAL|BELT|FILTER|KNOB|HANDLE|SENSOR|RELAY|ASSEMBLY|ASSY|SVU|ICE MAKER|DRAIN)\b',
-                                      );
-
-                                      for (String line in lines) {
-                                        String upperLine = line
-                                            .toUpperCase()
-                                            .trim();
-
-                                        // 1. Ищем Part Number
-                                        if (upperLine.contains('PART:') ||
-                                            upperLine.contains('P/N:') ||
-                                            upperLine.contains('P/N')) {
-                                          String possiblePart = upperLine
-                                              .split(
-                                                RegExp(
-                                                  r'(PART:|P/N:|P/N|PART)',
-                                                ),
-                                              )
-                                              .last
-                                              .trim()
-                                              .split(' ')
-                                              .first;
-                                          if (possiblePart.isNotEmpty)
-                                            parsedPart = possiblePart;
-                                        }
-                                        if (parsedPart.isEmpty &&
-                                            partRegex.hasMatch(upperLine)) {
-                                          parsedPart = partRegex
-                                              .firstMatch(upperLine)!
-                                              .group(0)!;
-                                        }
-
-                                        // 2. Ищем Barcode
-                                        if (barcodeRegex.hasMatch(upperLine) &&
-                                            !partRegex.hasMatch(upperLine)) {
-                                          parsedBarcode = barcodeRegex
-                                              .firstMatch(upperLine)!
-                                              .group(0)!;
-                                        }
-
-                                        // 3. Ищем Model Number
-                                        if (upperLine.contains('MODEL:') ||
-                                            upperLine.contains('MOD:') ||
-                                            upperLine.contains('MOD ') ||
-                                            upperLine.contains('FOR MODEL')) {
-                                          String possibleModel = upperLine
-                                              .split(
-                                                RegExp(
-                                                  r'(MODEL:|MOD:|MOD |\bFOR MODEL\b)',
-                                                ),
-                                              )
-                                              .last
-                                              .trim()
-                                              .split(' ')
-                                              .first;
-                                          if (possibleModel.isNotEmpty &&
-                                              possibleModel.length > 4)
-                                            parsedModel = possibleModel;
-                                        }
-
-                                        // Если явного слова MODEL нет, ищем по специфической структуре номера модели
-                                        if (parsedModel.isEmpty &&
-                                            modelRegex.hasMatch(upperLine)) {
-                                          String match = modelRegex
-                                              .firstMatch(upperLine)!
-                                              .group(0)!;
-                                          // Убеждаемся, что это не короткое случайное слово, не штрихкод и не парт-номер
-                                          if (match.length > 6 &&
-                                              !partRegex.hasMatch(match) &&
-                                              !barcodeRegex.hasMatch(match)) {
-                                            parsedModel = match;
-                                          }
-                                        }
-
-                                        // 4. Ищем Название
-                                        if (nameKeywords.hasMatch(upperLine) &&
-                                            parsedName.isEmpty) {
-                                          String cleanName = line
-                                              .replaceAll(partRegex, '')
-                                              .replaceAll(modelRegex, '')
-                                              .replaceAll(
-                                                RegExp(
-                                                  r'(Part:|P/N:|Model:|Mod:|Barcode:)',
-                                                  caseSensitive: false,
-                                                ),
-                                                '',
-                                              )
-                                              .trim();
-                                          if (cleanName.length > 3)
-                                            parsedName = cleanName;
-                                        }
-                                      }
-
-                                      // Если имя не нашли по ключевым словам, берем первую адекватную строку
-                                      if (parsedName.isEmpty) {
-                                        for (String l in lines) {
-                                          if (l.trim().length > 5 &&
-                                              !barcodeRegex.hasMatch(l) &&
-                                              !partRegex.hasMatch(l) &&
-                                              !modelRegex.hasMatch(
-                                                l.toUpperCase(),
-                                              ) &&
-                                              !l.toUpperCase().contains(
-                                                'PART',
-                                              )) {
-                                            parsedName = l.trim();
-                                            break;
-                                          }
-                                        }
-                                      }
-
-                                      // Убираем возможный мусор, оставляя буквы, цифры, дефисы и слэши
-                                      parsedPart = parsedPart.replaceAll(
-                                        RegExp(r'[^A-Z0-9-]'),
-                                        '',
-                                      );
-                                      parsedModel = parsedModel.replaceAll(
-                                        RegExp(r'[^A-Z0-9-/]'),
-                                        '',
-                                      );
-
-                                      setDialogState(() {
-                                        if (parsedName.isNotEmpty)
-                                          nameController.text = parsedName;
-                                        if (parsedPart.isNotEmpty)
-                                          partNumController.text = parsedPart;
-                                        if (parsedModel.isNotEmpty)
-                                          modelController.text = parsedModel;
-                                        if (parsedBarcode.isNotEmpty)
-                                          barcodeController.text =
-                                              parsedBarcode;
-                                        formDirty = true;
-                                      });
-
-                                      // Снимаем блокировку до похода в базу:
-                                      // иначе «Сохранить» остаётся серым, пока
-                                      // ищется дубль, и кнопка кажется мёртвой.
-                                      setDialogState(() => isAiThinking = false);
-                                      guessCategory();
-
-                                      if (context.mounted)
-                                        ScaffoldMessenger.of(
-                                          context,
-                                        ).showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              'Этикетка успешно отсканирована! ✨'.tr,
-                                            ),
-                                            backgroundColor: Colors.green,
-                                          ),
-                                        );
-
-                                      await checkDuplicate(
-                                        partNumController.text,
-                                      );
-                                      await suggestReplacements();
-                                      await findWebImage();
-                                    } else {
-                                      if (context.mounted)
-                                        ScaffoldMessenger.of(
-                                          context,
-                                        ).showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              'Текст не найден на фото'.tr,
-                                            ),
-                                          ),
-                                        );
-                                    }
-                                    setDialogState(() => isAiThinking = false);
-                                  }
-                                } catch (e, stack) {
-                                  ErrorLogService.record(
-                                    e,
-                                    stack,
-                                    kind: 'сканер этикетки',
-                                  );
-                                  setDialogState(() => isAiThinking = false);
-                                  if (context.mounted)
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text('${'Ошибка сканера'.tr}: $e'),
-                                        backgroundColor: Colors.red,
-                                      ),
-                                    );
-                                }
-                              },
-                          ),
-                        ),
-                      ],
+                    if (webSearching) _webSearchingRow(),
+                    // Все снимки — свои и найденные в интернете — над «+».
+                    _photoStrip(
+                      urls: currentGallery(),
+                      webUrl: (webImageUrl ?? '').trim(),
+                      coverUrl: coverUrl,
+                      onOpen: _openPhotos,
+                      onLongPress: photoMenu,
+                    ),
+                    const SizedBox(height: 10),
+                    _addPhotoButton(
+                      busy: isUploadingPhoto || isAiThinking,
+                      label: isAiThinking
+                          ? 'ИИ читает…'.tr
+                          : isUploadingPhoto
+                              ? 'Загружаю фото…'.tr
+                              : null,
+                      onTap: openAddSheet,
                     ),
                   ],
                 ),
@@ -1841,11 +1914,11 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       // Отложенный поиск дубля не должен стрелять по закрытому окну.
       debounce?.cancel();
       categoryDebounce?.cancel();
-      // Непринятая картинка так и лежит в Storage — убираем за собой.
-      final pending = webSuggestion;
-      if (pending != null) {
-        webSuggestion = null;
-        unawaited(PartImageService.discard(pending.imageUrl));
+      // Найденная картинка уже лежит в Storage. Карточку не сохранили —
+      // убираем за собой.
+      final pending = (webImageUrl ?? '').trim();
+      if (!saved && pending.isNotEmpty && pending != savedWebImage) {
+        unawaited(PartImageService.discard(pending));
       }
     });
   }
@@ -2072,310 +2145,245 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     );
   }
 
-  /// Плитка «Фото». Одного размера со сканером — они стоят рядом.
-  Widget _photoTile({
-    required String? imageUrl,
-    required bool uploading,
+  /// Открыть снимки на весь экран. Тот же просмотрщик, что в заявках:
+  /// свайп между фото и зум пальцами.
+  void _openPhotos(List<String> urls, int index) {
+    if (urls.isEmpty) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => FullScreenGallery(
+          images: [
+            for (final url in urls) <String, dynamic>{'url': url},
+          ],
+          initialIndex: index,
+        ),
+      ),
+    );
+  }
+  /// Полоса снимков карточки: тап — посмотреть, долгий тап — сделать фото
+  /// по умолчанию или убрать. Первым идёт фото по умолчанию (звёздочка),
+  /// картинка из интернета помечена глобусом.
+  Widget _photoStrip({
+    required List<String> urls,
+    required String webUrl,
+    required String coverUrl,
+    required void Function(List<String> urls, int index) onOpen,
+    required void Function(String url) onLongPress,
+  }) {
+    Widget badge(IconData icon, Color color) => Container(
+      margin: const EdgeInsets.all(3),
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Icon(icon, size: 13, color: color),
+    );
+
+    Widget thumb(int index) {
+      final url = urls[index];
+      final isCover = coverUrl.isNotEmpty && url == coverUrl;
+      return GestureDetector(
+        onTap: () => onOpen(urls, index),
+        onLongPress: () {
+          HapticFeedback.mediumImpact();
+          onLongPress(url);
+        },
+        child: Container(
+          width: 84,
+          height: 84,
+          decoration: BoxDecoration(
+            color: Colors.grey.shade200,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isCover ? const Color(0xFFFCC520) : Colors.grey.shade400,
+              width: isCover ? 2.4 : 1,
+            ),
+            image: DecorationImage(
+              image: thumbImage(url, width: 252),
+              fit: BoxFit.cover,
+            ),
+          ),
+          child: Stack(
+            children: [
+              if (isCover)
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  child: badge(Icons.star_rounded, const Color(0xFFFCC520)),
+                ),
+              if (url == webUrl && webUrl.isNotEmpty)
+                Positioned(
+                  right: 0,
+                  bottom: 0,
+                  child: badge(Icons.public, Colors.white),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (urls.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '${'Фотографии детали'.tr} · ${urls.length}',
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: Colors.black54,
+          ),
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          height: 84,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: urls.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemBuilder: (_, index) => thumb(index),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Тап — посмотреть, долгий тап — фото по умолчанию или убрать'.tr,
+          style: const TextStyle(fontSize: 11, color: Colors.black38),
+        ),
+      ],
+    );
+  }
+
+  /// Единственная кнопка добавления: «+». Что именно добавить — в окне снизу.
+  Widget _addPhotoButton({
+    required bool busy,
+    required String? label,
     required VoidCallback onTap,
   }) {
-    return _tileShell(
-      onTap: uploading ? null : onTap,
-      background: Colors.grey.shade200,
-      border: Colors.grey.shade400,
-      image: imageUrl,
-      child: uploading
-          ? const CircularProgressIndicator(
-              strokeWidth: 2.4,
-              color: Color(0xFFFCC520),
-            )
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  imageUrl == null ? Icons.add_a_photo : Icons.edit,
-                  size: 22,
-                  color: imageUrl == null ? Colors.black54 : Colors.white,
-                ),
-                const SizedBox(height: 5),
-                Text(
-                  imageUrl == null ? 'Фото'.tr : 'Изменить'.tr,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.bold,
-                    color: imageUrl == null ? Colors.black54 : Colors.white,
-                  ),
-                ),
-              ],
-            ),
-    );
-  }
-
-  /// Плитка «Картинка» — фото детали, найденное в интернете.
-  Widget _webImageTile({
-    required String? imageUrl,
-    required bool searching,
-    required VoidCallback? onTap,
-  }) {
-    return _tileShell(
-      onTap: onTap,
-      background: Colors.grey.shade200,
-      border: Colors.grey.shade400,
-      image: imageUrl,
-      child: searching
-          ? const CircularProgressIndicator(
-              strokeWidth: 2.4,
-              color: Color(0xFFFCC520),
-            )
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  imageUrl == null ? Icons.image_search : Icons.image,
-                  size: 22,
-                  color: imageUrl == null ? Colors.black54 : Colors.white,
-                ),
-                const SizedBox(height: 5),
-                Text(
-                  imageUrl == null ? 'Найти фото'.tr : 'Картинка'.tr,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.bold,
-                    color: imageUrl == null ? Colors.black54 : Colors.white,
-                  ),
-                ),
-              ],
-            ),
-    );
-  }
-
-  /// Что ИИ принёс из интернета. Сохранится только после зелёной галочки.
-  Widget _webImageOffer({
-    required PartImageFind? found,
-    required bool searching,
-    required VoidCallback onAccept,
-    required VoidCallback onReject,
-    required VoidCallback onAgain,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: const Color(0xFFEFF6FF),
-        border: Border.all(color: const Color(0xFF14557F).withValues(alpha: 0.35)),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: searching || found == null
-          ? Row(
-              children: [
-                const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.2,
-                    color: Color(0xFF14557F),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'ИИ ищет фото детали в интернете…'.tr,
-                    style: const TextStyle(
-                      fontSize: 12.5,
-                      color: Color(0xFF14557F),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            )
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'ИИ нашёл фото этой детали'.tr,
-                  style: const TextStyle(
-                    color: Color(0xFF14557F),
-                    fontWeight: FontWeight.w800,
-                    fontSize: 13,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  [
-                    if (found.sourceHost.isNotEmpty) found.sourceHost,
-                    if (found.why.isNotEmpty) found.why,
-                  ].join(' · '),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11.5, color: Colors.black54),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        color: Colors.white,
-                        child: Image(
-                          image: thumbImage(found.imageUrl, width: 320),
-                          height: 92,
-                          width: 92,
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, __, ___) => const SizedBox(
-                            height: 92,
-                            width: 92,
-                            child: Icon(Icons.broken_image_outlined),
-                          ),
+    return SizedBox(
+      height: 56,
+      child: Material(
+        color: const Color(0xFFFCC520),
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: busy ? null : onTap,
+          child: Center(
+            child: busy
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.4,
+                          color: Colors.black87,
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Text(
-                            'Сохранить её в карточку? Фото стикера останется.'.tr,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.black87,
-                            ),
+                      if (label != null) ...[
+                        const SizedBox(width: 10),
+                        Text(
+                          label,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black87,
                           ),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              _offerButton(
-                                icon: Icons.check,
-                                color: const Color(0xFF008F3B),
-                                onTap: onAccept,
-                              ),
-                              const SizedBox(width: 8),
-                              _offerButton(
-                                icon: Icons.close,
-                                color: Colors.red.shade600,
-                                onTap: onReject,
-                              ),
-                              const Spacer(),
-                              TextButton.icon(
-                                onPressed: onAgain,
-                                icon: const Icon(Icons.refresh, size: 16),
-                                label: Text(
-                                  'Поискать ещё'.tr,
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                                style: TextButton.styleFrom(
-                                  foregroundColor: const Color(0xFF14557F),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-    );
-  }
-
-  Widget _offerButton({
-    required IconData icon,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return Material(
-      color: color,
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(7),
-          child: Icon(icon, size: 20, color: Colors.white),
+                        ),
+                      ],
+                    ],
+                  )
+                : const Icon(Icons.add, size: 34, color: Colors.black87),
+          ),
         ),
       ),
     );
   }
 
-  Widget _actionTile({
+  /// Плитка в окне «+»: большая — сканер, две поменьше — фото.
+  Widget _addChoice({
     required IconData icon,
     required String label,
     required Color color,
-    required bool busy,
-    required VoidCallback? onTap,
+    required VoidCallback onTap,
+    String? hint,
+    bool big = false,
   }) {
-    return _tileShell(
-      onTap: onTap,
-      background: color,
-      border: color,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          busy
-              ? const SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2.4,
-                  ),
-                )
-              : Icon(icon, size: 22, color: Colors.white),
-          const SizedBox(height: 5),
-          Text(
-            label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontSize: 12.5,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
+    return Material(
+      color: color,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: big ? 48 : 28, color: Colors.white),
+              SizedBox(height: big ? 10 : 4),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                style: TextStyle(
+                  fontSize: big ? 16 : 14,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.white,
+                ),
+              ),
+              if (hint != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  hint,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  style: const TextStyle(fontSize: 11.5, color: Colors.white70),
+                ),
+              ],
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 
-  /// Общая рамка обеих плиток, чтобы они были одинаковыми.
-  Widget _tileShell({
-    required VoidCallback? onTap,
-    required Color background,
-    required Color border,
-    required Widget child,
-    String? image,
-  }) {
+  /// Пока ИИ ищет картинку детали в интернете.
+  Widget _webSearchingRow() {
     return Container(
-      height: 76,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: border),
-        image: image != null
-            ? DecorationImage(
-                image: thumbImage(image, width: 480),
-                fit: BoxFit.cover,
-                colorFilter: ColorFilter.mode(
-                  Colors.black.withValues(alpha: 0.35),
-                  BlendMode.darken,
-                ),
-              )
-            : null,
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          child: Center(child: child),
+        color: const Color(0xFFEFF6FF),
+        border: Border.all(
+          color: const Color(0xFF14557F).withValues(alpha: 0.35),
         ),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.2,
+              color: Color(0xFF14557F),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'ИИ ищет фото детали в интернете…'.tr,
+              style: const TextStyle(
+                fontSize: 12.5,
+                color: Color(0xFF14557F),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -2431,28 +2439,11 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
   }
 
   Future<void> _deleteItem(DocumentReference ref) async {
-    final bool confirm =
-        await showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text('Удалить?'.tr),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: Text('Отмена'.tr),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context, true),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: Text(
-                  'Удалить'.tr,
-                  style: TextStyle(color: Colors.white),
-                ),
-              ),
-            ],
-          ),
-        ) ??
-        false;
+    final confirm = await showConfirmCancelSheet(
+      context,
+      title: 'Удалить?'.tr,
+      confirmLabel: 'Удалить'.tr,
+    );
     if (confirm) await WarehouseService.delete(ref.id);
   }
 
@@ -2497,41 +2488,6 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       ),
       body: Column(
         children: [
-          Container(
-            color: const Color(0xFF14557F),
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: TextField(
-              controller: _searchController,
-              onChanged: (value) =>
-                  setState(() => _searchQuery = value.toUpperCase()),
-              decoration: InputDecoration(
-                hintText: 'Поиск (Название или Номер)...'.tr,
-                prefixIcon: const Icon(Icons.search, color: Colors.grey),
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(vertical: 10),
-                suffixIcon: _searchQuery.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(
-                          Icons.clear,
-                          color: Colors.grey,
-                          size: 20,
-                        ),
-                        onPressed: () {
-                          _searchController.clear();
-                          setState(() => _searchQuery = '');
-                        },
-                      )
-                    : null,
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-              ),
-            ),
-          ),
-
           Container(
             color: Colors.white,
             padding: const EdgeInsets.symmetric(vertical: 8),
@@ -2627,7 +2583,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
 
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: WarehouseService.ref.snapshots(),
+              stream: _itemsStream,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting)
                   return const Center(
@@ -2725,12 +2681,17 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                     final String name = '${data['name'] ?? ''}';
                     final String partNumber = data['partNumber'] ?? '';
                     final String modelNumber = data['modelNumber'] ?? '';
-                    // В списке главной идёт каталожная картинка: на ней видно
-                    // деталь, а на стикере — только буквы.
-                    final String imageUrl =
-                        '${data['webImageUrl'] ?? ''}'.trim().isNotEmpty
-                            ? '${data['webImageUrl']}'
-                            : '${data['imageUrl'] ?? ''}';
+                    // Все снимки карточки: по нажатию на плитку их листают
+                    // на весь экран, не открывая редактор. Первым идёт фото
+                    // по умолчанию, без него — каталожная картинка: на ней
+                    // видно деталь, а на стикере — только буквы.
+                    final photos = WarehouseItem.galleryOf(
+                      coverUrl: '${data['coverUrl'] ?? ''}',
+                      imageUrl: '${data['imageUrl'] ?? ''}',
+                      webImageUrl: '${data['webImageUrl'] ?? ''}',
+                      photos: WarehouseItem.parsePhotos(data['photos']),
+                    );
+                    final String imageUrl = photos.isEmpty ? '' : photos.first;
                     final String category = data['category'] ?? 'Универсальное';
                     final double price =
                         double.tryParse(data['price'].toString()) ?? 0.0;
@@ -2766,29 +2727,62 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                           child: Row(
                             crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
-                              Container(
-                                height: 48,
-                                width: 48,
-                                margin: const EdgeInsets.only(right: 10),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade100,
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color: Colors.grey.shade200,
-                                  ),
-                                  image: imageUrl.isNotEmpty
-                                      ? DecorationImage(
-                                          image: thumbImage(
-                                            imageUrl,
-                                            width: 144,
+                              GestureDetector(
+                                onTap: photos.isEmpty
+                                    ? () => _showItemDialog(document: doc)
+                                    : () => _openPhotos(photos, 0),
+                                child: Stack(
+                                  children: [
+                                    Container(
+                                      height: 48,
+                                      width: 48,
+                                      margin: const EdgeInsets.only(right: 10),
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey.shade100,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.grey.shade200,
+                                        ),
+                                        image: imageUrl.isNotEmpty
+                                            ? DecorationImage(
+                                                image: thumbImage(
+                                                  imageUrl,
+                                                  width: 144,
+                                                ),
+                                                fit: BoxFit.cover,
+                                              )
+                                            : null,
+                                      ),
+                                      child: imageUrl.isEmpty
+                                          ? _categoryPhoto(category, size: 48)
+                                          : null,
+                                    ),
+                                    if (photos.length > 1)
+                                      Positioned(
+                                        right: 12,
+                                        bottom: 2,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 4,
+                                            vertical: 1,
                                           ),
-                                          fit: BoxFit.cover,
-                                        )
-                                      : null,
+                                          decoration: BoxDecoration(
+                                            color: Colors.black54,
+                                            borderRadius:
+                                                BorderRadius.circular(6),
+                                          ),
+                                          child: Text(
+                                            '${photos.length}',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
                                 ),
-                                child: imageUrl.isEmpty
-                                    ? _categoryPhoto(category, size: 48)
-                                    : null,
                               ),
 
                               Expanded(
@@ -2954,12 +2948,63 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               },
             ),
           ),
+          // Поиск и «+» внизу — под большим пальцем.
+          Container(
+            color: const Color(0xFF14557F),
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            child: SafeArea(
+              top: false,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _searchController,
+                      onChanged: (value) =>
+                          setState(() => _searchQuery = value.toUpperCase()),
+                      decoration: InputDecoration(
+                        hintText: 'Поиск (Название или Номер)...'.tr,
+                        prefixIcon: const Icon(Icons.search, color: Colors.grey),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                        suffixIcon: _searchQuery.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(
+                                  Icons.clear,
+                                  color: Colors.grey,
+                                  size: 20,
+                                ),
+                                onPressed: () {
+                                  _searchController.clear();
+                                  setState(() => _searchQuery = '');
+                                },
+                              )
+                            : null,
+                        filled: true,
+                        fillColor: Colors.white,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  SizedBox(
+                    width: 50,
+                    height: 50,
+                    child: FloatingActionButton(
+                      heroTag: 'warehouse-add',
+                      elevation: 2,
+                      onPressed: () => _showItemDialog(),
+                      backgroundColor: const Color(0xFFFCC520),
+                      child: const Icon(Icons.add, color: Colors.black, size: 28),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _showItemDialog(),
-        backgroundColor: const Color(0xFFFCC520),
-        child: const Icon(Icons.add, color: Colors.black, size: 28),
       ),
     );
   }

@@ -41,6 +41,7 @@ class OnTheWayService extends ChangeNotifier {
   String _dayKey = '';
   final Set<String> _prompted = {};
   final Set<String> _statusPrompted = {};
+  final Map<String, String> _seenStatus = {};
   OnTheWayOffer? pending;
   Job? pendingStatus;
   bool _starting = false;
@@ -62,11 +63,15 @@ class OnTheWayService extends ChangeNotifier {
       _originCoord = null;
       _prompted.clear();
       _statusPrompted.clear();
+      _seenStatus.clear();
       pending = null;
       pendingStatus = null;
       _previousRemaining = [];
       await _loadDayState();
     }
+    await _trackStatusChanges(
+      JobService.activeForDay(allJobs, today, includeClosed: true),
+    );
 
     final remaining = JobService.activeForDay(allJobs, today).where((job) {
       final visit = job.visitOn(today);
@@ -201,11 +206,46 @@ class OnTheWayService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Статус уже поменяли сами (в карточке, депозитом, вебхуком Stripe) —
+  /// после отъезда про эту заявку не спрашиваем, а висящий вопрос снимаем.
+  /// Держим свежие копии заявок: иначе вопрос показывает статус на момент
+  /// приезда.
+  Future<void> _trackStatusChanges(List<Job> dayJobs) async {
+    var changed = false;
+    var pendingChanged = false;
+    for (final job in dayJobs) {
+      final seen = _seenStatus[job.id];
+      if (seen == job.status) continue;
+      if (seen != null) {
+        _statusPrompted.add(job.id);
+        if (pendingStatus?.id == job.id) pendingChanged = true;
+      }
+      _seenStatus[job.id] = job.status;
+      changed = true;
+    }
+    Job? fresh(Job? old) {
+      if (old == null) return null;
+      for (final job in dayJobs) {
+        if (job.id == old.id) return job;
+      }
+      return old;
+    }
+
+    _originJob = fresh(_originJob);
+    pendingStatus = fresh(pendingStatus);
+    if (pendingChanged) {
+      await dismissStatusPrompt();
+    } else if (changed) {
+      await _saveDayState();
+    }
+  }
+
   Future<void> dismissStatusPrompt() async {
     final job = pendingStatus;
     pendingStatus = null;
     if (job != null) {
       _statusPrompted.add(job.id);
+      unawaited(LocalNotificationService.cancelLeaveStatus());
     }
     await _saveDayState();
     notifyListeners();
@@ -407,6 +447,12 @@ class OnTheWayService extends ChangeNotifier {
     _statusPrompted
       ..clear()
       ..addAll(statusRaw);
+    _seenStatus.clear();
+    for (final entry
+        in prefs.getStringList('on_way_seen_status_$_dayKey') ?? const <String>[]) {
+      final cut = entry.indexOf('=');
+      if (cut > 0) _seenStatus[entry.substring(0, cut)] = entry.substring(cut + 1);
+    }
     await _restoreOriginIfNeeded();
     await _restorePendingIfNeeded(prefs);
   }
@@ -434,6 +480,9 @@ class OnTheWayService extends ChangeNotifier {
       'on_way_status_prompted_$_dayKey',
       _statusPrompted.toList(),
     );
+    await prefs.setStringList('on_way_seen_status_$_dayKey', [
+      for (final entry in _seenStatus.entries) '${entry.key}=${entry.value}',
+    ]);
     final status = pendingStatus;
     if (status == null) {
       await prefs.remove('on_way_pending_status_$_dayKey');

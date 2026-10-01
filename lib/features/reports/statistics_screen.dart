@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import '../../core/utils/app_date_picker.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/constants.dart';
@@ -163,19 +164,11 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   }
 
   Future<void> _pickDate() async {
-    final picked = await showDatePicker(
+    final picked = await showAppDateSheet(
       context: context,
-      initialDate: _selectedDate,
+      initial: _selectedDate,
       firstDate: DateTime(2020),
       lastDate: DateTime.now().add(const Duration(days: 365)),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.light(primary: Color(0xFF14557F)),
-          ),
-          child: child!,
-        );
-      },
     );
     if (picked == null) return;
     setState(() => _selectedDate = picked);

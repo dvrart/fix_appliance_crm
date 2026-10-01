@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../services/services.dart';
-import '../../../shared/widgets/app_bar_save.dart';
+import '../../../shared/widgets/confirm_action_sheet.dart';
 import '../../../shared/widgets/unsaved_changes_dialog.dart';
+import '../../../shared/stale_routes.dart';
 import '../../../shared/unsaved_navigation_gate.dart';
 import 'job_details_controller.dart';
 import 'tabs/details_tab.dart';
@@ -52,6 +53,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
       jobData: widget.jobData,
     );
     UnsavedNavigationGate.push(_allowNavigateAway);
+    StaleRoutes.watchJob(widget.jobId, this);
 
     if (widget.openDocumentIndex != null) {
       _controller.setViewingDocumentIndex(widget.openDocumentIndex);
@@ -86,62 +88,28 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
   void dispose() {
     _controller.removeListener(_onControllerChanged);
     UnsavedNavigationGate.pop(_allowNavigateAway);
+    StaleRoutes.unwatchJob(widget.jobId, this);
     _tabController.dispose();
     _controller.dispose();
     super.dispose();
   }
 
   Future<void> _deleteJob() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Удалить заявку?'.tr),
-        content: Text(
+    final confirm = await showConfirmCancelSheet(
+      context,
+      title: 'Удалить заявку?'.tr,
+      message:
           'Заявка попадёт в корзину на 30 дней. Потом удалится навсегда.'.tr,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: Text('Удалить'.tr),
-          ),
-        ],
-      ),
+      confirmLabel: 'Удалить'.tr,
     );
 
-    if (confirm == true) {
-      await JobService.delete(widget.jobId);
-      if (mounted) {
-        _controller.abandonUnsaved();
-        Navigator.pop(context);
-      }
-    }
-  }
-
-  Future<void> _saveAndMaybeLeave({required bool leave}) async {
-    final ok = await _controller.commitChanges();
-    if (!mounted) return;
-    if (!ok) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось сохранить'.tr)),
-      );
-      return;
-    }
-    if (_controller.photosQueued) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Нет сети — фото сохранится и загрузится позже'.tr),
-        ),
-      );
-    }
-    if (leave) Navigator.pop(context);
+    if (!confirm || !mounted) return;
+    final jobId = widget.jobId;
+    _controller.abandonUnsaved();
+    await JobService.delete(jobId);
+    // Закрывает эту карточку и все её копии глубже в стеке (заявка → клиент →
+    // та же заявка), иначе «Назад» вернёт на удалённую заявку.
+    StaleRoutes.dropJob(jobId);
   }
 
   Future<bool> _applyLeaveAction(
@@ -157,6 +125,13 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
           SnackBar(content: Text('Не удалось сохранить'.tr)),
         );
         return false;
+      }
+      if (_controller.photosQueued) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Нет сети — фото сохранится и загрузится позже'.tr),
+          ),
+        );
       }
     } else {
       _controller.discardChanges();
@@ -245,25 +220,6 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
             onPressed: _deleteJob,
           ),
         ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(46),
-          child: IgnorePointer(
-            ignoring: _controller.financeMode == 'builder',
-            child: TabBar(
-              controller: _tabController,
-              onTap: _onJobTabTap,
-              indicatorColor: AppColors.accent,
-              labelColor: AppColors.accent,
-              unselectedLabelColor: Colors.white,
-              labelStyle: const TextStyle(fontWeight: FontWeight.bold),
-              tabs: [
-                Tab(text: 'ДЕТАЛИ'.tr),
-                Tab(text: 'ФИНАНСЫ'.tr),
-                Tab(text: 'ЧАТ'.tr),
-              ],
-            ),
-          ),
-        ),
       ),
       body: TabBarView(
         controller: _tabController,
@@ -276,13 +232,30 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
           ChatTab(controller: _controller),
         ],
       ),
+      // Внизу только вкладки — под большим пальцем. Отдельной кнопки
+      // «Сохранить» нет: правки сохраняются по «Назад» — окно спросит
+      // «Подтвердить / Продолжить / Не сохранять».
       bottomNavigationBar: _controller.financeMode == 'builder'
           ? null
-          : BottomConfirmButton(
-              dirty: _controller.hasSavableChanges,
-              saving: _controller.isCommitting,
-              onPressed: () => _saveAndMaybeLeave(leave: false),
-            ),
+          : Material(
+              color: AppColors.primary,
+              child: SafeArea(
+                top: false,
+                child: TabBar(
+                    controller: _tabController,
+                    onTap: _onJobTabTap,
+                    indicatorColor: AppColors.accent,
+                    labelColor: AppColors.accent,
+                    unselectedLabelColor: Colors.white,
+                    labelStyle: const TextStyle(fontWeight: FontWeight.bold),
+                    tabs: [
+                      Tab(text: 'ДЕТАЛИ'.tr),
+                      Tab(text: 'ФИНАНСЫ'.tr),
+                      Tab(text: 'ЧАТ'.tr),
+                    ],
+                  ),
+                ),
+              ),
     ),
         );
       },

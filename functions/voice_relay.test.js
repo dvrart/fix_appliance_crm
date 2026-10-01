@@ -189,7 +189,10 @@ test('reply delivery stays connected while shop rules and caller pauses remain u
   assert.ok(prompt.includes(profile.priceLine));
   assert.ok(prompt.includes(session.openJobBrief));
   assert.match(prompt, /whether this call is about that repair or a separate new one/);
-  assert.ok(prompt.includes(session.calendarBrief));
+  // Секретарь не назначает визиты: занятость календаря ей не показываем.
+  assert.ok(!prompt.includes(session.calendarBrief));
+  assert.match(prompt, /You do NOT book new visits/);
+  assert.match(prompt, /technician will contact them/);
   assert.match(prompt, /Do not greet again/);
   assert.match(prompt, /If they pause to look something up, wait quietly/);
   assert.match(prompt, /You cannot hang up/);
@@ -355,7 +358,6 @@ test('Live declares real calendar tools and never declares a hangup tool', () =>
   const names = setup.tools.flatMap((tool) => tool.functionDeclarations.map((fn) => fn.name));
   assert.deepEqual(names.sort(), [
     'cancel_appointment',
-    'check_availability',
     'check_service_area',
     'get_caller_appointments',
   ]);

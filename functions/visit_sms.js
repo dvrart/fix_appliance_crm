@@ -10,6 +10,7 @@ const smsLinks = require('./sms_links');
 const voiceFacts = require('./voice_facts');
 const schedule = require('./schedule');
 const jobDedupe = require('./job_dedupe');
+const paymentGuard = require('./payment_guard');
 const { notifyMaster } = require('./notify');
 
 const COMPANY_ID = 'fix_appliance_ca';
@@ -1159,8 +1160,39 @@ async function sendMissedReviewSms() {
   }
 }
 
+/**
+ * Приложение пишет `documents` целиком, и оплата, которую Stripe записал, пока
+ * телефон был без сети, может пропасть под старым массивом из очереди.
+ * Возвращаем такие платежи; повторный вызов триггера уже увидит их в `before`.
+ */
+async function restoreStripePaymentsIfLost(before, after, jobId) {
+  if (!before || !after || after.deletedAt) return null;
+  if (!paymentGuard.restoreLostStripePayments(before.documents, after.documents).restored.length) return null;
+  const jobRef = jobsRef().doc(jobId);
+  let repaired = null;
+  await db().runTransaction(async (tx) => {
+    const snapshot = await tx.get(jobRef);
+    if (!snapshot.exists) return;
+    const current = snapshot.data() || {};
+    const fixed = paymentGuard.restoreLostStripePayments(before.documents, current.documents);
+    if (!fixed.restored.length) return;
+    tx.update(jobRef, {
+      documents: fixed.documents,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    repaired = { after: { ...current, documents: fixed.documents }, restored: fixed.restored };
+  });
+  if (!repaired) return null;
+  console.warn(
+    `job ${jobId}: restored ${repaired.restored.length} Stripe payment(s) lost in a documents overwrite`
+  );
+  return repaired.after;
+}
+
 async function processJobWrite(before, after, jobId) {
   if (!after) return;
+  const repaired = await restoreStripePaymentsIfLost(before, after, jobId);
+  if (repaired) after = repaired;
   if (after.deletedAt || isClosedJob(after)) {
     await blockJobCreateForJob(jobId, after.sourceCallId);
     // Closed jobs used to return before review SMS — send it on complete.

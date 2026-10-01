@@ -38,6 +38,7 @@ class _FieldAssistantHostState extends State<FieldAssistantHost> {
 
   Future<void> _bootstrap() async {
     await LocalNotificationService.initialize();
+    if (!mounted) return;
     _jobsSub = JobService.streamAll().listen((jobs) {
       MorningBriefingService.refresh(jobs);
       OnTheWayService.instance.sync(jobs);
@@ -169,11 +170,9 @@ class _FieldAssistantHostState extends State<FieldAssistantHost> {
 
   @override
   Widget build(BuildContext context) {
-    if (TwilioService.activeCall != null) return widget.child;
-
-    final statusJob = OnTheWayService.instance.pendingStatus;
-    final offer = OnTheWayService.instance.pending;
-    if (statusJob == null && offer == null) return widget.child;
+    final inCall = TwilioService.activeCall != null;
+    final statusJob = inCall ? null : OnTheWayService.instance.pendingStatus;
+    final offer = inCall ? null : OnTheWayService.instance.pending;
 
     return Stack(
       children: [

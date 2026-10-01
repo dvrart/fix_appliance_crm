@@ -19,6 +19,7 @@ class DocumentsListScreen extends StatefulWidget {
 
 class _DocumentsListScreenState extends State<DocumentsListScreen> {
   late final PageController _page;
+  late final _jobsStream = JobService.streamAll();
   int _index = 0;
 
   @override
@@ -77,7 +78,7 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
           ),
           Expanded(
             child: StreamBuilder<List<Job>>(
-              stream: JobService.streamAll(),
+              stream: _jobsStream,
               builder: (context, snapshot) {
                 final jobs = snapshot.data ?? const <Job>[];
                 final invoices = _collect(jobs, estimates: false);

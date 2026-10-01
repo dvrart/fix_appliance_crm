@@ -27,6 +27,7 @@ class DeliveryVanButton extends StatefulWidget {
 class _DeliveryVanButtonState extends State<DeliveryVanButton>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  late final _jobsStream = JobService.streamByStatus(JobStatuses.waitingPart);
 
   @override
   void initState() {
@@ -46,7 +47,7 @@ class _DeliveryVanButtonState extends State<DeliveryVanButton>
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<Job>>(
-      stream: JobService.streamByStatus(JobStatuses.waitingPart),
+      stream: _jobsStream,
       builder: (context, snapshot) {
         final jobs = snapshot.data ?? const <Job>[];
         final icon = Badge(

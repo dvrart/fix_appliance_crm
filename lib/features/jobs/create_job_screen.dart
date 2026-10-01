@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../core/utils/app_time_picker.dart';
+import '../../core/utils/app_date_picker.dart';
 import '../../widgets/smart_address_picker.dart';
 import '../../shared/widgets/catalog_picker.dart';
 import '../../services/catalog_service.dart';
@@ -258,31 +258,20 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
   }
 
   Future<void> _pickDateTime() async {
-    final pickedDate = await showDatePicker(
+    final day = _selectedDate ?? DateTime.now();
+    final time = _selectedTime ?? _defaultStartTime;
+    final picked = await showAppDateTimeSheet(
       context: context,
-      initialDate: _selectedDate ?? DateTime.now(),
+      initial: DateTime(day.year, day.month, day.day, time.hour, time.minute),
       firstDate: DateTime(2023),
       lastDate: DateTime(2030),
+      title: 'Дата и время визита'.tr,
     );
-    if (pickedDate == null || !mounted) return;
-
-    final pickedTime = await showAppTimePicker(
-      context: context,
-      initialTime: _selectedTime ?? _defaultStartTime,
-      helpText: 'Выберите время'.tr,
-    );
-
-    if (pickedTime != null) {
-      setState(() {
-        _selectedDate = pickedDate;
-        _selectedTime = pickedTime;
-      });
-    } else {
-      setState(() {
-        _selectedDate = pickedDate;
-        _selectedTime ??= _defaultStartTime;
-      });
-    }
+    if (picked == null || !mounted) return;
+    setState(() {
+      _selectedDate = DateTime(picked.year, picked.month, picked.day);
+      _selectedTime = TimeOfDay.fromDateTime(picked);
+    });
     _markDirty();
   }
 

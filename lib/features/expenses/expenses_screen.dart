@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import '../../core/utils/app_date_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -69,6 +70,7 @@ class ExpensesScreen extends StatefulWidget {
 class _ExpensesScreenState extends State<ExpensesScreen> {
   bool _busy = false;
   List<Expense> _items = const [];
+  late final _expensesStream = ExpenseService.streamAll();
 
   @override
   void initState() {
@@ -329,7 +331,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
         ),
       ),
       body: StreamBuilder<List<Expense>>(
-        stream: ExpenseService.streamAll(),
+        stream: _expensesStream,
         builder: (context, snapshot) {
           final items = snapshot.data ?? const <Expense>[];
           _items = items;
@@ -682,9 +684,9 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
   }
 
   Future<void> _pickDate() async {
-    final picked = await showDatePicker(
+    final picked = await showAppDateSheet(
       context: context,
-      initialDate: _draft.date,
+      initial: _draft.date,
       firstDate: DateTime(2020),
       lastDate: DateTime.now().add(const Duration(days: 3)),
     );

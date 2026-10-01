@@ -11,6 +11,18 @@ const ZONE = [
   { lat: 42.7, lng: -81.0 },
 ];
 
+test('секретарь не назначает визит: промпт и прощание обещают звонок мастера', () => {
+  for (const flow of [voiceFacts.VOICE_CALL_FLOW, voiceFacts.VOICE_LIVE_FLOW]) {
+    assert.match(flow, /You do NOT book visits/);
+    assert.match(flow, /technician will contact them/);
+    assert.doesNotMatch(flow, /do not book a taken window/);
+  }
+  const wish = { scheduled_date: '2099-01-05', scheduled_time: '14:00' };
+  assert.equal(voiceFacts.farewellFor(wish), voiceFacts.VOICE_FAREWELL_EN_CALLBACK);
+  assert.equal(voiceFacts.farewellFor({ preferred_time: 'any weekday morning' }), voiceFacts.VOICE_FAREWELL_EN_CALLBACK);
+  assert.doesNotMatch(voiceFacts.farewellFor(wish), /see you then/);
+});
+
 test('pointInPolygon: город внутри и снаружи зоны', () => {
   assert.equal(voiceFacts.pointInPolygon(42.8623, -80.728, ZONE), true); // Tillsonburg
   assert.equal(voiceFacts.pointInPolygon(43.1394, -80.2644, ZONE), true); // Brantford

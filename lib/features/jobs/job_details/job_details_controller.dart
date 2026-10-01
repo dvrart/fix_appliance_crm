@@ -8,6 +8,7 @@ import '../../../models/client.dart';
 import '../../../models/job.dart';
 import '../../../services/services.dart';
 import '../../../core/l10n/app_locale.dart';
+import '../../../shared/stale_routes.dart';
 
 /// Контроллер состояния для JobDetailsScreen
 /// Вынесен отдельно, чтобы вкладки могли обращаться к общему состоянию
@@ -23,6 +24,7 @@ class JobDetailsController extends ChangeNotifier {
   ({String street, String city, String postal, String unit})?
   _pendingClientAddress;
   bool _committing = false;
+  bool _seenAlive = false;
 
   bool get hasUnsavedChanges =>
       _draft.isNotEmpty ||
@@ -175,7 +177,8 @@ class JobDetailsController extends ChangeNotifier {
     scheduledAt =
         _parseDate(jobData['scheduledAt']) ??
         _parseDate(jobData['scheduledDate']);
-    durationMinutes = (jobData['durationMinutes'] as num?)?.toInt() ?? kDefaultVisitMinutes;
+    durationMinutes =
+        (jobData['durationMinutes'] as num?)?.toInt() ?? kDefaultVisitMinutes;
     packingNotes = jobData['packingNotes'] ?? '';
     trackingNumber = (jobData['trackingNumber'] ?? '').toString();
     amazonOrderId = (jobData['amazonOrderId'] ?? '').toString();
@@ -203,9 +206,22 @@ class JobDetailsController extends ChangeNotifier {
     _jobSubscription = FirestoreService.jobsRef.doc(jobId).snapshots().listen((
       snap,
     ) {
-      if (!snap.exists) return;
-      final data = snap.data() as Map<String, dynamic>?;
-      if (data == null) return;
+      final data = snap.exists ? snap.data() as Map<String, dynamic>? : null;
+      if (data == null) {
+        // Удалена навсегда. Пустой ответ из кэша без сети ещё ничего не значит.
+        if (_seenAlive || !snap.metadata.isFromCache) {
+          StaleRoutes.dropJob(jobId);
+        }
+        return;
+      }
+      // Карточку из корзины открывают намеренно — закрываем только при
+      // переходе «живая → в корзине».
+      if (!StaleRoutes.isTrashed(data, snap.metadata)) {
+        _seenAlive = true;
+      } else if (_seenAlive) {
+        StaleRoutes.dropJob(jobId);
+        return;
+      }
       // Пока есть черновик — не затираем снимок remote визитами/полями с сервера
       // вслепую: _lastRemote нужен для discard. Обновляем remote только без правок
       // или мержим без visits, если visits грязные.
@@ -314,10 +330,12 @@ class JobDetailsController extends ChangeNotifier {
         jobData['hasJobSite'] = hasJobSite;
         jobData['jobSiteAddress'] = jobSiteAddress;
       }
-      if (data['suggestComplete'] == true && !JobStatuses.isCompletedStatus(currentStatus)) {
+      if (data['suggestComplete'] == true &&
+          !JobStatuses.isCompletedStatus(currentStatus)) {
         pendingSuggestComplete = true;
       }
-      if (data['suggestCancel'] == true && !JobStatuses.isCancelledStatus(currentStatus)) {
+      if (data['suggestCancel'] == true &&
+          !JobStatuses.isCancelledStatus(currentStatus)) {
         pendingSuggestCancel = true;
       }
       if (!_disposed) notifyListeners();
@@ -371,10 +389,12 @@ class JobDetailsController extends ChangeNotifier {
     }
     final items = merged.values.toList();
     items.sort((a, b) {
-      final aAt = CallRecord.parseStamp(a['startTime']) ??
+      final aAt =
+          CallRecord.parseStamp(a['startTime']) ??
           CallRecord.parseStamp(a['uploadedAt']) ??
           DateTime.fromMillisecondsSinceEpoch(0);
-      final bAt = CallRecord.parseStamp(b['startTime']) ??
+      final bAt =
+          CallRecord.parseStamp(b['startTime']) ??
           CallRecord.parseStamp(b['uploadedAt']) ??
           DateTime.fromMillisecondsSinceEpoch(0);
       return aAt.compareTo(bAt);
@@ -488,15 +508,15 @@ class JobDetailsController extends ChangeNotifier {
   /// Контактное имя на месте
   String get contactName => hasJobSite
       ? (jobSiteName.trim().isEmpty
-          ? (jobData['clientName'] ?? 'Неизвестно'.tr)
-          : jobSiteName)
+            ? (jobData['clientName'] ?? 'Неизвестно'.tr)
+            : jobSiteName)
       : (jobData['clientName'] ?? 'Неизвестно'.tr);
 
   /// Контактный телефон
   String get contactPhone => hasJobSite
       ? (jobSitePhone.trim().isEmpty
-          ? (jobData['clientPhone'] ?? '')
-          : jobSitePhone)
+            ? (jobData['clientPhone'] ?? '')
+            : jobSitePhone)
       : (jobData['clientPhone'] ?? '');
 
   List<JobChatContact> get chatContacts {
@@ -726,12 +746,9 @@ class JobDetailsController extends ChangeNotifier {
     }
     if (visits.isEmpty) {
       final fromParts = currentStatus == JobStatuses.waitingPart;
-      await saveVisits(
-        [
-          JobVisit.create(startAt: newValue, durationMinutes: durationMinutes),
-        ],
-        markInstall: fromParts,
-      );
+      await saveVisits([
+        JobVisit.create(startAt: newValue, durationMinutes: durationMinutes),
+      ], markInstall: fromParts);
       return;
     }
     final now = DateTime.now();
@@ -779,7 +796,41 @@ class JobDetailsController extends ChangeNotifier {
     );
   }
 
-  Future<void> updateVisit(JobVisit visit) {
+  /// «Перенос визита» из меню статусов: эта заявка остаётся на своей дате
+  /// (визиты закрываются, статус — «Перенос»), а на новую дату создаётся
+  /// отдельная заявка с выбранным статусом (Вызов / Установка / Повторный
+  /// визит). Возвращает id новой заявки или null, если сохранить не удалось.
+  Future<String?> rescheduleToNewJob(JobVisit visit, String status) async {
+    if (!await commitChanges()) return null;
+    final String newJobId;
+    try {
+      newJobId = await JobService.createRescheduledFrom(
+        Job.fromMap(Map<String, dynamic>.from(jobData), jobId),
+        visit: visit,
+        status: status,
+      );
+    } catch (_) {
+      return null;
+    }
+    _applyVisitFields(JobVisit.markAllScheduledDone(visits));
+    _visitsDirty = true;
+    if (JobStatuses.canMarkRescheduled(currentStatus)) {
+      currentStatus = JobStatuses.rescheduled;
+      _queue({'status': JobStatuses.rescheduled});
+    }
+    notifyListeners();
+    await commitChanges();
+    return newJobId;
+  }
+
+  /// [correction] — исправление даты/времени этого же визита: статус не
+  /// меняется на «Перенос» / «Установка».
+  Future<void> updateVisit(JobVisit visit, {bool correction = false}) {
+    if (correction) {
+      return saveVisits([
+        for (final item in visits) item.id == visit.id ? visit : item,
+      ]);
+    }
     JobVisit? previous;
     for (final item in visits) {
       if (item.id == visit.id) {
@@ -792,9 +843,7 @@ class JobDetailsController extends ChangeNotifier {
         !JobVisit.isSameDay(previous.startAt, visit.startAt);
     final fromParts = dayChanged && currentStatus == JobStatuses.waitingPart;
     return saveVisits(
-      [
-        for (final item in visits) item.id == visit.id ? visit : item,
-      ],
+      [for (final item in visits) item.id == visit.id ? visit : item],
       markRescheduled: dayChanged && !fromParts,
       markInstall: fromParts,
     );
@@ -805,10 +854,12 @@ class JobDetailsController extends ChangeNotifier {
   }
 
   Future<void> updateVisitConfirm(JobVisit visit, String status) async {
-    final nextStatus =
-        status.trim().isEmpty ? JobVisit.confirmPending : status.trim();
+    final nextStatus = status.trim().isEmpty
+        ? JobVisit.confirmPending
+        : status.trim();
     final current = visit.effectiveConfirmStatus;
-    final alreadyPending = current.isEmpty || current == JobVisit.confirmPending;
+    final alreadyPending =
+        current.isEmpty || current == JobVisit.confirmPending;
     if (nextStatus == JobVisit.confirmPending && alreadyPending) {
       // «Нет» при уже неподтверждённом визите — ничего не пишем в Firestore,
       // иначе уйдут все черновые правки (новая дата и т.п.).
@@ -924,9 +975,9 @@ class JobDetailsController extends ChangeNotifier {
           await storageRef
               .putFile(File(local))
               .timeout(const Duration(seconds: 25));
-          item['url'] = await storageRef
-              .getDownloadURL()
-              .timeout(const Duration(seconds: 15));
+          item['url'] = await storageRef.getDownloadURL().timeout(
+            const Duration(seconds: 15),
+          );
           item.remove('localPath');
           item.remove('pendingUpload');
         } catch (_) {

@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:http/http.dart' as http;
+import '../services/network_status_service.dart';
 import '../core/api_keys.dart';
 import '../core/geo/service_area.dart';
 import '../core/l10n/app_locale.dart';
@@ -104,6 +104,8 @@ void showSmartAddressPicker({
   var isFetching = false;
   var predictions = <Map<String, dynamic>>[];
   Timer? searchDebounce;
+  var disposed = false;
+  var lookupGeneration = 0;
   final searchCtrl = TextEditingController();
   // Зона обслуживания с карты в настройках: поиск смотрит только в неё.
   var area = ServiceArea.empty;
@@ -134,7 +136,7 @@ void showSmartAddressPicker({
       if (strict) url.write('&strictbounds=true');
     }
     try {
-      final response = await http.get(Uri.parse(url.toString()));
+      final response = await getWithTimeout(Uri.parse(url.toString()));
       if (response.statusCode != 200) return const [];
       final data = json.decode(response.body);
       if (data['status'] != 'OK') return const [];
@@ -229,6 +231,15 @@ void showSmartAddressPicker({
               return DirtyLeaveScope(
                 dirty: isDirty(),
                 onSave: persist,
+                onDispose: () {
+                  disposed = true;
+                  searchDebounce?.cancel();
+                  for (final controller in [
+                    streetCtrl, unitCtrl, cityCtrl, postalCtrl, searchCtrl,
+                  ]) {
+                    controller.dispose();
+                  }
+                },
                 child: Builder(
                   builder: (context) {
                     return KeyboardAvoidingSheet(
@@ -283,7 +294,11 @@ void showSmartAddressPicker({
                           ),
                         ),
                         onChanged: (value) {
+                          final request = ++lookupGeneration;
                           searchDebounce?.cancel();
+                          if (isFetching) {
+                            setSheetState(() => isFetching = false);
+                          }
                           if (value.trim().length < 3) {
                             setSheetState(() {
                               predictions = [];
@@ -300,6 +315,10 @@ void showSmartAddressPicker({
                               var found =
                                   await fetchPredictions(value, restrict: true);
                               var widened = false;
+                              if (disposed || !sheetContext.mounted ||
+                                  request != lookupGeneration) {
+                                return;
+                              }
                               if (found.isEmpty && area.canRestrictSearch) {
                                 found = await fetchPredictions(
                                   value,
@@ -308,8 +327,11 @@ void showSmartAddressPicker({
                                 widened = found.isNotEmpty;
                               }
                               // Медленный ответ не должен затирать новый запрос.
-                              if (searchCtrl.text != value) return;
-                              if (!sheetContext.mounted) return;
+                              if (disposed || !sheetContext.mounted ||
+                                  request != lookupGeneration ||
+                                  searchCtrl.text != value) {
+                                return;
+                              }
                               setSheetState(() {
                                 predictions = found;
                                 widenedSearch = widened;
@@ -365,12 +387,18 @@ void showSmartAddressPicker({
                                 ),
                                 onTap: () async {
                           final placeId = selection['place_id'];
+                          final request = ++lookupGeneration;
+                          searchDebounce?.cancel();
                           setSheetState(() => isFetching = true);
 
                           final detailsUrl =
                               'https://maps.googleapis.com/maps/api/place/details/json?place_id=$placeId&key=$kGoogleMapsApiKey&language=ru';
                           try {
-                            final response = await http.get(Uri.parse(detailsUrl));
+                            final response = await getWithTimeout(Uri.parse(detailsUrl));
+                            if (disposed || !sheetContext.mounted ||
+                                request != lookupGeneration) {
+                              return;
+                            }
                             if (response.statusCode == 200) {
                               final data = json.decode(response.body);
                               if (data['status'] == 'OK') {
@@ -428,8 +456,12 @@ void showSmartAddressPicker({
                                 });
                               }
                             }
-                          } catch (e) {
-                            setSheetState(() => isFetching = false);
+                          } catch (_) {
+                          } finally {
+                            if (!disposed && sheetContext.mounted &&
+                                request == lookupGeneration) {
+                              setSheetState(() => isFetching = false);
+                            }
                           }
                                 },
                               );

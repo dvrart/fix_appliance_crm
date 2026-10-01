@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'firestore_service.dart';
+import 'network_status_service.dart';
 import 'sms_service.dart' show SmsService;
 
 DateTime? _asDate(dynamic value) {
@@ -100,7 +101,7 @@ class ScheduledMessageService {
     required DateTime sendAt,
   }) async {
     final doc = _ref.doc();
-    await doc.set({
+    await settleWrite(doc.set({
       'channel': channel,
       'to': to,
       'toEmail': toEmail,
@@ -112,7 +113,7 @@ class ScheduledMessageService {
       'sendAt': Timestamp.fromDate(sendAt.toUtc()),
       'status': 'pending',
       'createdAt': FieldValue.serverTimestamp(),
-    });
+    }));
     return doc.id;
   }
 

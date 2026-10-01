@@ -18,16 +18,16 @@ const VOICE_FAREWELL_ES =
 
 const VOICE_CALL_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
 Never pushy: one repair question per reply at most, and only when it fits. Off-topic chat gets a human answer first — the repair comes back once, lightly, when the moment opens. If they need to think or want to call back later, accept warmly and stop collecting.
-Visit days, hours, and prices are in the owner rules. Each visit is 2 hours — do not book a taken window.
-The caller picks the day and time. Ask what suits them; never propose a slot of your own unless the one they asked for is taken.
+Visit days, hours, and prices are in the owner rules.
+You do NOT book visits and cannot see the calendar. Ask what day and time would suit them, note it, and say the technician will contact them to set the exact time. Never confirm, promise, or propose a slot, and never say a time is free or taken.
 When you have enough, or they want a callback: pass it to the tech, photo of the model sticker, anything else. If they say no: Have a good day. Do not hang up.`;
 
-const EXTRACT_CARD_RULES = `Keep street, city, unit, and postal code in the original English/Canadian spelling. Never translate or transliterate into Russian (write "King Street", not "Кинг-стрит"; "Toronto", not "Торонто"). Person names stay in English as spoken. problem_description is ONLY the appliance fault and model number — never the SMS, email, or call transcript. client_email is the customer's email from the letter body, not a booking-agency From: address.`;
+const EXTRACT_CARD_RULES = `Keep street, city, unit, and postal code in the original English/Canadian spelling. Never translate or transliterate into Russian (write "King Street", not "Кинг-стрит"; "Toronto", not "Торонто"). Person names stay in English as spoken. client_name is ONLY the customer's own name — the person who calls or writes in. Never the shop side: not the technician (Artem), not the receptionist or AI, not a name the shop used to introduce itself ("my name is…", "…speaking"), not the person the customer asks for. If the customer never said their own name, client_name=null. problem_description is ONLY the appliance fault and model number — never the SMS, email, or call transcript. client_email is the customer's email from the letter body, not a booking-agency From: address.`;
 
 const VOICE_LIVE_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
 Never pushy: one repair question per reply at most, and only when it fits. Off-topic chat gets a human answer first — the repair comes back once, lightly, when the moment opens. If they need to think or want to call back later, accept warmly and stop collecting.
-Visit days and hours are in the owner rules. Each visit is 2 hours — do not book a taken window.
-The caller picks the day and time. Ask what suits them; never propose a slot of your own unless the one they asked for is taken.
+Visit days and hours are in the owner rules.
+You do NOT book visits and cannot see the calendar. Ask what day and time would suit them, note it, and say the technician will contact them to set the exact time. Never confirm, promise, or propose a slot, and never say a time is free or taken.
 When you have enough: pass it to the tech, photo, anything else. If they say no: Have a good day. Do not hang up.`;
 
 const NAME_STOP = new Set([
@@ -710,24 +710,139 @@ function onSiteContactFrom(extracted, ownerName, ownerPhone) {
   };
 }
 
+/**
+ * Имена людей мастерской. Мастер представляется («меня зовут Артём»), клиент
+ * спрашивает «можно Артёма?» — и это имя уезжало в заявку и карточку клиента.
+ * Клиентом такое имя становится, только если звонящий сам так представился.
+ */
+const SHOP_PEOPLE_NAMES = ['artem', 'artyom', 'artiom'];
+
+const SHOP_LINE_RE = /^\s*(ИИ|AI|Assistant|Secretary|Секретарь|Me|Master|Мастер|Моё|Мое|Technician)\s*:\s*/i;
+const CLIENT_LINE_RE = /^\s*(Клиент|Client|User|Caller)\s*:\s*/i;
+
+/**
+ * Расшифровка записи («Моё: … / Клиент: …») → история с ролями. Раньше весь
+ * диалог уходил одной репликой клиента, и «меня зовут Артём» мастера считалось
+ * тем, как представился клиент. Строки без метки продолжают предыдущую реплику.
+ */
+function historyFromTranscript(text) {
+  const out = [];
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const shop = line.match(SHOP_LINE_RE);
+    const label = shop || line.match(CLIENT_LINE_RE);
+    if (label) {
+      out.push({ role: shop ? 'assistant' : 'user', text: line.slice(label[0].length).trim() });
+    } else if (out.length) {
+      out[out.length - 1].text += `\n${line}`;
+    } else {
+      out.push({ role: 'user', text: line });
+    }
+  }
+  return out;
+}
+
+const RU_LATIN = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i',
+  й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't',
+  у: 'u', ф: 'f', х: 'kh', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y',
+  ь: '', э: 'e', ю: 'yu', я: 'ya',
+};
+
+/** «Артём» и «Artem» — одно имя: сравниваем в латинице. */
+function nameKey(word) {
+  return String(word || '')
+    .toLowerCase()
+    .replace(/[а-яё]/g, (ch) => RU_LATIN[ch] ?? ch)
+    .replace(/[^a-z]/g, '');
+}
+
+function sameNameKey(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return Math.min(a.length, b.length) >= 5 && editDistance(a, b) <= 1;
+}
+
+const L = 'A-Za-zА-Яа-яЁё';
+const NAME_END = `(?=[^${L}]|$)`;
+const INTRO_NAMED = new RegExp(`(?:my name is|my name's|меня зовут|моё имя|мое имя)\\s+([${L}]{2,16})${NAME_END}`, 'gi');
+const INTRO_SPEAKING = new RegExp(`(?:^|[^${L}])([${L}]{2,16})\\s+(?:speaking|here|слушаю|на связи)${NAME_END}`, 'gi');
+const INTRO_FROM = new RegExp(`(?:this is|it'?s|i'?m|i am|это|с вами)\\s+([${L}]{2,16}),?\\s+(?:from|with|at|of|here|speaking|из|с|слушаю)${NAME_END}`, 'gi');
+const INTRO_SHOP_IM = new RegExp(`(?:^|[^${L}])(?:i'?m|i am)\\s+([${L}]{2,16})${NAME_END}`, 'gi');
+const INTRO_CALLER = new RegExp(`(?:this is|it'?s|i(?:'|’| a)?m|это)\\s+([${L}]{2,16})${NAME_END}`, 'gi');
+const BARE_NAME_REPLY = new RegExp(`^(?:(?:yeah|yes|yep|sure|ok|okay|um|uh|it'?s|its|i'?m|это)[,\\s]+)*([${L}]{2,16})[.!]?$`, 'i');
+
+function matchAll(re, text) {
+  return [...String(text || '').matchAll(re)].map((m) => m[1]);
+}
+
+/** Как представился каждый из говорящих: { shop: [...], caller: [...] }. */
+function selfIntroducedNames(history) {
+  const shop = [];
+  const caller = [];
+  let prevAsst = '';
+  for (const item of Array.isArray(history) ? history : []) {
+    if (!item || !item.text) continue;
+    const text = String(item.text);
+    if (item.role === 'assistant') {
+      shop.push(
+        ...matchAll(INTRO_NAMED, text),
+        ...matchAll(INTRO_SPEAKING, text),
+        ...matchAll(INTRO_FROM, text),
+        ...matchAll(INTRO_SHOP_IM, text)
+      );
+      prevAsst = text;
+      continue;
+    }
+    caller.push(
+      ...matchAll(INTRO_NAMED, text),
+      ...matchAll(INTRO_SPEAKING, text),
+      ...matchAll(INTRO_CALLER, text)
+    );
+    const bare = askedForName(prevAsst) && text.trim().match(BARE_NAME_REPLY);
+    if (bare) caller.push(bare[1]);
+    prevAsst = '';
+  }
+  const keys = (list) => list.filter((w) => !isNameStop(w)).map(nameKey).filter(Boolean);
+  return { shop: keys(shop), caller: keys(caller) };
+}
+
+/**
+ * Имя принадлежит мастерской (мастеру или секретарю), а не звонящему.
+ * Исключение — звонящий сам так представился: тёзка мастера тоже бывает.
+ */
+function isShopPersonName(name, history, intros = selfIntroducedNames(history)) {
+  const parts = String(name || '').trim().split(/\s+/).map(nameKey).filter(Boolean);
+  if (!parts.length) return false;
+  const shop = [...SHOP_PEOPLE_NAMES, ...intros.shop];
+  return parts.some(
+    (part) =>
+      shop.some((s) => sameNameKey(part, s)) &&
+      !intros.caller.some((c) => sameNameKey(part, c))
+  );
+}
+
 function nameFromHistory(history) {
   if (!Array.isArray(history)) return '';
+  const intros = selfIntroducedNames(history);
+  const ok = (word) =>
+    looksLikePersonName(word) && !NAME_STOP.has(word.toLowerCase()) && !isShopPersonName(word, history, intros);
   const userRe =
     /(?:my name is|this is|i(?:'|’| a)?m|меня зовут)\s+([A-Za-zА-Яа-яЁё]{2,16})\b/i;
   const asstRe =
     /(?:okay|ok|alright|thanks|thank you|hi|hello|perfect|great)\s+([A-Za-zА-Яа-яЁё]{2,16})\b/i;
+  // Только реплики звонящего: «this is …» / «I'm …» секретаря и «меня зовут»
+  // мастера — это они представились, а не клиент.
   for (const item of [...history].reverse()) {
-    const m = String((item && item.text) || '').match(userRe);
-    if (m && looksLikePersonName(m[1]) && !NAME_STOP.has(m[1].toLowerCase())) {
-      return titleCaseName(m[1]);
-    }
+    if (!item || item.role === 'assistant') continue;
+    const m = String(item.text || '').match(userRe);
+    if (m && ok(m[1])) return titleCaseName(m[1]);
   }
   for (const item of [...history].reverse()) {
     if (!item || item.role !== 'assistant') continue;
     const m = String(item.text || '').match(asstRe);
-    if (m && looksLikePersonName(m[1]) && !NAME_STOP.has(m[1].toLowerCase())) {
-      return titleCaseName(m[1]);
-    }
+    if (m && ok(m[1])) return titleCaseName(m[1]);
   }
   return '';
 }
@@ -752,11 +867,14 @@ function nameWasSpoken(name, history) {
 
 function pickClientName(prev, next, history) {
   const spoken = usableClientName(nameFromHistory(history));
-  const nextN = usableClientName(next);
-  const prevN = usableClientName(prev);
   if (spoken) return spoken;
-  const nextOk = nextN && nameWasSpoken(nextN, history) ? nextN : '';
-  const prevOk = prevN && nameWasSpoken(prevN, history) ? prevN : '';
+  const intros = selfIntroducedNames(history);
+  const fits = (raw) => {
+    const n = usableClientName(raw);
+    return n && nameWasSpoken(n, history) && !isShopPersonName(n, history, intros) ? n : '';
+  };
+  const nextOk = fits(next);
+  const prevOk = fits(prev);
   if (nextOk && prevOk && nextOk.length + 2 < prevOk.length) return prevOk;
   return nextOk || prevOk || '';
 }
@@ -962,11 +1080,9 @@ function formatTorontoStamp(date = new Date()) {
 }
 
 function farewellFor(extracted, _language) {
-  if (extracted && extracted.wants_callback === true && !extracted.scheduled_date && !extracted.scheduled_time) {
+  // Секретарь не назначает визит — «see you then» обещало бы время, которого нет.
+  if (extracted && (extracted.wants_callback === true || extracted.scheduled_date || extracted.scheduled_time || extracted.preferred_time)) {
     return VOICE_FAREWELL_EN_CALLBACK;
-  }
-  if (extracted && (extracted.scheduled_date || extracted.scheduled_time)) {
-    return VOICE_FAREWELL_EN;
   }
   const hour = torontoParts().h;
   return hour >= 17 ? VOICE_FAREWELL_EN_EVENING : VOICE_FAREWELL_EN_DAY;
@@ -1060,6 +1176,7 @@ function mergeExtracted(prev, next, history) {
       if (key === 'client_name') {
         const picked = pickClientName(out.client_name, value, history);
         if (picked) out.client_name = picked;
+        else if (isShopPersonName(out.client_name, history)) delete out.client_name;
         continue;
       }
       if (key === 'wants_callback') {
@@ -1134,14 +1251,14 @@ function workHoursSpeech(startMinutes, endMinutes) {
 /// Про субботу секретарь не говорит «мы не работаем»: мы работаем, просто окон
 /// нет — и зовём на следующую неделю. Остальные закрытые дни как раньше.
 const SATURDAY_BUSY_LINE =
-  'Saturday: never say we are closed, that we do not work Saturdays, or that the technician does not visit on Saturday. Say we do work Saturdays but unfortunately every window is already booked, and offer to set the visit for next week.';
+  'Saturday: never say we are closed, that we do not work Saturdays, or that the technician does not visit on Saturday. Say we do work Saturdays but unfortunately every window is already booked, and ask which day next week would suit them — the technician will confirm the time.';
 
 function closedDaysSpeech(closedNames) {
   const closed = (Array.isArray(closedNames) ? closedNames : []).filter(Boolean);
   if (!closed.length) return 'The technician visits every day of the week.';
   const others = closed.filter((name) => String(name) !== 'Saturday');
   const parts = [];
-  if (others.length) parts.push(`${others.join(' and ')}: no visit — offer the next working day.`);
+  if (others.length) parts.push(`${others.join(' and ')}: no visit — ask which working day would suit them instead.`);
   if (closed.length !== others.length) parts.push(SATURDAY_BUSY_LINE);
   return parts.join(' ');
 }
@@ -1222,6 +1339,8 @@ module.exports = {
   hasNewRepairRequest,
   parseScheduledAtDate,
   pickClientName,
+  historyFromTranscript,
+  isShopPersonName,
   isStaleVoiceGreeting,
   torontoParts,
   formatHour12,

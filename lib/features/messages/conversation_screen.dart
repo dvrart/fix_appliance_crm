@@ -6,7 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
-import '../../core/utils/app_time_picker.dart';
+import '../../core/utils/app_date_picker.dart';
 import '../../core/utils/thumb_image.dart';
 import '../../services/ai_service.dart';
 import '../../services/client_service.dart';
@@ -26,7 +26,7 @@ import '../../shared/widgets/selection_action_bar.dart';
 import '../../services/error_log_service.dart';
 
 /// Выбор даты и времени в стиле приложения (как при добавлении визита):
-/// лист с двумя строками — дата и время. Возвращает null при отмене.
+/// месяц и барабан времени в одном листе. Возвращает null при отмене.
 Future<DateTime?> showScheduleDateTimePicker(BuildContext context) {
   final now = DateTime.now();
   // Дефолт: +1 час, минуты 00 или 30 — ближайший интервал,
@@ -69,32 +69,6 @@ class _ScheduleDateTimeSheetState extends State<_ScheduleDateTimeSheet> {
     _dt = widget.initial;
   }
 
-  Future<void> _pickDate() async {
-    final now = DateTime.now();
-    final d = await showDatePicker(
-      context: context,
-      initialDate: _dt.isBefore(now) ? now : _dt,
-      firstDate: now,
-      lastDate: now.add(const Duration(days: 365)),
-    );
-    if (d == null || !mounted) return;
-    setState(() {
-      _dt = DateTime(d.year, d.month, d.day, _dt.hour, _dt.minute);
-    });
-  }
-
-  Future<void> _pickTime() async {
-    final t = await showAppTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(_dt),
-      helpText: 'Время отправки'.tr,
-    );
-    if (t == null || !mounted) return;
-    setState(() {
-      _dt = DateTime(_dt.year, _dt.month, _dt.day, t.hour, t.minute);
-    });
-  }
-
   String _relativeLabel(DateTime dt) {
     final diff = dt.difference(DateTime.now());
     if (diff.isNegative) return 'в прошлом'.tr;
@@ -107,14 +81,12 @@ class _ScheduleDateTimeSheetState extends State<_ScheduleDateTimeSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final accent = const Color(0xFF14557F);
-    final dateStr = DateFormat('d MMM yyyy', AppLocale.instance.dateLocale).format(_dt);
-    final timeStr = DateFormat('HH:mm').format(_dt);
+    final now = DateTime.now();
     final tooSoon = _dt.isBefore(DateTime.now().add(const Duration(minutes: 1)));
     final relLabel = _relativeLabel(_dt);
 
     return SafeArea(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: EdgeInsets.only(
           left: 16,
           right: 16,
@@ -151,22 +123,18 @@ class _ScheduleDateTimeSheetState extends State<_ScheduleDateTimeSheet> {
                 fontWeight: FontWeight.w500,
               ),
             ),
+            const SizedBox(height: 4),
+            Text(
+              appDateTimeLabel(_dt),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            AppDateTimePanel(
+              value: _dt,
+              firstDate: now,
+              lastDate: now.add(const Duration(days: 365)),
+              onChanged: (v) => setState(() => _dt = v),
+            ),
             const SizedBox(height: 8),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.calendar_month, color: accent),
-              title: Text(dateStr, style: const TextStyle(fontSize: 16)),
-              trailing: const Icon(Icons.edit, size: 18, color: Colors.grey),
-              onTap: _pickDate,
-            ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.schedule, color: accent),
-              title: Text(timeStr, style: const TextStyle(fontSize: 16)),
-              trailing: const Icon(Icons.edit, size: 18, color: Colors.grey),
-              onTap: _pickTime,
-            ),
-            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
@@ -402,7 +370,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
   late String _contactName;
   late String _peerId;
   final Map<String, List<SmsMessage>> _threadCache = {};
+  late Stream<List<SmsMessage>> _messagesStream;
+  late Stream<List<ScheduledMessage>> _scheduledStream;
   String? _lastJumpId;
+
+  String get _threadKey => widget.websiteInbox
+      ? 'website-email'
+      : '$_channel|$_phone|$_email';
   final Set<String> _selectedIds = {};
   List<String> _visibleIds = const [];
   Timer? _translateDebounce;
@@ -428,8 +402,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Future<void> _copySelected() async {
-    final key = '$_channel|$_phone|$_email';
-    final messages = _threadCache[key] ?? const <SmsMessage>[];
+    final messages = _threadCache[_threadKey] ?? const <SmsMessage>[];
     final byId = {for (final m in messages) m.id: m};
     final parts = <String>[];
     for (final id in _selectedIds) {
@@ -467,6 +440,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             (_hasEmail && !_hasPhone
                 ? ConversationChannel.email
                 : ConversationChannel.sms);
+    _bindStreams();
     _textController.addListener(_onDraftChanged);
     _markRead();
   }
@@ -476,10 +450,38 @@ class _ConversationScreenState extends State<ConversationScreen> {
     super.didUpdateWidget(oldWidget);
     final phoneChanged = oldWidget.phoneNumber != widget.phoneNumber;
     final emailChanged = oldWidget.email != widget.email;
-    if (phoneChanged || emailChanged) {
+    final inboxChanged = oldWidget.websiteInbox != widget.websiteInbox;
+    if (phoneChanged || emailChanged || inboxChanged) {
       _applyPeerFromWidget();
+      if (widget.websiteInbox || (!_hasPhone && _hasEmail)) {
+        _channel = ConversationChannel.email;
+      } else if (!_hasEmail) {
+        _channel = ConversationChannel.sms;
+      }
       _markRead();
     }
+    if (phoneChanged || emailChanged || inboxChanged ||
+        oldWidget.extraPhones != widget.extraPhones ||
+        oldWidget.clientId != widget.clientId) {
+      _bindStreams();
+    }
+  }
+
+  void _bindStreams() {
+    _messagesStream = SmsService.streamConversation(
+      _phone,
+      email: _hasEmail ? _email : null,
+      extraPhones: widget.extraPhones,
+      emailsOnly: _channel == ConversationChannel.email,
+      websiteInbox: widget.websiteInbox,
+    );
+    _scheduledStream = ScheduledMessageService.streamPendingForConversation(
+      _phone,
+      email: _hasEmail ? _email : null,
+      clientId: widget.clientId,
+    );
+    _lastJumpId = null;
+    _selectedIds.clear();
   }
 
   void _applyPeerFromWidget() {
@@ -515,6 +517,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       } else if (_hasPhone && _channel == ConversationChannel.email && !_hasEmail) {
         _channel = ConversationChannel.sms;
       }
+      _bindStreams();
     });
     _markRead();
   }
@@ -1181,22 +1184,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (_peers.length > 1) _buildRecipientBar(),
         Expanded(
           child: StreamBuilder<List<SmsMessage>>(
-            key: ValueKey(
-              widget.websiteInbox
-                  ? 'website-email'
-                  : '$_channel|$_phone|$_email',
-            ),
-            stream: SmsService.streamConversation(
-              _phone,
-              email: _hasEmail ? _email : null,
-              extraPhones: widget.extraPhones,
-              emailsOnly: _channel == ConversationChannel.email,
-              websiteInbox: widget.websiteInbox,
-            ),
+            key: ValueKey(_threadKey),
+            stream: _messagesStream,
             builder: (context, snapshot) {
-              final key = widget.websiteInbox
-                  ? 'website-email'
-                  : '$_channel|$_phone|$_email';
+              final key = _threadKey;
               if (snapshot.hasData) {
                 _threadCache[key] = snapshot.data!;
               }
@@ -1242,28 +1233,26 @@ class _ConversationScreenState extends State<ConversationScreen> {
             },
           ),
         ),
-        if (!widget.websiteInbox) _buildScheduledBanner(),
-        if (!widget.websiteInbox) _buildInputBar(),
+        if (!widget.websiteInbox && !_selecting) _buildScheduledBanner(),
+        // Действия выбора внизу вместо поля ввода — под большим пальцем.
+        if (_selecting)
+          SafeArea(
+            top: false,
+            child: SelectionActionBar(
+              count: _selectedIds.length,
+              onCancel: _clearSelection,
+              onSelectAll: _selectAllVisible,
+              onCopy: _copySelected,
+              onDelete: _deleteSelected,
+            ),
+          )
+        else if (!widget.websiteInbox)
+          _buildInputBar(),
       ],
     );
 
     if (widget.embedded) {
-      return ColoredBox(
-        color: Colors.grey.shade100,
-        child: Column(
-          children: [
-            if (_selecting)
-              SelectionActionBar(
-                count: _selectedIds.length,
-                onCancel: _clearSelection,
-                onSelectAll: _selectAllVisible,
-                onCopy: _copySelected,
-                onDelete: _deleteSelected,
-              ),
-            Expanded(child: thread),
-          ],
-        ),
-      );
+      return ColoredBox(color: Colors.grey.shade100, child: thread);
     }
 
     return PopScope(
@@ -1282,23 +1271,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   onPressed: _clearSelection,
                 ),
                 title: Text('${_selectedIds.length}'),
-                actions: [
-                  IconButton(
-                    tooltip: 'Выбрать все'.tr,
-                    onPressed: _selectAllVisible,
-                    icon: const Icon(Icons.select_all),
-                  ),
-                  IconButton(
-                    tooltip: 'Копировать'.tr,
-                    onPressed: _copySelected,
-                    icon: const Icon(Icons.copy_rounded),
-                  ),
-                  IconButton(
-                    tooltip: 'Удалить'.tr,
-                    onPressed: _deleteSelected,
-                    icon: const Icon(Icons.delete_outline, color: Color(0xFFFF8A80)),
-                  ),
-                ],
               )
             : AppBar(
                 title: Column(
@@ -1326,35 +1298,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 ),
                 backgroundColor: AppColors.primary,
                 foregroundColor: Colors.white,
-                actions: [
-                  if (!widget.websiteInbox)
-                    IconButton(
-                      icon: const Icon(Icons.person_outline),
-                      tooltip: 'Карточка клиента'.tr,
-                      onPressed: _openClientCard,
-                    ),
-                  if (!widget.websiteInbox)
-                    IconButton(
-                      icon: _extracting
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Icon(Icons.auto_fix_high),
-                      tooltip: 'Сохранить имя и адрес в карточку'.tr,
-                      onPressed: _extracting ? null : _extractAndApplyToClient,
-                    ),
-                  if (!widget.websiteInbox && _hasPhone)
-                    IconButton(
-                      icon: const Icon(Icons.call),
-                      tooltip: 'Позвонить'.tr,
-                      onPressed: _call,
-                    ),
-                ],
               ),
         body: thread,
       ),
@@ -1704,11 +1647,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   Widget _buildScheduledBanner() {
     return StreamBuilder<List<ScheduledMessage>>(
-      stream: ScheduledMessageService.streamPendingForConversation(
-        _phone,
-        email: _hasEmail ? _email : null,
-        clientId: widget.clientId,
-      ),
+      key: ValueKey(_threadKey),
+      stream: _scheduledStream,
       builder: (context, snapshot) {
         final items = (snapshot.data ?? [])
             .where((m) => m.isPending)
@@ -1806,6 +1746,38 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
+  List<Widget> _quickActions() {
+    final color = AppColors.primary;
+    return [
+      IconButton(
+        icon: Icon(Icons.person_outline, color: color),
+        tooltip: 'Карточка клиента'.tr,
+        onPressed: _openClientCard,
+      ),
+      IconButton(
+        icon: _extracting
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(Icons.auto_fix_high, color: color),
+        tooltip: 'Сохранить имя и адрес в карточку'.tr,
+        onPressed: _extracting ? null : _extractAndApplyToClient,
+      ),
+      if (_hasPhone)
+        IconButton.filled(
+          icon: const Icon(Icons.call),
+          tooltip: 'Позвонить'.tr,
+          style: IconButton.styleFrom(
+            backgroundColor: const Color(0xFF22C55E),
+            foregroundColor: Colors.white,
+          ),
+          onPressed: _call,
+        ),
+    ];
+  }
+
   Widget _buildInputBar() {
     return Container(
       padding: EdgeInsets.only(
@@ -1821,9 +1793,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: SegmentedButton<ConversationChannel>(
+          Row(
+            children: [
+              SegmentedButton<ConversationChannel>(
               showSelectedIcon: false,
               style: const ButtonStyle(
                 visualDensity: VisualDensity.compact,
@@ -1845,10 +1817,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
               ],
               selected: {_channel},
               onSelectionChanged: (value) {
-                setState(() => _channel = value.first);
+                setState(() {
+                  _channel = value.first;
+                  _bindStreams();
+                });
                 _markRead();
               },
             ),
+              const Spacer(),
+              // Карточка, «имя и адрес в карточку» и звонок — здесь, у
+              // большого пальца, а не в верхней панели.
+              if (!widget.embedded) ..._quickActions(),
+            ],
           ),
           const SizedBox(height: 8),
           if (_attachments.isNotEmpty)
@@ -1872,7 +1852,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         ),
                         clipBehavior: Clip.antiAlias,
                         child: file.isImage
-                            ? Image.memory(file.bytes, fit: BoxFit.cover)
+                            ? Image.memory(
+                                file.bytes,
+                                fit: BoxFit.cover,
+                                cacheWidth: 216,
+                                cacheHeight: 216,
+                              )
                             : Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
@@ -1934,9 +1919,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       alignment: Alignment.centerLeft,
                       child: Text(
                         _textController.text.trim().isEmpty
-                            ? (_channel == ConversationChannel.email
-                                ? 'Пишите по-русски — клиенту уйдёт на английском'.tr
-                                : 'Пишите по-русски — клиенту уйдёт на английском'.tr)
+                            ? 'Пишите по-русски — клиенту уйдёт на английском'.tr
                             : _textController.text.trim(),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,

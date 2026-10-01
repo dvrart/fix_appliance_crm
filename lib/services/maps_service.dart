@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../core/constants.dart';
 import '../core/geo/service_area.dart';
 import '../core/l10n/app_locale.dart';
+import 'network_status_service.dart';
 
 /// Результат построения маршрута через Google Directions API
 class OptimizedRoute {
@@ -126,7 +126,7 @@ class MapsService {
       final url =
           'https://maps.googleapis.com/maps/api/distancematrix/json?origins=$origin&destinations=$destination&language=ru&key=$kGoogleApiKey';
 
-      final response = await http.get(Uri.parse(url));
+      final response = await getWithTimeout(Uri.parse(url));
       if (response.statusCode != 200) return null;
 
       final data = json.decode(response.body);
@@ -151,7 +151,7 @@ class MapsService {
     try {
       final url =
           'https://maps.googleapis.com/maps/api/geocode/json?address=${Uri.encodeComponent(query)}&region=ca&key=$kGoogleApiKey';
-      final response = await http.get(Uri.parse(url));
+      final response = await getWithTimeout(Uri.parse(url));
       if (response.statusCode != 200) return null;
       final data = json.decode(response.body);
       if (data['status'] != 'OK') return null;
@@ -188,7 +188,7 @@ class MapsService {
     try {
       final url =
           'https://maps.googleapis.com/maps/api/geocode/json?latlng=${point.latitude},${point.longitude}&key=$kGoogleApiKey';
-      final response = await http.get(Uri.parse(url));
+      final response = await getWithTimeout(Uri.parse(url));
       if (response.statusCode != 200) return null;
       final data = json.decode(response.body);
       if (data['status'] != 'OK') return null;
@@ -224,8 +224,10 @@ class MapsService {
       samples.add(points[i]);
     }
     final towns = <String>{};
-    for (final sample in samples.take(8)) {
-      final name = await reverseGeocodeLocality(sample);
+    final names = await Future.wait(
+      samples.take(8).map(reverseGeocodeLocality),
+    );
+    for (final name in names) {
       if (name != null && name.isNotEmpty) towns.add(name);
     }
     if (towns.isEmpty) {
@@ -311,7 +313,7 @@ class MapsService {
       final url =
           'https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${Uri.encodeComponent(query)}&key=$kGoogleApiKey&language=ru&components=country:ca';
 
-      final response = await http.get(Uri.parse(url));
+      final response = await getWithTimeout(Uri.parse(url));
       if (response.statusCode != 200) return [];
 
       final data = json.decode(response.body);
@@ -331,7 +333,7 @@ class MapsService {
       final url =
           'https://maps.googleapis.com/maps/api/place/details/json?place_id=$placeId&key=$kGoogleApiKey&language=ru&fields=address_components,formatted_address';
 
-      final response = await http.get(Uri.parse(url));
+      final response = await getWithTimeout(Uri.parse(url));
       if (response.statusCode != 200) return null;
 
       final data = json.decode(response.body);
@@ -411,7 +413,7 @@ class MapsService {
           '&waypoints=$optimizePrefix$waypointsParam'
           '&language=ru&key=$kGoogleApiKey';
 
-      final response = await http.get(Uri.parse(url));
+      final response = await getWithTimeout(Uri.parse(url));
       if (response.statusCode != 200) {
         lastRouteError = 'HTTP ${response.statusCode}';
         return null;

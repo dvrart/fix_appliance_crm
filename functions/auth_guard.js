@@ -12,6 +12,8 @@
 const admin = require('firebase-admin');
 const twilio = require('twilio');
 
+const APP_OWNER_UIDS = new Set(['Ew8vDgXvuMMwt9gYQUOi7rujNxO2']);
+
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 // Смена токена без простоя: пока Twilio ещё подписывает старым, а в .env уже
 // лежит новый, принимаем оба. После промоута строку TWILIO_AUTH_TOKEN_PREV
@@ -61,6 +63,10 @@ async function requireAppUser(req, res) {
   const user = await verifyAppUser(req);
   if (!user) {
     res.status(401).json({ error: 'Unauthorized: Firebase ID token required' });
+    return null;
+  }
+  if (!APP_OWNER_UIDS.has(user.uid)) {
+    res.status(403).json({ error: 'Forbidden: owner access required' });
     return null;
   }
   return user;

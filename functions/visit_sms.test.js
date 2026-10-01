@@ -533,3 +533,31 @@ test('SMS reschedule updates scheduledAt and scheduledDate together', async () =
   assert.deepEqual(saved.scheduledAt, saved.visits[0].startAt);
   assert.deepEqual(saved.scheduledDate, saved.scheduledAt);
 });
+
+test('a documents overwrite from the app cannot erase a Stripe payment, and the repair does not loop', async () => {
+  const stripePaid = { amount: 226, method: 'Stripe', date: '2098-12-30T13:00:00.000Z', stripePaymentIntentId: 'pi_kept' };
+  const before = { ...job(), status: 'Готово', documents: [
+    { type: 'Invoice', number: 'INV-1', items: [{ name: 'Repair', qty: 1, price: 200 }], taxRate: 0.13, payments: [stripePaid], stripe: { status: 'paid' } },
+  ] };
+  const overwrite = { ...before, documents: [
+    { ...before.documents[0], items: [{ name: 'Repair', qty: 1, price: 210 }], payments: [{ amount: 20, method: 'Наличные', date: '2098-12-30T13:30:00.000Z' }], stripe: {} },
+  ] };
+  const repaired = await trigger(before, overwrite);
+  assert.deepEqual(repaired.documents[0].payments, [overwrite.documents[0].payments[0], stripePaid]);
+  assert.equal(repaired.documents[0].items[0].price, 210);
+  assert.equal(repaired.documents[0].stripe.status, 'paid');
+  const jobWrites = writes.filter((write) => write.path === JOB).length;
+  const again = await trigger(overwrite, repaired);
+  assert.deepEqual(again.documents, repaired.documents);
+  assert.equal(writes.filter((write) => write.path === JOB).length, jobWrites);
+});
+
+test('removing a whole trashed invoice or a cash payment is left alone', async () => {
+  const before = { ...job(), documents: [
+    { type: 'Invoice', number: 'INV-1', items: [], payments: [{ amount: 50, method: 'Наличные', date: '2098-12-30T13:00:00.000Z' }] },
+    { type: 'Invoice', number: 'INV-2', items: [], deletedAt: '2098-12-01', payments: [{ amount: 10, method: 'Stripe', stripeSessionId: 'cs_gone' }] },
+  ] };
+  const after = { ...before, documents: [{ ...before.documents[0], payments: [] }] };
+  const result = await trigger(before, after);
+  assert.deepEqual(result.documents, after.documents);
+});

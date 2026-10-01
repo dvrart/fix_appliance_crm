@@ -30,11 +30,13 @@ class VisitConfirmBadge extends StatelessWidget {
     if (jobStatus.isNotEmpty && JobStatuses.isCancelledStatus(jobStatus)) {
       return JobVisit.confirmCancelled;
     }
-    if (jobStatus == JobStatuses.rescheduled) {
-      return JobVisit.confirmReschedule;
-    }
     if (visit == null) return JobVisit.confirmPending;
     final status = visit.effectiveConfirmStatus;
+    // «Заказ принят», поставленный руками, важнее метки переноса.
+    if (jobStatus == JobStatuses.rescheduled &&
+        status != JobVisit.confirmConfirmed) {
+      return JobVisit.confirmReschedule;
+    }
     if (status.isEmpty) return JobVisit.confirmPending;
     return status;
   }
