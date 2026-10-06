@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'settings_service.dart';
 import 'stripe_service.dart';
 import '../core/l10n/app_locale.dart';
+import '../core/motion.dart';
 
 class StripeReaderStatus {
   final bool connected;
@@ -218,6 +219,7 @@ class StripeTerminalService {
     }
 
     showDialog<void>(
+      animationStyle: AppMotion.dialog,
       context: context,
       barrierDismissible: false,
       useRootNavigator: true,

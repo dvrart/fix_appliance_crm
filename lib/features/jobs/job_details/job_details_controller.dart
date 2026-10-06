@@ -500,10 +500,15 @@ class JobDetailsController extends ChangeNotifier {
     super.dispose();
   }
 
-  /// Адрес для навигации
-  String get workAddress => hasJobSite
-      ? jobSiteAddress
-      : (jobData['clientAddress'] ?? 'Не указан'.tr);
+  /// Адрес для навигации.
+  ///
+  /// Галочка «другое место работы» иногда стоит, а адрес туда не вписан —
+  /// тогда едем к клиенту, иначе маршрут открывался бы в пустоту.
+  String get workAddress {
+    final site = jobSiteAddress.trim();
+    if (hasJobSite && site.isNotEmpty) return site;
+    return (jobData['clientAddress'] ?? '').toString();
+  }
 
   /// Контактное имя на месте
   String get contactName => hasJobSite

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:twilio_voice/twilio_voice.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../core/motion.dart';
 import '../../services/twilio_service.dart';
 import '../../core/l10n/app_locale.dart';
 
@@ -59,13 +60,13 @@ class CallScreen extends StatefulWidget {
             // сдвига в сторону ни на открытии, ни на закрытии.
             final curved = CurvedAnimation(
               parent: animation,
-              curve: Curves.easeOutCubic,
-              reverseCurve: Curves.easeInCubic,
+              curve: AppMotion.enter,
+              reverseCurve: AppMotion.exit,
             );
             return FadeTransition(
               opacity: curved,
               child: ScaleTransition(
-                scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
+                scale: Tween<double>(begin: 0.97, end: 1).animate(curved),
                 child: child,
               ),
             );

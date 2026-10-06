@@ -65,7 +65,14 @@ class _AssistantHostState extends State<AssistantHost>
     _lifecycleState = WidgetsBinding.instance.lifecycleState;
     WidgetsBinding.instance.addObserver(this);
     FocusManager.instance.addListener(_onFocusChanged);
-    _onFocusChanged();
+    // Do NOT call _onFocusChanged() here: during initState the old widget tree
+    // (splash screen) is still being deactivated in the same build frame, so
+    // the primary focus node's context may fail Flutter's internal lifecycle
+    // assert even when context.mounted appears true. Deferring to
+    // addPostFrameCallback guarantees the tree is fully settled first.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _onFocusChanged();
+    });
     _readKeyboard();
     AssistantAudioService.playback.addListener(_onAssistantChanged);
     AssistantAudioService.playback.suspendMicrophone = _suspendForPlayback;
@@ -123,7 +130,8 @@ class _AssistantHostState extends State<AssistantHost>
 
   void _onFocusChanged() {
     final focus = FocusManager.instance.primaryFocus;
-    final editing = focus?.context?.findAncestorWidgetOfExactType<EditableText>() != null;
+    final editing =
+        focus?.context?.findAncestorWidgetOfExactType<EditableText>() != null;
     if (editing == _textFieldFocused) return;
     _textFieldFocused = editing;
     unawaited(_syncWake());

@@ -26,6 +26,15 @@ const Map<String, String> kEnglishUi = {
   'Изменить имя': 'Edit name',
   'Изменить компанию': 'Edit company',
   'Финансы': 'Finance',
+  'Детали': 'Details',
+  'Чат': 'Chat',
+  'Свободно': 'Free',
+  'Сейчас': 'Now',
+  'Старт': 'Start',
+  'Визитов': 'Visits',
+  'Модель не указана': 'No model yet',
+  'Нажмите, чтобы описать неисправность': 'Tap to describe the problem',
+  'Нажмите, чтобы добавить фото': 'Tap to add photos',
   'Финансы и документы': 'Finance & documents',
   'Ассистент': 'Assistant',
   'Зона обслуживания': 'Service area',
@@ -146,6 +155,7 @@ const Map<String, String> kEnglishUi = {
   'Адрес работы (куда ехать)...': 'Job-site address (where to go)...',
   'Укажите имя, телефон и адрес работы': 'Enter name, phone and job-site address',
   'Укажите адрес работы': 'Enter the job-site address',
+  'Адрес не указан': 'No address',
   'Укажите адрес, куда ехать': 'Enter the address to drive to',
   'Убрать': 'Remove',
   'Сохранение…': 'Saving…',
@@ -377,6 +387,8 @@ const Map<String, String> kEnglishUi = {
       'After saving, the status will become “Rescheduled”.',
   'Эта заявка останется на своей дате со статусом «Перенос», а на новую дату создастся отдельная заявка.':
       'This job stays on its date as “Rescheduled”, and a separate job is created for the new date.',
+  'Эта заявка останется на своей дате, а на новую дату создастся отдельная заявка с этим статусом.':
+      'This job stays on its date, and a separate job with this status is created for the new date.',
   'Не удалось создать заявку на новую дату':
       'Could not create the job for the new date',
   'Сам, после нового визита': 'Automatic, after a new visit',
@@ -449,6 +461,7 @@ const Map<String, String> kEnglishUi = {
   'Сканировать и добавить': 'Scan and add',
   'ИИ заполнит номер и название': 'AI fills in number and name',
   'Добавить фото': 'Add photos',
+  'Добавить фото ИИ': 'Add photo with AI',
   'Загружаю фото…': 'Uploading photo…',
   'Тап — посмотреть, долгий тап — фото по умолчанию или убрать':
       'Tap to view, long-press to make default or remove',
@@ -738,6 +751,12 @@ const Map<String, String> kEnglishUi = {
       'No scheduled jobs on this date\nwith an address.',
   'Не удалось построить маршрут.': 'Could not build the route.',
   'Проверьте адреса заявок.': 'Check job addresses.',
+  'В заявке нет адреса — впишите, куда ехать':
+      'The job has no address — add where to drive',
+  'Google Maps не нашла этот адрес': 'Google Maps could not find this address',
+  'Google Maps не нашла эти адреса': 'Google Maps could not find these addresses',
+  'остановок не влезли в Google Maps — она берёт девять':
+      'stops did not fit in Google Maps — it takes nine',
   'Статус': 'Status',
   'Статус заказа': 'Job status',
   'Проложить маршрут': 'Get directions',
@@ -1023,6 +1042,7 @@ const Map<String, String> kEnglishUi = {
   'ИИ подставил номера замен': 'AI filled replacement numbers',
   'Добавил к замене на складе': 'Added to the substitute in stock',
   'тот же номер под другим артикулом': 'same part, different number',
+  'тот же номер в заменах': 'this number is in its replacement list',
   'ваша пометка': 'your note',
   'подсказал ИИ': 'AI suggestion',
   'проверено каталогом': 'confirmed by the catalog',
@@ -1183,6 +1203,11 @@ const Map<String, String> kEnglishUi = {
   'Доставлено': 'Delivered',
   'Прочитано': 'Read',
   'Не отправлено': 'Not sent',
+  // Сообщение, которое придумал сервер и которое ждёт «Отправить» от мастера.
+  'Ждёт вашего разрешения': 'Waiting for your approval',
+  'Ждёт отправки': 'Waiting to be sent',
+  'Сообщение отправлено': 'Message sent',
+  'Сообщение не отправлено': 'Message was not sent',
   'Шаблон': 'Template',
   'Выберите шаблон': 'Choose a template',
   'Входящие': 'Incoming',
@@ -1355,8 +1380,8 @@ const Map<String, String> kEnglishUi = {
   'След. визит': 'Next visit',
   'Не запланировано — нажмите «Добавить», чтобы назначить':
       'Not scheduled — tap Add to set a visit',
-  'Ожидание запчасти — дату возврата ставить не нужно. Когда запчасть приедет — статус → «Перенос визита».':
-      'Waiting for a part — no return date needed. When the part arrives: status → "Reschedule visit".',
+  'Ожидание запчасти — дату возврата ставить не нужно. Когда запчасть приедет — статус → «Установка».':
+      'Waiting for a part — no return date needed. When the part arrives: status → "Installation".',
   'Новый визит': 'New visit',
   'Отправить SMS повторно': 'Resend SMS',
   'Назначить дату и время визита': 'Set visit date and time',

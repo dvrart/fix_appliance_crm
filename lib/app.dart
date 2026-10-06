@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'core/app_commands.dart';
 import 'core/haptic_scope.dart';
+import 'core/quick_scaffold_messenger.dart';
 import 'core/l10n/app_locale.dart';
 import 'core/ui_scale.dart';
 import 'core/theme.dart';
@@ -65,7 +66,7 @@ class FixApplianceCrmApp extends StatelessWidget {
             child: AppHapticScope(
               child: RepaintBoundary(
                 key: AssistantScreenSight.boundaryKey,
-                child: child!,
+                child: QuickScaffoldMessenger(child: child!),
               ),
             ),
           ),

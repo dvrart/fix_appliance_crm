@@ -17,6 +17,7 @@ import '../../../../services/job_service.dart';
 import '../../../../services/twilio_service.dart';
 import '../../../../services/message_translate_service.dart';
 import '../../../../shared/widgets/call_transcript_chat.dart';
+import '../../../../shared/widgets/linked_text.dart';
 import '../../../calls/call_review_page.dart';
 
 String playableCallUrl(Map<String, dynamic> attachment) {
@@ -373,7 +374,7 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                     padding: EdgeInsets.only(bottom: 8),
                     child: LinearProgressIndicator(minHeight: 2),
                   ),
-                Text(
+                LinkedText(
                   _summary.isEmpty
                       ? (_translating
                           ? 'Перевожу...'.tr

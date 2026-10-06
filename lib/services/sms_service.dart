@@ -64,6 +64,11 @@ class SmsMessage {
   final String bodyRu;
   final DateTime? deletedAt;
 
+  /// Судьба исходящего, которое придумал сервер: `pending` — ждёт решения
+  /// мастера и клиенту ещё не ушло, `approved` — отправлено по кнопке,
+  /// `rejected` — мастер отказался. Пусто у всего, что мастер отправил сам.
+  final String approval;
+
   SmsMessage({
     required this.id,
     required this.sid,
@@ -100,14 +105,24 @@ class SmsMessage {
     this.failureDismissed = false,
     this.bodyRu = '',
     this.deletedAt,
+    this.approval = '',
   });
 
   bool get isDeleted => deletedAt != null;
 
+  /// Сообщение лежит в очереди и клиенту не ушло: нужно «Отправить» мастера.
+  bool get awaitingApproval => approval == 'pending' && !isDeleted;
+
+  /// Мастер нажал «Не отправлять» — текст остаётся в переписке как след.
+  bool get sendingRejected => approval == 'rejected';
+
   /// Оператор не доставил сообщение. Twilio присылает это статус-колбэком
   /// уже после отправки, поэтому в чате такое SMS выглядело «отправлено».
   bool get deliveryFailed =>
-      isOutbound && (status == 'undelivered' || status == 'failed');
+      isOutbound &&
+      !awaitingApproval &&
+      !sendingRejected &&
+      (status == 'undelivered' || status == 'failed');
 
   /// Почему не дошло — человеческим языком, как в шторке.
   String get failureReason => failureReasonFor(errorCode);
@@ -258,6 +273,7 @@ class SmsMessage {
       errorCode: (map['errorCode'] ?? '').toString(),
       failureDismissed: map['failureDismissed'] == true,
       bodyRu: (map['bodyRu'] ?? '').toString(),
+      approval: (map['approval'] ?? '').toString(),
       deletedAt: map['deletedAt'] is Timestamp
           ? (map['deletedAt'] as Timestamp).toDate()
           : (map['deletedAt'] is DateTime
@@ -538,6 +554,62 @@ class SmsService {
       },
       SetOptions(merge: true),
     );
+  }
+
+  /// Исходящие, которые придумал сервер и которые клиенту ещё не ушли.
+  /// Решение FIX, 05.10.2026: ни одно такое сообщение не уходит само —
+  /// мастер видит текст и жмёт «Отправить» или «Не отправлять».
+  static Stream<List<SmsMessage>> streamAwaitingApproval() {
+    return _ref
+        .where('approval', isEqualTo: 'pending')
+        .snapshots()
+        .map((snapshot) {
+      final items = snapshot.docs
+          .map(
+            (doc) => SmsMessage.fromMap(
+              doc.data() as Map<String, dynamic>,
+              doc.id,
+            ),
+          )
+          .where((message) => message.awaitingApproval)
+          .toList();
+      items.sort(
+        (a, b) => (a.createdAt ?? DateTime(0)).compareTo(b.createdAt ?? DateTime(0)),
+      );
+      return items;
+    });
+  }
+
+  /// Отправить ([send] = true) или отклонить сообщение из очереди.
+  /// Twilio дёргает сервер: решение возвращается уже после попытки отправки,
+  /// поэтому ошибку видно сразу, а сообщение остаётся в очереди.
+  static Future<bool> decideOutbox(String messageId, {required bool send}) async {
+    final id = messageId.trim();
+    if (id.isEmpty) return false;
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$kFirebaseFunctionsUrl/approveOutbox'),
+            headers: await AuthService.headers(),
+            body: json.encode({'id': id, 'action': send ? 'send' : 'reject'}),
+          )
+          .timeout(const Duration(seconds: 40));
+      if (response.statusCode == 200) {
+        lastError = '';
+        return true;
+      }
+      lastError = _describeSendError(response.statusCode, response.body);
+      ErrorLogService.record(
+        'Решение по сообщению не прошло (${response.statusCode}): ${response.body.trim()}',
+        null,
+        kind: 'sms',
+      );
+      return false;
+    } catch (e, s) {
+      lastError = e is TimeoutException ? 'сервер не ответил вовремя' : 'нет связи';
+      ErrorLogService.record(e, s, kind: 'sms');
+      return false;
+    }
   }
 
   /// Почему не ушло последнее SMS. Раньше причина уходила в debugPrint,

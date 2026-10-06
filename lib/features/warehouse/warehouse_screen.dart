@@ -10,6 +10,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/l10n/app_locale.dart';
+import '../../core/motion.dart';
 import '../../core/utils/number_input.dart';
 import '../../core/utils/thumb_image.dart';
 import '../../models/warehouse_item.dart';
@@ -118,14 +119,31 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     return null;
   }
 
-  /// Найти ту же деталь по номеру — и живую, и ту, что уже в корзине.
-  /// Иначе «объединить» пишет количество в скрытую карточку, и в списке пусто.
-  static Future<DocumentSnapshot?> _findSamePart(
+  /// Та же деталь уже на складе? Смотрим и свой артикул карточки, и её
+  /// «Заменяет номера», и номера замен, набранные в новой карточке: одну
+  /// деталь продают под двумя номерами, и без этого на полке заводилась
+  /// вторая такая же, а по набранному номеру не находилась ни одна.
+  ///
+  /// Ищем и живые карточки, и те, что лежат в корзине: иначе «объединить»
+  /// пишет количество в скрытую карточку, и в списке пусто.
+  ///
+  /// Второе значение — «номер совпал точно». По нему решают, сливать
+  /// карточки целиком или только долить количество, не трогая чужой номер.
+  static Future<(DocumentSnapshot, bool)?> _findSamePart(
     String part, {
     String? excludeId,
+    List<String> alsoNumbers = const [],
   }) async {
     final wanted = WarehouseItem.normalizePart(part);
     if (wanted.isEmpty) return null;
+    // Номера замен из черновика: по ним ищем карточку, записанную под
+    // одним из них.
+    final draftNumbers = <String>{
+      wanted,
+      for (final number in alsoNumbers) WarehouseItem.normalizePart(number),
+      for (final number in WarehouseItem.localSupersessions(part))
+        WarehouseItem.normalizePart(number),
+    }..removeWhere((number) => number.length < WarehouseItem.minNumberQuery);
 
     final exact = part.trim().toUpperCase();
     QuerySnapshot? remote;
@@ -138,44 +156,64 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       debugPrint('Склад: поиск по парт-номеру не прошёл: $error');
     }
 
-    QuerySnapshot? local;
+    QuerySnapshot? all;
     try {
-      local = await WarehouseService.ref
+      all = await WarehouseService.ref
           .get(const GetOptions(source: Source.cache))
           .timeout(const Duration(seconds: 3));
     } catch (_) {}
+    // Кэш пустой (первый запуск, чистая установка) — спрашиваем сервер,
+    // иначе проверка молча пропустит половину склада.
+    if (all == null || all.docs.isEmpty) {
+      try {
+        all = await WarehouseService.ref.get().timeout(
+          const Duration(seconds: 6),
+        );
+      } catch (_) {}
+    }
 
-    final seen = <String, DocumentSnapshot>{};
-    void add(DocumentSnapshot doc) {
+    final hits = <String, bool>{}; // id → номер совпал точно
+    final docs = <String, DocumentSnapshot>{};
+    void add(DocumentSnapshot doc, {required bool isExact}) {
       if (excludeId != null && doc.id == excludeId) return;
-      seen[doc.id] = doc;
+      docs[doc.id] = doc;
+      hits[doc.id] = (hits[doc.id] ?? false) || isExact;
     }
 
-    if (remote != null) {
-      for (final doc in remote.docs) {
-        add(doc);
-      }
+    for (final doc in remote?.docs ?? const <QueryDocumentSnapshot>[]) {
+      add(doc, isExact: true);
     }
-    if (local != null) {
-      for (final doc in local.docs) {
-        final data = doc.data() as Map<String, dynamic>? ?? {};
-        if (WarehouseItem.normalizePart('${data['partNumber']}') == wanted) {
-          add(doc);
-        }
+    for (final doc in all?.docs ?? const <QueryDocumentSnapshot>[]) {
+      final data = doc.data() as Map<String, dynamic>? ?? {};
+      final item = WarehouseItem.fromMap(data, doc.id);
+      final itemPart = WarehouseItem.normalizePart(item.partNumber);
+      if (itemPart.isNotEmpty && itemPart == wanted) {
+        add(doc, isExact: true);
+        continue;
       }
+      // Наш номер записан у соседа в «заменяет», или сосед записан под
+      // номером, который мы сами пометили как заменяемый.
+      final sameByReplace =
+          draftNumbers.any(item.replaces) || draftNumbers.contains(itemPart);
+      if (sameByReplace) add(doc, isExact: false);
     }
-    if (seen.isEmpty) return null;
+    if (docs.isEmpty) return null;
 
-    final docs = seen.values.toList()
+    bool trashed(DocumentSnapshot doc) =>
+        (doc.data() as Map<String, dynamic>?)?['deletedAt'] != null;
+
+    final sorted = docs.values.toList()
       ..sort((a, b) {
-        final aTrash =
-            (a.data() as Map<String, dynamic>?)?['deletedAt'] != null;
-        final bTrash =
-            (b.data() as Map<String, dynamic>?)?['deletedAt'] != null;
-        if (aTrash == bTrash) return 0;
-        return aTrash ? 1 : -1;
+        // Точное совпадение важнее найденного по замене, живое — важнее
+        // лежащего в корзине.
+        final byExact =
+            ((hits[b.id] ?? false) ? 1 : 0) - ((hits[a.id] ?? false) ? 1 : 0);
+        if (byExact != 0) return byExact;
+        if (trashed(a) == trashed(b)) return 0;
+        return trashed(a) ? 1 : -1;
       });
-    return docs.first;
+    final best = sorted.first;
+    return (best, hits[best.id] ?? false);
   }
 
   Future<List<DocumentSnapshot>> _loadLiveStock({String? excludeId}) async {
@@ -337,6 +375,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     bool openSearchDone = false;
 
     showDialog(
+      animationStyle: AppMotion.dialog,
       context: context,
       barrierDismissible: false,
       builder: (context) {
@@ -364,18 +403,24 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 return;
               }
               setDialogState(() => isCheckingDuplicate = true);
-              final match = await _findSamePart(
+              final found = await _findSamePart(
                 part,
                 excludeId: isEditing ? document.id : null,
+                alsoNumbers:
+                    WarehouseItem.parseInterchange(interchangeController.text),
               );
               if (!context.mounted) return;
+              // Совпал сам номер — это та же карточка, её и сливаем.
+              // Совпало по «заменяет номера» — номер на полке чужой,
+              // переписывать его нельзя: показываем как замену.
+              final match = found?.$1;
+              final exactHit = found?.$2 ?? false;
               setDialogState(() {
-                foundDuplicate = match;
-                if (match != null) {
-                  foundSubstitute = null;
-                  substituteWhy = '';
-                  substituteRefuted = false;
-                }
+                foundDuplicate = exactHit ? match : null;
+                foundSubstitute = exactHit ? null : match;
+                substituteWhy =
+                    match == null || exactHit ? '' : 'тот же номер в заменах'.tr;
+                if (match != null) substituteRefuted = false;
                 isCheckingDuplicate = false;
                 if (match != null && !isEditing) {
                   final old =
@@ -483,9 +528,17 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 );
                 if (!context.mounted) return;
                 setDialogState(() {
-                  foundSubstitute = local?.$1;
-                  substituteWhy = local?.$2 ?? '';
-                  substituteRefuted = false;
+                  // Найденное по «заменяет номера» в checkDuplicate не
+                  // затираем: та карточка могла лежать в корзине, а сюда
+                  // попадает только живой остаток.
+                  if (local != null) {
+                    foundSubstitute = local.$1;
+                    substituteWhy = local.$2;
+                    substituteRefuted = false;
+                  } else if (foundSubstitute == null) {
+                    substituteWhy = '';
+                    substituteRefuted = false;
+                  }
                 });
                 await verifySubstitute(part);
               }
@@ -891,10 +944,13 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
             }
 
             /// «Сканировать и добавить»: ИИ читает этикетку и заполняет
-            /// карточку, а сам снимок встаёт в фото детали.
-            Future<void> scanSticker() async {
+            /// карточку, а сам снимок встаёт в фото детали. С
+            /// `ImageSource.gallery` разбирается уже снятое фото («Добавить
+            /// фото ИИ») — дальше путь тот же.
+            Future<void> scanSticker({
+              ImageSource source = ImageSource.camera,
+            }) async {
                                 try {
-                                  const source = ImageSource.camera;
                                   final picker = ImagePicker();
                                   // Полный кадр Samsung — это десятки мегабайт
                                   // в памяти. ML Kit на таком снимке валил всё
@@ -1270,8 +1326,10 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               }
             }
 
-            /// Одна кнопка «+»: снизу квадрат «Сканировать и добавить»,
-            /// справа от него «Добавить фото» и «Сделать фото».
+            /// Одна кнопка «+»: снизу квадрат «Сканировать и добавить», а
+            /// справа три узкие плитки — «Добавить фото», «Сделать фото» и
+            /// «Добавить фото ИИ» (то же сканирование, но по снимку из
+            /// галереи: системная камера своей кнопки галереи не даёт).
             Future<void> openAddSheet() async {
               final action = await showModalBottomSheet<String>(
                 context: context,
@@ -1289,6 +1347,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           Expanded(
+                            flex: 5,
                             child: _addChoice(
                               icon: Icons.document_scanner_outlined,
                               label: 'Сканировать и добавить'.tr,
@@ -1300,6 +1359,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                           ),
                           const SizedBox(width: 12),
                           Expanded(
+                            flex: 4,
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
@@ -1308,16 +1368,29 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                     icon: Icons.photo_library_outlined,
                                     label: 'Добавить фото'.tr,
                                     color: const Color(0xFF14557F),
+                                    compact: true,
                                     onTap: () => Navigator.pop(sheet, 'gallery'),
                                   ),
                                 ),
-                                const SizedBox(height: 12),
+                                const SizedBox(height: 10),
                                 Expanded(
                                   child: _addChoice(
                                     icon: Icons.photo_camera,
                                     label: 'Сделать фото'.tr,
                                     color: const Color(0xFF14557F),
+                                    compact: true,
                                     onTap: () => Navigator.pop(sheet, 'camera'),
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                Expanded(
+                                  child: _addChoice(
+                                    icon: Icons.auto_awesome,
+                                    label: 'Добавить фото ИИ'.tr,
+                                    color: Colors.green.shade600,
+                                    compact: true,
+                                    onTap: () =>
+                                        Navigator.pop(sheet, 'scanGallery'),
                                   ),
                                 ),
                               ],
@@ -1333,6 +1406,8 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               switch (action) {
                 case 'scan':
                   await scanSticker();
+                case 'scanGallery':
+                  await scanSticker(source: ImageSource.gallery);
                 case 'gallery':
                   await pickPhotos();
                 case 'camera':
@@ -2302,7 +2377,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     );
   }
 
-  /// Плитка в окне «+»: большая — сканер, две поменьше — фото.
+  /// Плитка в окне «+»: большая — сканер, узкие (`compact`) — три кнопки
+  /// фото справа. У узкой иконка стоит слева от подписи, иначе три штуки
+  /// в столбик не помещаются.
   Widget _addChoice({
     required IconData icon,
     required String label,
@@ -2310,7 +2387,22 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     required VoidCallback onTap,
     String? hint,
     bool big = false,
+    bool compact = false,
   }) {
+    final text = Text(
+      label,
+      textAlign: compact ? TextAlign.start : TextAlign.center,
+      maxLines: 2,
+      style: TextStyle(
+        fontSize: big
+            ? 16
+            : compact
+            ? 13
+            : 14,
+        fontWeight: FontWeight.w800,
+        color: Colors.white,
+      ),
+    );
     return Material(
       color: color,
       borderRadius: BorderRadius.circular(16),
@@ -2318,33 +2410,38 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
         borderRadius: BorderRadius.circular(16),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: big ? 48 : 28, color: Colors.white),
-              SizedBox(height: big ? 10 : 4),
-              Text(
-                label,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                style: TextStyle(
-                  fontSize: big ? 16 : 14,
-                  fontWeight: FontWeight.w800,
-                  color: Colors.white,
-                ),
-              ),
-              if (hint != null) ...[
-                const SizedBox(height: 4),
-                Text(
-                  hint,
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  style: const TextStyle(fontSize: 11.5, color: Colors.white70),
-                ),
-              ],
-            ],
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 12 : 10,
+            vertical: compact ? 6 : 10,
           ),
+          child: compact
+              ? Row(
+                  children: [
+                    Icon(icon, size: 22, color: Colors.white),
+                    const SizedBox(width: 10),
+                    Expanded(child: text),
+                  ],
+                )
+              : Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(icon, size: big ? 48 : 28, color: Colors.white),
+                    SizedBox(height: big ? 10 : 4),
+                    text,
+                    if (hint != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        hint,
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.white70,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
         ),
       ),
     );
@@ -2601,39 +2698,20 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   final raw = doc.data();
                   if (raw is! Map) return false;
                   final data = Map<String, dynamic>.from(raw);
-                  final name = (data['name'] ?? '').toString().toUpperCase();
-                  final partNumber = (data['partNumber'] ?? '')
-                      .toString()
-                      .toUpperCase();
-                  final modelNumber = (data['modelNumber'] ?? '')
-                      .toString()
-                      .toUpperCase();
-                  final barcode = (data['barcode'] ?? '')
-                      .toString()
-                      .toUpperCase();
                   final category = data['category'] ?? 'Универсальное';
                   if (data['deletedAt'] != null) return false;
 
-                  bool matchesCategory =
+                  // Пока в строке поиска что-то есть, ищем по всему складу.
+                  // Категорию карточке подбирает ИИ, и фильтр прятал как раз
+                  // то, что набрали: деталь есть, а по номеру не находится.
+                  final searching = _searchQuery.trim().isNotEmpty;
+                  final matchesCategory =
+                      searching ||
                       _selectedCategory == 'Все' ||
                       category == _selectedCategory;
-                  // Ищем и по номерам, которые деталь заменяет, — иначе
-                  // взаимозаменяемую деталь по её номеру не найти.
-                  final wanted = WarehouseItem.normalizePart(_searchQuery);
-                  final replaces =
-                      wanted.length >= 3 &&
-                      WarehouseItem.parseInterchange(
-                        data['interchange'],
-                      ).any((n) => WarehouseItem.normalizePart(n) == wanted);
 
-                  bool matchesSearch =
-                      name.contains(_searchQuery) ||
-                      partNumber.contains(_searchQuery) ||
-                      modelNumber.contains(_searchQuery) ||
-                      barcode.contains(_searchQuery) ||
-                      replaces;
-
-                  return matchesCategory && matchesSearch;
+                  return matchesCategory &&
+                      WarehouseItem.matchesSearch(data, _searchQuery);
                 }).toList();
 
                 docs.sort((a, b) {

@@ -27,6 +27,7 @@ import '../../shared/widgets/appliance_logo.dart';
 import '../../shared/widgets/calendar_hatch.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
 import '../../shared/widgets/visit_confirm_badge.dart';
+import 'calendar_card_shape.dart';
 import 'visit_link_overlay.dart';
 import 'now_time_overlay.dart';
 import 'calendar_event_sheet.dart';
@@ -189,6 +190,22 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   }
 
   bool get _visitLinksEnabled => _visitLinksViewOk && _showVisitLinks;
+
+  /// Неделя и 5 дней: колонка узкая, подпись в карточку всё равно не влезает —
+  /// там рисуем квадрат. В дне и месяце карточка остаётся полосой.
+  bool get _squareCardView {
+    final view = _calendarController.view;
+    return view == CalendarView.week || view == CalendarView.workWeek;
+  }
+
+  /// Длина карточки, которую видит календарь. Квадрат длительность не
+  /// показывает, а если отдать настоящую, календарь сочтёт трёхчасовую заявку
+  /// пересекающейся с полуденной и поделит колонку пополам — обе карточки
+  /// станут вдвое меньше на ровном месте. Поэтому в неделе и 5 днях все
+  /// заявки для раскладки одинаковой длины: соседние по времени встают просто
+  /// друг под другом и во всю ширину колонки. Настоящая длительность лежит в
+  /// `realMinutesById` — ею пользуются перенос и проверка пересечений.
+  int _cardMinutes(int realMinutes) => _squareCardView ? 60 : realMinutes;
 
   bool get _nowLineViewOk {
     final view = _calendarController.view;
@@ -695,6 +712,10 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
 
                             List<Appointment> appointments = [];
                             final activeAppointmentIds = <String>{};
+                            // Настоящая длительность визита: календарю мы её
+                            // не отдаём (там карточка — квадрат), а переносу
+                            // и проверке пересечений она нужна.
+                            final realMinutesById = <String, int>{};
                             final docsById = <String, QueryDocumentSnapshot>{};
                             var unscheduledCount = 0;
                             for (final doc in snapshot.data!.docs) {
@@ -720,41 +741,93 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                 ),
                               );
                               for (final visit in job.coalescedVisits) {
-                                final minutes = visit.durationMinutes > 0
-                                    ? visit.durationMinutes
-                                    : _defaultDurationMinutes;
+                                final minutes =
+                                    (visit.durationMinutes > 0
+                                            ? visit.durationMinutes
+                                            : _defaultDurationMinutes)
+                                        .clamp(15, 8 * 60);
+                                final appointmentId = JobVisit.appointmentId(
+                                  doc.id,
+                                  visit.id,
+                                );
+                                realMinutesById[appointmentId] = minutes;
                                 appointments.add(
                                   Appointment(
                                     startTime: visit.startAt,
                                     endTime: visit.startAt.add(
-                                      Duration(
-                                        minutes: minutes.clamp(15, 8 * 60),
-                                      ),
+                                      Duration(minutes: _cardMinutes(minutes)),
                                     ),
                                     color: _appointmentColor(job, visit),
-                                    id: JobVisit.appointmentId(
-                                      doc.id,
-                                      visit.id,
-                                    ),
+                                    id: appointmentId,
                                     notes: visit.note,
                                   ),
                                 );
                               }
                             }
                             for (final event in _events) {
-                              activeAppointmentIds.add(
-                                CalendarEvent.appointmentIdOf(event.id),
-                              );
+                              final eventAppointmentId =
+                                  CalendarEvent.appointmentIdOf(event.id);
+                              activeAppointmentIds.add(eventAppointmentId);
+                              final eventMinutes = event.endAt
+                                  .difference(event.startAt)
+                                  .inMinutes
+                                  .clamp(15, 8 * 60);
+                              realMinutesById[eventAppointmentId] =
+                                  eventMinutes;
                               appointments.add(
                                 Appointment(
                                   startTime: event.startAt,
-                                  endTime: event.endAt,
+                                  endTime: event.startAt.add(
+                                    Duration(
+                                      minutes: _cardMinutes(eventMinutes),
+                                    ),
+                                  ),
                                   subject: '',
                                   color: event.priority.color,
-                                  id: CalendarEvent.appointmentIdOf(event.id),
+                                  id: eventAppointmentId,
                                   notes: event.photoUrl,
                                 ),
                               );
+                            }
+
+                            // Квадрат короткой заявки растёт вниз, в пустое
+                            // время. Чтобы он не наехал на соседнюю карточку,
+                            // держим под рукой ближайшее следующее начало дня.
+                            final startsByDay = <DateTime, List<DateTime>>{};
+                            for (final app in appointments) {
+                              final start = app.startTime;
+                              final day = DateTime(
+                                start.year,
+                                start.month,
+                                start.day,
+                              );
+                              startsByDay
+                                  .putIfAbsent(day, () => <DateTime>[])
+                                  .add(start);
+                            }
+                            for (final starts in startsByDay.values) {
+                              starts.sort();
+                            }
+                            double freeMinutesAfter(DateTime start) {
+                              final day = DateTime(
+                                start.year,
+                                start.month,
+                                start.day,
+                              );
+                              for (final other
+                                  in startsByDay[day] ?? const <DateTime>[]) {
+                                if (other.isAfter(start)) {
+                                  return other
+                                      .difference(start)
+                                      .inMinutes
+                                      .toDouble();
+                                }
+                              }
+                              return day
+                                  .add(const Duration(days: 1))
+                                  .difference(start)
+                                  .inMinutes
+                                  .toDouble();
                             }
 
                             final jobAppointments = [
@@ -903,11 +976,10 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                   details
                                                                       .visibleDates;
                                                               _nowLine
-                                                                      .visibleDates
-                                                                      .value =
-                                                                  List.of(
-                                                                    visibleDates,
-                                                                  );
+                                                                  .visibleDates
+                                                                  .value = List.of(
+                                                                visibleDates,
+                                                              );
                                                               if (visibleDates
                                                                   .isNotEmpty) {
                                                                 _linkCatalog
@@ -1101,12 +1173,20 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                     }
                                                                   }
 
-                                                                  final duration = appointment
-                                                                      .endTime
-                                                                      .difference(
+                                                                  // Длину берём настоящую: endTime у карточки-квадрата
+                                                                  // длительность визита не показывает.
+                                                                  final duration = Duration(
+                                                                    minutes:
+                                                                        realMinutesById[appointment
+                                                                            .id
+                                                                            .toString()] ??
                                                                         appointment
-                                                                            .startTime,
-                                                                      );
+                                                                            .endTime
+                                                                            .difference(
+                                                                              appointment.startTime,
+                                                                            )
+                                                                            .inMinutes,
+                                                                  );
                                                                   final newEnd =
                                                                       newTime.add(
                                                                         duration,
@@ -1128,9 +1208,20 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                         )) {
                                                                       return false;
                                                                     }
+                                                                    final otherEnd = other.startTime.add(
+                                                                      Duration(
+                                                                        minutes:
+                                                                            realMinutesById[other.id
+                                                                                .toString()] ??
+                                                                            other.endTime
+                                                                                .difference(
+                                                                                  other.startTime,
+                                                                                )
+                                                                                .inMinutes,
+                                                                      ),
+                                                                    );
                                                                     return newTime.isBefore(
-                                                                          other
-                                                                              .endTime,
+                                                                          otherEnd,
                                                                         ) &&
                                                                         newEnd.isAfter(
                                                                           other
@@ -1475,12 +1566,35 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                   final bounds =
                                                                       calendarAppointmentDetails
                                                                           .bounds;
+                                                                  // Карточка больше не тянется по длительности: рисуем
+                                                                  // квадрат от времени начала, а занятое время под ним —
+                                                                  // бледной полосой.
+                                                                  final shape = calendarCardShape(
+                                                                    slot: bounds
+                                                                        .size,
+                                                                    freeHeight:
+                                                                        freeMinutesAfter(
+                                                                          app.startTime,
+                                                                        ) *
+                                                                        slotHeight /
+                                                                        60,
+                                                                    square:
+                                                                        _squareCardView,
+                                                                    minHeight:
+                                                                        _calendarController.view ==
+                                                                            CalendarView.day
+                                                                        ? 40
+                                                                        : 0,
+                                                                  );
+                                                                  final cardSize =
+                                                                      shape
+                                                                          .size;
                                                                   if (CalendarEvent.isAppointmentId(
                                                                     app.id,
                                                                   )) {
                                                                     return _eventAppointmentCard(
                                                                       app,
-                                                                      bounds,
+                                                                      shape,
                                                                     );
                                                                   }
 
@@ -1597,15 +1711,17 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                         )
                                                                       : null;
                                                                   final logoSize =
-                                                                      bounds.width <
+                                                                      cardSize.width <
                                                                           56
-                                                                      ? (bounds.shortestSide -
+                                                                      // Нижняя граница 14, а не 28: в плотном дне квадрат
+                                                                      // ужимается, и логотип не должен вылезать за него.
+                                                                      ? (cardSize.shortestSide -
                                                                                 6)
                                                                             .clamp(
-                                                                              28.0,
+                                                                              14.0,
                                                                               72.0,
                                                                             )
-                                                                      : (bounds.height -
+                                                                      : (cardSize.height -
                                                                                 6)
                                                                             .clamp(
                                                                               32.0,
@@ -1613,9 +1729,9 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                             );
                                                                   final showName =
                                                                       !fiveDay &&
-                                                                      bounds.width >=
+                                                                      cardSize.width >=
                                                                           56 &&
-                                                                      bounds.height >=
+                                                                      cardSize.height >=
                                                                           26;
                                                                   final showBadge =
                                                                       CalendarStatusBadge.has(
@@ -1624,9 +1740,9 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                         emoji:
                                                                             statusEmoji,
                                                                       ) &&
-                                                                      bounds.width >=
+                                                                      cardSize.width >=
                                                                           20 &&
-                                                                      bounds.height >=
+                                                                      cardSize.height >=
                                                                           16;
                                                                   final badge =
                                                                       showBadge
@@ -1645,71 +1761,77 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                             : 8,
                                                                       );
 
-                                                                  // Обертка: один тап открывает заявку
-                                                                  return VisitLinkReporter(
-                                                                    hub:
-                                                                        _visitLinkHub,
-                                                                    appointmentId: app
-                                                                        .id
-                                                                        .toString(),
-                                                                    jobId:
-                                                                        jobId,
-                                                                    startAt: app
-                                                                        .startTime,
-                                                                    color: app
-                                                                        .color,
-                                                                    enabled:
-                                                                        _visitLinksEnabled,
-                                                                    child: SizedBox(
-                                                                      width: bounds
-                                                                          .width,
-                                                                      height: bounds
-                                                                          .height,
-                                                                      child: GestureDetector(
-                                                                        onTap: () {
-                                                                          AppFeedback.pleasant();
-                                                                          Navigator.push(
-                                                                            context,
-                                                                            MaterialPageRoute(
-                                                                              builder:
-                                                                                  (
-                                                                                    context,
-                                                                                  ) => JobDetailsScreen(
-                                                                                    jobId: jobId,
-                                                                                    clientId:
-                                                                                        jobData['clientId'] ??
-                                                                                        '',
-                                                                                    jobData: jobData,
-                                                                                  ),
-                                                                            ),
-                                                                          );
-                                                                        },
-                                                                        // Пункт 19: перехватываем долгое нажатие на выполненной
-                                                                        // работе, иначе календарь поднимет карточку и начнёт
-                                                                        // перенос. onDragEnd такой перенос всё равно отклонит, но
-                                                                        // карточка не должна даже отрываться.
-                                                                        onLongPress:
-                                                                            _visitDragLocked(
-                                                                              parsedJob,
-                                                                              visit,
-                                                                            )
-                                                                            ? () {
-                                                                                AppFeedback.haptic();
-                                                                                _warnDragLocked();
-                                                                              }
-                                                                            : null,
-                                                                        // Закрыли заявку — тускнеют все её выезды, в том
-                                                                        // числе старые «Перенос».
-                                                                        child: Opacity(
-                                                                          opacity:
-                                                                              resultMark ==
-                                                                                      null &&
-                                                                                  !JobStatuses.isClosed(
-                                                                                    parsedJob?.status ??
-                                                                                        '',
-                                                                                  )
-                                                                              ? 1
-                                                                              : kCalendarClosedOpacity,
+                                                                  // Обертка: один тап открывает заявку. Тап ловим на всём
+                                                                  // слоте, а не только на квадрате, иначе по узкой
+                                                                  // карточке сложно попасть.
+                                                                  return GestureDetector(
+                                                                    behavior:
+                                                                        HitTestBehavior
+                                                                            .opaque,
+                                                                    onTap: () {
+                                                                      AppFeedback.pleasant();
+                                                                      Navigator.push(
+                                                                        context,
+                                                                        MaterialPageRoute(
+                                                                          builder:
+                                                                              (
+                                                                                context,
+                                                                              ) => JobDetailsScreen(
+                                                                                jobId: jobId,
+                                                                                clientId:
+                                                                                    jobData['clientId'] ??
+                                                                                    '',
+                                                                                jobData: jobData,
+                                                                              ),
+                                                                        ),
+                                                                      );
+                                                                    },
+                                                                    // Пункт 19: перехватываем долгое нажатие на выполненной
+                                                                    // работе, иначе календарь поднимет карточку и начнёт
+                                                                    // перенос. onDragEnd такой перенос всё равно отклонит, но
+                                                                    // карточка не должна даже отрываться.
+                                                                    onLongPress:
+                                                                        _visitDragLocked(
+                                                                          parsedJob,
+                                                                          visit,
+                                                                        )
+                                                                        ? () {
+                                                                            AppFeedback.haptic();
+                                                                            _warnDragLocked();
+                                                                          }
+                                                                        : null,
+                                                                    // Закрыли заявку — тускнеют все её выезды, в том
+                                                                    // числе старые «Перенос».
+                                                                    child: Opacity(
+                                                                      opacity:
+                                                                          resultMark ==
+                                                                                  null &&
+                                                                              !JobStatuses.isClosed(
+                                                                                parsedJob?.status ??
+                                                                                    '',
+                                                                              )
+                                                                          ? 1
+                                                                          : kCalendarClosedOpacity,
+                                                                      child: CalendarCardSlot(
+                                                                        shape:
+                                                                            shape,
+                                                                        // Связки между визитами тянутся к самой
+                                                                        // карточке, а не к слоту — иначе линия
+                                                                        // упирается в пустоту под квадратом.
+                                                                        child: VisitLinkReporter(
+                                                                          hub:
+                                                                              _visitLinkHub,
+                                                                          appointmentId: app
+                                                                              .id
+                                                                              .toString(),
+                                                                          jobId:
+                                                                              jobId,
+                                                                          startAt:
+                                                                              app.startTime,
+                                                                          color:
+                                                                              app.color,
+                                                                          enabled:
+                                                                              _visitLinksEnabled,
                                                                           child: HatchedCalendarCard(
                                                                             color:
                                                                                 app.color,
@@ -1853,6 +1975,13 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                               .month
                                                                       ? 0
                                                                       : 52,
+                                                                  cardRadius:
+                                                                      _calendarController
+                                                                              .view ==
+                                                                          CalendarView
+                                                                              .month
+                                                                      ? 4
+                                                                      : 8,
                                                                 ),
                                                               ),
                                                             ),
@@ -1953,7 +2082,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     await showCalendarEventSheet(context, startAt: date);
   }
 
-  Widget _eventAppointmentCard(Appointment app, Rect bounds) {
+  Widget _eventAppointmentCard(Appointment app, CalendarCardShape shape) {
     final eventId = CalendarEvent.idFromAppointment(app.id);
     CalendarEvent? event;
     for (final item in _events) {
@@ -1962,24 +2091,26 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
         break;
       }
     }
-    final logoSize = (bounds.shortestSide - 8).clamp(22.0, 56.0);
+    final logoSize = (shape.size.shortestSide - 8).clamp(14.0, 56.0);
     final color = event?.priority.color ?? app.color;
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: () {
         AppFeedback.pleasant();
         showCalendarEventSheet(context, event: event, startAt: app.startTime);
       },
-      child: Container(
-        width: bounds.width,
-        height: bounds.height,
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(
-            _calendarController.view == CalendarView.month ? 4 : 8,
+      child: CalendarCardSlot(
+        shape: shape,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(
+              _calendarController.view == CalendarView.month ? 4 : 8,
+            ),
           ),
-        ),
-        child: Center(
-          child: Icon(Icons.flag, color: Colors.white, size: logoSize),
+          child: Center(
+            child: Icon(Icons.flag, color: Colors.white, size: logoSize),
+          ),
         ),
       ),
     );

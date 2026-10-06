@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../core/utils/formatters.dart';
 import '../../services/services.dart';
 import '../../models/job.dart';
 import '../../shared/widgets/job_agenda_card.dart';
@@ -550,18 +551,220 @@ class _JobsScreenState extends State<JobsScreen> {
           )
         else if (entries.isNotEmpty)
           SliverPadding(
-            padding: const EdgeInsets.fromLTRB(14, 4, 14, 88),
+            padding: const EdgeInsets.fromLTRB(8, 8, 14, 88),
             sliver: SliverList(
-              delegate: SliverChildListDelegate([
-                for (final entry in entries)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: _buildAgendaCard(entry.job, entry.visit),
-                  ),
-              ]),
+              delegate: SliverChildListDelegate(
+                _timelineRows(entries, isToday),
+              ),
             ),
           ),
       ],
+    );
+  }
+
+  DateTime _entryEnd(_AgendaEntry entry) {
+    final minutes = entry.visit.durationMinutes > 0
+        ? entry.visit.durationMinutes
+        : entry.job.durationMinutes;
+    return entry.visit.startAt.add(Duration(minutes: minutes.clamp(15, 480)));
+  }
+
+  /// Шкала времени слева: начало и конец визита, свободные окна между
+  /// визитами и красная черта «сейчас» на сегодняшнем дне.
+  List<Widget> _timelineRows(List<_AgendaEntry> entries, bool isToday) {
+    final now = DateTime.now();
+    var nowShown = !isToday;
+    final rows = <Widget>[];
+    for (var i = 0; i < entries.length; i++) {
+      final entry = entries[i];
+      if (!nowShown && entry.visit.startAt.isAfter(now)) {
+        rows.add(_nowRow(now));
+        nowShown = true;
+      }
+      if (i > 0) {
+        final gap = entry.visit.startAt.difference(_entryEnd(entries[i - 1]));
+        if (gap.inMinutes >= 60) rows.add(_gapRow(gap));
+      }
+      rows.add(_timelineEntry(entry, isLast: i == entries.length - 1));
+    }
+    if (!nowShown) rows.add(_nowRow(now));
+    return rows;
+  }
+
+  static const double _gutter = 64;
+
+  Widget _timelineEntry(_AgendaEntry entry, {required bool isLast}) {
+    final color = StatusService.colorOf(
+      entry.job.displayStatusForVisit(entry.visit),
+    );
+    final line = Colors.grey.shade300;
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: _gutter,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 4, right: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          Formatters.formatTime(entry.visit.startAt),
+                          maxLines: 1,
+                          style: TextStyle(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 14,
+                            height: 1.1,
+                          ),
+                        ),
+                        Text(
+                          Formatters.formatTime(_entryEnd(entry)),
+                          maxLines: 1,
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 12,
+                  child: Stack(
+                    alignment: Alignment.topCenter,
+                    children: [
+                      Positioned(
+                        top: 0,
+                        bottom: 0,
+                        child: Container(width: 2, color: line),
+                      ),
+                      Positioned(
+                        top: 6,
+                        child: Container(
+                          width: 12,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            color: color,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(bottom: isLast ? 0 : 8),
+              child: JobAgendaCard(
+                job: entry.job,
+                visit: entry.visit,
+                showTime: false,
+                onTap: () => _openJob(entry.job),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _gutterLine({double height = 28, Widget? child}) {
+    return SizedBox(
+      height: height,
+      child: Row(
+        children: [
+          SizedBox(
+            width: _gutter,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Container(
+                width: 2,
+                margin: const EdgeInsets.only(right: 5),
+                color: Colors.grey.shade300,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          if (child != null) Expanded(child: child),
+        ],
+      ),
+    );
+  }
+
+  Widget _gapRow(Duration gap) {
+    final hours = gap.inMinutes ~/ 60;
+    final minutes = gap.inMinutes % 60;
+    final label = minutes == 0
+        ? '$hours ${'ч'.tr}'
+        : '$hours ${'ч'.tr} $minutes ${'мин'.tr}';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: _gutterLine(
+        child: Row(
+          children: [
+            Icon(Icons.free_breakfast_outlined,
+                size: 16, color: Colors.grey.shade500),
+            const SizedBox(width: 6),
+            Text(
+              '${'Свободно'.tr} · $label',
+              style: TextStyle(
+                color: Colors.grey.shade600,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _nowRow(DateTime now) {
+    const red = Color(0xFFE53935);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: SizedBox(
+        height: 16,
+        child: Row(
+          children: [
+            SizedBox(
+              width: _gutter - 12,
+              child: Text(
+                Formatters.formatTime(now),
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  color: red,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 11,
+                ),
+              ),
+            ),
+            const SizedBox(width: 2),
+            Container(
+              width: 10,
+              height: 10,
+              decoration: const BoxDecoration(
+                color: red,
+                shape: BoxShape.circle,
+              ),
+            ),
+            Expanded(child: Container(height: 2, color: red)),
+          ],
+        ),
+      ),
     );
   }
 
@@ -581,12 +784,6 @@ class _JobsScreenState extends State<JobsScreen> {
     await JobService.getById(job.id);
   }
 
-  Widget _buildAgendaCard(Job job, JobVisit? visit) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: JobAgendaCard(job: job, visit: visit, onTap: () => _openJob(job)),
-    );
-  }
 }
 
 class _AgendaEntry {

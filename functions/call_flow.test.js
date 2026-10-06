@@ -310,6 +310,23 @@ test('a call the owner answered and booked gets a visit at the spoken time', asy
   assert.equal(job.needsReview, true);
 });
 
+test('after the relay hangs up on a silent line the call ends instead of re-opening the stream', async () => {
+  const sid = `CA${'a'.repeat(32)}`;
+  await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });
+  await webhook(api.dialAction, { CallSid: sid, DialCallStatus: 'no-answer' });
+  apply(`${COMPANY}/calls/${sid}`, { aiReception: {
+    ...call(sid).aiReception, done: true,
+    history: [{ role: 'assistant', text: "Sorry, I'm having trouble hearing you — please call back or text this number." }],
+  } });
+  // Без метки оборванный поток на живом звонке поднимается заново.
+  assert.match(await webhook(api.aiRelayComplete, { CallSid: sid, CallStatus: 'in-progress' }), /<Stream/);
+  // Релей сказал «can't hear you» и через 30 с тишины закрыл поток сам.
+  apply(`${COMPANY}/calls/${sid}`, { aiReception: { ...call(sid).aiReception, hangup: 'silence' } });
+  const ended = await webhook(api.aiRelayComplete, { CallSid: sid, CallStatus: 'in-progress' });
+  assert.doesNotMatch(ended, /<Stream|<Gather|<Say|<Dial/);
+  assert.equal(call(sid).status, 'completed');
+});
+
 test('a declined or deleted call never becomes a job', async () => {
   const declined = `CA${'8'.repeat(32)}`;
   geminiScript.transcript = 'AI: Hi, FixApplianceCA.\nClient: Do you fix gas cooktops?\nAI: Sorry, we do not service gas cooktops.\nClient: Ok, bye.';

@@ -14,8 +14,6 @@ const paymentGuard = require('./payment_guard');
 const { notifyMaster } = require('./notify');
 
 const COMPANY_ID = 'fix_appliance_ca';
-const STATUS_CALLBACK =
-  'https://us-central1-fix-appliance-crm.cloudfunctions.net/smsStatusCallback';
 const DEFAULTS = {
   booking_confirm:
     'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day',
@@ -315,10 +313,6 @@ function visitSentEmail(visit, viaEmail) {
   return false;
 }
 
-function visitHasStart(visit) {
-  return Boolean(toDate(visit && visit.startAt));
-}
-
 async function jobContact(job) {
   const email = await resolveJobEmail(job);
   if (isEmailJob(job) && email) {
@@ -496,13 +490,25 @@ async function getCompanyName() {
   }
 }
 
+/**
+ * Ни одно придуманное сервером сообщение не уходит клиенту само. Текст
+ * складывается в `messages` со `status: 'awaiting_approval'`, мастер видит его
+ * серым пузырём в переписке и в колокольчике и жмёт «Отправить» или
+ * «Не отправлять» (`approveOutbox` в index.js). Решение FIX, 05.10.2026:
+ * раньше «Не отправлять» гасило только подтверждение визита, а остальные
+ * полтора десятка автоотправок шли мимо этой кнопки.
+ *
+ * Возвращает true, когда сообщение положено в очередь: вызывающий код считает
+ * свою работу сделанной и не ставит его в очередь повторно на следующем
+ * проходе. Отправлено оно или нет — решает мастер.
+ */
 async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody }) {
-  const client = twilioClient();
+  const configured = Boolean(twilioClient());
   const e164 = toE164(to);
   const text = String(body || '').trim();
-  if (!client || !e164 || !text) {
+  if (!configured || !e164 || !text) {
     console.warn(
-      `sendTwilioSms skip kind=${kind || ''} job=${jobId || ''} to=${e164 || '(empty)'} client=${Boolean(client)}`
+      `sendTwilioSms skip kind=${kind || ''} job=${jobId || ''} to=${e164 || '(empty)'} client=${configured}`
     );
     return false;
   }
@@ -521,21 +527,16 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody }) 
     const fallbackRaw = String(fallbackBody || '').trim();
     const fallbackText =
       fallbackRaw && fallbackRaw !== text ? withSmsHeader(fallbackRaw, header) : '';
-    const message = await client.messages.create({
-      from,
-      to: e164,
-      body: wrapped,
-      statusCallback: STATUS_CALLBACK,
-    });
-    await messagesRef().add({
-      sid: message.sid,
+    const doc = await messagesRef().add({
+      sid: '',
       from,
       to: e164,
       body: wrapped,
       fallbackBody: fallbackText,
       retried30007: false,
       direction: 'outbound',
-      status: message.status,
+      status: 'awaiting_approval',
+      approval: 'pending',
       clientId: clientId || null,
       jobId: jobId || null,
       kind: kind || null,
@@ -544,14 +545,28 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody }) 
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       read: true,
     });
+    console.log(`sendTwilioSms queued kind=${kind || ''} job=${jobId || ''} id=${doc.id}`);
+    await notifyMaster('Сообщение ждёт отправки', outboxPreview(wrapped), {
+      type: 'outbox',
+      messageId: doc.id,
+      clientId: clientId || '',
+      jobId: jobId || '',
+      peer: e164,
+    });
     return true;
   } catch (error) {
     console.error(
-      `sendTwilioSms fail kind=${kind || ''} job=${jobId || ''} to=${e164}:`,
+      `sendTwilioSms queue fail kind=${kind || ''} job=${jobId || ''} to=${e164}:`,
       error && error.message ? error.message : error
     );
     return false;
   }
+}
+
+/** Однострочный текст сообщения для шторки. */
+function outboxPreview(body) {
+  const line = String(body || '').replace(/\s+/g, ' ').trim();
+  return line.length <= 90 ? line : `${line.slice(0, 89)}…`;
 }
 
 async function sendSms({ to, body, clientId, jobId, kind, job, fallbackBody }) {
@@ -930,121 +945,11 @@ async function sendBookingIfNeeded(jobId, before, after, config, templates) {
     return;
   }
 
-  if (boolFlag(config, 'manualSmsApproval')) {
-    await queueManualBooking(jobId, before);
-    return;
-  }
-  const beforeById = new Map(
-    coalesceVisits(before || {}).map((visit) => [String(visit.id || ''), visit])
-  );
-  const visits = coalesceVisits(after);
-  let changed = false;
-  const now = Date.now();
-  const hasRealSlot = visits.some(
-    (visit) => isScheduledVisit(visit) && visitHasStart(visit)
-  );
-
-  if (!hasRealSlot) {
-    await sendEmailRequestAckIfNeeded(jobId, after, viaEmail, email);
-    return;
-  }
-
-  for (const visit of visits) {
-    if (String(visit.note || '').toLowerCase().includes('уточнить')) continue;
-    if (!isScheduledVisit(visit)) continue;
-    const start = toDate(visit.startAt);
-    if (!start) continue;
-    if (start.getTime() < now - 2 * 36e5 && !after.createdByAi) continue;
-    const dayKey = torontoDayKey(start);
-    if (!dayKey) continue;
-    const prev = beforeById.get(String(visit.id || ''));
-    const slotKey = visitSlotKey(start);
-    const prevSlot = prev ? visitSlotKey(prev.startAt) : '';
-    const storedSlot = normalizeSlotKey(visit.smsBookingSlotKey);
-    if (['pending', 'approved', 'rejected', 'sending', 'sent', 'error'].includes(bookingStateFor(visit))) continue;
-
-    // If the owner manually sent the confirmation, clear the pending flag.
-    if (visit.smsBookingPending && visit.smsBookingSentAt) {
-      const pendingSlot = String(visit.smsBookingSlotKey || '').trim();
-      if (pendingSlot && pendingSlot === slotKey) {
-        visit.smsBookingPending = false;
-        delete visit.smsBookingPendingAt;
-        changed = true;
-      }
-    }
-
-    // Слот реально переехал на другое время: прежнее «да» клиента относилось
-    // к старому времени, поэтому подтверждение больше не действует.
-    const slotMoved = Boolean(
-      (prev && prevSlot && prevSlot !== slotKey) ||
-        (storedSlot && storedSlot !== slotKey) ||
-        (visit.smsBookingDayKey && visit.smsBookingDayKey !== dayKey)
-    );
-
-    // Пункт 18: заказ, который клиент уже подтвердил, трогать нельзя. Любая
-    // запись в заявку (например, ответ клиента в переписке) дёргает этот
-    // триггер, и раньше подтверждённый визит сбрасывался в «не подтверждено».
-    if (String(visit.smsConfirmStatus || '') === 'confirmed' && !slotMoved) {
-      continue;
-    }
-
-    const alreadyThisSlot =
-      (Boolean(visit.smsBookingSentAt) || Boolean(visit.smsBookingPending)) &&
-      ((storedSlot && storedSlot === slotKey) ||
-        (!storedSlot && prev && prevSlot === slotKey) ||
-        (!storedSlot && !prev && visit.smsBookingDayKey === dayKey && !prevSlot));
-    let texted = alreadyThisSlot && visitSentSms(visit, viaEmail);
-    if (alreadyThisSlot && (texted || !hasPhone)) {
-      continue;
-    }
-    const moved = Boolean(visit.smsBookingSentAt) && slotMoved;
-    const kind = moved ? 'confirm_rescheduled' : 'booking_confirm';
-    const body = applyTemplate(
-      moved ? templates.confirm_rescheduled : templates.booking_confirm,
-      visitVars(after, visit)
-    );
-    if (hasPhone && !texted) {
-      texted = await sendTwilioSms({
-        to: phone,
-        body,
-        clientId: after.clientId,
-        jobId,
-        kind,
-      });
-    }
-    if (!texted) {
-      console.log(`sendBookingIfNeeded skip ${jobId}: email confirm disabled, no SMS`);
-      continue;
-    }
-    console.log(
-      `sendBookingIfNeeded sent job=${jobId} kind=${moved ? 'moved' : 'new'} email=false sms=${texted}`
-    );
-    visit.smsBookingDayKey = dayKey;
-    visit.smsBookingSlotKey = slotKey;
-    visit.smsBookingSentAt = admin.firestore.Timestamp.now();
-    visit.smsBookingSentSms = texted;
-    visit.smsBookingSentEmail = false;
-    visit.smsBookingVia = 'sms';
-    visit.smsBookingPending = false;
-    delete visit.smsBookingPendingAt;
-    if (!alreadyThisSlot) {
-      visit.smsReminderSentAt = moved ? null : visit.smsReminderSentAt || null;
-      visit.smsConfirmStatus = 'pending';
-    }
-    changed = true;
-  }
-
-  if (changed) {
-    await jobsRef().doc(jobId).update({
-      visits,
-      scheduleUnconfirmed: false,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  }
-}
-
-async function sendEmailRequestAckIfNeeded() {
-  return;
+  // Автоматического режима больше нет: подтверждение визита всегда ждёт
+  // «Отправить» от мастера. Флаг `manualSmsApproval` раньше можно было
+  // выключить в настройках, и тогда SMS о новом времени уходило клиенту
+  // мгновенно — кнопка «Не отправлять» в карточке уже ничего не решала.
+  await queueManualBooking(jobId, before);
 }
 
 async function sendReviewIfNeeded(jobId, before, after, config, templates) {
@@ -1402,10 +1307,9 @@ async function sendManualConfirmAckIfNeeded(jobId, before, after, templates) {
 async function sendDayBeforeReminders() {
   const config = await loadConfig();
   if (!boolFlag(config, 'reminderSmsEnabled')) return;
-  if (boolFlag(config, 'manualSmsApproval')) {
-    console.log('sendDayBeforeReminders skip: manualSmsApproval=true');
-    return;
-  }
+  // Напоминание тоже не уходит само: `sendSms` кладёт его в очередь, мастер
+  // жмёт «Отправить». Раньше здесь стоял выход по `manualSmsApproval`, и
+  // напоминания не работали вовсе, хотя в настройках числились включёнными.
   const offsets = reminderOffsets(config);
   if (!offsets.length) return;
   const templates = await loadTemplates();

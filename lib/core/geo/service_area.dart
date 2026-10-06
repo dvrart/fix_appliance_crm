@@ -74,6 +74,26 @@ class ServiceArea {
     return LatLng((minLat + maxLat) / 2, (minLng + maxLng) / 2);
   }
 
+  /// Прямоугольник вокруг зоны. Геокодер Google смещает им выдачу: «Main St»
+  /// без города остаётся в нашем районе, а не уезжает в другую провинцию.
+  LatLngBounds? get boundingBox {
+    if (!hasPolygon) return null;
+    var minLat = polygon.first.latitude;
+    var maxLat = minLat;
+    var minLng = polygon.first.longitude;
+    var maxLng = minLng;
+    for (final point in polygon) {
+      minLat = math.min(minLat, point.latitude);
+      maxLat = math.max(maxLat, point.latitude);
+      minLng = math.min(minLng, point.longitude);
+      maxLng = math.max(maxLng, point.longitude);
+    }
+    return LatLngBounds(
+      southwest: LatLng(minLat, minLng),
+      northeast: LatLng(maxLat, maxLng),
+    );
+  }
+
   /// Радиус круга, который накрывает всю зону (с небольшим запасом).
   double get radiusMeters {
     if (!hasPolygon) return 0;

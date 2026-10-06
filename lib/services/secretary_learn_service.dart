@@ -132,6 +132,24 @@ class SecretaryLearnService {
     await _ref.doc(lesson.id).delete();
   }
 
+  /// Удалить несколько записей разбора одной пакетной операцией.
+  static Future<int> deleteAll(List<SecretaryLesson> lessons) async {
+    var deleted = 0;
+    const batchLimit = 450;
+    final total = lessons.length;
+    while (deleted < total) {
+      final batch = FirebaseFirestore.instance.batch();
+      var batchSize = 0;
+      while (deleted < total && batchSize < batchLimit) {
+        batch.delete(_ref.doc(lessons[deleted].id));
+        deleted++;
+        batchSize++;
+      }
+      await batch.commit();
+    }
+    return deleted;
+  }
+
   static Future<void> dismissPending() async {
     final snap = await _ref.get();
     final batch = FirebaseFirestore.instance.batch();

@@ -15,15 +15,18 @@ let wss = null;
 let deps = null;
 const sessions = new Map();
 
-// Порядок по замеру времени до первого звука (3 прогона каждая):
-//   3.1-flash-live               539 мс
-//   2.5-native-audio-09-2025    2537 мс
-//   2.5-native-audio-12-2025    7451 мс  ← была второй: срыв на неё означал
-//                                          семисекундные паузы в разговоре
-//   2.5-flash-live-preview      соединение закрывается (1008), убрана
+// Основная модель и запасные. Замер 02.10.2026 боевым промптом, время до
+// первого звука приветствия:
+//   3.1-flash-live-preview       ~590 мс — основная
+//   3.8-live (GA)               ~1300 мс — замена, которую рекомендует Google
+//   2.5-native-audio-12-2025    ~1200 мс приветствие, ответ ~2 с
+// На запасную уходим, только если основная рвётся посреди звонка (resumeLive).
+// Раньше обе 2.5 не поднимались вообще: сервер закрывал сокет с 1007 на
+// enableAffectiveDialog, и запасной цепочки фактически не было.
+// 2.5-…-09-2025 убрана: Google её больше не перечисляет.
 const LIVE_MODELS = [
   process.env.GEMINI_LIVE_MODEL || 'gemini-3.1-flash-live-preview',
-  'gemini-2.5-flash-native-audio-preview-09-2025',
+  'gemini-3.8-live',
   'gemini-2.5-flash-native-audio-preview-12-2025',
 ];
 
@@ -63,25 +66,65 @@ function uniqueModels() {
 }
 
 // Скорость реакции. Меняется переменными окружения, деплой функций без правки кода.
+// Сколько тишины ждать, прежде чем решить, что звонящий договорил. Было 160 мс —
+// и секретарь влезала на любой паузе («it's making, uh…»), а распознавание
+// получало фразу кусками: в бою «it's Brad Smith» стало «Sí. ¿Es Brad Smith?».
+// Прямой прогон 02.10.2026, «Hi, my name is … Brad Smith»: при 160 мс она
+// перебила и имя пропало из расшифровки, при 500 мс фраза пришла целиком, а
+// ответ начался через 1,1–1,3 с после последнего слова. Google советует
+// 500–800 мс. Решение FIX — 0,5 с.
 const SILENCE_MS = (() => {
   const raw = Number(process.env.VOICE_SILENCE_MS);
-  // Замер: сама модель отвечает ~540 мс, плюс дорога через Twilio. Это
-  // ожидание — единственная часть паузы, которой мы управляем.
-  return Number.isFinite(raw) && raw >= 120 && raw <= 1200 ? Math.round(raw) : 160;
+  return Number.isFinite(raw) && raw >= 120 && raw <= 1200 ? Math.round(raw) : 500;
 })();
 const END_SENSITIVITY =
   String(process.env.VOICE_END_SENSITIVITY || '').toUpperCase() === 'LOW'
     ? 'END_SENSITIVITY_LOW'
     : 'END_SENSITIVITY_HIGH';
+// Сколько речи нужно, чтобы засчитать её начало: щелчок или кашель на линии не
+// должен обрывать секретаря на полуслове.
+const PREFIX_MS = 300;
 
 // Страховка на случай, когда модель молчит после реплики клиента: её толкают
-// заговорить. Было 3500 мс — это и слышалось как «пауза три с половиной
-// секунды». Модель отвечает сама за ~540 мс, так что ждать дольше секунды
-// незачем.
+// заговорить. Толчок — clientContent с turnComplete, а он по документации
+// безусловно прерывает генерацию. При 1100 мс он срезал её собственный ответ,
+// который просто чуть задержался, и заставлял влезать, пока звонящий думает
+// (в бою: «You sound like, um…» → «What can we help you with today?»). Теперь —
+// только после 3 с тишины звонящего, если она с тех пор так и не заговорила.
 const STALL_MS = (() => {
   const raw = Number(process.env.VOICE_STALL_MS);
-  return Number.isFinite(raw) && raw >= 600 && raw <= 5000 ? Math.round(raw) : 1100;
+  return Number.isFinite(raw) && raw >= 600 && raw <= 8000 ? Math.round(raw) : 3000;
 })();
+
+// Тишина на линии. Сама модель на тишину не отвечает — её VAD ждёт голос, —
+// поэтому лестницу ведёт релей (решение FIX, 02.10.2026): её реплика кончилась,
+// звонящий молчит SILENCE_CHECK_MS → «Hello — are you still there?»; снова
+// тишина SILENCE_GIVEUP_MS → «I can't hear you — please call back or text this
+// number»; после этого SILENCE_HANGUP_MS тишины → кладём трубку. Любое слово
+// звонящего возвращает лестницу в начало. «Hold on, let me check» — ждём дольше.
+const SILENCE_CHECK_MS = 10000;
+const SILENCE_HOLD_MS = 60000;
+const SILENCE_GIVEUP_MS = 9000;
+const SILENCE_HANGUP_MS = 30000;
+
+// «Глухой» Live (01.10.2026, три звонка подряд): звонящий говорил, а Gemini не
+// слышал ни слова и раз в 10–30 с рвал сокет с 1011. Громкость входящего звука
+// релей видит сам: если за время «тишины» звонящий явно говорил (кадры по 20 мс
+// с RMS ≥ VOICED_RMS, в сумме ≥ DEAF_VOICED_MS), это не тишина, а сбой модели —
+// переходим на запасную. Порог — по записям звонков: шум линии RMS 2–100,
+// речь — тысячи.
+const VOICED_RMS = 900;
+const DEAF_VOICED_MS = 1500;
+// 3.1 присылает расшифровку звонящего только в конце его фразы, поэтому во
+// время длинного рассказа релей узнаёт о речи лишь по громкости. Пока звонящий
+// слышно говорил последние VOICE_QUIET_MS, тишину не объявляем и глухоту не
+// решаем: здоровая модель отвечает через ~1,2 с после конца фразы.
+const VOICE_QUIET_MS = 2500;
+
+// Сколько обрывов Live терпим за звонок, прежде чем уйти в резервный Gather.
+// Модель меняем после второго обрыва подряд на одной и той же.
+const LIVE_FAILURE_LIMIT = 5;
+const MODEL_FAILURES_TO_SWITCH = 2;
 
 /// 2.5 Live думает по умолчанию (секунды тишины). 3.1 — через thinkingLevel.
 function thinkingConfigFor(model) {
@@ -92,8 +135,12 @@ function thinkingConfigFor(model) {
   return { thinkingBudget: 0 };
 }
 
-function isGemini25Live(model) {
-  return /2\.5|native-audio/.test(String(model || '').toLowerCase());
+/// 3.8 и новее вызывают инструменты асинхронно (NON_BLOCKING) по умолчанию:
+/// модель продолжала бы говорить, не дождавшись календаря, а отмену визита
+/// можно подтверждать только после ответа сервера. Поэтому им — BLOCKING.
+/// Старым моделям поле не передаём: они его не знают.
+function toolsNeedBlocking(model) {
+  return !/gemini-3\.1|gemini-2\.|native-audio/.test(String(model || '').toLowerCase());
 }
 
 function geminiLiveUrl(apiKey) {
@@ -101,6 +148,12 @@ function geminiLiveUrl(apiKey) {
     'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta' +
     `.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`
   );
+}
+
+/// Сокет к Gemini. Тесты подставляют свой через deps.openGeminiSocket.
+function openGeminiSocket(apiKey) {
+  if (deps && typeof deps.openGeminiSocket === 'function') return deps.openGeminiSocket(apiKey);
+  return new WebSocket(geminiLiveUrl(apiKey), { perMessageDeflate: false });
 }
 
 function outsideAreaRule(profile, thenWhat) {
@@ -172,10 +225,11 @@ function liveSystemPrompt(profile, session) {
   const visitDays = profile.workDaysLabel || 'Monday–Friday';
   const closedDays = profile.closedDaysLabel || '';
   const area = String((profile && profile.serviceArea) || '').trim();
+  const name = voiceFacts.SECRETARY_NAME;
   const opening = session.greetingSpoken
     ? 'Hello already played. Do not greet again. Wait.'
-    : 'You pick up the phone. Greet like a real person in a small repair shop: your own words, a little different every time, warm and brisk. Never a memorized slogan or a call-centre announcement. One short breath, then stop and wait.';
-  return `You are a real woman answering the shop phone for FixApplianceCA. Not a script. Not a form.
+    : `You pick up the phone. Greet like a real person in a small repair shop: your own words, a little different every time, warm and brisk. If you say a name, it is ${name}. Never a memorized slogan or a call-centre announcement. One short breath, then stop and wait.`;
+  return `You are ${name}, answering the shop phone for FixApplianceCA. You sound like a real person in a small shop — not a script, not a form.
 
 ${opening} When they speak, first words are ordinary — a real reaction, then one easy follow-up. If they say the dryer is broken: "Oh no — what's it doing?" not their name, not the address.
 
@@ -213,8 +267,19 @@ HOW YOU SOUND — you are on a phone, not reading:
 - Speak at a brisk, efficient pace — slightly quicker than ordinary conversation. Contractions always: what's, that's, you're, I'll, we've.
 - Keep the flow moving: short pauses at punctuation only, no dead air between phrases. Clip the gaps between sentences, not the words themselves.
 - One thought per turn. If it needs two sentences, make the second one short.
-- Never spell things out or read a list aloud. Never repeat back the whole thing they just told you.
+- Never read a list aloud. Never repeat back the whole thing they just told you. The one exception: a name or address you did not catch for sure — ask again, and if needed have them spell it and read the letters back (see the names-and-addresses rule).
 - If they pause to look something up, wait quietly. Do not fill the silence with chatter.
+- Let them finish. If they trail off ("it's making, uh…"), give them a moment; do not jump in with the next question.
+
+WHO YOU ARE:
+- Your name is ${name}. Never use another name, and never introduce yourself as "she".
+- Asked your name: "I'm ${name}" — warm, one line — then give the conversation back gently ("so, what's going on?"). Never answer a personal question with a checklist question like the brand or the address.
+- Asked whether you are a real person, a human, a robot or an AI: be honest and light — "I'm ${name}, the shop's virtual assistant — I'll get all of this to the technician." Then carry on. Never claim to be human.
+
+LINE TROUBLE:
+- If they keep saying hello, say you're breaking up, or cannot hear you: answer in a few words ("Yes, I'm here — can you hear me?"). At most twice in the whole call; never repeat your whole question each time.
+- If you still cannot hear each other: say once that you're having trouble hearing them and they can call back or text this number. Then wait quietly.
+- If you were cut off mid-sentence, do not restart the same sentence word for word — give the point again in a few words.
 
 You cannot hang up. After "Have a good day," wait. They hang up.`;
 }
@@ -243,13 +308,11 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
       automaticActivityDetection: {
         disabled: false,
         startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
-        // Сколько ждать после того, как звонящий замолчал. Это и есть пауза
-        // перед ответом. END_SENSITIVITY_LOW + 550 мс звучало как задумчивый
-        // автоответчик; живой человек отвечает примерно через 300 мс.
+        // Сколько ждать после того, как звонящий замолчал (см. SILENCE_MS).
         // Если начнёт перебивать тех, кто ищет шильдик — поднять
-        // VOICE_SILENCE_MS до 600 и вернуть VOICE_END_SENSITIVITY=LOW.
+        // VOICE_SILENCE_MS до 600–700 или вернуть VOICE_END_SENSITIVITY=LOW.
         endOfSpeechSensitivity: END_SENSITIVITY,
-        prefixPaddingMs: 200,
+        prefixPaddingMs: PREFIX_MS,
         silenceDurationMs: SILENCE_MS,
       },
     },
@@ -261,10 +324,10 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
       slidingWindow: { targetTokens: 32000 },
     },
   };
-  if (isGemini25Live(model)) {
-    setup.enableAffectiveDialog = true;
-  }
+  // enableAffectiveDialog здесь больше не ставим: обе 2.5 закрывали сокет с
+  // 1007 «Unknown name enableAffectiveDialog», и запасные модели не поднимались.
   if (withTools) {
+    const blocking = toolsNeedBlocking(model) ? { behavior: 'BLOCKING' } : {};
     setup.tools = [{ functionDeclarations: [
       {
         name: 'get_caller_appointments',
@@ -296,7 +359,7 @@ function buildSetup(model, systemText, withTools, resumeHandle) {
           required: ['place'],
         },
       },
-    ] }];
+    ].map((declaration) => ({ ...declaration, ...blocking })) }];
   }
   return { setup };
 }
@@ -385,9 +448,9 @@ appliance_type must be Russian: Холодильник, Стиральная м�
 brand: the make they named (Samsung, LG, Whirlpool, GE, Bosch…). Never invent a brand. Not the model number.
 Today is ${today} in America/Toronto.
 preferred_time: when the caller would like the visit, in their own words, short English ("Wednesday after 2 p.m.", "any weekday morning"). A wish only — nothing is booked on this call.
-scheduled_date must be YYYY-MM-DD. "tomorrow" = the next calendar day after ${today}. Never leave the date empty if they named a day.
+scheduled_date must be YYYY-MM-DD. "tomorrow" = the next calendar day after ${today}. Never leave the date empty if they named a day. If they did not name a day ("whenever", "any time", "whatever suits the technician"), scheduled_date=null — never default to today.
 scheduled_time must be HH:mm 24-hour. "11:00", "at 11", "eleven o'clock" → 11:00. A bare "2", "at 2", "two", "around two" on a repair call → 14:00. But if they said a.m. or morning, keep the hour exactly as spoken: "10 a.m." → 10:00, NEVER 22:00. Only add 12 hours when they said p.m., afternoon, or evening about that same hour. Never leave time empty if they named a clock time.
-client_name: the CALLER's own short given name as they said it (Amelia, David). Only from "Caller" turns or the caller's answer to "what's your name?" — never a name you (the assistant) said about yourself, and never the technician the caller asks for. NEVER a phonetic mash. NEVER a mood or filler: good, fine, okay, thanks, well, sure. "I'm good" / "sounds good" is not a name. If they already said a real first name, keep that spelling.
+client_name: the CALLER's own short given name as they said it (Amelia, David). Only from "Caller" turns or the caller's answer to "what's your name?" — never a name you (the assistant, ${voiceFacts.SECRETARY_NAME}) said about yourself, and never the technician the caller asks for. NEVER a phonetic mash. NEVER a mood, filler or ordinary word: good, fine, okay, thanks, well, sure, ready, here, she. "I'm good" / "are you ready?" is not a name. If they already said a real first name, keep that spelling. If the caller spelled it letter by letter or corrected you, use the spelled / corrected version (same for street and city).
 address: the REPAIR address (where the technician drives). Street number + street name. null if mumbled.
 owner_address: the caller's home if it is different from the repair address.
 has_job_site=true if the repair is not at the caller's own home (tenant, rental, another house).
@@ -395,7 +458,7 @@ If the spoken street is not the known home, has_job_site=true, address=repair pl
 contact_on_site_name / contact_on_site_phone: ONLY if the caller names a DIFFERENT person who will be at the repair address, with that person's name and/or phone. "I'll be there", "me", "just me", or "my husband" without a name → null. The caller's own name is not an on-site contact.
 wants_callback=true if they asked to speak to a live person, the technician, the master, or to get a call back from a human. After that, do not treat missing time as incomplete.
 appointment_intent: lookup, cancel, reschedule, new_repair, or none. Use new_repair ONLY if the CALLER explicitly requested a separate new repair, never from the assistant reading existing job facts. An appointment lookup/cancellation/reschedule is not a new order: createJob=false. Dates mentioned in an old booking or a cancellation are NOT a new scheduled_date/time.
-service_declined=true if we cannot take a NEW job: outside the service area, not a household appliance (laptop/computer/phone), or we told them we don't do that work. Then createJob=false. Cancellation of an existing visit is handled by the calendar tool, not by this flag.
+service_declined=true if we cannot take a NEW job: outside the service area, not a household appliance (laptop/computer/phone), or we told them we don't do that work. Then createJob=false. Cancellation of an existing visit is handled by the calendar tool, not by this flag. A Freon / refrigerant question is a normal fridge or freezer repair — never declined.
 Return STRICT JSON only:
 {"appointment_intent":"none","client_name":null,"address":null,"city":null,"postal_code":null,"owner_address":null,"appliance_type":null,"brand":null,"model":null,"problem_description":null,"scheduled_date":null,"scheduled_time":null,"preferred_time":null,"wants_callback":false,"has_job_site":false,"contact_on_site_name":null,"contact_on_site_phone":null,"notes":null,"service_declined":false,"decline_reason":null,"done":false,"createJob":false}
 
@@ -492,6 +555,8 @@ async function persistSession(session, extra) {
     pendingCancellation: session.pendingCancellation || null,
   };
   if (extra && extra.done) reception.done = true;
+  // aiRelayComplete по этой метке не поднимает поток заново, а кладёт трубку.
+  if (session.hangupReason) reception.hangup = session.hangupReason;
   const declined =
     voiceFacts.isServiceDeclined(session.extracted) ||
     Boolean(extra && extra.serviceDeclined);
@@ -591,6 +656,7 @@ async function runBackgroundExtract(session) {
 
 function clearSessionTimers(session) {
   clearReplyWatchdog(session);
+  clearSilence(session);
   clearAuthGrace(session);
   if (session.extractTimer) {
     clearTimeout(session.extractTimer);
@@ -654,18 +720,28 @@ function lastHistoryText(session, role) {
   return '';
 }
 
-function armReplyWatchdog(session) {
+function armReplyWatchdog(session, wait = STALL_MS) {
   clearReplyWatchdog(session);
   session.replyWatch = setTimeout(() => {
+    session.replyWatch = null;
     if (session.closed || session.wantHangup || !session.ready || session.toolPending) return;
     if (session.assistantPartial) return;
-    const lastUser = lastHistoryText(session, 'user');
+    const lastUser = String(session.userPartial || '').trim() || lastHistoryText(session, 'user');
     if (!lastUser) return;
+    // Звонящий ещё говорит или только что договорил — ждём, а не толкаем её
+    // влезать посреди его фразы.
+    const quiet = Date.now() - Number(session.lastInputAt || 0);
+    if (quiet < STALL_MS) {
+      armReplyWatchdog(session, STALL_MS - quiet);
+      return;
+    }
+    // Она уже ответила на эти слова — спасать нечего.
+    if (Number(session.lastOutputAt || 0) >= Number(session.lastInputAt || 0)) return;
     session.stallNudge = Number(session.stallNudge || 0) + 1;
     console.warn(`voiceLive stall ${session.callSid} n=${session.stallNudge}`);
     if (session.stallNudge > 1) return;
     nudgeKeepTalking(session, lastUser);
-  }, STALL_MS);
+  }, Math.max(50, wait));
 }
 
 function clearReplyWatchdog(session) {
@@ -687,34 +763,144 @@ function nudgeKeepTalking(session, lastUser) {
   } else if (enough) {
     extra = ' You have enough. Pass it to the tech if you have not, then ask if anything else.';
   }
-  sendJson(session.geminiWs, {
-    clientContent: {
-      turns: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: `The caller is still on the line.${extra} Do not stay silent. Do not hang up.`,
-            },
-          ],
-        },
-      ],
-      turnComplete: true,
+  sendPrompt(session, [
+    {
+      role: 'user',
+      parts: [{ text: `The caller is still on the line.${extra} Do not stay silent. Do not hang up.` }],
     },
-  });
+  ]);
 }
 
-function continueLivePrompt(session) {
+function continueLivePrompt(session, callerWaiting) {
   const bits = (session.history || []).slice(-8).map((item) => {
     const who = item.role === 'assistant' ? 'You' : 'Caller';
     return `${who}: ${item.text}`;
   });
-  return `The phone call is still connected after a brief audio glitch. Same caller, not a new call.
+  const next = callerWaiting
+    ? 'Reply now to what the caller just said, as if nothing happened.'
+    : 'Stay quiet and listen until the caller speaks. If they say hello or ask whether you are there, say once, in a few words, that the line cut out for a second, then carry on from your last open question. Do not apologise again on later glitches.';
+  return `The phone call is still connected after a brief audio glitch on our side. Same caller, not a new call.
 ${compactKnown(session)}
 Recent turns:
 ${bits.join('\n') || '(still collecting details)'}
-If they say hello / are you there, they are checking the line — say a short "yes, I'm here" and continue the last unanswered question.
-Do not greet from scratch. Do not say goodbye. Do not call end_call. Keep collecting.`;
+Do not greet from scratch. Do not say goodbye. ${next}`;
+}
+
+// ── Тишина на линии ────────────────────────────────────────────────────────
+
+function clearSilence(session) {
+  if (session.silenceTimer) {
+    clearTimeout(session.silenceTimer);
+    session.silenceTimer = null;
+  }
+}
+
+/// Звонящий что-то сказал (Gemini его расслышал) — лестница сначала.
+function noteCallerHeard(session) {
+  session.lastCallerAt = Date.now();
+  session.silenceStage = 0;
+  session.voicedMs = 0;
+  clearSilence(session);
+}
+
+/// Её реплика закончилась — с этого момента ждём звонящего.
+function armSilence(session) {
+  clearSilence(session);
+  if (session.closed || session.liveFailed) return;
+  let stage = Number(session.silenceStage || 0);
+  // После «Have a good day» не переспрашиваем: ждём, что звонящий положит
+  // трубку, и через SILENCE_HANGUP_MS тишины кладём сами.
+  if (stage < 2 && voiceFacts.saidFarewell(lastHistoryText(session, 'assistant'))) {
+    stage = 2;
+    session.silenceStage = 2;
+  }
+  let wait = SILENCE_CHECK_MS;
+  if (stage >= 2) wait = SILENCE_HANGUP_MS;
+  else if (stage === 1) wait = SILENCE_GIVEUP_MS;
+  else if (voiceFacts.callerAskedToHold(lastHistoryText(session, 'user'))) wait = SILENCE_HOLD_MS;
+  session.silenceTimer = setTimeout(() => onSilence(session), wait);
+}
+
+function onSilence(session) {
+  session.silenceTimer = null;
+  if (session.closed || session.liveFailed) return;
+  // Неудобный момент: переподключение, работает инструмент, она говорит или
+  // звонящий прямо сейчас слышно говорит (расшифровка придёт в конце фразы).
+  const speaking = session.speaking || Boolean(session.assistantPartial);
+  const callerTalking = Boolean(session.lastVoicedAt) && Date.now() - session.lastVoicedAt < VOICE_QUIET_MS;
+  if (!session.ready || session.toolPending || speaking || callerTalking) {
+    session.silenceTimer = setTimeout(() => onSilence(session), 2000);
+    return;
+  }
+  // Звонящий явно говорил и замолчал, а Gemini не расслышал ни слова и не
+  // ответил — модель «оглохла». Первый раз — на запасную модель, второй (или
+  // запасных нет) — в Gather: там звонящего слушает сам Twilio.
+  if (Number(session.voicedMs || 0) >= DEAF_VOICED_MS) {
+    console.warn(`voiceLive deaf ${session.callSid} voiced=${Math.round(session.voicedMs)}ms model=${session.geminiModel}`);
+    session.voicedMs = 0;
+    session.liveFailures = Number(session.liveFailures || 0) + 1;
+    if (session.deafSwitched || !nextLiveModel(session.geminiModel)) {
+      giveUpLive(session, 'deaf');
+      return;
+    }
+    session.deafSwitched = true;
+    resumeLive(session, 'deaf', { switchModel: true });
+    session.silenceTimer = setTimeout(() => onSilence(session), SILENCE_CHECK_MS);
+    return;
+  }
+  const stage = Number(session.silenceStage || 0);
+  if (stage >= 2) {
+    hangUpForSilence(session).catch((error) => console.warn('voiceLive silence hangup:', error.message));
+    return;
+  }
+  session.silenceStage = stage + 1;
+  console.log(`voiceLive silence ${session.callSid} stage=${session.silenceStage}`);
+  nudgeSilence(session, session.silenceStage);
+  // Обычно лестницу двигает конец её реплики (armSilence). Если реплики так и
+  // не случилось (сокет лёг), идём дальше сами, чтобы звонок не висел вечно.
+  const fallback = session.silenceStage >= 2 ? SILENCE_HANGUP_MS : SILENCE_GIVEUP_MS;
+  session.silenceTimer = setTimeout(() => onSilence(session), fallback + 6000);
+}
+
+function nudgeSilence(session, stage) {
+  if (!session.geminiWs || session.geminiWs.readyState !== 1) return;
+  const text = stage === 1
+    ? 'The caller has not said anything for a while. Check the line once, in a few words — for example: "Hello — are you still there?" Then stop and listen. Do not repeat your last question.'
+    : 'Still nothing from the caller: they may not hear you, or you cannot hear them. Say once, kindly, in one or two short sentences, that you are having trouble hearing them and they can call back or send a text to this number. Then stop and wait quietly.';
+  sendPrompt(session, [{ role: 'user', parts: [{ text }] }]);
+}
+
+/// Подсказка модели от релея (приветствие, толчок, переспрос). Её ответ на
+/// такую подсказку — не признак того, что Gemini расслышал звонящего.
+function sendPrompt(session, turns, turnComplete = true) {
+  if (turnComplete) session.promptedTurn = true;
+  sendJson(session.geminiWs, { clientContent: { turns, turnComplete } });
+}
+
+/// После «can't hear you — call back or text» 30 с тишины: кладём трубку
+/// (решение FIX). Сама модель трубку положить не может, это делает релей: метка
+/// hangup в звонке говорит aiRelayComplete не поднимать поток заново.
+async function hangUpForSilence(session) {
+  if (session.closed) return;
+  const quiet = Math.round((Date.now() - Number(session.lastCallerAt || session.startedAt || Date.now())) / 1000);
+  console.log(`voiceLive silence hangup ${session.callSid} quiet=${quiet}s`);
+  session.hangupReason = 'silence';
+  try {
+    await onLiveStop(session);
+  } finally {
+    closeTwilio(session);
+  }
+}
+
+/// Громкость входящего звука: копим «громкие» 20-мс кадры, пока она молчит.
+/// Её собственный голос может вернуться эхом, поэтому во время её речи не считаем.
+function noteInboundLevel(session, pcm8) {
+  if (!pcm8.length) return;
+  let sum = 0;
+  for (let i = 0; i < pcm8.length; i++) sum += pcm8[i] * pcm8[i];
+  if (Math.sqrt(sum / pcm8.length) < VOICED_RMS) return;
+  session.lastVoicedAt = Date.now();
+  if (!session.speaking) session.voicedMs = Number(session.voicedMs || 0) + pcm8.length / 8;
 }
 
 function scheduleHangup(session, ms) {
@@ -765,7 +951,9 @@ function forwardMulawToGemini(session, payload) {
   if (!session.geminiWs || session.geminiWs.readyState !== 1) return false;
   const mulaw = Buffer.from(payload, 'base64');
   if (!mulaw.length) return true;
-  const pcm16 = upsample8kTo16k(mulawToPcm16(mulaw));
+  const pcm8 = mulawToPcm16(mulaw);
+  noteInboundLevel(session, pcm8);
+  const pcm16 = upsample8kTo16k(pcm8);
   sendJson(session.geminiWs, {
     realtimeInput: {
       audio: {
@@ -823,6 +1011,12 @@ function setPartial(session, field, text, finished) {
   if (field === 'userPartial') {
     const lastAsst = lastHistoryText(session, 'assistant');
     if (isSameVoiceLine(lastAsst, value)) return;
+    // Звонящий говорит: лестница тишины сначала, сторожевой таймер — от
+    // последнего его слова, а не от первого.
+    session.lastInputAt = Date.now();
+    session.heardChunks = Number(session.heardChunks || 0) + 1;
+    noteCallerHeard(session);
+    armReplyWatchdog(session);
   }
   session.language = 'en';
   session[field] = joinVoiceText(session[field], value);
@@ -883,9 +1077,17 @@ function greetLive(session) {
   if (session.needsContinue) {
     session.needsContinue = false;
     session.greeted = true;
+    // Отвечаем сразу, только если последние слова звонящего остались без
+    // ответа. Если последней говорила она, после сбоя молча слушаем: раньше
+    // каждое переподключение заставляло её сказать «I'm still here…» и
+    // повторить вопрос — при сбоях Gemini раз в 10–30 с вышло семь повторов
+    // подряд. Контекст при этом передаём (turnComplete=false — без ответа).
+    const history = session.history || [];
+    const last = history[history.length - 1];
+    const callerWaiting = Boolean(last && last.role === 'user' && String(last.text || '').trim());
     const turns = [];
     if (!session.resumeHandle) {
-      for (const item of (session.history || []).slice(-8)) {
+      for (const item of history.slice(-8)) {
         const text = String((item && item.text) || '').trim();
         if (!text) continue;
         turns.push({
@@ -896,14 +1098,9 @@ function greetLive(session) {
     }
     turns.push({
       role: 'user',
-      parts: [{ text: continueLivePrompt(session) }],
+      parts: [{ text: continueLivePrompt(session, callerWaiting) }],
     });
-    sendJson(session.geminiWs, {
-      clientContent: {
-        turns,
-        turnComplete: true,
-      },
-    });
+    sendPrompt(session, turns, callerWaiting);
     return;
   }
   if (session.greeted) return;
@@ -917,23 +1114,18 @@ function greetLive(session) {
   const body = greeting
     ? `Use an easy conversational rhythm, not a recording or a call-centre announcement. Keep the meaning of this opening, not its exact wording: ${greeting}`
     : 'Do not recite a set line: no memorized slogan, no call-centre announcement, nothing that sounds read from a script. Sound like someone who works here and just picked up the phone. Mention the shop (FixApplianceCA) naturally, and phrase it a little differently on every call.';
-  sendJson(session.geminiWs, {
-    clientContent: {
-      turns: [
+  sendPrompt(session, [
+    {
+      role: 'user',
+      parts: [
         {
-          role: 'user',
-          parts: [
-            {
-              text: `The call just connected. For this first greeting only, answer in your own words in English, warmly and matter-of-factly, as if picking up the shop phone for one person.
+          text: `The call just connected. For this first greeting only, answer in your own words in English, warmly and matter-of-factly, as if picking up the shop phone for one person.
 ${body}
-Keep it to one short breath. No sales pitch, exaggerated cheerfulness, made-up personal name, filler or staged laughter. End with one easy invitation to speak, then stop and listen. Do not start collecting repair details yet.`,
-            },
-          ],
+Keep it to one short breath. If you give your name, it is ${voiceFacts.SECRETARY_NAME} — no other name, never "this is she". No sales pitch, exaggerated cheerfulness, filler or staged laughter. End with one easy invitation to speak, then stop and listen. Do not start collecting repair details yet.`,
         },
       ],
-      turnComplete: true,
     },
-  });
+  ]);
 }
 
 function hangupAllowed(session, lastUser, lastAsst) {
@@ -1182,14 +1374,9 @@ function handleGeminiMessage(session, raw) {
         session.setupPayload &&
         session.setupPayload.setup &&
         session.setupPayload.setup.generationConfig;
-      const setupObj = session.setupPayload && session.setupPayload.setup;
       let stripped = false;
       if (gen && gen.thinkingConfig) {
         delete gen.thinkingConfig;
-        stripped = true;
-      }
-      if (setupObj && setupObj.enableAffectiveDialog) {
-        delete setupObj.enableAffectiveDialog;
         stripped = true;
       }
       if (stripped) {
@@ -1201,11 +1388,7 @@ function handleGeminiMessage(session, raw) {
           if (old) old.close();
         } catch (_) {}
         console.warn(`voiceLive retry ${session.callSid} without extra live flags`);
-        attachGeminiSocket(
-          session,
-          new WebSocket(geminiLiveUrl(deps.geminiApiKey), { perMessageDeflate: false }),
-          model
-        );
+        attachGeminiSocket(session, openGeminiSocket(deps.geminiApiKey), model);
         return;
       }
       closeGemini(session);
@@ -1221,18 +1404,31 @@ function handleGeminiMessage(session, raw) {
     session.ready = true;
     session.liveStarted = true;
     session.resumeAttempts = 0;
+    // Соединение установлено. Флаг раньше оставался поднятым до первого
+    // обрыва, и resumeLive по goAway молча ничего не делал: сессия доживала до
+    // дедлайна и обрывалась.
+    session.connecting = false;
+    session.speaking = false;
+    session.promptedTurn = false;
     if (session.needsContinue) {
       flushPendingAudio(session);
     } else {
       session.pendingAudio = [];
     }
     greetLive(session);
+    // Лестница тишины идёт и тогда, когда от модели так и не пришёл конец
+    // реплики (приветствие сорвалось, сокет переподняли). Начатый отсчёт не сбиваем.
+    if (!session.silenceTimer) armSilence(session);
     return;
   }
   const content = pick(message, 'serverContent', 'server_content') || {};
   if (pick(content, 'interrupted') === true) {
     flushPartial(session, 'assistantPartial');
     sendTwilioClear(session);
+    // Её перебил голос звонящего — значит, Gemini его слышит и линия жива.
+    session.speaking = false;
+    session.promptedTurn = false;
+    noteCallerHeard(session);
   }
   const input = pick(content, 'inputTranscription', 'input_transcription');
   if (input && input.text) {
@@ -1249,6 +1445,7 @@ function handleGeminiMessage(session, raw) {
     // каждый ответ и добавляет к разговору лишние секунды.
     if (session.userPartial) flushPartial(session, 'userPartial');
     clearReplyWatchdog(session);
+    session.lastOutputAt = Date.now();
     setPartial(session, 'assistantPartial', output.text, output.finished === true);
   }
   const turn = pick(content, 'modelTurn', 'model_turn') || {};
@@ -1256,6 +1453,12 @@ function handleGeminiMessage(session, raw) {
     const inline = pick(part, 'inlineData', 'inline_data');
     if (!inline || !inline.data) continue;
     clearReplyWatchdog(session);
+    session.lastOutputAt = Date.now();
+    // Она заговорила сама, без подсказки релея — отвечает на голос звонящего,
+    // значит, Gemini его слышит (даже если расшифровка не пришла).
+    if (!session.speaking && !session.promptedTurn) noteCallerHeard(session);
+    session.speaking = true;
+    clearSilence(session);
     sendTwilioAudio(session, base64ToInt16(inline.data), parsePcmRate(inline.mimeType || inline.mime_type));
   }
   if (pick(message, 'toolCall', 'tool_call')) {
@@ -1265,11 +1468,14 @@ function handleGeminiMessage(session, raw) {
   }
   if (pick(content, 'turnComplete', 'turn_complete') === true) {
     flushPartials(session);
+    session.speaking = false;
+    session.promptedTurn = false;
     const lastAsst = lastHistoryText(session, 'assistant');
     if (voiceFacts.saidGoodbye(lastAsst)) {
       console.warn(`voiceLive premature goodbye ${session.callSid} asst="${String(lastAsst).slice(0, 120)}"`);
       cancelHangup(session);
     }
+    armSilence(session);
     handleLiveTurnComplete(session).catch((error) => {
       console.warn('voiceLive turn:', error.message);
     });
@@ -1320,7 +1526,7 @@ function attachGeminiSocket(session, ws, model) {
     session.geminiError = error.message || 'gemini socket error';
     console.warn(`voiceLive gemini socket ${session.callSid}: ${session.geminiError}`);
   });
-  ws.on('close', (code) => {
+  ws.on('close', (code, reason) => {
     clearTimeout(setupTimer);
     if (session.geminiPing && ws.liveGen === session.socketGen) {
       clearInterval(session.geminiPing);
@@ -1329,20 +1535,45 @@ function attachGeminiSocket(session, ws, model) {
     if (ws.liveGen !== session.socketGen) return;
     session.connecting = false;
     session.ready = false;
+    session.speaking = false;
+    session.promptedTurn = false;
     if (session.geminiWs === ws) session.geminiWs = null;
+    // Причина закрытия: раньше в журнале был только код 1011, и понять, что
+    // именно сломалось у Gemini 01.10.2026, было уже нельзя.
+    const why = String(reason || '').replace(/\s+/g, ' ').slice(0, 160);
     console.log(
-      `voiceLive gemini close ${session.callSid} code=${code} started=${Boolean(session.liveStarted)}`
+      `voiceLive gemini close ${session.callSid} code=${code} started=${Boolean(session.liveStarted)} model=${model} reason="${why}"`
     );
     if (session.closed || session.wantHangup) return;
     if (!session.liveStarted) {
       if (typeof session.retryGemini === 'function') session.retryGemini();
       return;
     }
+    // Плановые переподключения (goAway) сюда не попадают — их сокет уже
+    // заменён. Значит, это сбой: считаем его.
+    session.liveFailures = Number(session.liveFailures || 0) + 1;
+    session.modelFailures = Number(session.modelFailures || 0) + 1;
     setTimeout(() => resumeLive(session, `close ${code}`), 200);
   });
 }
 
-function resumeLive(session, reason) {
+function nextLiveModel(current) {
+  const models = uniqueModels();
+  const at = models.indexOf(current);
+  return at >= 0 && at + 1 < models.length ? models[at + 1] : '';
+}
+
+/// Live рвётся раз за разом — дальше звонок ведёт резервный Gather (Twilio
+/// слушает сам, текстовая модель, синтез). Медленнее, зато звонящего слышно.
+function giveUpLive(session, reason) {
+  if (session.liveFailed) return;
+  console.warn(`voiceLive gave up ${session.callSid} drops=${session.liveFailures} last=${reason}`);
+  clearSilence(session);
+  markLiveFailed(session, `live dropped ${session.liveFailures} times, last: ${reason}`)
+    .then(() => closeTwilio(session));
+}
+
+function resumeLive(session, reason, { switchModel = false } = {}) {
   if (session.closed || session.wantHangup) return;
   if (session.connecting) return;
   const apiKey = deps && deps.geminiApiKey;
@@ -1353,7 +1584,31 @@ function resumeLive(session, reason) {
     closeTwilio(session);
     return;
   }
-  const model = session.geminiModel || uniqueModels()[0];
+  let model = session.geminiModel || uniqueModels()[0];
+  if (reason !== 'goAway') {
+    // 01.10.2026 Gemini 3.1 падал с 1011 раз в 10–30 с весь звонок, а релей
+    // каждый раз поднимал ту же модель. Первый обрыв — переподключаемся к ней
+    // же (с ручкой сессии), второй подряд — уходим на следующую модель, после
+    // LIVE_FAILURE_LIMIT обрывов за звонок — в Gather.
+    if (Number(session.liveFailures || 0) >= LIVE_FAILURE_LIMIT) {
+      giveUpLive(session, reason);
+      return;
+    }
+    if (switchModel || Number(session.modelFailures || 0) >= MODEL_FAILURES_TO_SWITCH) {
+      const next = nextLiveModel(model);
+      if (next) {
+        console.warn(`voiceLive switch ${session.callSid} ${model} -> ${next} (${reason})`);
+        model = next;
+        session.modelSwitches = Number(session.modelSwitches || 0) + 1;
+        // Ручка сессии привязана к модели; историю новой модели передаёт greetLive.
+        session.resumeHandle = null;
+      } else if (!switchModel) {
+        giveUpLive(session, reason);
+        return;
+      }
+      session.modelFailures = 0;
+    }
+  }
   session.ready = false;
   session.connecting = true;
   session.greeted = true;
@@ -1373,13 +1628,9 @@ function resumeLive(session, reason) {
     session.resumeHandle
   );
   console.log(
-    `voiceLive resume ${session.callSid} ${reason} attempt=${session.resumeAttempts} handle=${Boolean(session.resumeHandle)}`
+    `voiceLive resume ${session.callSid} ${reason} model=${model} attempt=${session.resumeAttempts} drops=${Number(session.liveFailures || 0)} handle=${Boolean(session.resumeHandle)}`
   );
-  attachGeminiSocket(
-    session,
-    new WebSocket(geminiLiveUrl(apiKey), { perMessageDeflate: false }),
-    model
-  );
+  attachGeminiSocket(session, openGeminiSocket(apiKey), model);
 }
 
 function startGeminiLive(session) {
@@ -1415,11 +1666,7 @@ function startGeminiLive(session) {
     session.liveTools = tools;
     session.setupPayload = buildSetup(model, tools ? session.systemText : `${session.systemText}\nLive calendar tools are unavailable. Do not claim a fresh lookup or a saved cancellation. Ask the caller to text us for a change.`, tools);
     console.log(`voiceLive connect ${session.callSid} ${model} tools=${tools}`);
-    attachGeminiSocket(
-      session,
-      new WebSocket(geminiLiveUrl(apiKey), { perMessageDeflate: false }),
-      model
-    );
+    attachGeminiSocket(session, openGeminiSocket(apiKey), model);
   };
   session.retryGemini();
 }
@@ -1675,10 +1922,14 @@ function handleSocket(ws) {
     // Раньше здесь молчали, и обрыв потока не оставлял в журнале ничего —
     // приходилось гадать, кто закрыл соединение.
     const lived = session.startedAt ? Math.round((Date.now() - session.startedAt) / 1000) : null;
+    // Итог звонка одной строкой: heard=0 при живом звонящем — Live его не слышал.
     console.log(
       `voiceRelay twilio close ${session.callSid || '?'} code=${code} lived=${lived}s ` +
         `gemini=${session.geminiWs ? 'up' : 'down'} ready=${Boolean(session.ready)} ` +
-        `reason="${String(reason || '').slice(0, 80)}"`
+        `model=${session.geminiModel || '-'} heard=${Number(session.heardChunks || 0)} ` +
+        `turns=${Number(session.turns || 0)} drops=${Number(session.liveFailures || 0)} ` +
+        `switches=${Number(session.modelSwitches || 0)} silence=${Number(session.silenceStage || 0)} ` +
+        `hangup=${session.hangupReason || '-'} reason="${String(reason || '').slice(0, 80)}"`
     );
     session.closed = true;
     clearSessionTimers(session);
@@ -1807,4 +2058,15 @@ module.exports = {
   liveSystemPrompt,
   buildSetup,
   runAppointmentTool,
+  // Внутренние шаги живого звонка — только для тестов.
+  _internals: {
+    handleGeminiMessage,
+    startGeminiLive,
+    sendCallerAudio,
+    liveModels: uniqueModels,
+    timing: {
+      SILENCE_MS, PREFIX_MS, STALL_MS, SILENCE_CHECK_MS, SILENCE_HOLD_MS, SILENCE_GIVEUP_MS,
+      SILENCE_HANGUP_MS, DEAF_VOICED_MS, LIVE_FAILURE_LIMIT,
+    },
+  },
 };

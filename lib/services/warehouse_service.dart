@@ -141,6 +141,36 @@ class WarehouseService {
     doc['stockApplied'] = !reverse;
   }
 
+  /// Документ уже списан, а его позиции поправили. Доводим склад до нового
+  /// состава: вернуть старое количество и списать новое. Без этого правка
+  /// «поставил не 1, а 2» тихо разошлась бы с остатком.
+  static Future<void> applyDocumentStockChange(
+    Map<String, dynamic> before,
+    Map<String, dynamic> after,
+  ) async {
+    final deltas = stockChangeDeltas(before, after);
+    for (final entry in deltas.entries) {
+      await adjustQuantity(entry.key, entry.value);
+    }
+  }
+
+  /// Разница между старым и новым составом документа. Чистая функция, как и
+  /// [stockDeltas], и по той же причине закрыта тестом.
+  @visibleForTesting
+  static Map<String, int> stockChangeDeltas(
+    Map<String, dynamic> before,
+    Map<String, dynamic> after,
+  ) {
+    // Не списывали (смета или документ без склада) — и возвращать нечего.
+    if (before['stockApplied'] != true) return {};
+    final out = <String, int>{...stockDeltas(before, reverse: true)};
+    stockDeltas(after, reverse: false).forEach((id, delta) {
+      out[id] = (out[id] ?? 0) + delta;
+    });
+    out.removeWhere((_, delta) => delta == 0);
+    return out;
+  }
+
   /// Смета склад не двигает; списать дважды или вернуть неспи́санное нельзя.
   @visibleForTesting
   static bool shouldApplyStock(

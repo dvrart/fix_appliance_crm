@@ -8,6 +8,10 @@ import 'ui_scale.dart';
 
 /// Лёгкая вибрация и всплывающая подсказка «Скопировано».
 class AppFeedback {
+  /// Сколько живёт любое всплывающее уведомление в приложении: снизу
+  /// (SnackBar), сверху («Скопировано») и баннер нового SMS / письма.
+  static const noticeDuration = Duration(seconds: 1);
+
   static OverlayEntry? _entry;
   static Timer? _hide;
 
@@ -128,6 +132,6 @@ class AppFeedback {
     );
     _entry = entry;
     overlay.insert(entry);
-    _hide = Timer(const Duration(seconds: 2), () => _remove(entry));
+    _hide = Timer(noticeDuration, () => _remove(entry));
   }
 }

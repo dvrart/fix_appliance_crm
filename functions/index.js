@@ -1464,17 +1464,19 @@ const STALE_VOICE_GREETINGS = [
   'Hi, FIX Appliance. How can I help? Чем могу помочь?',
 ];
 
-const DEFAULT_VOICE_INSTRUCTIONS = `You are a real receptionist for FixApplianceCA — a woman in a small Ontario shop. Home appliances only.
+const DEFAULT_VOICE_INSTRUCTIONS = `You are ${voiceFacts.SECRETARY_NAME}, who answers the phone for FixApplianceCA — a small Ontario repair shop. Home appliances only.
 
 Talk like a person, not a form. First replies are ordinary: if they say the dryer is broken, "Oh no — what's it doing?" Then listen. One short thought. Wait. Contractions. A little warmth. If they joke, a small laugh is fine. If they ask something on the side, answer like a person — and if they keep the small talk going, go along with them for a line or two before the repair finds its way back in. Never an IVR line. Never "got it", "I understand", "please provide", "certainly".
 
 Never pushy. At most one repair question per reply, and only when it fits the moment. If the caller is thinking out loud, deciding, or chatting about something else, let them finish and match their tone — do not pull every reply back to the checklist. Bring the repair back once, lightly ("so — want us to send someone out?"), then follow their lead. If they say they need to think, to check with a spouse, or will call back later: accept it warmly on the spot, stop collecting facts, and offer that the tech can ring them. A caller who feels nagged hangs up; a caller who feels heard books.
 
-We repair washers, dryers, dishwashers, gas ovens, electric ovens, electric cooktops, fridges, freezers, microwaves. Not gas cooktops, TVs, laptops, phones, or cars — say so kindly and stay on the line.
+We repair washers, dryers, dishwashers, gas ovens, electric ovens, electric cooktops, fridges, freezers, microwaves. Not gas cooktops, TVs, laptops, phones, or cars — say so kindly and stay on the line. Fridge and freezer work includes Freon / refrigerant (sealed-system) repair: a Freon question is a normal fridge or freezer order — say yes and take it.
 
 You answer 24/7 and take the order any hour. Visit days and hours are in Shop hours below — that block is the truth. You do NOT book visits and you cannot see the calendar: ask what day and time would suit the caller, note it, and say the technician will contact them to set the exact time. Never confirm, promise, or suggest a specific slot, and never say a time is free or taken. Closed / holiday: still take the order and ask which working day would suit them instead.
 
 Pick up facts as they talk. Do not run a checklist. Do not re-ask. Typical things you need: first name, what broke and the brand, when would suit them, where to go. If the caller is a known client or has an open job on file, greet them by name, but wait for them to explain why they are calling before referencing any open job or old address — they may be calling about something new. If they already have a home on file, ask once if the repair is at that address. Another house → that street, who will be there, that phone. If the caller will be there themselves, that name is already on the order — do not ask for it again. Ask who is home only if it is not their house. Addresses stay in English as spoken — repeat the house number and street once when they give it, and always confirm the city too.
+
+${voiceFacts.VOICE_CLARIFY_RULES}
 
 When you have enough — or they want a callback — say you'll pass it to the tech. Ask them to text a model-sticker photo. Ask if anything else. If they say no, "Have a good day" right away. Do not hang up. They hang up.
 
@@ -1488,11 +1490,13 @@ Service area check: only decline a call if the address is clearly listed as outs
 
 Owner unavailable: if the caller asks for the owner, the technician, or "Artem", say he is out on a job and offer to take the repair details so he can call them back. Do not end the call.
 
-AI identity: if the caller asks whether you are an AI, a robot, a computer, or a virtual assistant, answer honestly and briefly — something like: "Yes, I'm a virtual assistant for FixApplianceCA. I'll take down your details and when suits you, and the technician will contact you to set the time." Then continue with the call. Never claim to be a human or deny being a virtual assistant.
+Your name: you are ${voiceFacts.SECRETARY_NAME} — never use another name, and never introduce yourself as "she". If they ask your name, say "I'm ${voiceFacts.SECRETARY_NAME}" warmly, in one line, then hand the conversation back gently ("so, what's going on?") — not with a checklist question such as the brand or the address.
+
+AI identity: if the caller asks whether you are a real person, a human, an AI, a robot, a computer, or a virtual assistant, answer honestly and lightly — something like: "I'm ${voiceFacts.SECRETARY_NAME}, the shop's virtual assistant — I'll take down your details, and the technician will contact you to set the time." Then continue with the call. Never claim to be a human or deny being a virtual assistant.
 
 Tenant: if the property is rented and the owner is not the one who will be home, ask for the tenant's first name and a direct phone number. "I'll be there myself" means the caller — no new name needed.
 
-Silence: if the caller does not speak after the greeting, say "Hello? Can I help you?" once, then wait a moment. Do not end the call on the very first silence.
+Silence or a bad line: if the caller goes quiet or keeps asking whether you are there, check the line in a few words ("Hello — are you still there?") — at most twice in the whole call. If you still cannot hear each other, say once that you're having trouble hearing them and they can call back or text this number, then wait quietly. Never repeat the same question again and again.
 
 Goodbye timing: never say "Have a good day" or close the conversation while the caller is still speaking or asking a question. Wait for a clear pause before wrapping up.
 
@@ -2227,7 +2231,9 @@ async function resolveJobSchedule(extracted, opts = {}) {
   // пишем в описание, а визит ставит мастер после звонка клиенту.
   const start = opts.noBooking ? null : parseScheduledAt(extracted);
   if (!start) {
-    return { fields: jobScheduleFields(extracted, durationMinutes) };
+    // При noBooking дату с временем не передаём: jobScheduleFields разобрал
+    // бы их заново и всё равно поставил визит со звонка секретаря.
+    return { fields: jobScheduleFields(opts.noBooking ? {} : extracted, durationMinutes) };
   }
   const check = await schedule.checkSlot(start.toDate(), {
     excludeJobId: opts.excludeJobId,
@@ -2583,10 +2589,12 @@ async function startAiReception(req, res, callSid, options = {}) {
   }
 
   if (alreadyAi && forceGather) {
+    // Сюда попадаем, когда живой голос сломался посреди звонка (Live рвался
+    // раз за разом): звонящий слышал обрыв, поэтому сначала извиняемся.
     sendTwiml(
       res,
       twimlGatherSpeech(req, {
-        say: 'Go ahead.',
+        say: 'Sorry, the line cut out for a second. Go ahead.',
         language: 'en',
       })
     );
@@ -3197,7 +3205,12 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
     const snap = await callsRef.doc(callSid).get();
     let data = snap.exists ? snap.data() || {} : {};
     const liveFailed = Boolean(data.aiReception && data.aiReception.liveFailed);
-    const callEnded = await isTwilioCallEnded(callSid, req.body.CallStatus);
+    // Релей сам закрыл поток: после «I can't hear you — call back or text»
+    // 30 секунд никто не говорил (решение FIX). Поток не поднимаем заново, а
+    // доводим звонок как завершённый: ответ без глаголов — и Twilio кладёт трубку.
+    const relayHangup = String((data.aiReception && data.aiReception.hangup) || '');
+    if (relayHangup) console.log(`aiRelayComplete: ${callSid} relay hung up (${relayHangup})`);
+    const callEnded = Boolean(relayHangup) || await isTwilioCallEnded(callSid, req.body.CallStatus);
     if (!callEnded && (errorCode || sessionStatus === 'failed' || liveFailed)) {
       if (liveFailed) {
         await callsRef.doc(callSid).set({ aiReception: { liveFailed: false } }, { merge: true });
@@ -3893,8 +3906,9 @@ Direction: ${direction === 'outbound' ? 'master called the client' : 'client cal
 Speakers: lines "${shopEn}:" / "${shopRu}:" are the shop (${answeredBy === 'master' ? 'the technician Artem' : 'the AI receptionist'}); "Client:" / "Клиент:" is the customer.
 - client_name: ONLY from what the customer said about themselves. A name in a shop line ("меня зовут Артём", "Artem speaking", the receptionist's name) is NOT the client. Unknown → null.
 - client_phone: 10 digits, default ${callerNumber || 'null'} if they did not give another
-- scheduled_date YYYY-MM-DD. tomorrow = next day after ${today}
+- scheduled_date YYYY-MM-DD, only if the customer named a day or date (tomorrow = next day after ${today}). "Whenever", "any time", "whatever suits the technician" → null. Never default to today.
 - scheduled_time HH:mm. "2" / "at 2" / "two" = 14:00 unless morning / a.m.
+- service_declined: a Freon / refrigerant question is a normal fridge or freezer repair — not declined.
 - appliance_type in Russian: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
 - Never invent address, brand, or model
 Return STRICT JSON only:
@@ -3922,8 +3936,10 @@ ${transcription || transcriptionEn || liveLabeled}`;
       console.warn(`extract from transcript(${callId}):`, error.message);
     }
     // Реплики мастерской и клиента раздельно: иначе «меня зовут Артём»
-    // мастера читалось как имя звонящего.
-    const transcriptHistory = voiceFacts.historyFromTranscript(transcription);
+    // мастера читалось как имя звонящего. История — по английской расшифровке:
+    // имя приходит латиницей («Brad»), а в русском переводе оно «Брэд», и
+    // проверка «имя звучало в разговоре» выбросила бы настоящее имя.
+    const transcriptHistory = voiceFacts.historyFromTranscript(transcriptionEn || transcription);
     extracted = voiceFacts.enrichExtracted(extracted, transcriptHistory, transcription);
 
     try {
@@ -4700,6 +4716,101 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
     res.json({ success: true, sid: message.sid, id: docRef.id });
   } catch (error) {
     console.error('sendSms error:', error.code || '', error.message);
+    res.status(error.statusCode || 500).json({ error: error.message, code: error.code || '' });
+  }
+});
+
+/**
+ * Сообщение, которое сервер придумал сам, лежит в `messages` со
+ * `status: 'awaiting_approval'` и клиенту не ушло. Здесь мастер решает его
+ * судьбу: `action: 'send'` — отдаём в Twilio прямо сейчас, `action: 'reject'` —
+ * помечаем отказ, и больше о нём никто не вспомнит.
+ */
+exports.approveOutbox = functions.https.onRequest(async (req, res) => {
+  if (handleOptions(req, res)) return;
+  setCors(res);
+  if (!(await requireAppUser(req, res))) return;
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'POST required' });
+    return;
+  }
+  const id = String((req.body || {}).id || '').trim();
+  const action = String((req.body || {}).action || '').trim() === 'send' ? 'send' : 'reject';
+  if (!id) {
+    res.status(400).json({ error: 'Требуется поле id' });
+    return;
+  }
+  const docRef = messagesRef.doc(id);
+
+  if (action === 'reject') {
+    await docRef.set(
+      {
+        approval: 'rejected',
+        status: 'rejected',
+        decidedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    res.json({ success: true, state: 'rejected' });
+    return;
+  }
+
+  if (!client) {
+    res.status(500).json({ error: 'Twilio не настроен (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN)' });
+    return;
+  }
+
+  // Захватываем документ транзакцией: двойной тап по «Отправить» не должен
+  // отправить клиенту два одинаковых SMS.
+  let data;
+  try {
+    data = await db.runTransaction(async (tx) => {
+      const snapshot = await tx.get(docRef);
+      if (!snapshot.exists) throw new Error('Сообщение не найдено');
+      const current = snapshot.data() || {};
+      if (current.approval !== 'pending' || current.status !== 'awaiting_approval') {
+        return null;
+      }
+      tx.update(docRef, { approval: 'approved', status: 'sending' });
+      return current;
+    });
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+    return;
+  }
+  if (!data) {
+    const current = (await docRef.get()).data() || {};
+    res.status(409).json({ error: 'Решение по этому сообщению уже принято', state: current.status || '' });
+    return;
+  }
+
+  try {
+    const message = await client.messages.create({
+      from: TWILIO_PHONE_NUMBER,
+      to: String(data.to || ''),
+      body: String(data.body || ''),
+      statusCallback: SMS_STATUS_CB,
+    });
+    await docRef.set(
+      {
+        sid: message.sid,
+        status: message.status,
+        decidedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    res.json({ success: true, sid: message.sid });
+  } catch (error) {
+    console.error('approveOutbox send error:', error.code || '', error.message);
+    // Назад в очередь: мастер увидит тот же пузырь и сможет повторить.
+    await docRef.set(
+      {
+        approval: 'pending',
+        status: 'awaiting_approval',
+        errorMsg: String(error.message || '').slice(0, 300),
+      },
+      { merge: true }
+    );
     res.status(error.statusCode || 500).json({ error: error.message, code: error.code || '' });
   }
 });

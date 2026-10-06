@@ -12,6 +12,7 @@ import '../jobs/create_job_screen.dart';
 import '../calls/call_screen.dart';
 import '../messages/conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../core/motion.dart';
 import '../../models/job.dart';
 import '../../shared/stale_routes.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
@@ -223,6 +224,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
 
   void _editClientDialog(Map<String, dynamic> currentData) {
     showModalBottomSheet(
+      sheetAnimationStyle: AppMotion.sheet,
       context: context,
       isScrollControlled: true,
       useRootNavigator: true,

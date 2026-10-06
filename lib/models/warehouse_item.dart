@@ -160,6 +160,69 @@ class WarehouseItem {
     return interchange.any((item) => normalizePart(item) == wanted);
   }
 
+  /// Все номера, по которым карточку ищут: свой артикул, модель, штрихкод
+  /// и то, что деталь заменяет. Номера на полке и на стикере пишут
+  /// по-разному, поэтому здесь они уже очищены.
+  List<String> get searchNumbers => searchNumbersOf({
+        'partNumber': partNumber,
+        'modelNumber': modelNumber,
+        'barcode': barcode,
+        'interchange': interchange,
+      });
+
+  /// То же по сырым полям документа — список склада работает с ними
+  /// напрямую, без модели.
+  static List<String> searchNumbersOf(Map<String, dynamic> data) {
+    final out = <String>{};
+    void add(Object? raw) {
+      final clean = normalizePart('${raw ?? ''}');
+      if (clean.length < 3) return;
+      out.add(clean);
+      // Пара WP… ↔ … на стикере не напечатана, но искать по ней будут.
+      for (final alt in localSupersessions(clean)) {
+        final norm = normalizePart(alt);
+        if (norm.length >= 3) out.add(norm);
+      }
+    }
+
+    add(data['partNumber']);
+    add(data['modelNumber']);
+    add(data['barcode']);
+    for (final number in parseInterchange(data['interchange'])) {
+      add(number);
+    }
+    return out.toList();
+  }
+
+  /// Короче трёх знаков номер не ищем: «10» совпало бы с половиной склада.
+  static const minNumberQuery = 3;
+
+  /// Лежит ли номер [query] среди [numbers]. Совпадение целиком, куском
+  /// (ищут 4392067 — на полке 4392067VP) и наоборот: набрали номер с
+  /// суффиксом из магазина, а записан он короче.
+  static bool numberMatches(String query, Iterable<String> numbers) {
+    final wanted = normalizePart(query);
+    if (wanted.length < minNumberQuery) return false;
+    for (final raw in numbers) {
+      final number = normalizePart(raw);
+      if (number.length < minNumberQuery) continue;
+      if (number.contains(wanted)) return true;
+      if (number.length >= 5 && wanted.contains(number)) return true;
+    }
+    return false;
+  }
+
+  /// Фильтр списка склада. Ищем по названию и по любому номеру карточки —
+  /// включая «Заменяет номера»: деталь часто записана под номером, который
+  /// заменяет тот, что набирают.
+  static bool matchesSearch(Map<String, dynamic> data, String query) {
+    final text = query.trim();
+    if (text.isEmpty) return true;
+    final name = '${data['name'] ?? ''}'.toUpperCase();
+    if (name.contains(text.toUpperCase())) return true;
+    return numberMatches(text, searchNumbersOf(data));
+  }
+
   /// Номера пишут по-разному: 285753A, 285753-A, WP285753 A. Для сравнения
   /// оставляем только буквы и цифры.
   static String normalizePart(String value) {

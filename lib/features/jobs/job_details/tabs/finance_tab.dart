@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/app_feedback.dart';
 import '../../../../core/constants.dart';
 import '../../../../core/l10n/app_locale.dart';
+import '../../../../core/motion.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/utils/number_input.dart';
 import '../../../../models/document_settings.dart';
@@ -455,6 +456,7 @@ class _FinanceTabState extends State<FinanceTab> {
 
   void _showCreateDocumentMenu() {
     showModalBottomSheet(
+      sheetAnimationStyle: AppMotion.sheet,
       context: context,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -780,39 +782,67 @@ class _FinanceTabState extends State<FinanceTab> {
                       ),
                     ),
                   )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: ctrl.builderItems.length,
-                    itemBuilder: (context, index) {
-                      final item = ctrl.builderItems[index];
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: ListTile(
-                          title: Text(item['name'] ?? 'Item'),
-                          subtitle: Text(
-                            '${item['qty']} × \$${_money(item['price']).toStringAsFixed(2)}',
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                '\$${(_money(item['qty'], 1) * _money(item['price'])).toStringAsFixed(2)}',
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.red),
-                                onPressed: () {
-                                  setState(() {
-                                    ctrl.builderItems.removeAt(index);
-                                  });
-                                  ctrl.notifyBuilderChanged();
-                                },
-                              ),
-                            ],
+                : Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            context.tr(
+                              'Нажмите на позицию, чтобы поправить имя, цену или количество',
+                              'Tap a line to change its name, price or qty',
+                            ),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
                           ),
                         ),
-                      );
-                    },
+                      ),
+                      Expanded(
+                        child: ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: ctrl.builderItems.length,
+                          itemBuilder: (context, index) {
+                            final item = ctrl.builderItems[index];
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              child: ListTile(
+                                onTap: () => _editBuilderItem(index),
+                                title: Text(item['name'] ?? 'Item'),
+                                subtitle: Text(
+                                  '${item['qty']} × \$${_money(item['price']).toStringAsFixed(2)}',
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      '\$${(_money(item['qty'], 1) * _money(item['price'])).toStringAsFixed(2)}',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.delete,
+                                        color: Colors.red,
+                                      ),
+                                      onPressed: () {
+                                        setState(() {
+                                          ctrl.builderItems.removeAt(index);
+                                        });
+                                        ctrl.notifyBuilderChanged();
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
           ),
           // Итоги
@@ -1076,9 +1106,10 @@ class _FinanceTabState extends State<FinanceTab> {
             final matches = query.length < 2
                 ? const <WarehouseItem>[]
                 : warehouse.where((item) {
+                    // По номеру ищем так же, как на складе: с «заменяет
+                    // номера» и без оглядки на дефисы в артикуле.
                     return item.name.toLowerCase().contains(query) ||
-                        item.partNumber.toLowerCase().contains(query) ||
-                        (item.modelNumber ?? '').toLowerCase().contains(query);
+                        WarehouseItem.numberMatches(raw, item.searchNumbers);
                   }).take(6).toList();
 
             final matchIds = {for (final item in matches) item.id};
@@ -1426,6 +1457,150 @@ class _FinanceTabState extends State<FinanceTab> {
     qtyCtrl.dispose();
   }
 
+  /// Правка уже добавленной позиции: имя, цена, количество.
+  ///
+  /// Связь со складом (`warehouseItemId`, себестоимость) не трогаем: деталь
+  /// физически та же, меняется только то, что увидит клиент в счёте. Цена и
+  /// количество выделяются на первый тап — обычно их перебивают целиком.
+  Future<Map<String, dynamic>?> _showEditItemDialog(
+    Map<String, dynamic> item,
+  ) async {
+    final nameCtrl = TextEditingController(
+      text: (item['name'] ?? '').toString(),
+    );
+    final priceCtrl = TextEditingController(
+      text: _money(item['price']).toStringAsFixed(2),
+    );
+    final qtyCtrl = TextEditingController(
+      text: '${_money(item['qty'], 1).toInt()}',
+    );
+    var priceFresh = true;
+    var qtyFresh = true;
+
+    final edited = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Edit item'),
+          scrollable: true,
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Name',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: TextField(
+                        controller: priceCtrl,
+                        keyboardType: TextInputType.number,
+                        onTap: () {
+                          if (!priceFresh) return;
+                          priceFresh = false;
+                          clearAutoNumber(priceCtrl);
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Price',
+                          prefixText: '\$ ',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextField(
+                        controller: qtyCtrl,
+                        keyboardType: TextInputType.number,
+                        onTap: () {
+                          if (!qtyFresh) return;
+                          qtyFresh = false;
+                          clearAutoNumber(qtyCtrl);
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Qty',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text('Отмена'.tr),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final name = nameCtrl.text.trim();
+                if (name.isEmpty) return;
+                Navigator.pop(dialogContext, {
+                  ...item,
+                  'name': name,
+                  'price': double.tryParse(priceCtrl.text) ?? 0,
+                  'qty': int.tryParse(qtyCtrl.text) ?? 1,
+                });
+              },
+              child: Text('Сохранить'.tr),
+            ),
+          ],
+        );
+      },
+    );
+    nameCtrl.dispose();
+    priceCtrl.dispose();
+    qtyCtrl.dispose();
+    return edited;
+  }
+
+  Future<void> _editBuilderItem(int index) async {
+    if (index < 0 || index >= ctrl.builderItems.length) return;
+    final edited = await _showEditItemDialog(ctrl.builderItems[index]);
+    if (edited == null || !mounted) return;
+    if (index >= ctrl.builderItems.length) return;
+    setState(() => ctrl.builderItems[index] = edited);
+    ctrl.notifyBuilderChanged();
+  }
+
+  /// Позицию уже сохранённого документа правим на месте. Склад доводим до
+  /// нового состава: иначе списанное количество разойдётся со счётом.
+  Future<void> _editDocumentItem(int docIndex, int itemIndex) async {
+    if (_busy) return;
+    if (docIndex < 0 || docIndex >= ctrl.documents.length) return;
+    final doc = Map<String, dynamic>.from(ctrl.documents[docIndex]);
+    final items = [
+      for (final item in doc['items'] as List? ?? [])
+        if (item is Map) Map<String, dynamic>.from(item),
+    ];
+    if (itemIndex < 0 || itemIndex >= items.length) return;
+    final edited = await _showEditItemDialog(items[itemIndex]);
+    if (edited == null || !mounted) return;
+    final nextItems = [...items];
+    nextItems[itemIndex] = edited;
+
+    setState(() => _busy = true);
+    try {
+      await WarehouseService.applyDocumentStockChange(
+        {...doc, 'items': items},
+        {...doc, 'items': nextItems},
+      );
+      await ctrl.updateDocument(docIndex, {...doc, 'items': nextItems});
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Widget _buildDocumentViewer() {
     if (ctrl.viewingDocumentIndex == null ||
         ctrl.viewingDocumentIndex! >= ctrl.documents.length) {
@@ -1457,6 +1632,12 @@ class _FinanceTabState extends State<FinanceTab> {
     final total = ctrl.calcTotal(subtotal, tax);
     final paid = ctrl.calcPaid(payments);
     final due = ctrl.calcDue(total, paid);
+
+    // Деньги уже прошли — состав счёта трогать нельзя: сумма разойдётся с
+    // оплатой и с тем, что лежит у клиента на руках. То же со сметой, из
+    // которой уже сделан счёт: правка не доедет до него.
+    final itemsEditable =
+        !isCancelled && payments.isEmpty && !_estimateConverted(doc);
 
     return ColoredBox(
       color: Colors.white,
@@ -1502,14 +1683,36 @@ class _FinanceTabState extends State<FinanceTab> {
               'Items',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
             ),
-            const SizedBox(height: 8),
-            ...items.map((item) {
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 6),
+              child: Text(
+                itemsEditable
+                    ? context.tr(
+                        'Нажмите на позицию, чтобы поправить имя, цену или количество',
+                        'Tap a line to change its name, price or qty',
+                      )
+                    : _itemsLockedReason(
+                        context,
+                        cancelled: isCancelled,
+                        paid: payments.isNotEmpty,
+                      ),
+                style: const TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+            ),
+            ...items.asMap().entries.map((entry) {
+              final item = entry.value;
               final name = (item['name'] ?? 'Item').toString();
               final qty = _money(item['qty'], 1);
               final price = _money(item['price']);
               return Card(
                 margin: const EdgeInsets.only(bottom: 8),
                 child: ListTile(
+                  onTap: itemsEditable && !_busy
+                      ? () => _editDocumentItem(
+                            ctrl.viewingDocumentIndex!,
+                            entry.key,
+                          )
+                      : null,
                   title: Text(name),
                   subtitle: Text('$qty × \$${price.toStringAsFixed(2)}'),
                   trailing: Text(
@@ -1714,6 +1917,23 @@ class _FinanceTabState extends State<FinanceTab> {
           ],
         ),
       );
+  }
+
+  String _itemsLockedReason(
+    BuildContext context, {
+    required bool cancelled,
+    required bool paid,
+  }) {
+    if (cancelled) {
+      return context.tr('Документ отменён — позиции не меняются',
+          'Cancelled — line items are locked');
+    }
+    if (paid) {
+      return context.tr('Оплата прошла — позиции не меняются',
+          'Paid — line items are locked');
+    }
+    return context.tr('Из сметы уже сделан счёт — позиции не меняются',
+        'Converted to an invoice — line items are locked');
   }
 
   String _stripeUrl(Map<String, dynamic> doc) {
@@ -2283,90 +2503,6 @@ class _FinanceTabState extends State<FinanceTab> {
     );
   }
 
-  Future<void> _sendPaidInvoicePdf(
-    int documentIndex, {
-    double? paidAmount,
-  }) async {
-    // Пункт 13: при ручном режиме чек сам не уходит. Владелец отправляет его
-    // кнопкой отправки документа, когда сочтёт нужным.
-    final config = await SettingsService.loadConfig();
-    if (SettingsService.readManualSmsApproval(config)) return;
-    for (var i = 0; i < 15; i++) {
-      if (documentIndex >= 0 && documentIndex < ctrl.documents.length) {
-        final paid = ctrl.calcPaid(
-          ctrl.documents[documentIndex]['payments'] ?? [],
-        );
-        if (paid > 0 || (paidAmount != null && paidAmount > 0)) break;
-      }
-      await Future.delayed(const Duration(milliseconds: 200));
-      if (!mounted) return;
-    }
-    if (documentIndex < 0 || documentIndex >= ctrl.documents.length) return;
-    final doc = ctrl.documents[documentIndex];
-    final items = doc['items'] as List? ?? [];
-    final subtotal = ctrl.calcSubtotal(items);
-    final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
-    final total = ctrl.calcTotal(subtotal, tax);
-    var paid = ctrl.calcPaid(doc['payments'] ?? []);
-    if (paidAmount != null && paidAmount > paid) paid = paidAmount;
-    final due = ctrl.calcDue(total, paid);
-    if (paid <= 0) return;
-
-    final ok = await DocumentTemplateService.sendPdfLinkQuietly(
-      data: DocumentSendData(
-        kind: 'receipt',
-        jobId: ctrl.jobId,
-        clientId: ctrl.clientId,
-        clientName: (ctrl.jobData['clientName'] ?? ctrl.contactName).toString(),
-        clientPhone: _smsPhone,
-        clientAddress:
-            (ctrl.jobData['clientAddress'] ?? ctrl.workAddress).toString(),
-        documentNumber: documentIndex + 1,
-        items: items,
-        subtotal: subtotal,
-        tax: tax,
-        taxRate: (doc['taxRate'] as num?)?.toDouble() ?? 0,
-        total: total,
-        paid: paid,
-        due: due,
-        payments: List<Map<String, dynamic>>.from(doc['payments'] ?? []),
-        subject: ctrl.workAddress.trim().isEmpty
-            ? ctrl.contactName
-            : ctrl.workAddress,
-        serviceDate: DateTime.tryParse((doc['createdAt'] ?? '').toString()),
-        clientEmail: ctrl.clientEmail,
-        clientCompany: (ctrl.jobData['companyName'] ?? '').toString(),
-        persistPdfUrl: (url) async {
-          if (documentIndex < 0 || documentIndex >= ctrl.documents.length) {
-            return;
-          }
-          final next = Map<String, dynamic>.from(ctrl.documents[documentIndex]);
-          next['pdfUrl'] = url;
-          await ctrl.updateDocument(documentIndex, next);
-        },
-        persistFields: (patch) async {
-          if (documentIndex < 0 || documentIndex >= ctrl.documents.length) {
-            return;
-          }
-          final next = Map<String, dynamic>.from(ctrl.documents[documentIndex]);
-          next.addAll(patch);
-          await ctrl.updateDocument(documentIndex, next);
-        },
-        pdfShortCode: (doc['pdfShortCode'] ?? '').toString().trim().isEmpty
-            ? null
-            : (doc['pdfShortCode'] ?? '').toString().trim(),
-        signatureUrl: _signatureUrl(doc),
-      ),
-    );
-    if (!mounted || ok) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Не удалось отправить ссылку на PDF'.tr),
-        backgroundColor: Colors.red,
-      ),
-    );
-  }
-
   Future<void> _runTapToPay(int documentIndex, {double? amount, double tip = 0}) async {
     if (_busy) return;
     if (documentIndex < 0 || documentIndex >= ctrl.documents.length) return;
@@ -2515,6 +2651,7 @@ class _FinanceTabState extends State<FinanceTab> {
     final amountCtrl = TextEditingController(text: maxAmount.toStringAsFixed(2));
 
     showModalBottomSheet<void>(
+      sheetAnimationStyle: AppMotion.sheet,
       context: context,
       isScrollControlled: true,
       useRootNavigator: true,
@@ -2765,9 +2902,10 @@ class _FinanceTabState extends State<FinanceTab> {
     if (!mounted) return;
     _inPayResult = true;
     try {
-      final sendFuture = success && documentIndex != null
-          ? _sendPaidInvoicePdf(documentIndex, paidAmount: amount)
-          : Future<void>.value();
+      // Чек после оплаты сам не уходит: ссылку на PDF отправляет владелец
+      // кнопкой отправки документа. Прежний тихий автопуск жил под флагом
+      // «Ручное подтверждение SMS» и при включённом флаге (а он был включён
+      // всегда) не срабатывал ни разу — флага больше нет, нет и автопуска.
       await showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -2815,7 +2953,6 @@ class _FinanceTabState extends State<FinanceTab> {
         );
       },
     );
-      await sendFuture;
       if (!mounted || !success) return;
       final paidFully = documentIndex != null &&
           documentIndex >= 0 &&

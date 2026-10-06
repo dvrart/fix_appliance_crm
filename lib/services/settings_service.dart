@@ -319,10 +319,6 @@ class SettingsService {
     return boolFlag(config, 'reminderSmsEnabled');
   }
 
-  static bool readManualSmsApproval(Map<String, dynamic> config) {
-    return boolFlag(config, 'manualSmsApproval');
-  }
-
   static const reminderOffsetKeys = ['48h', '24h', 'morning', '2h'];
 
   static List<String> readReminderOffsets(Map<String, dynamic> config) {

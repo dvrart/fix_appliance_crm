@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'constants.dart';
+import 'motion.dart';
 import 'ui_scale.dart';
 
 class AppTheme {
@@ -33,11 +34,11 @@ class AppTheme {
       splashFactory: InkRipple.splashFactory,
       pageTransitionsTheme: const PageTransitionsTheme(
         builders: {
-          TargetPlatform.android: _SmoothPageTransitionsBuilder(),
-          TargetPlatform.iOS: _SmoothPageTransitionsBuilder(),
-          TargetPlatform.windows: _SmoothPageTransitionsBuilder(),
-          TargetPlatform.linux: _SmoothPageTransitionsBuilder(),
-          TargetPlatform.macOS: _SmoothPageTransitionsBuilder(),
+          TargetPlatform.android: SoftPageTransitionsBuilder(),
+          TargetPlatform.iOS: SoftPageTransitionsBuilder(),
+          TargetPlatform.windows: SoftPageTransitionsBuilder(),
+          TargetPlatform.linux: SoftPageTransitionsBuilder(),
+          TargetPlatform.macOS: SoftPageTransitionsBuilder(),
         },
       ),
       scaffoldBackgroundColor: Colors.grey.shade100,
@@ -153,50 +154,19 @@ class AppTheme {
         activeTrackColor: brand,
         thumbColor: brand,
       ),
+      // Выделение текста — красное, вместе с ползунками. Синяя подсветка по
+      // умолчанию терялась на синих пузырях переписки. Material раздаёт это
+      // через `DefaultSelectionStyle`, поэтому красным становится выделение
+      // и в полях ввода, и в обычном тексте (`SelectionArea`, `LinkedText`).
+      textSelectionTheme: const TextSelectionThemeData(
+        selectionColor: Color(0x66E53935),
+        selectionHandleColor: Color(0xFFE53935),
+      ),
     );
     final themed = AppUiSettings.textThemeFor(fontId, base.textTheme);
     return base.copyWith(
       textTheme: themed,
       primaryTextTheme: AppUiSettings.textThemeFor(fontId, base.primaryTextTheme),
-    );
-  }
-}
-
-class _SmoothPageTransitionsBuilder extends PageTransitionsBuilder {
-  const _SmoothPageTransitionsBuilder();
-
-  @override
-  Duration get transitionDuration => const Duration(milliseconds: 380);
-
-  @override
-  Duration get reverseTransitionDuration => const Duration(milliseconds: 320);
-
-  @override
-  Widget buildTransitions<T>(
-    PageRoute<T> route,
-    BuildContext context,
-    Animation<double> animation,
-    Animation<double> secondaryAnimation,
-    Widget child,
-  ) {
-    final incoming = CurvedAnimation(
-      parent: animation,
-      curve: const Cubic(0.16, 1, 0.3, 1),
-      reverseCurve: Curves.easeInOutCubic,
-    );
-    // No secondary animation: the screen below stays still while the new
-    // screen slides in. Prevents the background from drifting left when a
-    // route is pushed on top (especially noticeable with opaque:false routes
-    // like the call screen).
-    return FadeTransition(
-      opacity: incoming,
-      child: SlideTransition(
-        position: Tween<Offset>(
-          begin: const Offset(0.055, 0),
-          end: Offset.zero,
-        ).animate(incoming),
-        child: child,
-      ),
     );
   }
 }

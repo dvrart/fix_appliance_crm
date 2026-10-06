@@ -229,8 +229,10 @@ void main() {
           ),
         ),
       );
+      // 7 подписок: заявки на проверку, два списка звонков, письма-заявки,
+      // SMS-заявки, недоставленные SMS и сообщения, ждущие отправки.
       await tester.pump();
-      expect(backend.paths.length, 6);
+      expect(backend.paths.length, 7);
       final ids = backend.paths.keys.toList();
       for (final id in ids) {
         backend.emit(id);
@@ -238,7 +240,7 @@ void main() {
       }
       rebuild(() {});
       await tester.pump();
-      expect(backend.paths.length, 6);
+      expect(backend.paths.length, 7);
       await tester.pumpWidget(const SizedBox());
       await tester.pump();
       expect(backend.active, isEmpty);

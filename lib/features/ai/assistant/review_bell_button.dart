@@ -33,8 +33,12 @@ class ReviewBellButton extends StatelessWidget {
     required List<SmsMessage> emailOffers,
     List<SmsMessage> smsOffers = const [],
     List<SmsMessage> failedSms = const [],
+    List<SmsMessage> awaitingSms = const [],
   }) {
-    var n = emailOffers.length + smsOffers.length + failedSms.length;
+    var n = emailOffers.length +
+        smsOffers.length +
+        failedSms.length +
+        awaitingSms.length;
     final seenJobIds = <String>{};
     // Count jobs with needsReview (legacy auto-created or email/website)
     for (final job in jobs) {
@@ -67,7 +71,8 @@ class ReviewBellButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
       builder:
-          (jobs, pending, processing, emailOffers, smsOffers, failedSms) {
+          (jobs, pending, processing, emailOffers, smsOffers, failedSms,
+              awaitingSms) {
         final count = inboxCount(
           jobs: jobs,
           pending: pending,
@@ -75,6 +80,7 @@ class ReviewBellButton extends StatelessWidget {
           emailOffers: emailOffers,
           smsOffers: smsOffers,
           failedSms: failedSms,
+          awaitingSms: awaitingSms,
         );
         return IconButton(
           tooltip: context.tr('Уведомления', 'Notifications'),
@@ -224,7 +230,8 @@ class ReviewBellPickleIcon extends StatelessWidget {
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
       builder:
-          (jobs, pending, processing, emailOffers, smsOffers, failedSms) {
+          (jobs, pending, processing, emailOffers, smsOffers, failedSms,
+              awaitingSms) {
         final count = ReviewBellButton.inboxCount(
           jobs: jobs,
           pending: pending,
@@ -232,6 +239,7 @@ class ReviewBellPickleIcon extends StatelessWidget {
           emailOffers: emailOffers,
           smsOffers: smsOffers,
           failedSms: failedSms,
+          awaitingSms: awaitingSms,
         );
         return Badge(
           isLabelVisible: count > 0,
@@ -413,6 +421,7 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
     required List<SmsMessage> emailOffers,
     required List<SmsMessage> smsOffers,
     List<SmsMessage> failedSms = const [],
+    List<SmsMessage> awaitingSms = const [],
   }) {
     final host = widget.hostContext;
     final items = <_InboxItem>[];
@@ -669,6 +678,34 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
       );
     }
 
+    // Сообщения, которые придумал сервер и которые клиенту ещё не ушли.
+    // Решение принимает мастер: тап открывает переписку с кнопками под
+    // текстом. «Очистить» здесь нет — молча потерять решение нельзя.
+    for (final message in awaitingSms) {
+      final phone = message.to.trim();
+      items.add(
+        _InboxItem(
+          icon: Icons.schedule_send_rounded,
+          color: const Color(0xFFF59E0B),
+          name: phone.isEmpty ? unknown : phone,
+          when: message.createdAt,
+          originLabel: context.tr('Ждёт отправки', 'Waiting to be sent'),
+          originIcon: Icons.outbox_rounded,
+          onTap: () {
+            unawaited(
+              _closeInboxThen(() async {
+                await ConversationScreen.open(
+                  host,
+                  phoneNumber: phone,
+                  clientId: message.clientId,
+                );
+              }),
+            );
+          },
+        ),
+      );
+    }
+
     // Sort by time: newest first
     items.sort(
       (a, b) => (b.when ?? DateTime(0)).compareTo(a.when ?? DateTime(0)),
@@ -736,7 +773,8 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
       builder:
-          (jobs, pendingAll, processing, emailOffers, smsOffers, failedSms) {
+          (jobs, pendingAll, processing, emailOffers, smsOffers, failedSms,
+              awaitingSms) {
         final items = _items(
           jobs: jobs,
           pending: pendingAll,
@@ -744,6 +782,7 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
           emailOffers: emailOffers,
           smsOffers: smsOffers,
           failedSms: failedSms,
+          awaitingSms: awaitingSms,
         );
         final width = MediaQuery.sizeOf(context).width;
         final columns = width >= 520 ? 4 : 3;
@@ -955,6 +994,7 @@ class _ReviewInboxStreams extends StatefulWidget {
     List<SmsMessage> emailOffers,
     List<SmsMessage> smsOffers,
     List<SmsMessage> failedSms,
+    List<SmsMessage> awaitingSms,
   ) builder;
 
   const _ReviewInboxStreams({required this.builder});
@@ -970,6 +1010,7 @@ class _ReviewInboxStreamsState extends State<_ReviewInboxStreams> {
   late final _emailOffers = SmsService.streamEmailOffers();
   late final _smsOffers = SmsService.streamSmsOffers();
   late final _failedSms = SmsService.streamFailedOutbound();
+  late final _awaitingSms = SmsService.streamAwaitingApproval();
 
   @override
   Widget build(BuildContext context) {
@@ -991,13 +1032,19 @@ class _ReviewInboxStreamsState extends State<_ReviewInboxStreams> {
                         return StreamBuilder<List<SmsMessage>>(
                           stream: _failedSms,
                           builder: (context, failedSnap) {
-                            return widget.builder(
-                              jobsSnap.data ?? const <Job>[],
-                              pendingSnap.data ?? const <CallRecord>[],
-                              processingSnap.data ?? const <CallRecord>[],
-                              offersSnap.data ?? const <SmsMessage>[],
-                              smsOffersSnap.data ?? const <SmsMessage>[],
-                              failedSnap.data ?? const <SmsMessage>[],
+                            return StreamBuilder<List<SmsMessage>>(
+                              stream: _awaitingSms,
+                              builder: (context, awaitingSnap) {
+                                return widget.builder(
+                                  jobsSnap.data ?? const <Job>[],
+                                  pendingSnap.data ?? const <CallRecord>[],
+                                  processingSnap.data ?? const <CallRecord>[],
+                                  offersSnap.data ?? const <SmsMessage>[],
+                                  smsOffersSnap.data ?? const <SmsMessage>[],
+                                  failedSnap.data ?? const <SmsMessage>[],
+                                  awaitingSnap.data ?? const <SmsMessage>[],
+                                );
+                              },
                             );
                           },
                         );

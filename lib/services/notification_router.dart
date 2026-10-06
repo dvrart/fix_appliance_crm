@@ -137,6 +137,22 @@ class NotificationRouter {
       return;
     }
 
+    // Сообщение ждёт решения «Отправить / Не отправлять». Кнопки живут под
+    // текстом в переписке, поэтому открываем её, а не карточку заявки, хотя
+    // jobId в уведомлении есть.
+    if (type == 'outbox') {
+      final client = await _clientFor(from: from, clientId: clientId);
+      if (!nav.mounted) return;
+      await ConversationScreen.open(
+        nav.context,
+        phoneNumber: from,
+        contactName: client?.fullName,
+        clientId: client?.id ?? clientId,
+        initialChannel: ConversationChannel.sms,
+      );
+      return;
+    }
+
     if (jobId.isNotEmpty) {
       final job = await JobService.getById(jobId);
       if (job != null) {

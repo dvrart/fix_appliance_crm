@@ -7,6 +7,7 @@ import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
 import '../../shared/widgets/unsaved_changes_dialog.dart';
+import '../../core/motion.dart';
 import '../../core/ui_scale.dart';
 import '../../models/client.dart';
 import '../../services/catalog_service.dart';
@@ -148,6 +149,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
     }
 
     showModalBottomSheet(
+      sheetAnimationStyle: AppMotion.sheet,
       context: context,
       isScrollControlled: true,
       isDismissible: false,

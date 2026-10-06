@@ -1,7 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import '../../../core/app_feedback.dart';
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
+import '../../../models/client.dart';
 import '../../../services/services.dart';
+import '../../clients/client_details_screen.dart';
 import '../../../shared/widgets/confirm_action_sheet.dart';
 import '../../../shared/widgets/unsaved_changes_dialog.dart';
 import '../../../shared/stale_routes.dart';
@@ -188,15 +192,129 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
       _tabController.index == 0 &&
       !_controller.hasUnsavedChanges;
 
+  Future<void> _openClientCard() async {
+    final ctrl = _controller;
+    var clientId = ctrl.clientId.trim();
+    final name = (ctrl.jobData['clientName'] ?? '').toString().trim();
+    final phone = (ctrl.jobData['clientPhone'] ?? '').toString().trim();
+    final address = (ctrl.jobData['clientAddress'] ?? '').toString().trim();
+    final email = ctrl.clientEmail.trim();
+
+    // Если заявка не привязана к карточке клиента — найти по телефону
+    // или создать новую карточку и сразу привязать к заявке.
+    if (clientId.isEmpty) {
+      Client? found;
+      if (phone.isNotEmpty) {
+        found = await ClientService.findByPhone(phone);
+      }
+      if (!mounted) return;
+
+      if (found != null) {
+        // Нашли существующего клиента (в т.ч. из корзины) — привязываем
+        clientId = found.id;
+      } else if (name.isNotEmpty || phone.isNotEmpty) {
+        // Создаём новую карточку из данных заявки
+        clientId = await ClientService.createOrUpdate(
+          fullName: name.isNotEmpty ? name : phone,
+          phone: phone,
+          address: address,
+          email: email.isEmpty ? null : email,
+        );
+      }
+      if (!mounted) return;
+
+      // Записываем clientId в заявку фоном
+      if (clientId.isNotEmpty) {
+        unawaited(JobService.update(ctrl.jobId, {'clientId': clientId}));
+      }
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ClientDetailsScreen(
+          clientId: clientId,
+          clientData: {
+            'name': name,
+            'fullName': name,
+            'phone': phone,
+            'address': address,
+            'email': email,
+          },
+        ),
+      ),
+    );
+  }
+
+  /// Шапка: имя клиента вместо названия техники — тап открывает карточку.
+  Widget _clientTitle() {
+    final name = (_controller.jobData['clientName'] ?? '').toString().trim();
+    return Tooltip(
+      message: 'Карточка клиента'.tr,
+      child: InkWell(
+        onTap: _openClientCard,
+        onLongPress: name.isNotEmpty
+            ? () => AppFeedback.copy(context, name)
+            : null,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(6, 4, 8, 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircleAvatar(
+                radius: 16,
+                backgroundColor: Colors.white.withValues(alpha: 0.18),
+                child: const Icon(Icons.person, color: Colors.white, size: 20),
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name.isEmpty ? 'Клиент'.tr : name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 17,
+                        height: 1.1,
+                      ),
+                    ),
+                    Text(
+                      'Карточка клиента'.tr,
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontSize: 11,
+                        height: 1.2,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white.withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 2),
+              Icon(
+                Icons.chevron_right,
+                size: 20,
+                color: Colors.white.withValues(alpha: 0.7),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final applianceType = trAny(widget.jobData['applianceType'] ?? 'Заявка');
-    final brand = widget.jobData['brand'] ?? '';
-    final title = brand.isNotEmpty ? '$applianceType $brand' : applianceType;
-
     return ListenableBuilder(
       listenable: _controller,
       builder: (context, _) {
+        final builder = _controller.financeMode == 'builder';
         return PopScope(
           canPop: _canPopJob,
           onPopInvokedWithResult: (didPop, result) {
@@ -205,60 +323,148 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
           },
           child: Scaffold(
             appBar: AppBar(
-        title: Text(
-          title,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        toolbarHeight: 44,
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
-        automaticallyImplyLeading: false,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.delete, color: Colors.red),
-            tooltip: 'Удалить заявку'.tr,
-            onPressed: _deleteJob,
+              // «Удалить» слева, карточка клиента справа — так попросил FIX.
+              leading: IconButton(
+                icon: const Icon(Icons.delete, color: Colors.red),
+                tooltip: 'Удалить заявку'.tr,
+                onPressed: _deleteJob,
+              ),
+              title: Align(
+                alignment: Alignment.centerRight,
+                child: _clientTitle(),
+              ),
+              titleSpacing: 4,
+              toolbarHeight: 52,
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              automaticallyImplyLeading: false,
+              // Вкладки — сверху, как папки в картотеке. Отдельной кнопки
+              // «Сохранить» нет: правки сохраняются по «Назад» — окно
+              // спросит «Подтвердить / Продолжить / Не сохранять».
+              bottom: builder
+                  ? null
+                  : _FolderTabs(controller: _tabController, onTap: _onJobTabTap),
+            ),
+            body: TabBarView(
+              controller: _tabController,
+              physics: builder ? const NeverScrollableScrollPhysics() : null,
+              children: [
+                DetailsTab(controller: _controller),
+                FinanceTab(controller: _controller),
+                ChatTab(controller: _controller),
+              ],
+            ),
           ),
-        ],
+        );
+      },
+    );
+  }
+}
+
+/// Вкладки-папки: открытая сливается с листом под ней, остальные — корешки.
+class _FolderTabs extends StatelessWidget implements PreferredSizeWidget {
+  final TabController controller;
+  final ValueChanged<int> onTap;
+
+  const _FolderTabs({required this.controller, required this.onTap});
+
+  static const double _height = 46;
+
+  @override
+  Size get preferredSize => const Size.fromHeight(_height);
+
+  @override
+  Widget build(BuildContext context) {
+    final sheet = Theme.of(context).scaffoldBackgroundColor;
+    final tabs = [
+      (icon: Icons.assignment_outlined, label: 'Детали'.tr),
+      (icon: Icons.payments_outlined, label: 'Финансы'.tr),
+      (icon: Icons.chat_bubble_outline, label: 'Чат'.tr),
+    ];
+    return SizedBox(
+      height: _height,
+      child: AnimatedBuilder(
+        animation: controller.animation!,
+        builder: (context, _) {
+          final position = controller.animation!.value;
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                for (var i = 0; i < tabs.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 4),
+                  Expanded(
+                    child: _folder(
+                      icon: tabs[i].icon,
+                      label: tabs[i].label,
+                      // 1 — открыта, 0 — нет; между ними — во время свайпа.
+                      openness: (1 - (position - i).abs()).clamp(0.0, 1.0),
+                      sheet: sheet,
+                      onTap: () {
+                        controller.animateTo(i);
+                        onTap(i);
+                      },
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          );
+        },
       ),
-      body: TabBarView(
-        controller: _tabController,
-        physics: _controller.financeMode == 'builder'
-            ? const NeverScrollableScrollPhysics()
-            : null,
-        children: [
-          DetailsTab(controller: _controller),
-          FinanceTab(controller: _controller),
-          ChatTab(controller: _controller),
-        ],
-      ),
-      // Внизу только вкладки — под большим пальцем. Отдельной кнопки
-      // «Сохранить» нет: правки сохраняются по «Назад» — окно спросит
-      // «Подтвердить / Продолжить / Не сохранять».
-      bottomNavigationBar: _controller.financeMode == 'builder'
-          ? null
-          : Material(
-              color: AppColors.primary,
-              child: SafeArea(
-                top: false,
-                child: TabBar(
-                    controller: _tabController,
-                    onTap: _onJobTabTap,
-                    indicatorColor: AppColors.accent,
-                    labelColor: AppColors.accent,
-                    unselectedLabelColor: Colors.white,
-                    labelStyle: const TextStyle(fontWeight: FontWeight.bold),
-                    tabs: [
-                      Tab(text: 'ДЕТАЛИ'.tr),
-                      Tab(text: 'ФИНАНСЫ'.tr),
-                      Tab(text: 'ЧАТ'.tr),
-                    ],
+    );
+  }
+
+  Widget _folder({
+    required IconData icon,
+    required String label,
+    required double openness,
+    required Color sheet,
+    required VoidCallback onTap,
+  }) {
+    final bg = Color.lerp(
+      Colors.white.withValues(alpha: 0.12),
+      sheet,
+      openness,
+    )!;
+    final fg = Color.lerp(
+      Colors.white.withValues(alpha: 0.85),
+      AppColors.primary,
+      openness,
+    )!;
+    const radius = BorderRadius.vertical(top: Radius.circular(12));
+    return Material(
+      color: bg,
+      borderRadius: radius,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: radius,
+        child: SizedBox(
+          height: 34 + 6 * openness,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 18, color: fg),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: fg,
+                    fontSize: 14,
+                    fontWeight: openness > 0.5
+                        ? FontWeight.w800
+                        : FontWeight.w600,
                   ),
                 ),
               ),
-    ),
-        );
-      },
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

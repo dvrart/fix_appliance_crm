@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../../core/app_feedback.dart';
 import '../../services/services.dart';
 import 'conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
@@ -26,6 +27,16 @@ class _GlobalSmsListenerState extends State<GlobalSmsListener> {
   final Set<String> _seenIds = {};
   final DateTime _startedAt = DateTime.now();
   SmsMessage? _banner;
+  Timer? _bannerHide;
+
+  void _setBanner(SmsMessage? banner) {
+    _bannerHide?.cancel();
+    setState(() => _banner = banner);
+    if (banner == null) return;
+    _bannerHide = Timer(AppFeedback.noticeDuration, () {
+      if (mounted && _banner?.id == banner.id) setState(() => _banner = null);
+    });
+  }
 
   @override
   void initState() {
@@ -64,9 +75,7 @@ class _GlobalSmsListenerState extends State<GlobalSmsListener> {
       }
     }
 
-    if (banner != _banner && mounted) {
-      setState(() => _banner = banner);
-    }
+    if (banner != _banner && mounted) _setBanner(banner);
   }
 
   bool _isVisitConfirmReply(SmsMessage message) {
@@ -98,7 +107,7 @@ class _GlobalSmsListenerState extends State<GlobalSmsListener> {
   void _openConversation(SmsMessage message) {
     final navigator = widget.navigatorKey.currentState;
     if (navigator == null) return;
-    setState(() => _banner = null);
+    _setBanner(null);
     SmsService.markConversationRead(
       message.isEmail ? '' : message.from,
       email: message.isEmail ? message.counterpartEmail : null,
@@ -117,6 +126,7 @@ class _GlobalSmsListenerState extends State<GlobalSmsListener> {
   @override
   void dispose() {
     _subscription?.cancel();
+    _bannerHide?.cancel();
     super.dispose();
   }
 
@@ -186,7 +196,7 @@ class _GlobalSmsListenerState extends State<GlobalSmsListener> {
                         ),
                         IconButton(
                           icon: const Icon(Icons.close, color: Color(0xFF1A1A1A)),
-                          onPressed: () => setState(() => _banner = null),
+                          onPressed: () => _setBanner(null),
                         ),
                       ],
                     ),

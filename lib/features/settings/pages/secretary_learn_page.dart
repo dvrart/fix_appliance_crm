@@ -247,14 +247,54 @@ class _LessonListTab extends StatelessWidget {
                 fontSize: 13,
               ),
             ),
-            TextButton.icon(
-              onPressed: () async {
-                final pack =
-                    items.map((item) => item.agentPack()).join('\n\n---\n\n');
-                await SecretaryLearnPage.copyPack(context, pack);
-              },
-              icon: const Icon(Icons.copy_all_outlined, size: 18),
-              label: Text(context.tr('Скопировать все', 'Copy all')),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton.icon(
+                  onPressed: () async {
+                    // Capture everything that touches context BEFORE any await.
+                    final messenger = ScaffoldMessenger.of(context);
+                    final count = items.length;
+                    final doneMsg = context.tr(
+                      'Удалено $count записей',
+                      'Deleted $count records',
+                    );
+
+                    final ok = await showConfirmCancelSheet(
+                      context,
+                      title: context.tr(
+                        'Удалить все записи?',
+                        'Delete all records?',
+                      ),
+                      message: context.tr(
+                        'Будет удалено $count записей. Это действие нельзя отменить.',
+                        '$count records will be deleted. This cannot be undone.',
+                      ),
+                      confirmLabel: context.tr('Удалить', 'Delete'),
+                      cancelLabel: context.tr('Отмена', 'Cancel'),
+                    );
+                    if (!ok) return;
+
+                    await SecretaryLearnService.deleteAll(items);
+                    messenger.showSnackBar(SnackBar(content: Text(doneMsg)));
+                  },
+                  icon: const Icon(Icons.delete_outline,
+                      size: 18, color: Colors.red),
+                  label: Text(
+                    context.tr('Удалить все', 'Delete all'),
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () async {
+                    final pack =
+                        items.map((item) => item.agentPack()).join('\n\n---\n\n');
+                    await SecretaryLearnPage.copyPack(context, pack);
+                  },
+                  icon: const Icon(Icons.copy_all_outlined, size: 18),
+                  label: Text(context.tr('Скопировать все', 'Copy all')),
+                ),
+              ],
             ),
           ],
         ),

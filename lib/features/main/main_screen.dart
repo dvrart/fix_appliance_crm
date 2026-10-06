@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../core/motion.dart';
 import '../../core/ui_scale.dart';
 import '../../shared/widgets/custom_drawer.dart';
 import '../../shared/unsaved_navigation_gate.dart';
@@ -385,20 +386,24 @@ class _MainScreenState extends State<MainScreen>
       pageBuilder: (context, animation, secondary) {
         return const CreateJobScreen();
       },
-      transitionDuration: const Duration(milliseconds: 380),
-      reverseTransitionDuration: const Duration(milliseconds: 320),
+      transitionDuration: AppMotion.pageIn,
+      reverseTransitionDuration: AppMotion.pageOut,
       transitionsBuilder: (context, animation, secondary, child) {
         final curved = CurvedAnimation(
           parent: animation,
-          curve: const Cubic(0.16, 1, 0.3, 1),
-          reverseCurve: Curves.easeInOutCubic,
+          curve: AppMotion.enter,
+          reverseCurve: AppMotion.exit,
         );
-        return SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, 1),
-            end: Offset.zero,
-          ).animate(curved),
-          child: child,
+        // Затухание вдогонку подъёму: экран не «вылетает» снизу, а проявляется.
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 1),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          ),
         );
       },
     );

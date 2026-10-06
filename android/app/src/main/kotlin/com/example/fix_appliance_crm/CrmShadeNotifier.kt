@@ -232,7 +232,8 @@ object CrmShadeNotifier {
         type == "visit_confirm" || type == "estimate_confirm" ||
             type == "visit_soon" || type == "on_the_way" ||
             type == "leave_status" || type == "morning" ||
-            type == "evening" || type == "secretary_lesson" -> "🔔"
+            type == "evening" || type == "secretary_lesson" ||
+            type == "outbox" -> "🔔"
         else -> "💬"
     }
 
@@ -321,7 +322,8 @@ object CrmShadeNotifier {
     private fun channelFor(type: String, source: String): String = when {
         type == "email" || type == "email_offer" || type == "shipment" ||
             (type == "job" && (source == "email" || source == "website")) -> AppNotificationChannels.EMAIL
-        type == "visit_confirm" || type == "estimate_confirm" -> AppNotificationChannels.VISIT_CONFIRM
+        type == "visit_confirm" || type == "estimate_confirm" ||
+            type == "outbox" -> AppNotificationChannels.VISIT_CONFIRM
         type == "secretary_lesson" -> AppNotificationChannels.SECRETARY_LEARN
         type == "visit_soon" -> AppNotificationChannels.VISIT_SOON
         type == "on_the_way" || type == "leave_status" -> AppNotificationChannels.ON_WAY

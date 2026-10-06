@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../core/motion.dart';
 import '../../core/utils/app_date_picker.dart';
 import '../../core/utils/thumb_image.dart';
 import '../../services/ai_service.dart';
@@ -22,6 +23,7 @@ import '../calls/call_screen.dart';
 import '../clients/client_details_screen.dart';
 import '../clients/edit_client_sheet.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../shared/widgets/linked_text.dart';
 import '../../shared/widgets/selection_action_bar.dart';
 import '../../services/error_log_service.dart';
 
@@ -372,12 +374,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final Map<String, List<SmsMessage>> _threadCache = {};
   late Stream<List<SmsMessage>> _messagesStream;
   late Stream<List<ScheduledMessage>> _scheduledStream;
-  String? _lastJumpId;
 
   String get _threadKey => widget.websiteInbox
       ? 'website-email'
       : '$_channel|$_phone|$_email';
   final Set<String> _selectedIds = {};
+  /// Сообщения, по которым прямо сейчас уходит решение «отправить / не надо».
+  final Set<String> _decidingIds = {};
   List<String> _visibleIds = const [];
   Timer? _translateDebounce;
 
@@ -480,7 +483,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       email: _hasEmail ? _email : null,
       clientId: widget.clientId,
     );
-    _lastJumpId = null;
     _selectedIds.clear();
   }
 
@@ -728,15 +730,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
             ..addAll(pending);
         });
       } else {
-        Future.delayed(const Duration(milliseconds: 200), () {
-          if (_scrollController.hasClients) {
-            _scrollController.animateTo(
-              _scrollController.position.maxScrollExtent,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOut,
-            );
-          }
-        });
+        // Лента перевёрнута: ноль — это низ. Если мастер читал старое,
+        // своё отправленное всё равно показываем.
+        if (_scrollController.hasClients && _scrollController.offset > 0) {
+          _scrollController.animateTo(
+            0,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
       }
     } catch (e) {
       if (!mounted) return;
@@ -755,6 +757,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   Future<void> _pickAttachment() async {
     showModalBottomSheet<void>(
+      sheetAnimationStyle: AppMotion.sheet,
       context: context,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -1212,23 +1215,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
               }
 
               _visibleIds = [for (final message in messages) message.id];
-              final lastId = messages.last.id;
-              if (lastId != _lastJumpId) {
-                _lastJumpId = lastId;
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (_scrollController.hasClients) {
-                    _scrollController.jumpTo(
-                      _scrollController.position.maxScrollExtent,
-                    );
-                  }
-                });
-              }
 
+              // Лента перевёрнута: offset 0 — это низ, последнее сообщение.
+              // Так низ держится сам, и прокрутку к нему звать не надо.
+              // Раньше здесь был jumpTo(maxScrollExtent) в postFrame: у
+              // ListView.builder до раскладки всех пузырей maxScrollExtent —
+              // грубая оценка (у нас 8173 против настоящих 5452), прыжок
+              // уезжал за конец, и BouncingScrollPhysics потом секунду
+              // медленно подтягивала ленту обратно — это и был рывок. Любая
+              // смена высоты выше экрана (картинка догрузилась, появился
+              // «Перевод…») запускала то же самое заново.
               return ListView.builder(
                 controller: _scrollController,
+                reverse: true,
                 padding: const EdgeInsets.all(16),
                 itemCount: messages.length,
-                itemBuilder: (context, index) => _buildBubble(messages[index]),
+                itemBuilder: (context, index) =>
+                    _buildBubble(messages[messages.length - 1 - index]),
               );
             },
           ),
@@ -1306,8 +1309,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   Widget _buildBubble(SmsMessage message) {
     final isOutbound = message.isOutbound;
+    // Сообщение, которое придумал сервер, ждёт решения мастера. Рисуем его
+    // не синим «отправлено», а жёлтым черновиком с кнопками — иначе
+    // неотправленный текст выглядит в переписке как ушедший клиенту.
+    final waiting = message.awaitingApproval;
+    final refused = message.sendingRejected;
+    final onDark = isOutbound && !waiting && !refused;
     final selected = _selectedIds.contains(message.id);
-    return GestureDetector(
+    // Долгое нажатие выделяет сообщение, двойное касание по тексту — слова
+    // внутри него. Порог долгого нажатия укорочен, иначе жест забирает себе
+    // выделение текста (см. QuickLongPress).
+    return QuickLongPress(
       onLongPress: () => _toggleSelected(message.id),
       onTap: _selecting ? () => _toggleSelected(message.id) : null,
       child: Align(
@@ -1327,8 +1339,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
         decoration: BoxDecoration(
           color: selected
-              ? (isOutbound ? const Color(0xFF0D47A1) : const Color(0xFFE3F2FD))
-              : (isOutbound ? AppColors.primary : Colors.white),
+              ? (onDark ? const Color(0xFF0D47A1) : const Color(0xFFE3F2FD))
+              : waiting
+                  ? const Color(0xFFFFF8E1)
+                  : refused
+                      ? const Color(0xFFF1F1F1)
+                      : (isOutbound ? AppColors.primary : Colors.white),
+          border: waiting
+              ? Border.all(color: Colors.orange.shade300, width: 1.5)
+              : null,
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(14),
             topRight: const Radius.circular(14),
@@ -1343,24 +1362,42 @@ class _ConversationScreenState extends State<ConversationScreen> {
             Row(
               children: [
                 Icon(
-                  message.isEmail ? Icons.email : Icons.sms,
+                  waiting
+                      ? Icons.schedule_send_rounded
+                      : refused
+                          ? Icons.block_rounded
+                          : (message.isEmail ? Icons.email : Icons.sms),
                   size: 14,
-                  color: isOutbound
+                  color: onDark
                       ? Colors.white70
-                      : (message.isEmail ? const Color(0xFFEA4335) : Colors.indigo),
+                      : waiting
+                          ? Colors.orange.shade800
+                          : refused
+                              ? Colors.grey.shade600
+                              : (message.isEmail
+                                  ? const Color(0xFFEA4335)
+                                  : Colors.indigo),
                 ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    message.isEmail
+                    waiting
+                        ? 'Ждёт вашего разрешения'.tr
+                        : refused
+                            ? 'Не отправлено'.tr
+                            : message.isEmail
                         ? (isOutbound
                             ? '${'Кому'.tr}: ${message.toEmail.isNotEmpty ? message.toEmail : message.to}'
                             : '${'От'.tr}: ${message.fromEmail.isNotEmpty ? message.fromEmail : message.from}')
                         : (isOutbound ? 'SMS'.tr : '${'От'.tr}: ${message.from}'),
                     style: TextStyle(
-                      color: isOutbound ? Colors.white70 : Colors.grey.shade600,
+                      color: onDark
+                          ? Colors.white70
+                          : waiting
+                              ? Colors.orange.shade900
+                              : Colors.grey.shade600,
                       fontSize: 11,
-                      fontWeight: FontWeight.w600,
+                      fontWeight: waiting ? FontWeight.w800 : FontWeight.w600,
                     ),
                   ),
                 ),
@@ -1371,7 +1408,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               Text(
                 message.subject.trim(),
                 style: TextStyle(
-                  color: isOutbound ? Colors.white : Colors.black87,
+                  color: onDark ? Colors.white : Colors.black87,
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
                 ),
@@ -1386,7 +1423,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     for (final url in message.mediaUrls)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 6),
-                        child: _buildMediaPreview(url, isOutbound),
+                        child: _buildMediaPreview(url, onDark),
                       ),
                   ],
                 ),
@@ -1426,7 +1463,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
             if (message.body.trim().isNotEmpty)
               _TranslatedMessageBody(
                 message: message,
-                isOutbound: isOutbound,
+                isOutbound: onDark,
+                // Пока идёт выделение сообщений, нажатия забирают галочки.
+                interactive: !_selecting,
               ),
             if (message.extractedData != null &&
                 (message.extractedData!['model'] != null ||
@@ -1442,12 +1481,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     if (message.jobId != null) 'Добавлено в заявку'.tr,
                   ].join(' · '),
                   style: TextStyle(
-                    color: isOutbound ? Colors.white70 : AppColors.primary,
+                    color: onDark ? Colors.white70 : AppColors.primary,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
+            if (waiting) _approvalButtons(message),
             // Оператор мог зарезать SMS уже после отправки (Twilio 30007).
             // Без этой пометки такое сообщение выглядело доставленным.
             if (message.deliveryFailed) ...[
@@ -1487,7 +1527,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               child: Text(
                 message.createdAt != null ? DateFormat('HH:mm').format(message.createdAt!) : '',
                 style: TextStyle(
-                  color: isOutbound ? Colors.white70 : Colors.grey.shade500,
+                  color: onDark ? Colors.white70 : Colors.grey.shade500,
                   fontSize: 11,
                 ),
               ),
@@ -1505,6 +1545,70 @@ class _ConversationScreenState extends State<ConversationScreen> {
       ),
     ),
     );
+  }
+
+  /// «Отправить» / «Не отправлять» под текстом, который придумал сервер.
+  /// Пока решение не принято, клиенту ничего не ушло.
+  Widget _approvalButtons(SmsMessage message) {
+    final busy = _decidingIds.contains(message.id);
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: ElevatedButton.icon(
+              onPressed: busy ? null : () => _decideOutbox(message, send: true),
+              icon: const Icon(Icons.send_rounded, size: 18),
+              label: Text('Отправить'.tr),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF22C55E),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 10),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: ElevatedButton.icon(
+              onPressed: busy ? null : () => _decideOutbox(message, send: false),
+              icon: const Icon(Icons.close_rounded, size: 18),
+              label: Text('Не отправлять'.tr),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE53935),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 10),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _decideOutbox(SmsMessage message, {required bool send}) async {
+    if (_decidingIds.contains(message.id)) return;
+    AppFeedback.haptic();
+    setState(() => _decidingIds.add(message.id));
+    try {
+      final ok = await SmsService.decideOutbox(message.id, send: send);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ok
+                ? (send
+                    ? 'Сообщение отправлено'.tr
+                    : 'Сообщение не отправлено'.tr)
+                : SmsService.failureText(),
+          ),
+          backgroundColor: ok
+              ? (send ? Colors.green : Colors.grey.shade700)
+              : Colors.orange.shade800,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _decidingIds.remove(message.id));
+    }
   }
 
   Widget _buildMediaPreview(String url, bool isOutbound) {
@@ -2231,10 +2335,12 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
 class _TranslatedMessageBody extends StatefulWidget {
   final SmsMessage message;
   final bool isOutbound;
+  final bool interactive;
 
   const _TranslatedMessageBody({
     required this.message,
     required this.isOutbound,
+    this.interactive = true,
   });
 
   @override
@@ -2317,14 +2423,16 @@ class _TranslatedMessageBodyState extends State<_TranslatedMessageBody> {
               ),
             ),
           ),
-        Text(
+        LinkedText(
           _display,
+          interactive: widget.interactive,
           style: TextStyle(color: color, fontSize: 15),
         ),
         if (_original != null && _original!.trim() != _display.trim()) ...[
           const SizedBox(height: 6),
-          Text(
+          LinkedText(
             _original!,
+            interactive: widget.interactive,
             style: TextStyle(
               color: widget.isOutbound ? Colors.white70 : Colors.black54,
               fontSize: 11,

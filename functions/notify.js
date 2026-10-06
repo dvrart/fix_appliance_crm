@@ -25,7 +25,9 @@ function channelFor(data) {
   ) {
     return 'email_messages';
   }
-  if (type === 'visit_confirm' || type === 'estimate_confirm') return 'visit_confirm';
+  if (type === 'visit_confirm' || type === 'estimate_confirm' || type === 'outbox') {
+    return 'visit_confirm';
+  }
   if (type === 'secretary_lesson') return 'secretary_learn';
   if (type === 'visit_soon') return 'visit_soon';
   if (type === 'on_the_way' || type === 'leave_status') return 'on_the_way';

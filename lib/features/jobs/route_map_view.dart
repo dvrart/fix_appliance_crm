@@ -71,11 +71,7 @@ class _RouteMapViewState extends State<RouteMapView> {
         : RouteMapChrome(
             distanceText: distance,
             applyTimes: _applyTimesFromRoute,
-            openMaps: () {
-              MapsService.openRouteInMaps(
-                _orderedJobs.map((j) => j.workAddress).toList(),
-              );
-            },
+            openMaps: _openInMaps,
             refresh: _loadRoute,
           );
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -120,7 +116,7 @@ class _RouteMapViewState extends State<RouteMapView> {
     });
 
     final jobsWithAddress = widget.jobs
-        .where((j) => j.workAddress.trim().isNotEmpty)
+        .where((j) => MapsService.hasRoutableAddress(j.workAddress))
         .toList();
     _skippedCount = widget.jobs.length - jobsWithAddress.length;
     _orderedJobs = jobsWithAddress;
@@ -178,6 +174,30 @@ class _RouteMapViewState extends State<RouteMapView> {
     if (!mounted) return;
     _notifyChrome();
     setState(() => _loading = false);
+  }
+
+  /// Google Maps берёт не больше девяти промежуточных точек — об остальных
+  /// предупреждаем, иначе они молча выпадут из маршрута.
+  Future<void> _openInMaps() async {
+    final addresses = _orderedJobs.map((j) => j.workAddress).toList();
+    final extra = addresses.length - (MapsService.maxMapsWaypoints + 1);
+    final opened = await MapsService.openRouteInMaps(addresses);
+    if (!mounted) return;
+    if (!opened) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Google Maps не нашла эти адреса'.tr)),
+      );
+      return;
+    }
+    if (extra > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '$extra ${'остановок не влезли в Google Maps — она берёт девять'.tr}',
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> _applyTimesFromRoute() async {
@@ -496,11 +516,7 @@ class _RouteMapViewState extends State<RouteMapView> {
                     _mapAction(
                       icon: Icons.map_outlined,
                       tooltip: 'Открыть в Google Maps'.tr,
-                      onTap: () {
-                        MapsService.openRouteInMaps(
-                          _orderedJobs.map((j) => j.workAddress).toList(),
-                        );
-                      },
+                      onTap: _openInMaps,
                     ),
                     const SizedBox(height: 8),
                     _mapAction(

@@ -17,6 +17,7 @@ import '../../services/message_translate_service.dart';
 import '../../services/secretary_learn_service.dart';
 import '../../services/twilio_service.dart';
 import '../../shared/widgets/call_transcript_chat.dart';
+import '../../shared/widgets/linked_text.dart';
 import '../ai/job_preview_screen.dart';
 import '../jobs/job_details/editors/call_recording_page.dart';
 import '../jobs/job_details/job_details_screen.dart';
@@ -537,7 +538,7 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
           const SizedBox(height: 12),
           _SectionCard(
             title: context.tr('Коротко о звонке', 'Call summary'),
-            child: Text(_summary, style: const TextStyle(height: 1.45)),
+            child: LinkedText(_summary, style: const TextStyle(height: 1.45)),
           ),
         ],
         const SizedBox(height: 12),
@@ -803,7 +804,7 @@ class _ProblemCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           if (!hasProblem)
-            Text(
+            LinkedText(
               (report?.okRu ?? '').trim().isNotEmpty
                   ? report!.okRu
                   : context.tr(
@@ -877,7 +878,7 @@ class _ProblemCard extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 4),
-        Text(text, style: const TextStyle(height: 1.35, fontSize: 15)),
+        LinkedText(text, style: const TextStyle(height: 1.35, fontSize: 15)),
       ],
     );
   }

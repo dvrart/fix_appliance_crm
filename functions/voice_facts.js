@@ -16,15 +16,24 @@ const VOICE_FAREWELL_UK =
 const VOICE_FAREWELL_ES =
   'Que esté bien, adiós. Nuestro técnico se comunicará con usted lo antes posible.';
 
+const VOICE_CLARIFY_RULES = `Names and addresses must be right — the technician drives there and calls by that name. "Do not re-ask" covers things they said clearly; it does NOT cover a name, street, house number, city or postal code you did not catch for sure.
+- Unsure, muffled, unusual, or it sounds like a mishearing (odd word, not a real street, number cut off): ask again right away, lightly — "Sorry, the line cut out — what was the street again?"
+- Still unclear after that, or an uncommon name or street: ask them to spell it — "Could you spell that for me?" — then read the spelling back letter by letter once ("S-Z-U-B-A, right?").
+- If they correct you, take the correction, confirm once in a few words, and move on. Never argue about their own name or street.
+- Confirm a house number digit by digit if it was long or garbled ("one-four-two-seven?"). Postal code: read it back in groups ("N3T 5L4?").
+- Do not spell back common names or streets you heard clearly. Never guess or invent a spelling.`;
+
 const VOICE_CALL_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
+${VOICE_CLARIFY_RULES}
 Never pushy: one repair question per reply at most, and only when it fits. Off-topic chat gets a human answer first — the repair comes back once, lightly, when the moment opens. If they need to think or want to call back later, accept warmly and stop collecting.
 Visit days, hours, and prices are in the owner rules.
 You do NOT book visits and cannot see the calendar. Ask what day and time would suit them, note it, and say the technician will contact them to set the exact time. Never confirm, promise, or propose a slot, and never say a time is free or taken.
 When you have enough, or they want a callback: pass it to the tech, photo of the model sticker, anything else. If they say no: Have a good day. Do not hang up.`;
 
-const EXTRACT_CARD_RULES = `Keep street, city, unit, and postal code in the original English/Canadian spelling. Never translate or transliterate into Russian (write "King Street", not "Кинг-стрит"; "Toronto", not "Торонто"). Person names stay in English as spoken. client_name is ONLY the customer's own name — the person who calls or writes in. Never the shop side: not the technician (Artem), not the receptionist or AI, not a name the shop used to introduce itself ("my name is…", "…speaking"), not the person the customer asks for. If the customer never said their own name, client_name=null. problem_description is ONLY the appliance fault and model number — never the SMS, email, or call transcript. client_email is the customer's email from the letter body, not a booking-agency From: address.`;
+const EXTRACT_CARD_RULES = `Keep street, city, unit, and postal code in the original English/Canadian spelling. Never translate or transliterate into Russian (write "King Street", not "Кинг-стрит"; "Toronto", not "Торонто"). Person names stay in English as spoken. If the customer spelled a name, street or city letter by letter ("S-Z-U-B-A"), or corrected a mishearing, use the spelled / corrected version — the latest correction wins over the first guess. client_name is ONLY the customer's own name — the person who calls or writes in. Never the shop side: not the technician (Artem), not the receptionist or AI (Sarah), not a name the shop used to introduce itself ("my name is…", "this is…", "…speaking"), not the person the customer asks for. Never an ordinary word or pronoun (she, ready, here, at). If the customer never said their own name, client_name=null. problem_description is ONLY the appliance fault and model number — never the SMS, email, or call transcript. client_email is the customer's email from the letter body, not a booking-agency From: address.`;
 
 const VOICE_LIVE_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
+${VOICE_CLARIFY_RULES}
 Never pushy: one repair question per reply at most, and only when it fits. Off-topic chat gets a human answer first — the repair comes back once, lightly, when the moment opens. If they need to think or want to call back later, accept warmly and stop collecting.
 Visit days and hours are in the owner rules.
 You do NOT book visits and cannot see the calendar. Ask what day and time would suit them, note it, and say the technician will contact them to set the exact time. Never confirm, promise, or propose a slot, and never say a time is free or taken.
@@ -59,6 +68,27 @@ const NAME_STOP = new Set([
   'tenant', 'customer', 'client', 'caller', 'husband', 'wife', 'mom', 'dad',
   'mother', 'father', 'son', 'daughter', 'neighbour', 'neighbor', 'company',
   'appliance', 'service', 'repair', 'warranty', 'insurance',
+  // Местоимения, предлоги и служебные слова. Секретарь сказала «this is she
+  // speaking» — в CRM появился клиент «She»; из «…look at something new»
+  // получилось имя «At»; «Are you ready?» уехало в звонок как имя «Ready».
+  'she', 'he', 'her', 'him', 'his', 'hers', 'they', 'them', 'their', 'it',
+  'its', 'we', 'us', 'myself', 'yourself', 'at', 'on', 'in', 'to', 'of', 'by',
+  'as', 'an', 'is', 'are', 'am', 'be', 'do', 'does', 'did', 'go', 'up', 'out',
+  'if', 'or', 'but', 'into', 'off', 'over', 'ready', 'busy', 'free', 'new',
+  'old', 'same', 'else', 'something', 'anything', 'nothing', 'everything',
+  'someone', 'anyone', 'who', 'why', 'where', 'when', 'which', 'whose', 'whom',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  // Что обычно идёт после «I'm / this is / it's» вместо имени («this is my
+  // dryer», «I'm gonna», «I'm afraid»).
+  'my', 'gonna', 'wanna', 'gotta', 'getting', 'thinking', 'hoping', 'planning',
+  'waiting', 'working', 'driving', 'leaving', 'moving', 'staying', 'living',
+  'renting', 'asking', 'phoning', 'afraid', 'glad', 'happy', 'available',
+  'away', 'outside', 'inside', 'interested', 'curious', 'confused', 'positive',
+  'certain', 'correct', 'wrong', 'late', 'early', 'only', 'definitely',
+  'absolutely', 'totally', 'exactly', 'honestly', 'seriously', 'usually',
+  'always', 'never', 'already',
+  // Название мастерской: «Hi, FixApplianceCA, …» — не обращение к клиенту.
+  'fix', 'fixappliance', 'fixapplianceca', 'appliances',
 ]);
 
 const WEEKDAYS = {
@@ -392,13 +422,16 @@ function preferShopVisitTime(hhmm, spokenText) {
   return `${pad2(h)}:${min}`;
 }
 
+// «I am Amelia at 12 King Street» — это адрес, а не «в 12:00».
+const NOT_A_STREET = '(?!\\s+(?:[A-Za-z.\'-]+\\s+){0,2}(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|crescent|cres|circle|place|pl|trail|terrace|line|highway|hwy)\\b)';
+
 function inferTimeFromText(text) {
   const t = String(text || '');
   if (/\bnoon\b|\bполдень\b/i.test(t) && !/\bafternoon\b/i.test(t)) {
     return preferShopVisitTime('12:00', t);
   }
   const patterns = [
-    /\b(?:at|around|about|by|for)\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b/i,
+    new RegExp(`\\b(?:at|around|about|by|for)\\s+(\\d{1,2})${NOT_A_STREET}(?::(\\d{2}))?\\s*(a\\.?m\\.?|p\\.?m\\.?)?\\b`, 'i'),
     /\b(\d{1,2}):(\d{2})\s*(a\.?m\.?|p\.?m\.?)?\b/i,
     /\b(\d{1,2})\s*o['’]?clock\b/i,
     /\b(\d{1,2})\s*(a\.?m\.?|p\.?m\.?)\b/i,
@@ -714,8 +747,10 @@ function onSiteContactFrom(extracted, ownerName, ownerPhone) {
  * Имена людей мастерской. Мастер представляется («меня зовут Артём»), клиент
  * спрашивает «можно Артёма?» — и это имя уезжало в заявку и карточку клиента.
  * Клиентом такое имя становится, только если звонящий сам так представился.
+ * Sarah — постоянное имя секретаря (решение FIX, 02.10.2026).
  */
-const SHOP_PEOPLE_NAMES = ['artem', 'artyom', 'artiom'];
+const SECRETARY_NAME = 'Sarah';
+const SHOP_PEOPLE_NAMES = ['artem', 'artyom', 'artiom', 'sarah'];
 
 const SHOP_LINE_RE = /^\s*(ИИ|AI|Assistant|Secretary|Секретарь|Me|Master|Мастер|Моё|Мое|Technician)\s*:\s*/i;
 const CLIENT_LINE_RE = /^\s*(Клиент|Client|User|Caller)\s*:\s*/i;
@@ -771,7 +806,11 @@ const INTRO_SPEAKING = new RegExp(`(?:^|[^${L}])([${L}]{2,16})\\s+(?:speaking|he
 const INTRO_FROM = new RegExp(`(?:this is|it'?s|i'?m|i am|это|с вами)\\s+([${L}]{2,16}),?\\s+(?:from|with|at|of|here|speaking|из|с|слушаю)${NAME_END}`, 'gi');
 const INTRO_SHOP_IM = new RegExp(`(?:^|[^${L}])(?:i'?m|i am)\\s+([${L}]{2,16})${NAME_END}`, 'gi');
 const INTRO_CALLER = new RegExp(`(?:this is|it'?s|i(?:'|’| a)?m|это)\\s+([${L}]{2,16})${NAME_END}`, 'gi');
-const BARE_NAME_REPLY = new RegExp(`^(?:(?:yeah|yes|yep|sure|ok|okay|um|uh|it'?s|its|i'?m|это)[,\\s]+)*([${L}]{2,16})[.!]?$`, 'i');
+// Приветствие мастерской: «FixApplianceCA, this is Kate.», «…this is helen, how
+// can I help?», «this is she speaking», в записи — «this is Shi-». Всё, что идёт
+// после «this is / it's / это» в первой реплике мастерской, — её собственное имя.
+const INTRO_GREETING = new RegExp(`(?:this is|it'?s|это)\\s+([${L}]{2,16})${NAME_END}`, 'gi');
+const BARE_NAME_REPLY = new RegExp(`^(?:(?:yeah|yes|yep|sure|ok|okay|um|uh|it'?s|its|i'?m|это)[,\\s]+)*([${L}]{2,16})(?:\\s+([${L}]{2,16}))?[.!]?$`, 'i');
 
 function matchAll(re, text) {
   return [...String(text || '').matchAll(re)].map((m) => m[1]);
@@ -782,15 +821,21 @@ function selfIntroducedNames(history) {
   const shop = [];
   const caller = [];
   let prevAsst = '';
+  let shopLines = 0;
   for (const item of Array.isArray(history) ? history : []) {
     if (!item || !item.text) continue;
     const text = String(item.text);
     if (item.role === 'assistant') {
+      // «this is …» дальше в разговоре бывает и про клиента («this is Brad's
+      // place?»), поэтому как самопредставление считаем только приветствие.
+      const greeting = shopLines === 0 || /fix\s*appliance/i.test(text);
+      shopLines += 1;
       shop.push(
         ...matchAll(INTRO_NAMED, text),
         ...matchAll(INTRO_SPEAKING, text),
         ...matchAll(INTRO_FROM, text),
-        ...matchAll(INTRO_SHOP_IM, text)
+        ...matchAll(INTRO_SHOP_IM, text),
+        ...(greeting ? matchAll(INTRO_GREETING, text) : [])
       );
       prevAsst = text;
       continue;
@@ -801,7 +846,7 @@ function selfIntroducedNames(history) {
       ...matchAll(INTRO_CALLER, text)
     );
     const bare = askedForName(prevAsst) && text.trim().match(BARE_NAME_REPLY);
-    if (bare) caller.push(bare[1]);
+    if (bare) caller.push(...bare.slice(1, 3).filter(Boolean));
     prevAsst = '';
   }
   const keys = (list) => list.filter((w) => !isNameStop(w)).map(nameKey).filter(Boolean);
@@ -828,21 +873,29 @@ function nameFromHistory(history) {
   const intros = selfIntroducedNames(history);
   const ok = (word) =>
     looksLikePersonName(word) && !NAME_STOP.has(word.toLowerCase()) && !isShopPersonName(word, history, intros);
-  const userRe =
-    /(?:my name is|this is|i(?:'|’| a)?m|меня зовут)\s+([A-Za-zА-Яа-яЁё]{2,16})\b/i;
-  const asstRe =
-    /(?:okay|ok|alright|thanks|thank you|hi|hello|perfect|great)\s+([A-Za-zА-Яа-яЁё]{2,16})\b/i;
+  // Начало слова обязательно: без него «claim Smith» читалось как «I'm Smith».
+  // Берём первое подходящее совпадение в реплике, а не только первое вообще:
+  // в «I'm good, my name is Brad» первое — «good».
+  const userRe = new RegExp(
+    `(?:^|[^${L}'’])(?:my name is|this is|i(?:'|’| a)?m|меня зовут)\\s+([${L}]{2,16})${NAME_END}`,
+    'gi'
+  );
+  const asstRe = new RegExp(
+    `(?:^|[^${L}'’])(?:(?:okay|ok|alright|perfect|great)\\s+|(?:thanks|thank you|hi|hello|hey),?\\s+)([${L}]{2,16})${NAME_END}`,
+    'gi'
+  );
+  const firstOk = (re, text) => matchAll(re, text).find((word) => ok(word));
   // Только реплики звонящего: «this is …» / «I'm …» секретаря и «меня зовут»
   // мастера — это они представились, а не клиент.
   for (const item of [...history].reverse()) {
     if (!item || item.role === 'assistant') continue;
-    const m = String(item.text || '').match(userRe);
-    if (m && ok(m[1])) return titleCaseName(m[1]);
+    const word = firstOk(userRe, item.text);
+    if (word) return titleCaseName(word);
   }
   for (const item of [...history].reverse()) {
     if (!item || item.role !== 'assistant') continue;
-    const m = String(item.text || '').match(asstRe);
-    if (m && ok(m[1])) return titleCaseName(m[1]);
+    const word = firstOk(asstRe, item.text);
+    if (word) return titleCaseName(word);
   }
   return '';
 }
@@ -897,6 +950,19 @@ function saidGoodbye(text) {
   return /okay,?\s*bye|see you then|our technician will contact you|all the best,\s*goodbye|technician will contact you as soon as possible|see you at the scheduled time|всего доброго|до свидания|свяжется с вами в ближайшее время|увидимся в назначенное/i.test(
     String(text || '')
   );
+}
+
+/** Её реплика — прощание: после него ждём только, когда звонящий положит трубку. */
+function saidFarewell(text) {
+  const t = String(text || '');
+  return saidGoodbye(t)
+    || /\b(have a (?:good|great|nice|lovely|wonderful) (?:day|evening|night|weekend|one)|take care|good ?bye|bye(?: now| for now)?)\b/i.test(t);
+}
+
+/** Звонящий попросил подождать: пошёл за шильдиком, ищет номер модели. */
+function callerAskedToHold(text) {
+  return /\b(hold on|hang on|one (?:sec|second|moment|minute)|just a (?:sec|second|moment|minute)|give me (?:a|one) (?:sec|second|moment|minute)|wait a (?:sec|second|moment|minute)|let me (?:check|look|find|grab|get|see)|bear with me)\b/i.test(String(text || ''))
+    || /секунд|минутк|подожд|сейчас посмотр|сейчас найд/i.test(String(text || ''));
 }
 
 function isCheckInUtterance(text) {
@@ -1310,6 +1376,7 @@ module.exports = {
   TORONTO,
   VOICE_CALL_FLOW,
   VOICE_LIVE_FLOW,
+  VOICE_CLARIFY_RULES,
   torontoTodayYmd,
   addDaysYmd,
   fromTorontoWallClock,
@@ -1351,6 +1418,9 @@ module.exports = {
   detectLiveCallback,
   saidCallbackPromise,
   saidGoodbye,
+  saidFarewell,
+  callerAskedToHold,
+  SECRETARY_NAME,
   isCheckInUtterance,
   callerAskedToStop,
   askedAnythingElse,

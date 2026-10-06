@@ -8,6 +8,7 @@ import 'package:printing/printing.dart';
 
 import '../core/api_keys.dart';
 import '../core/l10n/app_locale.dart';
+import '../core/motion.dart';
 import '../core/utils/formatters.dart';
 import '../models/document_settings.dart';
 import '../shared/widgets/keyboard_safe.dart';
@@ -304,6 +305,7 @@ class DocumentTemplateService {
     }
 
     showDialog<void>(
+      animationStyle: AppMotion.dialog,
       context: context,
       barrierDismissible: false,
       useRootNavigator: true,
@@ -372,46 +374,6 @@ class DocumentTemplateService {
         backgroundColor: ok ? Colors.green : Colors.red,
       ),
     );
-  }
-
-  /// After a payment: SMS the client a download link, no UI sheet.
-  static Future<bool> sendPdfLinkQuietly({
-    required DocumentSendData data,
-  }) async {
-    if (data.clientPhone.trim().isEmpty) return false;
-    final settings = await SettingsService.loadDocumentSettings();
-    try {
-      final pdf = await _ensurePdfUrls(settings: settings, data: data);
-      final body = settings.wrapOutgoingMessage(
-        settings.renderSms(
-          kind: data.kind,
-          clientName: data.clientName,
-          total: data.total,
-          due: data.due,
-          paid: data.paid,
-          items: data.items,
-          url: pdf.smsUrl,
-        ),
-      );
-      final text = _bodyWithUrl(body, pdf.smsUrl);
-      if (text.isEmpty) return false;
-      final ok = await SmsService.sendSms(
-        to: data.clientPhone,
-        body: text,
-        fallbackBody: _bodyWithUrl(body, pdf.fallbackUrl),
-        clientId: data.clientId,
-      );
-      await JobService.sendMessage(
-        jobId: data.jobId,
-        text: text,
-        targetRole: 'Владелец'.tr,
-        sender: 'company',
-      );
-      return ok;
-    } catch (error) {
-      debugPrint('sendPdfLinkQuietly: $error');
-      return false;
-    }
   }
 
   static Future<void> sharePdf({

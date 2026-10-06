@@ -7,6 +7,7 @@ import '../services/network_status_service.dart';
 import '../core/api_keys.dart';
 import '../core/geo/service_area.dart';
 import '../core/l10n/app_locale.dart';
+import '../core/motion.dart';
 import '../services/settings_service.dart';
 import '../shared/widgets/app_bar_save.dart';
 import '../shared/widgets/dirty_leave_scope.dart';
@@ -209,6 +210,7 @@ void showSmartAddressPicker({
   }
 
   showModalBottomSheet(
+    sheetAnimationStyle: AppMotion.sheet,
     context: context,
     isScrollControlled: true,
     useRootNavigator: true,

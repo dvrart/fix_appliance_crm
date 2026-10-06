@@ -20,6 +20,9 @@ class JobAgendaCard extends StatelessWidget {
   final String? footer;
   final Color? routeIndexColor;
 
+  /// false — время уже показано рядом (шкала времени в списке дня).
+  final bool showTime;
+
   const JobAgendaCard({
     super.key,
     required this.job,
@@ -28,6 +31,7 @@ class JobAgendaCard extends StatelessWidget {
     this.routeIndex,
     this.footer,
     this.routeIndexColor,
+    this.showTime = true,
   });
 
   @override
@@ -76,7 +80,7 @@ class JobAgendaCard extends StatelessWidget {
     final address = job.workAddress.trim();
     final nameSize = 15.5 * ui.cardNameScale;
     final when = visit?.startAt ?? job.scheduledAt;
-    final timeLabel = Formatters.formatTime(when);
+    final timeLabel = showTime ? Formatters.formatTime(when) : '';
 
     return Material(
       color: ui.paperColor,
@@ -286,7 +290,7 @@ class JobAgendaCard extends StatelessWidget {
   }) {
     final nameSize = 14.5 * ui.cardNameScale;
     final when = visit?.startAt ?? job.scheduledAt;
-    final timeLabel = Formatters.formatTime(when);
+    final timeLabel = showTime ? Formatters.formatTime(when) : '';
     final fill = Color.alphaBlend(
       statusColor.withValues(alpha: 0.22),
       ui.paperColor,

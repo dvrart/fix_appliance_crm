@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
+import '../../../core/motion.dart';
 import '../../../services/settings_service.dart';
 import '../widgets/settings_ui.dart';
 import 'voice_test_dialog.dart';
@@ -114,6 +115,7 @@ class _AssistantSettingsPageState extends State<AssistantSettingsPage> {
 
   void _showHowToOpen() {
     showDialog<void>(
+      animationStyle: AppMotion.dialog,
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(context.tr('Как вызывать', 'How to open')),

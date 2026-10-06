@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../core/motion.dart';
 import '../../models/models.dart';
 import '../../services/services.dart';
 import '../../shared/widgets/highlight_text.dart';
@@ -21,8 +22,14 @@ class GlobalSearchOverlay {
         transitionDuration: const Duration(milliseconds: 280),
         reverseTransitionDuration: const Duration(milliseconds: 220),
         pageBuilder: (context, animation, _) {
+          // Голая `animation` линейна — затухание шло ровной полкой и
+          // ощущалось рывком. Прогоняем через общую кривую.
           return FadeTransition(
-            opacity: animation,
+            opacity: CurvedAnimation(
+              parent: animation,
+              curve: AppMotion.enter,
+              reverseCurve: AppMotion.exit,
+            ),
             child: const _GlobalSearchPage(),
           );
         },

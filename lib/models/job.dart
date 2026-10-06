@@ -649,8 +649,15 @@ class Job {
     }
   }
 
-  /// Адрес для навигации (Job Site или адрес клиента)
-  String get workAddress => hasJobSite ? (jobSiteAddress ?? clientAddress) : clientAddress;
+  /// Адрес для навигации (Job Site или адрес клиента).
+  ///
+  /// Галочка «другое место работы» иногда стоит, а адрес туда не вписан —
+  /// тогда едем к клиенту, иначе маршрут открывался бы в пустоту.
+  String get workAddress {
+    final site = (jobSiteAddress ?? '').trim();
+    if (hasJobSite && site.isNotEmpty) return site;
+    return clientAddress;
+  }
 
   /// Город для шторки и группировки: поле city или кусок адреса.
   String get displayCity {

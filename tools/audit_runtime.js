@@ -40,7 +40,7 @@ async function main() {
   ]);
   const config = fields(configDoc.fields);
   const keys = [
-    'aiAnswerEnabled', 'aiAnswerTimeoutSeconds', 'manualSmsApproval', 'bookingSmsEnabled',
+    'aiAnswerEnabled', 'aiAnswerTimeoutSeconds', 'bookingSmsEnabled',
     'reminderSmsEnabled', 'autoReviewSmsEnabled', 'morningBriefingEnabled', 'onTheWayPromptEnabled',
     'workDays', 'workStartMinutes', 'workEndMinutes', 'holidayDates', 'vacationRanges',
     'defaultVisitMinutes', 'serviceCallFee', 'hourlyRate', 'minimumCharge', 'defaultTax',

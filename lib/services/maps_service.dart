@@ -6,7 +6,20 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../core/constants.dart';
 import '../core/geo/service_area.dart';
 import '../core/l10n/app_locale.dart';
+import 'firestore_service.dart';
 import 'network_status_service.dart';
+
+/// Точка для навигации: что показать в поле «куда» и чем это подтвердить.
+///
+/// `placeId` важнее текста: Google Maps по нему открывает ровно то здание,
+/// даже если в адресе не хватает города.
+class MapPlace {
+  const MapPlace({required this.address, this.placeId, this.location});
+
+  final String address;
+  final String? placeId;
+  final LatLng? location;
+}
 
 /// Результат построения маршрута через Google Directions API
 class OptimizedRoute {
@@ -114,19 +127,29 @@ class MapsService {
 
       final origin = '${position.latitude},${position.longitude}';
 
-      // Очищаем адрес от почтового индекса для лучшего геокодинга
-      String cleanAddress = destinationAddress
-          .replaceAll(RegExp(r'[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d'), '')
-          .trim();
-      if (cleanAddress.isEmpty || cleanAddress.length < 5) {
-        cleanAddress = destinationAddress;
-      }
+      // Адрес разбираем тем же геокодером, что и кнопка «Проложить маршрут»:
+      // иначе на карточке висит время до одного места, а навигатор везёт в
+      // другое. Почтовый индекс не выбрасываем — он и есть самая точная часть.
+      final place = await resolvePlace(destinationAddress);
+      if (place == null) return null;
+      final point = place.location;
+      final destination = point != null
+          ? '${point.latitude},${point.longitude}'
+          : place.address;
 
-      final destination = Uri.encodeComponent(cleanAddress);
-      final url =
-          'https://maps.googleapis.com/maps/api/distancematrix/json?origins=$origin&destinations=$destination&language=ru&key=$kGoogleApiKey';
+      final uri = Uri.https(
+        'maps.googleapis.com',
+        '/maps/api/distancematrix/json',
+        {
+          'origins': origin,
+          'destinations': destination,
+          'region': 'ca',
+          'language': AppLocale.instance.isEn ? 'en' : 'ru',
+          'key': kGoogleApiKey,
+        },
+      );
 
-      final response = await getWithTimeout(Uri.parse(url));
+      final response = await getWithTimeout(uri);
       if (response.statusCode != 200) return null;
 
       final data = json.decode(response.body);
@@ -144,28 +167,10 @@ class MapsService {
     }
   }
 
-  /// Координаты адреса через Geocoding API.
+  /// Координаты адреса через Geocoding API — с привязкой к зоне обслуживания.
   static Future<LatLng?> geocodeAddress(String address) async {
-    final query = address.trim();
-    if (query.length < 5 || kGoogleApiKey.isEmpty) return null;
-    try {
-      final url =
-          'https://maps.googleapis.com/maps/api/geocode/json?address=${Uri.encodeComponent(query)}&region=ca&key=$kGoogleApiKey';
-      final response = await getWithTimeout(Uri.parse(url));
-      if (response.statusCode != 200) return null;
-      final data = json.decode(response.body);
-      if (data['status'] != 'OK') return null;
-      final results = data['results'] as List?;
-      if (results == null || results.isEmpty) return null;
-      final loc = results.first['geometry']?['location'];
-      if (loc == null) return null;
-      return LatLng(
-        (loc['lat'] as num).toDouble(),
-        (loc['lng'] as num).toDouble(),
-      );
-    } catch (_) {
-      return null;
-    }
+    final place = await resolvePlace(address);
+    return place?.location;
   }
 
   static String? _component(List<dynamic>? components, List<String> types) {
@@ -252,37 +257,206 @@ class MapsService {
     );
   }
 
-  /// Открыть навигатор (Google Maps)
-  static Future<void> openNavigator(String address) async {
-    final encodedAddress = Uri.encodeComponent(address);
-    final url = 'https://www.google.com/maps/dir/?api=1&destination=$encodedAddress';
+  /// Подписи, которые лежат в поле адреса вместо адреса.
+  static final RegExp _placeholderAddress = RegExp(
+    r'^(не\s*указан[а-яё]*|нет\s*адреса|адрес\s*не\s*указан[а-яё]*|неизвестн[а-яё]*|'
+    r'not\s*specified|no\s*address|unknown|n/?a|[-—.?]+)$',
+    caseSensitive: false,
+  );
 
-    final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+  /// Квартира, офис, подъезд. Геокодер Google на них спотыкается и отдаёт
+  /// либо ZERO_RESULTS, либо соседнее здание, поэтому в запрос их не кладём.
+  static final RegExp _unitPart = RegExp(
+    r'^(unit|apt|apartment|suite|ste|bsmt|basement|кв|кварт\w*|оф|офис)'
+    r'\s*[:.#-]?\s*[\w-]*$|^#\s*[\w-]+$',
+    caseSensitive: false,
+  );
+
+  /// Провинция или штат отдельным куском адреса («ON», «Ontario»).
+  static final RegExp _provincePart = RegExp(
+    r'^(ab|bc|mb|nb|nl|ns|nt|nu|on|pe|qc|sk|yt)$',
+    caseSensitive: false,
+  );
+
+  /// Google Maps берёт не больше девяти промежуточных точек.
+  static const int maxMapsWaypoints = 9;
+
+  /// Адрес в том виде, в каком его поймёт Google: без заглушек и квартир,
+  /// с провинцией и страной, если их не вписали.
+  ///
+  /// Пустой ответ означает «ехать некуда» — ссылку строить нельзя, иначе
+  /// Google Maps откроется с пустой формой поиска.
+  static String navigationQuery(String address, {String region = ''}) {
+    final text = address.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (text.isEmpty || _placeholderAddress.hasMatch(text)) return '';
+    final parts = text
+        .split(',')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty && !_unitPart.hasMatch(part))
+        .toList();
+    if (parts.isEmpty) return '';
+    // Одно слово без цифр («Toronto») — не адрес дома, но ехать по нему можно;
+    // отсекаем только мусор вроде «???».
+    if (!RegExp(r'[0-9a-zA-Zа-яА-Я]').hasMatch(parts.join())) return '';
+
+    final lower = parts.map((part) => part.toLowerCase()).toList();
+    final province = region.trim();
+    final hasProvince =
+        lower.any(_provincePart.hasMatch) ||
+        (province.isNotEmpty &&
+            lower.any((part) => part.contains(province.toLowerCase())));
+    if (!hasProvince && province.isNotEmpty) parts.add(province);
+    if (!lower.contains('canada')) parts.add('Canada');
+    return parts.join(', ');
+  }
+
+  /// Есть ли куда ехать: адрес не пустой и не подпись-заглушка.
+  static bool hasRoutableAddress(String address) =>
+      navigationQuery(address).isNotEmpty;
+
+  static ServiceArea? _area;
+  static DateTime? _areaAt;
+  static const Duration _areaTtl = Duration(minutes: 10);
+
+  /// Зона обслуживания из настроек — ею же ограничен поиск адреса и секретарь.
+  static Future<ServiceArea> serviceAreaBias() async {
+    final cached = _area;
+    final at = _areaAt;
+    if (cached != null &&
+        at != null &&
+        DateTime.now().difference(at) < _areaTtl) {
+      return cached;
+    }
+    _areaAt = DateTime.now();
+    try {
+      final doc = await FirestoreService.configRef.get();
+      final data = doc.data() as Map<String, dynamic>?;
+      _area = data == null ? ServiceArea.empty : ServiceArea.fromConfig(data);
+    } catch (_) {
+      _area = ServiceArea.empty;
+    }
+    return _area!;
+  }
+
+  static final Map<String, MapPlace> _placeCache = {};
+
+  /// Адрес → точка на карте. Геокодер зовётся с привязкой к зоне обслуживания
+  /// и к Канаде, поэтому «Main St» не уезжает в другую провинцию.
+  static Future<MapPlace?> resolvePlace(String address) async {
+    final area = await serviceAreaBias();
+    final query = navigationQuery(address, region: area.region);
+    if (query.isEmpty) return null;
+    if (kGoogleApiKey.isEmpty) return MapPlace(address: query);
+    final cached = _placeCache[query];
+    if (cached != null) return cached;
+
+    final bounds = area.boundingBox;
+    final base = {
+      'address': query,
+      'region': 'ca',
+      'key': kGoogleApiKey,
+      if (bounds != null)
+        'bounds':
+            '${bounds.southwest.latitude},${bounds.southwest.longitude}'
+            '|${bounds.northeast.latitude},${bounds.northeast.longitude}',
+    };
+
+    // Сначала строго по Канаде, потом без фильтра — редкий адрес лучше найти
+    // хоть как-то, чем не найти совсем.
+    for (final params in [
+      {...base, 'components': 'country:CA'},
+      base,
+    ]) {
+      final place = await _geocodeOnce(params);
+      if (place != null) {
+        _placeCache[query] = place;
+        return place;
+      }
+    }
+    // Геокодер молчит (нет сети, редкий адрес) — не запоминаем неудачу,
+    // пусть следующее нажатие попробует ещё раз. Едем по тексту.
+    return MapPlace(address: query);
+  }
+
+  static Future<MapPlace?> _geocodeOnce(Map<String, String> params) async {
+    try {
+      final uri = Uri.https(
+        'maps.googleapis.com',
+        '/maps/api/geocode/json',
+        params,
+      );
+      final response = await getWithTimeout(uri);
+      if (response.statusCode != 200) return null;
+      final data = json.decode(response.body);
+      if (data['status'] != 'OK') return null;
+      final results = data['results'] as List?;
+      if (results == null || results.isEmpty) return null;
+      final first = results.first as Map<String, dynamic>;
+      final loc = first['geometry']?['location'];
+      return MapPlace(
+        address: (first['formatted_address'] ?? params['address']).toString(),
+        placeId: (first['place_id'] ?? '').toString().isEmpty
+            ? null
+            : first['place_id'].toString(),
+        location: loc == null
+            ? null
+            : LatLng(
+                (loc['lat'] as num).toDouble(),
+                (loc['lng'] as num).toDouble(),
+              ),
+      );
+    } catch (_) {
+      return null;
     }
   }
 
-  /// Открыть построенный маршрут (несколько точек) во внешнем приложении Google Maps
-  static Future<void> openRouteInMaps(List<String> orderedAddresses) async {
-    if (orderedAddresses.isEmpty) return;
+  /// Ссылка «проложить маршрут» по готовым точкам. Последняя — конечная,
+  /// остальные промежуточные. `null`, если ехать некуда: без `destination`
+  /// Google Maps открывает пустую форму поиска, а не маршрут.
+  static Uri? routeUri(List<MapPlace> stops) {
+    if (stops.isEmpty) return null;
+    final trimmed = stops.length > maxMapsWaypoints + 1
+        ? [...stops.take(maxMapsWaypoints), stops.last]
+        : stops;
+    final destination = trimmed.last;
+    if (destination.address.trim().isEmpty) return null;
+    final waypoints = trimmed.sublist(0, trimmed.length - 1);
+    final withIds = waypoints.every((stop) => stop.placeId != null);
+    return Uri.https('www.google.com', '/maps/dir/', {
+      'api': '1',
+      'travelmode': 'driving',
+      'destination': destination.address,
+      if (destination.placeId != null)
+        'destination_place_id': destination.placeId!,
+      if (waypoints.isNotEmpty)
+        'waypoints': waypoints.map((stop) => stop.address).join('|'),
+      if (waypoints.isNotEmpty && withIds)
+        'waypoint_place_ids': waypoints.map((stop) => stop.placeId!).join('|'),
+    });
+  }
 
-    final destination = Uri.encodeComponent(orderedAddresses.last);
-    var url =
-        'https://www.google.com/maps/dir/?api=1&destination=$destination&travelmode=driving';
+  /// Открыть навигатор (Google Maps). `false` — адреса нет или он не разобран,
+  /// и об этом надо сказать вслух, а не открывать карту в никуда.
+  static Future<bool> openNavigator(String address) async {
+    final place = await resolvePlace(address);
+    if (place == null) return false;
+    return _launch(routeUri([place]));
+  }
 
-    if (orderedAddresses.length > 1) {
-      final waypoints = orderedAddresses
-          .sublist(0, orderedAddresses.length - 1)
-          .map(Uri.encodeComponent)
-          .join('|');
-      url += '&waypoints=$waypoints';
+  /// Открыть построенный маршрут (несколько точек) во внешнем Google Maps
+  static Future<bool> openRouteInMaps(List<String> orderedAddresses) async {
+    final stops = <MapPlace>[];
+    for (final address in orderedAddresses) {
+      final place = await resolvePlace(address);
+      if (place != null) stops.add(place);
     }
+    return _launch(routeUri(stops));
+  }
 
-    final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
+  static Future<bool> _launch(Uri? uri) async {
+    if (uri == null) return false;
+    if (!await canLaunchUrl(uri)) return false;
+    return launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   /// Позвонить
@@ -404,16 +578,38 @@ class MapsService {
 
     try {
       final originStr = '${origin.latitude},${origin.longitude}';
-      final waypointsParam = addresses.map(Uri.encodeComponent).join('|');
+      // Адреса сначала разбираем сами, с привязкой к зоне: Directions ищет
+      // текст по всему миру и на «Main St» без города уводит маршрут в другую
+      // провинцию. Что разобрали — отдаём координатами.
+      final area = await serviceAreaBias();
+      final waypoints = <String>[];
+      for (final address in addresses) {
+        final place = await resolvePlace(address);
+        final point = place?.location;
+        final text = place?.address ?? navigationQuery(address, region: area.region);
+        waypoints.add(
+          point != null
+              ? '${point.latitude},${point.longitude}'
+              : (text.isEmpty ? address.trim() : text),
+        );
+      }
+      final waypointsParam = waypoints.join('|');
       final optimizePrefix = optimize ? 'optimize:true|' : '';
 
-      final url = 'https://maps.googleapis.com/maps/api/directions/json'
-          '?origin=$originStr'
-          '&destination=$originStr'
-          '&waypoints=$optimizePrefix$waypointsParam'
-          '&language=ru&key=$kGoogleApiKey';
+      final uri = Uri.https(
+        'maps.googleapis.com',
+        '/maps/api/directions/json',
+        {
+          'origin': originStr,
+          'destination': originStr,
+          'waypoints': '$optimizePrefix$waypointsParam',
+          'region': 'ca',
+          'language': AppLocale.instance.isEn ? 'en' : 'ru',
+          'key': kGoogleApiKey,
+        },
+      );
 
-      final response = await getWithTimeout(Uri.parse(url));
+      final response = await getWithTimeout(uri);
       if (response.statusCode != 200) {
         lastRouteError = 'HTTP ${response.statusCode}';
         return null;

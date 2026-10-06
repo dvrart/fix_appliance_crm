@@ -375,12 +375,20 @@ class _MessagesScreenState extends State<MessagesScreen>
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${last.isOutbound ? '${'Вы'.tr}: ' : ''}$preview',
+                      // Неотправленное нельзя подписывать «Вы:» — мастер его
+                      // ещё не отправлял, оно ждёт его решения.
+                      last.awaitingApproval
+                          ? '${'Ждёт отправки'.tr}: $preview'
+                          : '${last.isOutbound ? '${'Вы'.tr}: ' : ''}$preview',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: hasUnread ? Colors.black87 : Colors.grey.shade600,
-                        fontWeight: hasUnread ? FontWeight.w600 : FontWeight.normal,
+                        color: last.awaitingApproval
+                            ? Colors.orange.shade900
+                            : (hasUnread ? Colors.black87 : Colors.grey.shade600),
+                        fontWeight: hasUnread || last.awaitingApproval
+                            ? FontWeight.w600
+                            : FontWeight.normal,
                       ),
                     ),
                   ],

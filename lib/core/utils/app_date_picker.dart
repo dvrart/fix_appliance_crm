@@ -39,6 +39,51 @@ class AppDateTimePanel extends StatefulWidget {
   State<AppDateTimePanel> createState() => _AppDateTimePanelState();
 }
 
+/// Барабан часов и минут (24 ч). Меняет только время у [value], дата остаётся.
+class AppTimeWheel extends StatelessWidget {
+  final DateTime value;
+  final ValueChanged<DateTime> onChanged;
+  final double height;
+
+  const AppTimeWheel({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.height = 132,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: height,
+      child: CupertinoTheme(
+        data: const CupertinoThemeData(
+          brightness: Brightness.light,
+          textTheme: CupertinoTextThemeData(
+            dateTimePickerTextStyle: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w600,
+              color: Colors.black,
+            ),
+          ),
+        ),
+        child: CupertinoDatePicker(
+          mode: CupertinoDatePickerMode.time,
+          use24hFormat: true,
+          initialDateTime: DateTime(2024, 1, 1, value.hour, value.minute),
+          onDateTimeChanged: (t) {
+            if (t.hour == value.hour && t.minute == value.minute) return;
+            HapticFeedback.selectionClick();
+            onChanged(
+              DateTime(value.year, value.month, value.day, t.hour, t.minute),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
 class _AppDateTimePanelState extends State<AppDateTimePanel> {
   late DateTime _month = DateTime(widget.value.year, widget.value.month);
 
@@ -83,40 +128,7 @@ class _AppDateTimePanelState extends State<AppDateTimePanel> {
         _grid(),
         if (widget.showTime) ...[
           const SizedBox(height: 4),
-          SizedBox(
-            height: 132,
-            child: CupertinoTheme(
-              data: const CupertinoThemeData(
-                brightness: Brightness.light,
-                textTheme: CupertinoTextThemeData(
-                  dateTimePickerTextStyle: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black,
-                  ),
-                ),
-              ),
-              child: CupertinoDatePicker(
-                mode: CupertinoDatePickerMode.time,
-                use24hFormat: true,
-                initialDateTime: DateTime(
-                  2024,
-                  1,
-                  1,
-                  widget.value.hour,
-                  widget.value.minute,
-                ),
-                onDateTimeChanged: (t) {
-                  final v = widget.value;
-                  if (t.hour == v.hour && t.minute == v.minute) return;
-                  HapticFeedback.selectionClick();
-                  widget.onChanged(
-                    DateTime(v.year, v.month, v.day, t.hour, t.minute),
-                  );
-                },
-              ),
-            ),
-          ),
+          AppTimeWheel(value: widget.value, onChanged: widget.onChanged),
         ],
       ],
     );

@@ -11,6 +11,7 @@ class VisitConfirmBadge extends StatelessWidget {
   final bool iconOnly;
   final bool stacked;
   final bool expand;
+  final bool wide;
 
   const VisitConfirmBadge({
     super.key,
@@ -19,6 +20,7 @@ class VisitConfirmBadge extends StatelessWidget {
     this.iconOnly = false,
     this.stacked = false,
     this.expand = false,
+    this.wide = false,
   });
 
   static VisitConfirmBadge? maybe(String status, {bool compact = false}) {
@@ -44,6 +46,12 @@ class VisitConfirmBadge extends StatelessWidget {
   static Widget stamp(JobVisit? visit, {String jobStatus = '', bool expand = false}) {
     final status = visualOf(visit, jobStatus: jobStatus);
     return VisitConfirmBadge(status: status, stacked: true, expand: expand);
+  }
+
+  /// Плашка во всю ширину: значок слева, подпись справа.
+  static Widget strip(JobVisit? visit, {String jobStatus = ''}) {
+    final status = visualOf(visit, jobStatus: jobStatus);
+    return VisitConfirmBadge(status: status, wide: true);
   }
 
   static Widget mark(JobVisit? visit, {double size = 22}) {
@@ -190,6 +198,44 @@ class VisitConfirmBadge extends StatelessWidget {
       return Tooltip(
         message: look.label.tr,
         child: Icon(look.icon, size: compact ? 22 : 26, color: look.color),
+      );
+    }
+    if (wide) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+        decoration: BoxDecoration(
+          color: look.bg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: look.color.withValues(alpha: 0.35)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 26,
+              height: 26,
+              decoration: BoxDecoration(
+                color: look.color,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(look.icon, size: 16, color: Colors.white),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                look.label.tr,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: look.color,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13,
+                  height: 1.1,
+                ),
+              ),
+            ),
+          ],
+        ),
       );
     }
     if (stacked) {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import 'linked_text.dart';
 
 class _SpeakerLine {
   final bool isShop;
@@ -193,7 +194,9 @@ class _Bubble extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 2),
-              SelectableText(
+              // Двойное касание выделяет слово, адреса и телефоны из
+              // разговора нажимаются.
+              LinkedText(
                 line.text,
                 style: const TextStyle(
                   fontSize: 15,

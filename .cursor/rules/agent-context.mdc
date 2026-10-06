@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Fix Appliance CRM — context for the next agent
 
-Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: Samsung `R5CW421KFXH`, package `com.example.fix_appliance_crm`. PowerShell: no `&&`; use `;`. Do not commit unless asked. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
+Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: `44c25486` — `adb devices -l` 05.10.2026 отдаёт `model:26077PC53G device:songyuan` (Xiaomi/HyperOS), а не OPPO F9, как было записано раньше; replaced Samsung `R5CW421KFXH` on 03.10.2026. Samsung-specific notes below (One UI shade, battery dialogs, mic click) need re-verification on this phone. package `com.example.fix_appliance_crm`. PowerShell: no `&&`; use `;`. Do not commit unless asked. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
 
 ## Проверки перед сдачей работы
 
@@ -44,8 +44,8 @@ Typical install (always do this after app UI/code changes — do not wait for FI
 
 ```
 flutter build apk --release
-adb -s R5CW421KFXH install -r build\app\outputs\flutter-apk\app-release.apk
-adb -s R5CW421KFXH shell am start -n com.example.fix_appliance_crm/.MainActivity
+adb -s 44c25486 install -r build\app\outputs\flutter-apk\app-release.apk
+adb -s 44c25486 shell am start -n com.example.fix_appliance_crm/.MainActivity
 ```
 
 ## Two different AIs
@@ -85,7 +85,7 @@ Owner does **not** rewrite the phone secretary from the app. Coach chat was remo
 Company on the phone: **FixApplianceCA**. Polite, easy, a little erudite. Answers a side question in one sentence, then returns to the repair. Must not freeze or go silent.
 
 - Do **not** inject fake user turns (`steerCollectAfterTurn`) after every reply — that made her not listen.
-- After confirm: model-sticker photo, then “anything else?”, then **Have a good day**. Do **not hang up**. Wait until the caller says goodbye. `end_call` is ignored.
+- After confirm: model-sticker photo, then “anything else?”, then **Have a good day**. Do **not hang up**. Wait until the caller says goodbye. `end_call` is ignored. The one exception (FIX, 02.10.2026): 30 s of total silence after her goodbye or after “I can't hear you — call back or text” — then the relay hangs up (see «Секретарь: разбор ошибок 30.09–01.10»).
 - Visits **Monday–Friday 7:00 a.m. – 9:00 p.m.** Toronto, last start **7:00 p.m.** Sunday: **no visit** — still take the order, ask which weekday suits them. **Saturday: never say we are closed.** She says we do work Saturdays but every window is already booked, and asks which day next week suits them (`closedDaysSpeech` in `functions/voice_facts.js`, used by `getAiAnswerSettings` and `calendarBrief`; SMS wording in `smsBusyReply`). The server still refuses to book a Saturday. Public holidays: take the order; the technician must agree. Secretary answers **24/7**.
 - We repair washers, dryers, dishwashers, gas ovens, electric ovens, **electric** cooktops, fridges, freezers, microwaves. Not gas cooktops, TVs, laptops, phones.
 - Old client: use their name; ask if the repair is at the address on file. New site → job site + who will be there + phone. Ask who is home only if it is not the owner’s house.
@@ -99,9 +99,37 @@ Spoken first name (e.g. Amelia) must go on the **client card** (`fullName`), not
 
 **Контакт на адресе = клиент, если другого человека не назвали (22.09.2026).** Звонок с «я буду» оставлял `jobSiteName`/`jobSitePhone` пустыми — карточка показывала «Контакт на адресе» без имени. Теперь `voiceFacts.onSiteContactFrom(extracted, ownerName, ownerPhone)` подставляет имя и телефон клиента, если явно не назван другой человек; `explicit=true` только для другого человека (другое имя или номер). Фолбэк вшит в создание заявки, `patchDraftJobFromCall`, контакты локации карточки клиента, `applyInboundAddressToClient` и email/website-заявку. Позже названный реальный человек заменяет фолбэк, а существующий записанный контакт фолбэк не затирает. В extraction-промптах (Live `voice_relay.js`, текстовый режим и SMS/email в `index.js`): «I'll be there»/«me»/«my husband» без имени → null. Live-секретарю: «клиент будет сам — не переспрашивать имя». В приложении `JobDetailsController.contactName/contactPhone` и карточка «Где работа» (`details_tab._sitePiece`) тоже падают на данные клиента. Тесты: `voice_facts.test.js` («onSiteContactFrom…»).
 
+**«Где работа» на карточке заявки: адрес видно, пустое берём у клиента (05.10.2026, просьба FIX).** Полоска показывала только имя — адреса в карточке не было вообще (он жил в окне правки и под длинным нажатием на кнопку маршрута). Теперь `details_tab._sitePiece` отдаёт в `_compactSiteNameCard` ещё и `ctrl.workAddress`: имя сверху, адрес второй строкой (у `_compactStrip` появились `subvalue`/`subvalueColor`), пусто — красным «Адрес не указан». Длинное нажатие копирует обе строки. В окне «Где работа» подстановка из карточки клиента была «всё или ничего» (`useClient`): заявка, где знали имя на месте, но не адрес, открывалась с пустым адресом, а ОК без адреса не сохранял. Теперь каждое поле (имя, телефон, почта, адрес) берётся из карточки клиента по отдельности. **При сохранении то, что совпало с карточкой клиента, в заявку не пишется** (`_sameText`, `_sameAddress`, `SmsService.normalizePhone`): совпало всё — `clearJobSite()`. Так `jobSite*` хранит только действительно другое место, а подстановка живая — правка карточки клиента сразу видна в заявке (решение FIX: «только показ»). Фолбэки на чтении — `JobDetailsController.workAddress/contactName/contactPhone`.
+
+**Позиции счёта правятся, а не только добавляются и удаляются (05.10.2026, просьба FIX).** В строке счёта были только цена и красная корзина: ошибся в имени детали или в цене — удаляй и набирай заново. Теперь тап по строке открывает окно **Edit item** (`_showEditItemDialog` в `finance_tab.dart`) с именем, ценой и количеством; цена и количество выделяются на первый тап (`clearAutoNumber`). Работает в двух местах: конструктор до сохранения (`_editBuilderItem`, правит `ctrl.builderItems`) и **уже сохранённый** Invoice/Estimate (`_editDocumentItem` → `ctrl.updateDocument`). Связь со складом (`warehouseItemId`, `costPrice`) при правке сохраняется — деталь та же, меняется только то, что увидит клиент. Если у сохранённого счёта поменяли **количество**, склад доводится до нового состава: `WarehouseService.applyDocumentStockChange(before, after)` / чистая `stockChangeDeltas` (возврат старого минус списание нового, молчит при `stockApplied != true`), тесты в `test/warehouse_stock_test.dart`. Строки **заперты** (`itemsEditable`), когда по документу уже есть платежи, он отменён или из сметы сделан счёт — под заголовком «Items» тогда стоит причина (`_itemsLockedReason`), иначе подсказка «нажмите на позицию». Решение FIX: по оплаченному счёту позиции не трогаем вовсе, чтобы сумма не разошлась с оплатой и с бумажкой на руках у клиента.
+
+**Переспрос имени и адреса, по буквам (02.10.2026, просьба FIX).** Секретарю мешали «Do not re-ask» и «Never spell things out». Теперь есть `voiceFacts.VOICE_CLARIFY_RULES`: неразборчивые или странные имя, улицу, номер дома, город или почтовый индекс она переспрашивает; если и после этого неясно или слово редкое — просит продиктовать по буквам и один раз читает буквы обратно; номер дома — по цифрам, индекс — группами. Обычное имя или улицу, которые расслышала ясно, по буквам не повторяет. Правило подмешано в `VOICE_CALL_FLOW`, `VOICE_LIVE_FLOW` и `DEFAULT_VOICE_INSTRUCTIONS`; в `voice_relay.js` «HOW YOU SOUND» сделано исключение. Извлечение (`EXTRACT_CARD_RULES`, Live-извлечение) берёт продиктованное по буквам или исправленное написание, побеждает последняя поправка. Нужен деплой функций, APK не нужен.
+
+## Секретарь: разбор ошибок 30.09–01.10 и починка (02.10.2026)
+
+Разбор по журналу Cloud Logging и документам звонков, а не по пересказу из колокольчика. Решения FIX: имя **Sarah**, пауза **0,5 с**, **фреон делаем**, при тишине **класть трубку через 30 с** после «не слышу вас».
+
+- **«Тишина» и 7 повторов «I'm still here» (01.10, 15:49–15:56 UTC, три звонка одного клиента подряд) — это сбой Gemini, а не молчание клиента.** В записи клиент говорил («I'd like to book a service for my LG washing machine»), а Live его не слышал (`turns=0`) и раз в 10–30 с закрывал сокет с **1011**. Релей переподнимал ту же модель, и каждое переподключение толкало её сказать «sorry about that… I'm still here» и повторить вопрос. За 14 дней из 42 звонков 1011 был только в этих трёх.
+- **Переподключение больше не толкает её говорить** (`greetLive`, ветка `needsContinue`). Контекст уходит через `clientContent` с `turnComplete=false` (официальный способ восстановить контекст; проверено прямым прогоном: она молчит, потом отвечает по делу). `turnComplete=true` ставится, только если последняя реплика — звонящего и он ждёт ответа.
+- **Обрывы считаются** (`liveFailures` за звонок, `modelFailures` на модели; плановые `goAway` не считаются). Первый обрыв — та же модель с ручкой сессии, второй подряд — следующая модель (ручка сбрасывается, история уходит текстом), пятый за звонок — `giveUpLive` → `liveFailed` → `aiRelayComplete` → Gather («Sorry, the line cut out for a second. Go ahead.»).
+- **Запасные модели раньше не работали вообще:** обе 2.5 закрывали сокет с 1007 на `enableAffectiveDialog`, а путь «убрать флаг и повторить» ловил только `message.error`, не код закрытия. Флаг убран. `LIVE_MODELS` = 3.1-flash-live (~590 мс) → **3.8-live** (GA, ~1–1,3 с; у неё инструменты по умолчанию асинхронные, поэтому `toolsNeedBlocking` даёт им `behavior: 'BLOCKING'` — старым моделям поле не передавать) → 2.5-native-audio-12-2025 (~1 с). 2.5-…-09-2025 убрана: Google её больше не перечисляет. У 3.8 на паузе 450 мс иногда влезает — годится только как запасная.
+- **`goAway` раньше молча не работал:** `session.connecting` оставался `true` с первого подключения, и `resumeLive` выходил сразу; сессия доживала до дедлайна и рвалась. Теперь флаг сбрасывается на `setupComplete`.
+- **Пауза перед ответом 160 → 500 мс** (`VOICE_SILENCE_MS`), `prefixPaddingMs` 200 → 300. Google: 100–200 мс — «слишком мало», фраза режется на куски и падает качество распознавания; рекомендация 500–800. Прямой прогон «Hi, my name is … Brad Smith»: при 160 мс она перебила, и **имя пропало из расшифровки**; при 500 мс фраза пришла целиком, ответ через 1,1–1,3 с после последнего слова. В бою отсюда же «Sí. ¿Es Brad Smith?» и «You sound like, um…» → «What can we help you with today?».
+- **Сторожевой таймер 1100 → 3000 мс** (`VOICE_STALL_MS`) и только после тишины звонящего (`lastInputAt`), если она с тех пор не сказала ни звука (`lastOutputAt`). Толчок — `clientContent` с `turnComplete=true`, а это по документации **безусловно прерывает генерацию**: при 1100 мс он срезал её собственный чуть задержавшийся ответ.
+- **Лестница тишины** (`armSilence`/`onSilence`, отсчёт от конца её реплики): 10 с тишины → «Hello — are you still there?», ещё 9 с → «I'm having trouble hearing you — call back or text this number», ещё 30 с → `hangUpForSilence`: `onLiveStop` пишет `aiReception.hangup='silence'`, релей закрывает поток, `aiRelayComplete` видит метку и **не поднимает поток заново**, а доводит звонок как завершённый (ответ без глаголов — Twilio кладёт трубку). Любое слово звонящего возвращает лестницу в начало. «Hold on / let me check» → 60 с до переспроса. После «Have a good day» не переспрашивает — сразу ждёт 30 с.
+- **«Глухой» Live.** Релей сам считает громкость входящего звука (кадры по 20 мс с RMS ≥ 900: по записям шум линии 2–100, речь — тысячи). 3.1 присылает расшифровку звонящего только в конце фразы, поэтому пока он слышно говорил последние 2,5 с, тишину не объявляем. Если звонящий проговорил ≥ 1,5 с, замолчал, а Gemini ничего не расшифровал и не ответил — первый раз уходим на запасную модель, второй раз — в Gather. Ответ модели на подсказку релея (`promptedTurn`) не считается признаком, что она слышит звонящего.
+- **Журнал:** `voiceLive gemini close … model= reason="…"` (раньше был только код) и итог звонка в `voiceRelay twilio close … model= heard= turns= drops= switches= silence= hangup=`. `heard=0` при живом звонящем — Live его не слышал.
+- **Имя и честность.** `voiceFacts.SECRETARY_NAME = 'Sarah'`: в приветствии, `liveSystemPrompt` (WHO YOU ARE, LINE TROUBLE) и `DEFAULT_VOICE_INSTRUCTIONS`. На «как вас зовут?» — «I'm Sarah» и мягкий возврат («so, what's going on?»), а не вопрос про марку. На «вы живой человек / робот?» — честно: «I'm Sarah, the shop's virtual assistant». Было «You are a real woman» и запрет на имя — модель всё равно придумывала Sarah/Helen/Kate, а однажды сказала «this is she speaking».
+- **Фреон — обычный ремонт холодильника** (`DEFAULT_VOICE_INSTRUCTIONS`, извлечение Live и записи: не `service_declined`). 30.09 звонок про фреон записался отказом, заявки не было.
+- **Мусорные имена в CRM** («Ready», «Helen», «Kate», «Shi», «She», «At»; клиент `yq39ttAyDWryLMglewNY` так и остался «She»). Причины: `NAME_STOP` не знал местоимений и служебных слов; самопредставление в приветствии («this is Kate.», «this is helen, how…») не ловилось; `nameFromHistory` искал «i'm» без начала слова и брал только первое совпадение; **`processQueuedCallRecording` в проде был от 29.09 — без исправлений имён от 30.09**. Теперь: стоп-слова (she, at, ready, my, fixapplianceca…), `INTRO_GREETING` для первой реплики мастерской (и строк с «Fix Appliance»), `sarah` в `SHOP_PEOPLE_NAMES` (клиентка Sarah остаётся, если сама так представилась, в т.ч. «Sarah Johnson» в ответ на вопрос). В разборе записи история для проверки имён строится по **английской** расшифровке: в русском переводе «Brad» — это «Брэд», и проверка «имя звучало» выбрасывала бы настоящее имя.
+- **Две старые ошибки, которые вскрылись по дороге:** `resolveJobSchedule(…, { noBooking })` отдавал `extracted` в `jobScheduleFields`, и тот всё равно ставил визит со звонка секретаря, если звучали день и час; `inferTimeFromText` читал «at 12 King Street» как 12:00 (`NOT_A_STREET`). Извлечение больше не ставит `scheduled_date` «на сегодня», если день не назван («whatever's good for the guys»).
+- Звонок «dryer not working» (01.10, 14 с) — звонящий сам положил трубку (Twilio закрыл поток штатно, 1005, `completed`), технического сбоя нет; заявка `T7Sj0aWPvJoWTrStlYQm` создалась.
+- **Проверка:** `npm test` в `functions` (новые тесты: смена модели, goAway, сторожевой таймер, лестница тишины, «глухой» Live, длинный рассказ — на поддельном сокете и поддельных часах, `voiceRelay._internals`; имена — `voice_names.test.js`; Hangup — `call_flow.test.js`). Без настоящих звонков, но с настоящим Gemini — `node --env-file=functions/.env tools/live_probe.js models|vad|resume|dialog|ladder`.
+- **Деплой вместе, по отдельности нельзя:** `aiVoiceRelay` без нового `aiRelayComplete` после «положить трубку» поднимет поток заново. Плюс разбор записей: `processQueuedCallRecording` (регион `northamerica-northeast2`), `processCallRecording`, `retryStuckCallAi`, `recoverStuckCallJobs`, `recordingComplete`.
+
 Gemini Live: Twilio media stream `timeLimit` is 3600s (1 hour). Context compression starts at 32k tokens (keep 18k) so she does not freeze mid-word on a normal call. WebSocket still reconnects around 10 min (`goAway` + session resume). `aiVoiceRelay` is 2GiB; text-turn runtime is 512MiB.
 
-Deploy secretary + SMS calendar: `firebase deploy --only functions:aiVoiceRelay,functions:aiVoiceTurn,functions:incomingCall,functions:dialAction,functions:incomingSms,functions:recordingComplete,functions:processCallRecording,functions:aiRelayComplete`
+Deploy secretary + SMS calendar: `firebase deploy --only functions:aiVoiceRelay,functions:aiVoiceTurn,functions:incomingCall,functions:dialAction,functions:incomingSms,functions:recordingComplete,functions:processCallRecording,functions:aiRelayComplete,functions:processQueuedCallRecording,functions:retryStuckCallAi,functions:recoverStuckCallJobs` (с `FUNCTIONS_DISCOVERY_TIMEOUT=120`). Последние три раньше в списке не было — поэтому `processQueuedCallRecording` и жил на коде от 29.09.
 
 - Long Live calls: Twilio stream 1 hour; large Gemini context so a normal repair call does not compress mid-sentence.
 
@@ -154,6 +182,51 @@ Drawer **Корзина** is a 30-day recycle bin (`deletedAt` on jobs and clien
 `sendBookingIfNeeded` skips jobs with `needsReview === true`. The confirmation goes only after FIX taps **Проверено**. Email jobs (`source` / `sourceEmailId` / `sourceEmailFrom`) still get a **letter**. If a phone number exists, they **also get SMS** for the visit date and for date/time changes (`confirm_rescheduled`). Phone-only jobs get SMS. Hourly `sendVisitReminders` retries missed booking confirms and catch-up SMS for email jobs that never got a text. Deploy `onJobWritten`, `sendVisitReminders`.
 
 A follow-up email from a client with an open job is parsed by Gemini and written onto that job (address, model, serial, job-site contact). It does **not** create a second job. Deploy `syncGmailInbox`, `incomingSms`.
+
+## Ни одно сообщение не уходит клиенту само (05.10.2026, требование FIX)
+
+Жалоба: «меняю время визита, жму „Не отправлять“ — а SMS всё равно уходит». Кнопка в
+оранжевой плашке заявки гасила **только** подтверждение визита (`smsBooking.state =
+'rejected'`), а мимо неё клиенту писали ещё полтора десятка мест: `sendManualConfirmAckIfNeeded`
+(ответ на смену `smsConfirmStatus`), `sendReviewIfNeeded`, напоминания, весь автоответчик на
+входящие SMS (`tryMoveVisit`, отмена/подтверждение, `sendVisitChangeConflict`). Флаг
+`manualSmsApproval` закрывал ровно два из них.
+
+Что сделано — **один шлюз**: `sendTwilioSms` в `functions/visit_sms.js` больше **не зовёт
+Twilio**. Он кладёт готовый текст (с шапкой) в `messages` со `status: 'awaiting_approval'`,
+`approval: 'pending'` и будит мастера `notifyMaster('Сообщение ждёт отправки', …, { type:
+'outbox', messageId })`. Через него проходят **все** автоматические отправки, включая
+обёртку `sendSms`. Возвращает `true` = «положено в очередь», чтобы вызывающий код не
+ставил то же сообщение второй раз на следующем проходе.
+
+- Отправляет только мастер: `exports.approveOutbox` (`index.js`, рядом с `sendSms`),
+  `{ id, action: 'send' | 'reject' }`. `send` захватывает документ транзакцией
+  (двойной тап не отправит дважды), зовёт Twilio, пишет `sid`/`status`; при ошибке
+  возвращает сообщение в очередь. `reject` → `approval: 'rejected'`, `status: 'rejected'`.
+- В приложении: `SmsMessage.approval` + `awaitingApproval`/`sendingRejected`,
+  `SmsService.streamAwaitingApproval()` и `SmsService.decideOutbox(id, send:)`.
+  В переписке такой текст — **жёлтый пузырь** «Ждёт вашего разрешения» с кнопками
+  **Отправить / Не отправлять** (`conversation_screen._approvalButtons`), в списке
+  переписок — «Ждёт отправки: …» вместо «Вы: …», в колокольчике — карточка
+  (7-й поток в `_ReviewInboxStreams`; тест `runtime_performance_test` считает подписки).
+  Push `type: 'outbox'` ведёт **в переписку**, а не в карточку заявки
+  (`notification_router`), эмодзи 🔔 и канал `visit_confirm` (`CrmShadeNotifier`, `notify.js`).
+- Подтверждение визита осталось на своей старой механике (`queueManualBooking` + оранжевая
+  плашка в карточке), но **авторежим из `sendBookingIfNeeded` вырезан**: раньше при
+  `manualSmsApproval = false` SMS о новом времени уходило мгновенно.
+- Флага `manualSmsApproval` **больше нет**: убран из `sendDayBeforeReminders` (напоминания
+  снова работают, но тоже ждут кнопки), из настроек «Связь → SMS», из `SettingsService` и
+  `tools/audit_runtime.js`. Вместе с ним вырезана тихая отправка чека после оплаты
+  (`finance_tab._sendPaidInvoicePdf` + `DocumentTemplateService.sendPdfLinkQuietly`) —
+  она жила под этим флагом и при включённом флаге (а он был включён по умолчанию) не
+  срабатывала ни разу.
+- Что по-прежнему уходит сразу: то, что мастер отправил сам из приложения
+  (`exports.sendSms`, `exports.sendEmail`, ссылка на оплату Stripe, отложенные сообщения
+  `processScheduledMessages`) и авто-повтор при 30007 — это повтор уже одобренного текста.
+- Деплой: `firebase deploy --only functions:onJobWritten,functions:sendVisitReminders,functions:approveOutbox`.
+  Без деплоя приложение покажет кнопки, но сервер продолжит слать сам.
+- Тесты: `visit_sms.test.js` — «a reschedule waits for the owner instead of texting the
+  client», «an automatic reply is parked in the outbox, not sent to the client».
 
 ## SMS доставка и 30007 (Sep 21 2026)
 
@@ -228,6 +301,35 @@ FIX заводит в Настройки → Каталог → Статусы; 
 слову, иначе 📌. На широкой карточке отметка стоит первой в строке с именем, на узкой — в
 левом верхнем углу. `CalendarHatchPaint`/`HatchedCalendarCard(hatch:)` живы, но календарь
 `hatch` больше не передаёт; `JobStatusFrame` никем не используется.
+
+**Карточка квадратная при любой длительности (05.10.2026, просьба FIX).** Высоту задавала
+длительность: два часа смотрелись красивым квадратом, а час и полчаса — приплюснутой
+полоской, куда даже логотип не влезал (клэмп тянул его до 28 px в карточке высотой 25).
+Геометрия вынесена в `lib/features/calendar/calendar_card_shape.dart`: `calendarCardShape()`
+считает размер, `CalendarCardSlot` кладёт карточку в слот. Правила: в **неделе и 5 днях**
+сторона квадрата = ширина колонки, короткий визит дорастает **вниз, в свободное время**
+(`Stack(clipBehavior: Clip.none)`, слот в сетке остаётся по длительности); если следом
+впритык идёт другая заявка — сторона ужимается до свободной высоты, наезда нет. Длинная
+заявка — тот же квадрат, **занятое время на карточке никак не показано**: полосу-шлейф
+остатка FIX отменил в тот же день. В **дне** карточка остаётся полосой во всю ширину, но не
+ниже 40 px; в **месяце** ничего не меняется. Свободное место считает `freeMinutesAfter` в
+`build` (`startsByDay` — ближайшее следующее начало в этом дне, иначе до полуночи). Размеры
+логотипа, имени и отметки берутся от `cardSize`, а не от `bounds`. `VisitLinkReporter`
+переехал внутрь `CalendarCardSlot`, чтобы связки между визитами цеплялись к самому квадрату,
+а не к пустому слоту. Тап ловит весь слот (`HitTestBehavior.opaque`) — кроме той части, куда
+квадрат вылез за свой слот: там он не кликается (ограничение `hitTestChildren` у SfCalendar).
+Тесты: `test/calendar_card_shape_test.dart`.
+
+**Календарю отдаётся не настоящая длительность (05.10.2026).** Трёхчасовая заявка с 10:00
+«пересекалась» с заявкой на 12:00, SfCalendar делил колонку пополам — и оба квадрата
+получались вдвое меньше на ровном месте. Теперь в неделе и 5 днях `Appointment.endTime`
+= начало + **60 минут** у всех (`_cardMinutes`), поэтому соседние по времени заявки встают
+просто друг под другом во всю ширину колонки; делится колонка только когда визиты реально
+начинаются в один час. Настоящая длительность лежит в `realMinutesById` (ключ — id
+appointment’а) и используется в `onDragEnd`: и для записи `durationMinutes` в визит, и для
+проверки «это время пересекается с другой заявкой». **Не считайте длительность из
+`appointment.endTime`** — она показывает размер карточки, а не работы. В дне и месяце
+длительность отдаётся настоящая.
 
 **Цвет карточки идёт только за статусом заявки (29.09.2026).** Раньше `_appointmentColor` и
 `calendarHatchFor(visitDone:)` красили визит с `outcome == done` в «Завершено», даже если
@@ -533,12 +635,13 @@ timeouts and falls back to `OfflineQueueService`, and the job card then shows «
   `greetingSpoken=1`, историю поднимает `hydrateCall`), максимум 4 раза на звонок
   (`aiReception.streamResumes`), и только потом уходит в `Gather`. Закрытие сокета Twilio
   логируется (`voiceRelay twilio close … code= lived= gemini=`) — раньше этот путь молчал.
-- Замеры времени до первого звука (3 прогона, боевой промпт): `gemini-3.1-flash-live-preview`
+- Замеры времени до первого звука (3 прогона, боевой промпт, 02.09.2026): `gemini-3.1-flash-live-preview`
   **539 мс**, `2.5-native-audio-09-2025` 2537 мс, `2.5-native-audio-12-2025` **7451 мс**,
-  `2.5-flash-live-preview` закрывает сокет. Порядок в `LIVE_MODELS` держите по этим числам.
+  `2.5-flash-live-preview` закрывает сокет. Замер 02.10.2026 и нынешний порядок `LIVE_MODELS` —
+  в разделе «Секретарь: разбор ошибок 30.09–01.10» выше (`tools/live_probe.js models`).
   `thinkingConfig`/`thinkingLevel` на 3.1 **не ускоряют** (634 / 755 мс против 642) — не трогать.
-- Скорость реакции: `VOICE_SILENCE_MS` (по умолчанию 160), `VOICE_END_SENSITIVITY`,
-  `VOICE_STALL_MS` (1100). Осторожно: `flushPartial('userPartial')` **заново взводит**
+- Скорость реакции: `VOICE_SILENCE_MS` (по умолчанию 500 с 02.10.2026, было 160), `VOICE_END_SENSITIVITY`,
+  `VOICE_STALL_MS` (3000, было 1100). Осторожно: `flushPartial('userPartial')` **заново взводит**
   сторожевой таймер, поэтому `clearReplyWatchdog` вызывать строго после сброса, иначе таймер
   срабатывает на каждый ответ и добавляет к паузе свои секунды.
 
@@ -563,6 +666,38 @@ timeouts and falls back to `OfflineQueueService`, and the job card then shows «
   ничего не роняет. `ACCESS_BACKGROUND_LOCATION` добавлен в манифест, но выдаёт его владелец
   вручную («Разрешить всё время»). `start()` и `stop()` обёрнуты в try/catch: плагин бросает
   «No active stream to cancel», если поток так и не поднялся.
+
+## Маршруты и адреса для Google (05.10.2026)
+
+Кнопка «Проложить маршрут» открывала **пустую форму поиска** Google Maps. Так и написано в
+документации Maps URLs: ссылка `maps/dir/?api=1` **без `destination`** открывает пустой бланк.
+Четыре причины, все починены в `lib/services/maps_service.dart`:
+
+- **Адрес терялся на пустом поле заявки.** `workAddress` отдавал `jobSiteAddress`, как только
+  стоит галочка «другое место работы», даже если адрес туда не вписан. Теперь и
+  `Job.workAddress` (`lib/models/job.dart`), и `JobDetailsController.workAddress` падают на
+  адрес клиента, если `jobSiteAddress` пустой. Заглушку `'Не указан'` из контроллера убрали —
+  она же уезжала в SMS-шаблоны через `{address}`.
+- **Вертикальная черта между точками не экранировалась.** `openRouteInMaps` склеивал
+  `waypoints` голым `|`; по документации его надо слать как `%7C`. Все ссылки теперь собирает
+  `MapsService.routeUri(List<MapPlace>)` через `Uri.https`, которая экранирует сама. Она же
+  возвращает `null`, если ехать некуда, — пустую ссылку не открываем.
+- **Текст адреса уходил в Google как есть.** `navigationQuery` чистит заглушки
+  («Не указан», «N/A»), выкидывает «Unit 5»/«кв 3» (геокодер на них спотыкается) и дописывает
+  провинцию из зоны обслуживания плюс `Canada`. Почтовый индекс, наоборот, **не трогаем** — он
+  самая точная часть; раньше `getTravelTime` его вырезал «для лучшего геокодинга».
+- **Ничем не привязанный геокодер.** `resolvePlace` зовёт Geocoding с `region=ca`,
+  `components=country:CA` и `bounds` из нарисованной зоны (`ServiceArea.boundingBox`), а в
+  ссылку кладёт `destination_place_id` / `waypoint_place_ids` — по place_id Maps открывает ровно
+  то здание. Ответы кэшируются в памяти; неудачу **не** кэшируем, иначе офлайн запомнится
+  навсегда. Тем же `resolvePlace` теперь пользуются `geocodeAddress`, `getTravelTime` и
+  `getOptimizedRoute` (точки уезжают в Directions координатами) — иначе на карточке висит время
+  до одного места, а навигатор везёт в другое.
+
+`openNavigator`/`openRouteInMaps` возвращают `bool`; карточка заявки и карта маршрута показывают
+снекбар, если адреса нет или Google его не нашёл. Google Maps берёт **не больше девяти**
+промежуточных точек (`MapsService.maxMapsWaypoints`) — о лишних остановках карта предупреждает.
+Тесты: `test/maps_navigation_test.dart`.
 
 ## Ошибки приложения
 
@@ -701,6 +836,33 @@ FIX ничего не говорит про Cloud Functions: с ноутбука
 (`verifiedOnly`); уже опровергнутые пары лежат в `refutedPairs` диалога, чтобы
 AI-проход их не воскрешал. Тесты: `test/part_supersession_service_test.dart`.
 Не переносите эту проверку на сервер — с адресов Cloud каталог отдаёт 403.
+
+**Поиск по складу и проверка при добавлении (05.10.2026).** FIX завёл деталь и потом не
+нашёл её по номеру. Дыр было три, все в `WarehouseItem` (теперь это чистые функции под
+тестом — группа «поиск по складу» в `test/warehouse_stock_test.dart`):
+
+- Номер сравнивался **как напечатан**: `partNumber.contains(_searchQuery)`. `4581EL-2002C`
+  на полке и `4581EL2002C` в строке поиска — мимо. Теперь обе стороны идут через
+  `normalizePart` (`WarehouseItem.matchesSearch` / `numberMatches` / `searchNumbersOf`).
+- «Заменяет номера» искались **только целиком**: на полке `4392067VP`, набрали `4392067` —
+  не нашлось. Теперь номер ищется куском в обе стороны (кусок длиной от 5 знаков), плюс в
+  набор номеров карточки добавляются `localSupersessions` (WP… ↔ …). Короче трёх знаков
+  запрос номером не считается, иначе «45» поднимет половину склада.
+- **Фильтр категории резал поиск.** Категорию карточке подбирает ИИ, и ролик сушилки легко
+  лежит в «Универсальное»; стоишь на вкладке «Сушилка» — по номеру пусто. Пока в строке
+  поиска что-то есть, ищем по всему складу, вкладка игнорируется.
+
+Та же `numberMatches` стоит в выборе детали для счёта (`finance_tab`), иначе по номеру
+замены деталь находилась на складе, но не вставлялась в счёт.
+
+`_findSamePart` в окне «Новая деталь» теперь смотрит не только свой `partNumber`, но и
+`interchange` — в обе стороны (наш номер в чужих заменах, чужой номер в наших) — и
+возвращает `(doc, exact)`. **Точное совпадение номера** = дубль (`foundDuplicate`, карточки
+сливаются целиком). **Совпадение по заменам** = замена (`foundSubstitute`, «тот же номер в
+заменах»): номер на полке чужой, переписывать его нельзя — только долить количество и
+сшить списки. Не делайте такой случай дублем, иначе объединение затрёт номер соседней
+карточки. Кэш склада там же: пустой `Source.cache` теперь догружается с сервера, раньше на
+чистой установке проверка молча пропускала весь склад.
 
 Low stock: `lowStockAlertEnabled` appends a «Заканчивается» block to the morning briefing
 (`MorningBriefingService`), and the briefing fires even on a day with no jobs if stock is low.
@@ -895,7 +1057,14 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 
 - Проверка: `npm --prefix functions test` (107 тестов на Node 22.20.0); `flutter test --no-pub test/job_visit_sms_test.dart` (56). Реальный Gemini проверен на синтетическом lookup и подтверждённой отмене с in-memory backend, **без записи в production**. Обновлены 15 функций голос/SMS/Gmail/recovery и установлен release APK на `R5CW421KFXH`. Для shared-calendar изменений обновлять также `onJobWritten`, `sendVisitReminders`, `retryStuckCallAi`, `recoverStuckCallJobs`, `syncGmailInbox`, `sendSms`, `smsStatusCallback`, кроме основного набора голосовых функций.
 
-## Визиты в карточке заявки: «Дата визита» и «Перенос визита» (29.09.2026)
+## Визиты в карточке: «Дата визита» и статусы с новой датой (02.10.2026, решение FIX)
+
+Заменяет блок от 29.09 ниже. `details_tab._editVisit({existing, followUpStatus})`:
+- Окно **«Дата визита»** — только календарь+время, галочка SMS и «Сохранить». Ни длительности, ни заметки, ни чипов, ни «Выполнен»/«Удалить визит». Нажатие на любую точку шкалы = `ctrl.updateVisit(visit, correction: true)`; статус не меняется. У пустой заявки («Не запланировано») визит добавляется через `saveVisits` без авто-«Перенос»/«Установка».
+- Пункт **«Перенос визита» из меню статусов убран.** Его работу делают статусы **«Установка»** и **«Повторный визит»** (`_statusNeedsNewDate`): сразу то же окно (дата, время, SMS включена) → `rescheduleToNewJob` (новая заявка с этим статусом, старая остаётся на своей дате как «Перенос»). Если у заявки визитов нет — визит ставится в неё же и ей ставится выбранный статус. Отмена окна = статус не меняется.
+- Визит / Депозит / Ожидание запчасти / Позвонить / Готово / Отмена дату не трогают (запчасть закрывает последний визит как выполненный, «Готово» идёт через `_completeJobFlow`).
+
+### Старый блок (29.09.2026)
 
 `details_tab._editVisit({existing, correction, followUp})`, решение FIX:
 - Нажатие на блок **«Дата визита»** = `correction`: правит дату/время **этого же** визита (`ctrl.updateVisit(visit, correction: true)`) — без статуса «Перенос»/«Установка», подтверждение визита не трогается, SMS по умолчанию выключено.
@@ -973,3 +1142,77 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 - **Карточка клиента**: «Удалить» / «Новый ремонт» / «Изменить» — нижняя полоса.
 - **Переписка**: «Карточка», «Имя и адрес в карточку», «Позвонить» — в строке SMS/Email над полем ввода; при выборе сообщений панель действий встаёт вместо поля ввода.
 - Тест: `test/app_date_picker_test.dart`.
+## Карточка заявки — раскладка (02.10.2026)
+
+- Шапка (`job_details_screen.dart`): слева имя клиента, тап открывает карточку клиента (`_openClientCard` переехал сюда из `details_tab`). Под шапкой вкладки-папки `_FolderTabs` (Детали / Финансы / Чат, значок + подпись); открытая папка того же цвета, что и лист под ней. Нижнего TabBar больше нет.
+- «Детали»: сверху слева крупная карточка техники (`_buildApplianceHero`), справа статус и подтверждение заказа (`VisitConfirmBadge.strip`). Под ними «Где работа» и «Клиент звонил» — узкие полоски в одну строку (`_compactStrip`). Плитки заменены одним разделом `_buildWorkSection`: описание и фото рядом (фото максимум 3 миниатюры: ячейка внутри `IntrinsicHeight`, поэтому `LayoutBuilder` там нельзя), под ними одной строкой Длительность / С собой / Отслеживание. В самом низу «Дата визита» — шкала переносов (`_visitTimeline`): визиты по времени слева направо, первый «Старт», переносы зачёркнуты, текущий (`_orderConfirmVisit`) крупно с подписью «Сейчас», выполненные отмечены зелёной галочкой. Не влезают — шкала листается вбок, текущий визит виден сразу. Маршрут / Звонок / SMS закреплены внизу вкладки.
+- Календарь → «Список» (`jobs_screen._timelineRows`): слева шкала времени (начало и конец визита), «Свободно · N ч», если между визитами окно от часа, красная черта «сейчас» на сегодняшнем дне. У `JobAgendaCard` есть `showTime: false`, чтобы время не дублировалось.
+
+## Переписка дёргалась — лента перевёрнута (05.10.2026)
+
+Лента SMS/почты (`conversation_screen.dart`) при открытии и после каждого обновления
+подёргивалась: содержимое медленно уезжало вниз и рывком возвращалось. Причина — связка
+двух вещей:
+
+- в `build` стоял `jumpTo(_scrollController.position.maxScrollExtent)` в `postFrameCallback`;
+- у `ListView.builder` до раскладки всех пузырей `maxScrollExtent` — **грубая оценка**. В
+  логе на боевой переписке: прыжок на `8173.7`, а настоящий конец — `5451.7`;
+- физика у всего приложения `BouncingScrollPhysics` (`_AppScrollBehavior` в `app.dart`), и
+  она не обрезает перелёт, а **пружиной** тянет ленту обратно — сотни кадров, больше
+  секунды. Это и видно как рывок. С обычной андроидной физикой перелёт срезался бы сразу.
+
+Любая смена высоты выше экрана (догрузилась картинка, у входящего появился «Перевод…»)
+запускала то же самое заново.
+
+Починка: лента `reverse: true`, элементы берутся с конца
+(`messages[messages.length - 1 - index]`). Ноль прокрутки — это низ, последнее сообщение;
+низ держится сам, звать прокрутку не надо. Убраны `_lastJumpId` и оба прыжка к
+`maxScrollExtent`; после отправки — `animateTo(0)` и только если мастер листал вверх.
+
+Не возвращайте «прокрутить в конец» через `maxScrollExtent` в чате: с `BouncingScrollPhysics`
+это даёт именно тот рывок. Если чат где-то ещё — делайте `reverse: true`.
+
+Мелочь про телефон (сейчас Redmi `44c25486`, MIUI): `adb shell input tap` запрещён
+(`INJECT_EVENTS`), кликать по экрану из консоли нельзя — либо просит FIX, либо временный
+автопереход в коде и `flutter run`. `flutter run` при несовпадении подписи **сносит**
+установленный релиз, после чего релиз обратно ставится только через `adb uninstall` +
+`adb install` (первый раз MIUI отвечает `INSTALL_FAILED_USER_RESTRICTED` — повторить).
+
+## Всплывающие уведомления — 1 секунда (02.10.2026)
+
+Все всплывающие уведомления внутри приложения живут `AppFeedback.noticeDuration` (1 с). Нижние SnackBar ограничивает `QuickScaffoldMessenger` (`lib/core/quick_scaffold_messenger.dart`, вставлен в `MaterialApp.builder` в `app.dart`): он пересобирает каждый SnackBar с этой длительностью и `persist: false` — так что `duration:` в вызовах ни на что не влияет. Верхние: `AppFeedback.toast` («Скопировано») и жёлтый баннер нового SMS / письма в `GlobalSmsListener` (прячется по таймеру, сообщение остаётся непрочитанным). Не трогали: вопросы с кнопками внизу (`FieldAssistantHost`: «изменить статус?», «отправить, что едете?») и системные уведомления Android.
+
+## Ссылки и выделение текста (05.10.2026)
+
+`lib/shared/widgets/linked_text.dart` — общий `LinkedText`: ссылки, почта и телефоны в тексте
+нажимаются, двойное касание выделяет слово (дальше ползунки и «Копировать»). Стоит в
+пузырях переписки (`_TranslatedMessageBody`), в расшифровке разговора
+(`call_transcript_chat.dart`), в «Коротко о звонке» и в карточке проблемы секретаря
+(`call_review_page.dart`), в «Выжимке» записи (`call_recording_page.dart`).
+
+- Нажатие на ссылку **не уводит сразу в браузер**: открывается лист «Открыть ссылку /
+  Скопировать» (у почты — «Написать письмо», у телефона — «Позвонить / Написать SMS»).
+  Так просил FIX: случайный палец не должен открывать чужие сайты. Звонок идёт через
+  `CallScreen` (линия мастерской), не через системный набор.
+- Телефон ловится только в североамериканском виде либо с «+» в начале. Нарочно не «любые
+  8 цифр подряд»: иначе датой `2026-09-20` или номером заявки можно «позвонить».
+  Тесты на разбор — `test/linked_text_test.dart`.
+- **Главная грабля: `SelectionArea` съедает долгое нажатие.** У неё и у `GestureDetector`
+  порог одинаковый (500 мс), а в споре жестов побеждает тот, кто внутри. Выделение
+  сообщений галочками по долгому нажатию из-за этого просто переставало работать
+  (проверено тестом: `plain=0`). Поэтому пузырь в переписке обёрнут в `QuickLongPress`
+  (тот же файл) — долгое нажатие с порогом 350 мс, оно выигрывает. Если где-то ещё
+  добавляете выделение текста поверх своего долгого нажатия — берите `QuickLongPress`.
+- Пока идёт выделение сообщений галочками, `LinkedText` переключается в `interactive: false`
+  (обычный `Text`): иначе область выделения забирала бы и одиночные нажатия, и галочки
+  не ставились бы.
+- Вложенные области выделения дерутся за жесты, поэтому `LinkedText` сам проверяет
+  `SelectionContainer.maybeOf(context)` и внутри чужой `SelectionArea` (например на странице
+  записи разговора) своей не заводит.
+- `SelectableText.rich` здесь не годится: внутри него `TextSpan.recognizer` не срабатывает,
+  ссылки были бы мёртвыми. Связка «`SelectionArea` + `Text.rich` c распознавателями»
+  работает — на это есть тест.
+- **Подсветка выделения красная** (`textSelectionTheme` в `lib/core/theme.dart`:
+  `selectionColor: 0x66E53935`, ползунки `0xFFE53935`) — просьба FIX, синяя по умолчанию
+  терялась на синих пузырях. Material раздаёт это через `DefaultSelectionStyle`, поэтому
+  красным стало выделение везде, включая поля ввода. Цвет курсора не трогали.

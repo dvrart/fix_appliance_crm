@@ -139,7 +139,7 @@ async function trigger(before, after) {
 
 beforeEach(() => {
   store = new Map([
-    [`${COMPANY}/settings/config`, { manualSmsApproval: true, bookingSmsEnabled: true }],
+    [`${COMPANY}/settings/config`, { bookingSmsEnabled: true }],
     [`${COMPANY}/settings/sms_templates`, {}],
   ]);
   writes = [];
@@ -385,16 +385,14 @@ test('duplicate delivery callbacks perform no extra writes', async () => {
   assert.equal(writes.length, count);
 });
 
-test('changing to automatic mode does not approve an existing manual decision', async () => {
-  store.set(`${COMPANY}/settings/config`, { manualSmsApproval: false });
+test('a visit confirmation already awaiting a decision is left alone', async () => {
   const pending = job({ smsBooking: { state: 'pending', slotKey: SLOT }, smsBookingPending: true });
   await trigger(pending, pending);
   assert.equal(providerCalls, 0);
   assert.equal(writes.length, 0);
 });
 
-test('automatic reschedule records the new send time and settles', async () => {
-  store.set(`${COMPANY}/settings/config`, { manualSmsApproval: false });
+test('a reschedule waits for the owner instead of texting the client', async () => {
   const before = job({
     smsBookingSlotKey: SLOT, smsBookingSentAt: new Date('2026-01-01T00:00:00Z'),
     smsBookingSentSms: true, smsBookingVia: 'sms', smsConfirmStatus: 'pending',
@@ -402,10 +400,32 @@ test('automatic reschedule records the new send time and settles', async () => {
   const moved = structuredClone(before);
   moved.visits[0].startAt = new Date('2099-01-06T14:00:00Z');
   const result = await trigger(before, moved);
-  assert.equal(providerCalls, 1);
-  assert.ok(result.visits[0].smsBookingSentAt.getTime() > before.visits[0].smsBookingSentAt.getTime());
+  assert.equal(providerCalls, 0);
+  assert.equal(result.visits[0].smsBooking.state, 'pending');
+  assert.equal(result.visits[0].smsBookingPending, true);
+  assert.equal(pushes.length, 1);
+  // Повторный проход не должен будить мастера второй раз.
   await trigger(moved, result);
-  assert.equal(providerCalls, 1);
+  assert.equal(providerCalls, 0);
+  assert.equal(pushes.length, 1);
+});
+
+test('an automatic reply is parked in the outbox, not sent to the client', async () => {
+  const before = job({ smsConfirmStatus: 'pending' });
+  const after = structuredClone(before);
+  after.visits[0].smsConfirmStatus = 'confirmed';
+  await trigger(before, after);
+  assert.equal(providerCalls, 0);
+  const queued = [...store.entries()]
+    .filter(([path]) => path.startsWith(`${COMPANY}/messages/`))
+    .map(([, data]) => data);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].status, 'awaiting_approval');
+  assert.equal(queued[0].approval, 'pending');
+  assert.equal(queued[0].direction, 'outbound');
+  assert.match(queued[0].body, /See you/);
+  assert.equal(pushes[0][0], 'Сообщение ждёт отправки');
+  assert.equal(pushes[0][2].type, 'outbox');
 });
 
 test('a transaction failure after provider acceptance does not resend', async () => {
@@ -482,7 +502,11 @@ test('legacy SMS rescheduling acknowledgement is not replaced with pending', asy
   const result = await trigger(before, after);
   assert.equal(result.visits[0].smsBooking.state, 'sent');
   assert.equal(result.visits[0].smsConfirmStatus, 'confirmed');
-  assert.equal(pushes.length, 0);
+  // Единственный push — про ответ клиенту, который лёг в очередь на одобрение;
+  // само подтверждение визита мастера не дёргает.
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0][2].type, 'outbox');
+  assert.equal(providerCalls, 0);
 });
 
 test('SMS cancellation clears both schedule fields and uses the same visit state as phone cancellation', async () => {
@@ -515,7 +539,10 @@ test('SMS cancellation does not overwrite a concurrent app move', async () => {
   await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '0' });
   assert.equal(store.get(JOB).visits[0].outcome, 'scheduled');
   assert.deepEqual(store.get(JOB).visits[0].startAt, moved);
-  assert.equal(pushes.length, 0);
+  // Ответ «визит изменился» клиенту сам не уходит — ждёт мастера.
+  assert.equal(providerCalls, 0);
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0][2].type, 'outbox');
 });
 
 test('a stale SMS dialog cannot reopen a cancelled job', async () => {

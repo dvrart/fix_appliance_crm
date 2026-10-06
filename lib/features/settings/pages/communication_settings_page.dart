@@ -45,7 +45,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
   bool _onWayGeo = true;
   bool _bookingSms = true;
   bool _reminderSms = true;
-  bool _manualSms = true;
   bool _autoReview = true;
   List<String> _reminderOffsets = const ['24h'];
   int _morningHour = 7;
@@ -69,7 +68,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
   bool _savedOnWayGeo = true;
   bool _savedBookingSms = true;
   bool _savedReminderSms = true;
-  bool _savedManualSms = true;
   bool _savedAutoReview = true;
   List<String> _savedReminderOffsets = const ['24h'];
   int _savedMorningHour = 7;
@@ -179,7 +177,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       _onWayGeo = SettingsService.boolFlag(config, 'onTheWayPromptEnabled');
       _bookingSms = SettingsService.readBookingSmsEnabled(config);
       _reminderSms = SettingsService.readReminderSmsEnabled(config);
-      _manualSms = SettingsService.readManualSmsApproval(config);
       _autoReview = SettingsService.readAutoReviewSmsEnabled(config);
       _reminderOffsets = SettingsService.readReminderOffsets(config);
       _morningHour = SettingsService.readMorningBriefingHour(config);
@@ -193,7 +190,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       _savedOnWayGeo = _onWayGeo;
       _savedBookingSms = _bookingSms;
       _savedReminderSms = _reminderSms;
-      _savedManualSms = _manualSms;
       _savedAutoReview = _autoReview;
       _savedReminderOffsets = List<String>.from(_reminderOffsets);
       _savedMorningHour = _morningHour;
@@ -213,7 +209,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       _smsHeader != _savedSmsHeader ||
       _bookingSms != _savedBookingSms ||
       _reminderSms != _savedReminderSms ||
-      _manualSms != _savedManualSms ||
       _autoReview != _savedAutoReview ||
       _onWayMeters != _savedOnWayMeters ||
       _onWayText != _savedOnWayText ||
@@ -241,7 +236,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     await SettingsService.updateConfigMap({
       'bookingSmsEnabled': _bookingSms,
       'reminderSmsEnabled': _reminderSms,
-      'manualSmsApproval': _manualSms,
       'autoReviewSmsEnabled': _autoReview,
       'reminderOffsets': _reminderOffsets,
       'reminderMorningHour': _reminderMorningHour,
@@ -253,7 +247,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       _savedSmsHeader = _smsHeader;
       _savedBookingSms = _bookingSms;
       _savedReminderSms = _reminderSms;
-      _savedManualSms = _manualSms;
       _savedAutoReview = _autoReview;
       _savedReminderOffsets = List<String>.from(_reminderOffsets);
       _savedReminderMorningHour = _reminderMorningHour;
@@ -745,16 +738,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                 color: Colors.blue,
                 active: _bookingSms,
                 onTap: () => setState(() => _bookingSms = !_bookingSms),
-              ),
-              SettingsHubTile(
-                title: 'Ручное подтверждение SMS'.tr,
-                subtitle: _manualSms
-                    ? 'Автоотправка отключена'
-                    : 'SMS уходит автоматически',
-                icon: Icons.handshake_outlined,
-                color: Colors.orange.shade800,
-                active: _manualSms,
-                onTap: () => setState(() => _manualSms = !_manualSms),
               ),
               SettingsHubTile(
                 title: 'Напоминание'.tr,

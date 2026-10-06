@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../core/motion.dart';
 import '../../core/utils/formatters.dart';
 import '../../services/ai_service.dart';
 import '../../services/job_service.dart';
@@ -187,6 +188,7 @@ Future<void> reviewCall(
     extractedData = ExtractedJobData.fromJson(call.extractedData!);
   } else if (call.transcription != null && call.transcription!.isNotEmpty) {
     showDialog<void>(
+      animationStyle: AppMotion.dialog,
       context: context,
       barrierDismissible: false,
       useRootNavigator: true,

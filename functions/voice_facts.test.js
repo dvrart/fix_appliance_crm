@@ -23,6 +23,22 @@ test('секретарь не назначает визит: промпт и п�
   assert.doesNotMatch(voiceFacts.farewellFor(wish), /see you then/);
 });
 
+test('номер дома после «at» — адрес, а не время визита', () => {
+  assert.equal(voiceFacts.inferTimeFromText('My washer does not drain, I am Amelia at 12 King Street in Brantford.'), '');
+  assert.equal(voiceFacts.inferTimeFromText("We're at 56 Elm Dr, Paris."), '');
+  assert.equal(voiceFacts.inferTimeFromText('Can he come at 2 tomorrow?'), '14:00');
+  assert.equal(voiceFacts.inferTimeFromText('around 10 a.m. works'), '10:00');
+});
+
+test('секретарь переспрашивает неразборчивые имя и адрес, при нужде — по буквам', () => {
+  for (const flow of [voiceFacts.VOICE_CALL_FLOW, voiceFacts.VOICE_LIVE_FLOW]) {
+    assert.ok(flow.includes(voiceFacts.VOICE_CLARIFY_RULES));
+  }
+  assert.match(voiceFacts.VOICE_CLARIFY_RULES, /spell/);
+  assert.match(voiceFacts.VOICE_CLARIFY_RULES, /letter by letter/);
+  assert.match(voiceFacts.VOICE_CLARIFY_RULES, /does NOT cover a name, street/);
+});
+
 test('pointInPolygon: город внутри и снаружи зоны', () => {
   assert.equal(voiceFacts.pointInPolygon(42.8623, -80.728, ZONE), true); // Tillsonburg
   assert.equal(voiceFacts.pointInPolygon(43.1394, -80.2644, ZONE), true); // Brantford

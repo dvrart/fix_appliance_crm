@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { once } = require('node:events');
+const { EventEmitter, once } = require('node:events');
 const http = require('node:http');
 const net = require('node:net');
 const { test } = require('node:test');
@@ -206,20 +206,59 @@ test('pause tuning preserves the voice, listening sensitivity and long-session c
     voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
   });
   assert.equal(setup.generationConfig.thinkingConfig, undefined);
+  // 0,5 с тишины, а не 0,16: иначе она влезает на каждой паузе звонящего и
+  // распознавание получает фразу кусками (решение FIX, 02.10.2026).
   assert.deepEqual(setup.realtimeInputConfig, {
     activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
     automaticActivityDetection: {
       disabled: false,
       startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
       endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
-      prefixPaddingMs: 200,
-      silenceDurationMs: 160,
+      prefixPaddingMs: 300,
+      silenceDurationMs: 500,
     },
   });
   assert.deepEqual(setup.sessionResumption, { handle: 'test-resume' });
   assert.deepEqual(setup.contextWindowCompression, {
     triggerTokens: 64000, slidingWindow: { targetTokens: 32000 },
   });
+});
+
+test('fallback models can actually start: no affective flag, blocking tools on 3.8 only', () => {
+  assert.deepEqual(voiceRelay._internals.liveModels(), [
+    'gemini-3.1-flash-live-preview',
+    'gemini-3.8-live',
+    'gemini-2.5-flash-native-audio-preview-12-2025',
+  ]);
+  // 2.5 закрывала сокет с 1007 на enableAffectiveDialog — запасной не было.
+  const legacy = voiceRelay.buildSetup('gemini-2.5-flash-native-audio-preview-12-2025', 'Shop rules', true).setup;
+  assert.equal(legacy.enableAffectiveDialog, undefined);
+  assert.deepEqual(legacy.generationConfig.thinkingConfig, { thinkingBudget: 0 });
+  const behaviours = (model) => voiceRelay.buildSetup(model, 'Shop rules', true).setup.tools[0]
+    .functionDeclarations.map((fn) => fn.behavior);
+  // 3.8 зовёт инструменты асинхронно; отмена визита обязана дождаться сервера.
+  assert.deepEqual(behaviours('gemini-3.8-live'), ['BLOCKING', 'BLOCKING', 'BLOCKING']);
+  assert.deepEqual(behaviours('gemini-3.1-flash-live-preview'), [undefined, undefined, undefined]);
+  assert.deepEqual(behaviours('gemini-2.5-flash-native-audio-preview-12-2025'), [undefined, undefined, undefined]);
+});
+
+test('she is Sarah: one fixed name, honest about being a virtual assistant, calm on a bad line', () => {
+  const prompt = voiceRelay.liveSystemPrompt({ instructions: 'Shop rules.' }, {});
+  assert.match(prompt, /You are Sarah, answering the shop phone/);
+  assert.match(prompt, /Never use another name, and never introduce yourself as "she"/);
+  assert.match(prompt, /Asked your name: "I'm Sarah"/);
+  assert.match(prompt, /Never answer a personal question with a checklist question/);
+  assert.match(prompt, /the shop's virtual assistant/);
+  assert.match(prompt, /Never claim to be human/);
+  assert.match(prompt, /At most twice in the whole call/);
+  assert.match(prompt, /call back or text this number/);
+  assert.doesNotMatch(prompt, /You are a real woman/);
+  const { session, messages } = greetingSession({ greeting: '' });
+  voiceRelay.greetLive(session);
+  const greeting = messages[0].clientContent.turns[0].parts[0].text;
+  assert.match(greeting, /If you give your name, it is Sarah/);
+  assert.match(greeting, /never "this is she"/);
+  assert.doesNotMatch(greeting, /made-up personal name/);
 });
 
 test('first greeting is improvised like a live person, without a canned line', () => {
@@ -284,7 +323,21 @@ test('resumed calls continue with their history instead of a new greeting', () =
     assert.equal(turns.length, resumeHandle ? 1 : history.length + 1);
     assert.equal(session.needsContinue, false);
     assert.equal(session.greeted, true);
+    // Последней говорила она: после сбоя молчит и слушает, без «I'm still here».
+    assert.equal(messages[0].clientContent.turnComplete, false);
+    assert.match(prompt, /Stay quiet and listen until the caller speaks/);
   }
+});
+
+test('after a glitch she answers at once only if the caller was left without a reply', () => {
+  const history = [
+    { role: 'assistant', text: 'What brand is it?' },
+    { role: 'user', text: "It's a Whirlpool, about five years old." },
+  ];
+  const { session, messages } = greetingSession({ needsContinue: true, history, resumeHandle: 'test-resume-handle' });
+  voiceRelay.greetLive(session);
+  assert.equal(messages[0].clientContent.turnComplete, true);
+  assert.match(messages[0].clientContent.turns.at(-1).parts[0].text, /Reply now to what the caller just said/);
 });
 
 test('Live history records the actual greeting while fixed TTS greetings still persist', async (t) => {
@@ -478,6 +531,269 @@ test('appointment-only calls cannot become repair jobs from repeated historical 
   assert.equal(voiceFacts.isAppointmentOnly(extracted, data), true);
   data.aiReception.history.push({ role: 'user', text: 'I need to create a new appointment to repair my microwave.' });
   assert.equal(voiceFacts.isAppointmentOnly(extracted, data), false);
+});
+
+// ── Живой звонок на поддельном сокете Gemini и поддельных часах ─────────────
+
+class FakeGeminiSocket extends EventEmitter {
+  constructor() {
+    super();
+    this.readyState = 0;
+    this.sent = [];
+  }
+  send(raw) { this.sent.push(JSON.parse(raw)); }
+  ping() {}
+  close() {
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    this.emit('close', 1000, Buffer.from(''));
+  }
+  terminate() { this.close(); }
+  server(message) { this.emit('message', Buffer.from(JSON.stringify(message))); }
+  drop(code = 1011, reason = 'Internal error encountered.') {
+    this.readyState = 3;
+    this.emit('close', code, Buffer.from(reason));
+  }
+  get setup() { return this.sent.find((m) => m.setup)?.setup; }
+  get prompts() { return this.sent.filter((m) => m.clientContent).map((m) => m.clientContent); }
+}
+
+const MODEL_AUDIO = Buffer.alloc(960).toString('base64');
+const LOUD_FRAME = Buffer.from(Array.from({ length: 160 }, (_, i) => (i % 2 ? 0x00 : 0x80))).toString('base64');
+
+function liveCall(t) {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const sockets = [];
+  const writes = [];
+  const twilio = {
+    readyState: WebSocket.OPEN, closed: false, sent: [],
+    send(raw) { this.sent.push(JSON.parse(raw)); },
+    close() { this.closed = true; this.readyState = WebSocket.CLOSED; },
+  };
+  voiceRelay.init({
+    geminiApiKey: 'test-gemini-key',
+    openGeminiSocket: () => {
+      const ws = new FakeGeminiSocket();
+      sockets.push(ws);
+      return ws;
+    },
+    callsRef: {
+      doc: () => ({
+        get: async () => ({ exists: false }),
+        set: async (data) => { writes.push(structuredClone(data)); },
+      }),
+    },
+    mergeExtracted: (prev) => ({ ...(prev || {}) }),
+    normalizePhone: (phone) => String(phone || '').replace(/\D/g, '').slice(-10),
+    hasEnoughForJob: () => false,
+    appendTranscript: (current, line) => [current, line].filter(Boolean).join('\n'),
+    generateVoiceContent: async () => ({ response: { text: () => '{}' } }),
+    extractJsonObject: (raw) => JSON.parse(raw),
+  });
+  t.after(() => voiceRelay.init(null));
+  const session = {
+    callSid: 'CA-live-test', fromNumber: '+15195550100', streamSid: 'MZ-live-test',
+    history: [], extracted: {}, turns: 0, twilioWs: twilio, outLeftover: new Int16Array(0),
+    userPartial: '', assistantPartial: '', systemText: 'Shop rules.', startedAt: Date.now(),
+  };
+  voiceRelay._internals.startGeminiLive(session);
+  const current = () => sockets.at(-1);
+  const ready = () => {
+    current().readyState = WebSocket.OPEN;
+    current().emit('open');
+    current().server({ setupComplete: {} });
+  };
+  const modelSays = (text) => {
+    current().server({ serverContent: { outputTranscription: { text } } });
+    current().server({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: MODEL_AUDIO } }] } } });
+    current().server({ serverContent: { turnComplete: true } });
+  };
+  const callerSays = (text) => current().server({ serverContent: { inputTranscription: { text } } });
+  const tick = (ms) => t.mock.timers.tick(ms);
+  const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  const allPrompts = () => sockets.flatMap((ws) => ws.prompts);
+  return { session, sockets, twilio, writes, current, ready, modelSays, callerSays, tick, flush, allPrompts };
+}
+
+test('a model that keeps dropping is swapped for the next one, never looping "I\'m still here", then Gather', async (t) => {
+  const call = liveCall(t);
+  assert.equal(voiceRelay._internals.timing.LIVE_FAILURE_LIMIT, 5);
+  call.ready();
+  call.current().server({ sessionResumptionUpdate: { newHandle: 'handle-1' } });
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  const models = () => call.sockets.map((ws) => ws.setup.model.replace('models/', ''));
+
+  call.current().drop(1011);
+  call.tick(200);
+  assert.equal(call.sockets.length, 2);
+  call.ready();
+  assert.deepEqual(call.sockets[1].setup.sessionResumption, { handle: 'handle-1' });
+
+  call.current().drop(1011);
+  call.tick(200);
+  call.ready();
+  call.current().drop(1011);
+  call.tick(200);
+  call.ready();
+  call.current().drop(1011);
+  call.tick(200);
+  call.ready();
+  assert.deepEqual(models(), [
+    'gemini-3.1-flash-live-preview',
+    'gemini-3.1-flash-live-preview',
+    'gemini-3.8-live',
+    'gemini-3.8-live',
+    'gemini-2.5-flash-native-audio-preview-12-2025',
+  ]);
+  // Ручка сессии не переносится на другую модель, а история передаётся текстом.
+  assert.deepEqual(call.sockets[2].setup.sessionResumption, {});
+  assert.match(JSON.stringify(call.sockets[2].prompts), /this is Sarah/);
+  // Ни одно переподключение не заставило её заговорить без звонящего.
+  const forced = call.sockets.slice(1).flatMap((ws) => ws.prompts).filter((p) => p.turnComplete);
+  assert.deepEqual(forced, []);
+
+  // Пятый обрыв за звонок — дальше резервный Gather, новых сокетов нет.
+  call.current().drop(1011);
+  call.tick(200);
+  await call.flush();
+  assert.equal(call.sockets.length, 5);
+  assert.ok(call.writes.some((w) => w.aiReception && w.aiReception.liveFailed === true));
+  assert.equal(call.twilio.closed, true);
+});
+
+test('a planned goAway reconnect keeps the model and is not counted as a failure', (t) => {
+  const call = liveCall(t);
+  call.ready();
+  call.current().server({ sessionResumptionUpdate: { newHandle: 'handle-9' } });
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  call.current().server({ goAway: { timeLeft: '50s' } });
+  assert.equal(call.sockets.length, 2, 'goAway opens the next session straight away');
+  call.ready();
+  assert.deepEqual(call.sockets[1].setup.sessionResumption, { handle: 'handle-9' });
+  assert.equal(call.sockets[1].setup.model, 'models/gemini-3.1-flash-live-preview');
+  assert.equal(call.session.liveFailures || 0, 0);
+});
+
+test('the stall nudge waits for the caller to finish and never fires after she answered', (t) => {
+  const call = liveCall(t);
+  const nudges = () => call.allPrompts().filter((p) => /still on the line/.test(JSON.stringify(p)));
+  call.ready();
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  call.callerSays('My dryer is making');
+  call.tick(2000);
+  call.callerSays(' kind of a grinding noise, uh');
+  call.tick(2900);
+  assert.equal(nudges().length, 0, 'the caller spoke 2.9 s ago — too early to push her');
+  call.tick(200);
+  assert.equal(nudges().length, 1);
+
+  call.modelSays('Oh no — when does it grind?');
+  call.callerSays('When it spins.');
+  call.tick(1200);
+  call.modelSays('Got it. What brand is it?');
+  call.tick(6000);
+  assert.equal(nudges().length, 1, 'she answered, nothing to rescue');
+});
+
+test('silence on the line: one check, then "can\'t hear you", then the relay hangs up 30 s later', async (t) => {
+  const call = liveCall(t);
+  const { SILENCE_CHECK_MS, SILENCE_GIVEUP_MS, SILENCE_HANGUP_MS } = voiceRelay._internals.timing;
+  const ladder = () => call.allPrompts().map((p) => p.turns[0].parts[0].text).filter((text) => /said anything|Still nothing/.test(text));
+  call.ready();
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  call.tick(SILENCE_CHECK_MS - 1000);
+  call.callerSays('Hi, my fridge is warm.');
+  call.modelSays('Oh no — is the freezer still cold?');
+  call.tick(SILENCE_CHECK_MS - 1);
+  assert.deepEqual(ladder(), [], 'a word from the caller restarts the count');
+  call.tick(1);
+  assert.equal(ladder().length, 1);
+  assert.match(ladder()[0], /are you still there/);
+
+  call.modelSays('Hello — are you still there?');
+  call.tick(SILENCE_GIVEUP_MS);
+  assert.equal(ladder().length, 2);
+  assert.match(ladder()[1], /trouble hearing them/);
+  assert.match(ladder()[1], /call back or send a text/);
+
+  call.modelSays("Sorry, I'm having trouble hearing you — please call back or text this number.");
+  call.tick(SILENCE_HANGUP_MS - 1);
+  assert.equal(call.twilio.closed, false);
+  call.tick(1);
+  await call.flush();
+  assert.equal(call.twilio.closed, true);
+  const last = call.writes.at(-1).aiReception;
+  assert.equal(last.hangup, 'silence');
+  assert.equal(last.done, true);
+});
+
+test('after "have a good day" she does not ask whether they are there; the line closes after 30 s', async (t) => {
+  const call = liveCall(t);
+  const { SILENCE_HANGUP_MS } = voiceRelay._internals.timing;
+  call.ready();
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  call.callerSays("No, that's all, thanks.");
+  call.modelSays('Perfect — have a good day!');
+  call.tick(SILENCE_HANGUP_MS);
+  await call.flush();
+  assert.equal(call.allPrompts().filter((p) => /said anything/.test(JSON.stringify(p))).length, 0);
+  assert.equal(call.twilio.closed, true);
+});
+
+test('"hold on, let me check" buys a full minute before she checks the line', (t) => {
+  const call = liveCall(t);
+  const { SILENCE_CHECK_MS, SILENCE_HOLD_MS } = voiceRelay._internals.timing;
+  const checks = () => call.allPrompts().filter((p) => /said anything/.test(JSON.stringify(p))).length;
+  call.ready();
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  call.callerSays('Hold on, let me grab the model number.');
+  call.modelSays('Sure, take your time.');
+  call.tick(SILENCE_CHECK_MS * 3);
+  assert.equal(checks(), 0);
+  call.tick(SILENCE_HOLD_MS - SILENCE_CHECK_MS * 3);
+  assert.equal(checks(), 1);
+});
+
+test('a deaf model (caller audibly talks, Gemini hears nothing) is replaced, and the second time Gather takes over', async (t) => {
+  const call = liveCall(t);
+  const { SILENCE_CHECK_MS } = voiceRelay._internals.timing;
+  const talk = (ms) => {
+    for (let at = 0; at < ms; at += 20) {
+      voiceRelay._internals.sendCallerAudio(call.session, LOUD_FRAME);
+      call.tick(20);
+    }
+  };
+  call.ready();
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  call.tick(1000);
+  talk(2000);
+  call.tick(SILENCE_CHECK_MS - 3000);
+  assert.equal(call.sockets.length, 2, 'switched to the next model');
+  call.ready();
+  assert.equal(call.sockets[1].setup.model, 'models/gemini-3.8-live');
+  assert.equal(call.current().prompts.at(-1).turnComplete, false);
+
+  talk(2000);
+  call.tick(SILENCE_CHECK_MS);
+  await call.flush();
+  assert.ok(call.writes.some((w) => w.aiReception && w.aiReception.liveFailed === true));
+  assert.equal(call.twilio.closed, true);
+});
+
+test('a long story from the caller is not mistaken for silence or deafness', (t) => {
+  const call = liveCall(t);
+  const { SILENCE_CHECK_MS } = voiceRelay._internals.timing;
+  call.ready();
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  // 3.1 присылает расшифровку только в конце фразы: 14 секунд рассказа без неё.
+  for (let at = 0; at < 14000; at += 20) {
+    voiceRelay._internals.sendCallerAudio(call.session, LOUD_FRAME);
+    call.tick(20);
+  }
+  call.callerSays('So the dryer started making this noise last week and now it will not heat at all.');
+  call.tick(SILENCE_CHECK_MS - 1);
+  assert.equal(call.sockets.length, 1);
+  assert.equal(call.allPrompts().filter((p) => /said anything/.test(JSON.stringify(p))).length, 0);
 });
 
 test('bad stream keys are still rejected before starting Gemini', { timeout: 5000 }, async (t) => {

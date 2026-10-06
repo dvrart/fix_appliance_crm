@@ -373,6 +373,7 @@ class VisitLinkPainter extends CustomPainter {
     required this.overlayKey,
     required this.catalog,
     this.timeRulerWidth = 52,
+    this.cardRadius = 8,
   }) : super(repaint: hub);
 
   final VisitLinkHub hub;
@@ -381,6 +382,12 @@ class VisitLinkPainter extends CustomPainter {
 
   /// В месяце линейки времени нет, слева рисовать можно от самого края.
   final double timeRulerWidth;
+
+  /// Скругление карточек визита — по нему вырезается «подкладка» линии.
+  final double cardRadius;
+
+  /// Насколько гаснет линия там, где она пересекает чужую карточку.
+  static const double _underCardAlpha = 0.26;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -392,6 +399,20 @@ class VisitLinkPainter extends CustomPainter {
     if (segments.isEmpty) return;
 
     const stub = VisitLinkHub._edgeStub;
+
+    // Поверх карточек линия рисуется призраком, а в полную силу — только
+    // между ними: так видно, что связь есть, но она идёт под карточкой.
+    final cards = Path();
+    for (final rect in hub.visibleRects(overlayKey).values) {
+      cards.addRRect(
+        RRect.fromRectAndRadius(rect.deflate(0.5), Radius.circular(cardRadius)),
+      );
+    }
+    final outside = Path.combine(
+      PathOperation.difference,
+      Path()..addRect(Offset.zero & size),
+      cards,
+    );
 
     for (final seg in segments) {
       final p0 = seg.from;
@@ -454,19 +475,28 @@ class VisitLinkPainter extends CustomPainter {
         path.lineTo(p1.dx, p1.dy);
       }
 
-      final paint = Paint()
+      final gradientRect = Rect.fromPoints(p0, p1);
+      Paint strokeFor(double alpha, double width) => Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.2
+        ..strokeWidth = width
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
         ..shader = LinearGradient(
           colors: [
-            seg.fromColor.withValues(alpha: 0.95),
-            seg.toColor.withValues(alpha: 0.95),
+            seg.fromColor.withValues(alpha: alpha),
+            seg.toColor.withValues(alpha: alpha),
           ],
-        ).createShader(Rect.fromPoints(p0, p1));
+        ).createShader(gradientRect);
 
-      canvas.drawPath(path, paint);
+      canvas.save();
+      canvas.clipPath(cards);
+      canvas.drawPath(path, strokeFor(_underCardAlpha, 2.4));
+      canvas.restore();
+
+      canvas.save();
+      canvas.clipPath(outside);
+      canvas.drawPath(path, strokeFor(0.95, 3.2));
+      canvas.restore();
 
       if (seg.fromEdge != null) {
         canvas.drawCircle(p0, 3.2, Paint()..color = seg.fromColor);
@@ -480,7 +510,8 @@ class VisitLinkPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant VisitLinkPainter oldDelegate) {
     return oldDelegate.catalog != catalog ||
-        oldDelegate.timeRulerWidth != timeRulerWidth;
+        oldDelegate.timeRulerWidth != timeRulerWidth ||
+        oldDelegate.cardRadius != cardRadius;
   }
 }
 
