@@ -50,8 +50,56 @@ adb -s 44c25486 shell am start -n com.example.fix_appliance_crm/.MainActivity
 
 ## Two different AIs
 
-- **Phone secretary** (Twilio + Gemini Live): answers inbound calls if FIX does not pick up. Speaks English only. Files: `functions/voice_relay.js`, `functions/voice_facts.js`, `functions/index.js` (`aiVoiceRelay`, `aiVoiceTurn`, `getAiAnswerSettings`). Prompt/hangup changes are **server deploy**, no APK.
+- **Phone secretary** (Twilio + OpenAI Realtime, запасной Gemini Live): answers inbound calls if FIX does not pick up. Speaks English only. Files: `functions/voice_relay.js`, `functions/voice_facts.js`, `functions/index.js` (`aiVoiceRelay`, `aiVoiceTurn`, `getAiAnswerSettings`). Prompt/hangup changes are **server deploy**, no APK.
 - **In-app assistant** (FIX-Appliance / wake word): `lib/features/ai/assistant/*`. Do not mix this with the phone secretary.
+
+**Голос секретаря: два провайдера в одной цепочке (06.10.2026).** Живой голос стал
+роботизированным, и тракт переделан. Основной провайдер — **OpenAI Realtime**
+(`gpt-4o-mini-realtime-preview`, голос `coral`), запасной — **Gemini Live**
+(`gemini-3.1-flash-live-preview`, затем `gemini-2.5-flash-native-audio-preview-12-2025`,
+голос `Aoede`). Выбор живёт в `settings/ai_voice`: `voiceProvider` (`openai`/`gemini`),
+`openaiModel`, `openaiVoice` (coral/sage/ash/shimmer/verse), `geminiVoice`
+(Aoede/Kore/Leda/Zephyr); значения по умолчанию — из окружения (`VOICE_PROVIDER`,
+`OPENAI_REALTIME_MODEL`, `OPENAI_VOICE`, `GEMINI_VOICE`). Ключ — `OPENAI_API_KEY` в
+`functions/.env`; **без него OpenAI в цепочку не попадает вообще**, и всё работает как
+раньше, на Gemini. Цепочку строит `buildLiveChain`, шаг поднимает `openLiveStep`, обрывы на
+обоих провайдерах считает один `attachLiveSocket`: первый обрыв — тот же шаг, второй подряд
+или детектор «глухой» модели по RMS — следующий, дальше `LIVE_FAILURE_LIMIT` и Gather.
+
+Что важно не сломать при правках:
+
+- **Звук OpenAI не перекодируется.** `input_audio_format`/`output_audio_format` —
+  `g711_ulaw` 8 кГц, то есть родной формат Twilio: входящий mulaw уходит в
+  `input_audio_buffer.append` как есть, без апсемплинга в 16 кГц, а `response.audio.delta`
+  идёт в Twilio без даунсемплинга. Именно двойной пересчёт частоты и давал металлический
+  призвук. Громкость для детектора глухоты и лестницы тишины релей считает **сам**
+  (`forwardCallerAudio` декодирует кадр только ради RMS) — страховки одинаковы у обоих.
+- **Нарезка по 160 байт — общая и обязательная** (`sendTwilioMulaw`). Неполный кадр
+  копится в `session.outMulaw` и добивается тишиной на конце реплики (`flushTwilioTail`);
+  короткие кадры Twilio рвут поток кодом 1006.
+- **У Gemini 24 кГц → 8 кГц идёт через фильтр нижних частот** (`createLowPass` в
+  `audio_codec.js`, два биквада = 4-й порядок Баттерворта, срез 3400 Гц, состояние живёт на
+  сессии). Без него усреднения трёх сэмплов не хватало и всё выше 4 кГц заворачивалось в
+  слышимую полосу.
+- `gemini-3.8-live` **удалена**: такой модели в API нет, каждый обрыв стоил гарантированного
+  404 и секунд тишины перед настоящей запасной.
+- `enableAffectiveDialog` вернулся, но аккуратно: только для native-audio и только на
+  **v1alpha**. Если попытка не дожила до `setupComplete`, релей ставит `session.noAffective`
+  и поднимает ту же модель на v1beta без флага. Интонация не стоит потерянной запасной
+  модели. Выключается `GEMINI_AFFECTIVE=0`.
+- Сторож ответа (`STALL_MS`) — **4,5 с**, а не 3: на трёх он срезал живую паузу и она
+  начинала повторяться. Лестница тишины (10 с → 9 с → 30 с, 60 с на «подождите») не менялась.
+- Подсказки релея (приветствие, толчки, лестница) идут через **`sendPrompt`**, он сам
+  переводит их в `clientContent` (Gemini) или `conversation.item.create` + `response.create`
+  (OpenAI). Не слать в сокет напрямую — страховка отвалится на половине звонков.
+- Фоновая аналитика **не трогалась** и трогаться не должна: извлечение JSON раз в 8 секунд,
+  разбор MP3, перевод и отчёты об ошибках остаются на `gemini-flash-lite-latest`
+  (`VOICE_MODEL_CANDIDATES`). Транскрипты OpenAI
+  (`conversation.item.input_audio_transcription.completed`, `response.audio_transcript.done`)
+  кладутся в те же `history`/`transcription`, поэтому экстрактор, `aiRelayComplete` и
+  `finishAiReception` не знают, кто говорил.
+- Движок звонка в Firestore: `aiReception.engine` = `openai-realtime` или `gemini-live`.
+  `LIVE_ENGINES` в `index.js` признаёт оба — проверяйте по множеству, не по строке.
 
 **Обучение секретаря из приложения — выключено честно (21.09.2026).** Раньше выключено оно
 было только на словах, а в коде жила видимость:

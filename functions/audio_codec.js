@@ -62,16 +62,69 @@ function concatInt16(a, b) {
   return out;
 }
 
-function downsampleTo8k(pcm, fromRate, leftover) {
-  const combined = concatInt16(leftover, pcm);
-  const ratio = Math.max(1, Math.round(Number(fromRate || 24000) / 8000));
+// Антиалиасинг перед 24 кГц → 8 кГц. Усреднения трёх соседних сэмплов мало:
+// всё, что в голосе выше 4 кГц (шипящие, призвуки синтеза), заворачивается
+// обратно в слышимую полосу и даёт тот самый металлический оттенок в трубке.
+// Два биквада подряд — это 4-й порядок Баттерворта: на 6 кГц уже −21 дБ, а в
+// телефонной полосе до 3,4 кГц звук не трогается.
+const LOWPASS_STAGE_Q = [0.5411961, 1.3065630];
+
+function biquadLowPass(sampleRate, cutoffHz, q) {
+  const w0 = (2 * Math.PI * cutoffHz) / sampleRate;
+  const cos0 = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2 * q);
+  const a0 = 1 + alpha;
+  return {
+    b0: ((1 - cos0) / 2) / a0,
+    b1: (1 - cos0) / a0,
+    b2: ((1 - cos0) / 2) / a0,
+    a1: (-2 * cos0) / a0,
+    a2: (1 - alpha) / a0,
+    z1: 0,
+    z2: 0,
+  };
+}
+
+/// Фильтр живёт столько же, сколько звонок: состояние звеньев переносится из
+/// чанка в чанк, иначе на каждом куске аудио был бы слышен щелчок.
+function createLowPass(sampleRate, cutoffHz = 3400) {
+  const rate = Number(sampleRate) || 24000;
+  const cutoff = Math.max(300, Math.min(Number(cutoffHz) || 3400, rate / 2 - 100));
+  const stages = LOWPASS_STAGE_Q.map((q) => biquadLowPass(rate, cutoff, q));
+  return {
+    sampleRate: rate,
+    cutoff,
+    process(pcm) {
+      const out = new Int16Array(pcm.length);
+      for (let i = 0; i < pcm.length; i++) {
+        let x = pcm[i];
+        for (const stage of stages) {
+          // Transposed direct form II: меньше накопленной ошибки на длинном звонке.
+          const y = stage.b0 * x + stage.z1;
+          stage.z1 = stage.b1 * x - stage.a1 * y + stage.z2;
+          stage.z2 = stage.b2 * x - stage.a2 * y;
+          x = y;
+        }
+        out[i] = x >= 32767 ? 32767 : x <= -32768 ? -32768 : Math.round(x);
+      }
+      return out;
+    },
+  };
+}
+
+function downsampleTo8k(pcm, fromRate, leftover, filter) {
+  const rate = Number(fromRate || 24000);
+  // Остаток с прошлого раза уже отфильтрован — пропускаем только новый кусок.
+  const source = filter && filter.sampleRate === rate ? filter.process(pcm) : pcm;
+  const combined = concatInt16(leftover, source);
+  const ratio = Math.max(1, Math.round(rate / 8000));
   const outLen = Math.floor(combined.length / ratio);
   const out = new Int16Array(outLen);
   for (let i = 0; i < outLen; i++) {
     const start = i * ratio;
     let sum = 0;
     for (let j = 0; j < ratio; j++) sum += combined[start + j];
-    out[i] = sum / ratio;
+    out[i] = Math.round(sum / ratio);
   }
   const rem = combined.length % ratio;
   return {
@@ -99,12 +152,18 @@ function parsePcmRate(mimeType) {
   return match ? Number(match[1]) : 24000;
 }
 
+// mulaw-кодировка нуля. Ей добиваем неполный кадр, когда реплика кончилась,
+// а до 160 байт не хватает нескольких миллисекунд.
+const MULAW_SILENCE = 0xff;
+
 module.exports = {
   mulawToPcm16,
   pcm16ToMulaw,
   upsample8kTo16k,
   downsampleTo8k,
+  createLowPass,
   int16ToBase64,
   base64ToInt16,
   parsePcmRate,
+  MULAW_SILENCE,
 };

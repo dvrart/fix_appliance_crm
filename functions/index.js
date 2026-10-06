@@ -37,6 +37,9 @@ const TWILIO_TWIML_APP_SID = process.env.TWILIO_TWIML_APP_SID;
 const TWILIO_PUSH_CREDENTIAL_SID = process.env.TWILIO_PUSH_CREDENTIAL_SID;
 const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+// Живой голос секретаря. Без этого ключа OpenAI Realtime в цепочку провайдеров
+// даже не попадает, и звонки ведёт Gemini Live, как раньше.
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 // Идентификатор клиента Twilio Voice, на который приходят входящие звонки
 // (регистрируется в приложении через TwilioVoicePlatform.instance).
@@ -1692,6 +1695,28 @@ function withMappedServiceArea(instructions, serviceArea) {
 
 const HOURS_POLICY_VERSION = 4;
 
+// ── Живой голос: провайдер, модель и тембр ─────────────────────────────────
+// Правится в settings/ai_voice без переделки кода; переменные окружения задают
+// значения по умолчанию. Белые списки держит релей — здесь только то, что
+// нужно собрать профиль звонка. Фоновый разбор (расшифровка записи, JSON,
+// перевод, отчёты об ошибках) этих настроек не касается: он остаётся на
+// VOICE_MODEL_CANDIDATES.
+const DEFAULT_VOICE_PROVIDER = process.env.VOICE_PROVIDER === 'gemini' ? 'gemini' : 'openai';
+const DEFAULT_OPENAI_REALTIME_MODEL =
+  process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-mini-realtime-preview';
+const DEFAULT_OPENAI_VOICE = process.env.OPENAI_VOICE || 'coral';
+const DEFAULT_GEMINI_VOICE = process.env.GEMINI_VOICE || 'Aoede';
+
+function voiceEngineSettings(voice = {}) {
+  const provider = String(voice.voiceProvider || '').trim().toLowerCase();
+  return {
+    voiceProvider: provider === 'gemini' || provider === 'openai' ? provider : DEFAULT_VOICE_PROVIDER,
+    openaiModel: String(voice.openaiModel || '').trim() || DEFAULT_OPENAI_REALTIME_MODEL,
+    openaiVoice: String(voice.openaiVoice || '').trim() || DEFAULT_OPENAI_VOICE,
+    geminiVoice: String(voice.geminiVoice || '').trim() || DEFAULT_GEMINI_VOICE,
+  };
+}
+
 async function getAiAnswerSettings() {
   try {
     const [configSnap, voiceSnap, docsSnap] = await Promise.all([
@@ -1773,6 +1798,7 @@ async function getAiAnswerSettings() {
       awayLine,
       priceLine,
       instructions: nextInstructions,
+      ...voiceEngineSettings(voice),
     };
   } catch (_) {
     const fallbackDays = describeWorkDays({});
@@ -1791,6 +1817,7 @@ async function getAiAnswerSettings() {
       awayLine: '',
       priceLine: describePricing({}),
       instructions: withMappedServiceArea(DEFAULT_VOICE_INSTRUCTIONS, ''),
+      ...voiceEngineSettings({}),
     };
   }
 }
@@ -2537,6 +2564,8 @@ function twimlGeminiLiveStream(req, { url, callSid, greeting, resume }) {
     action: functionUrl(req, 'aiRelayComplete'),
   });
   const stream = connect.stream({
+    // Имя потока — просто метка в журнале Twilio. Кто именно ведёт голос
+    // (OpenAI Realtime или Gemini Live), решает релей по settings/ai_voice.
     url,
     name: 'gemini-live',
     timeLimit: 3600,
@@ -2614,9 +2643,19 @@ async function startAiReception(req, res, callSid, options = {}) {
     ? 'The technician had to step away. How can I help?'
     : DEFAULT_VOICE_GREETING;
 
-  const wss = forceGather ? '' : await resolveConversationRelayWss();
+  // Настройки тянем параллельно с адресом потока: голос звонящему нужен
+  // быстро, лишнего ожидания на этом шаге быть не должно.
+  const [wss, liveProfile] = forceGather
+    ? ['', null]
+    : await Promise.all([
+        resolveConversationRelayWss(),
+        getAiAnswerSettings().catch(() => null),
+      ]);
   if (wss) {
-    await completeAiPickup(callSid, data, greeting, { live: process.env.USE_CONVERSATION_RELAY !== '1' });
+    await completeAiPickup(callSid, data, greeting, {
+      live: process.env.USE_CONVERSATION_RELAY !== '1',
+      engine: liveEngineName(liveProfile),
+    });
     const keyed = relayStreamKey() ? 'key=yes' : 'key=MISSING';
     if (process.env.USE_CONVERSATION_RELAY === '1') {
       console.log(`startAiReception relay ${callSid} ${wss} ${keyed}`);
@@ -2632,7 +2671,16 @@ async function startAiReception(req, res, callSid, options = {}) {
   sendTwiml(res, twimlGatherSpeech(req, { say: greeting, language: 'en', startRecording: true }));
 }
 
-async function completeAiPickup(callSid, data, greeting, { live = false } = {}) {
+// Каким движком подписан звонок. Релей перезапишет это поле тем провайдером,
+// который реально поднялся; здесь — ожидание на момент снятия трубки.
+const LIVE_ENGINES = new Set(['gemini-live', 'openai-realtime']);
+
+function liveEngineName(profile) {
+  if (!OPENAI_API_KEY) return 'gemini-live';
+  return profile && profile.voiceProvider === 'gemini' ? 'gemini-live' : 'openai-realtime';
+}
+
+async function completeAiPickup(callSid, data, greeting, { live = false, engine = 'gemini-live' } = {}) {
   if (live) {
     const ref = callsRef.doc(callSid);
     await db.runTransaction(async (tx) => {
@@ -2641,7 +2689,7 @@ async function completeAiPickup(callSid, data, greeting, { live = false } = {}) 
       tx.set(ref, {
         status: voiceFacts.settledCallStatus(latest.status, 'in-progress'),
         answeredBy: 'ai',
-        aiReception: { engine: 'gemini-live' },
+        aiReception: { engine },
       }, { merge: true });
     });
     return;
@@ -3242,7 +3290,7 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
       endTime: data.endTime || admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
 
-    if (data.aiReception && data.aiReception.engine === 'gemini-live' && !data.aiReception.done) {
+    if (data.aiReception && LIVE_ENGINES.has(data.aiReception.engine) && !data.aiReception.done) {
       for (let i = 0; i < 10; i++) {
         await new Promise((resolve) => setTimeout(resolve, 700));
         const again = await callsRef.doc(callSid).get();
@@ -3285,6 +3333,7 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
 
 voiceRelay.init({
   geminiApiKey: GEMINI_API_KEY,
+  openaiApiKey: OPENAI_API_KEY,
   generateVoiceContent,
   generateVoiceTextStream,
   nextAiVoiceTurn,

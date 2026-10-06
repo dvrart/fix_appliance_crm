@@ -201,9 +201,10 @@ test('reply delivery stays connected while shop rules and caller pauses remain u
 test('pause tuning preserves the voice, listening sensitivity and long-session configuration', () => {
   const { setup } = voiceRelay.buildSetup('gemini-3.1-flash-live-preview', 'Shop instructions', false, 'test-resume');
   assert.equal(setup.model, 'models/gemini-3.1-flash-live-preview');
+  // Zephyr звучал сухо — по умолчанию Aoede, остальное выбирается в настройках.
   assert.deepEqual(setup.generationConfig.speechConfig, {
     languageCode: 'en-US',
-    voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
+    voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } },
   });
   assert.equal(setup.generationConfig.thinkingConfig, undefined);
   // 0,5 с тишины, а не 0,16: иначе она влезает на каждой паузе звонящего и
@@ -224,22 +225,95 @@ test('pause tuning preserves the voice, listening sensitivity and long-session c
   });
 });
 
-test('fallback models can actually start: no affective flag, blocking tools on 3.8 only', () => {
+test('the fallback list holds only models that exist, and the voice is configurable', () => {
+  // gemini-3.8-live в API нет: каждый обрыв стоил гарантированного 404 и
+  // лишних секунд тишины перед настоящей запасной моделью.
   assert.deepEqual(voiceRelay._internals.liveModels(), [
     'gemini-3.1-flash-live-preview',
-    'gemini-3.8-live',
     'gemini-2.5-flash-native-audio-preview-12-2025',
   ]);
-  // 2.5 закрывала сокет с 1007 на enableAffectiveDialog — запасной не было.
-  const legacy = voiceRelay.buildSetup('gemini-2.5-flash-native-audio-preview-12-2025', 'Shop rules', true).setup;
-  assert.equal(legacy.enableAffectiveDialog, undefined);
-  assert.deepEqual(legacy.generationConfig.thinkingConfig, { thinkingBudget: 0 });
+  const voiceOf = (voice) => voiceRelay.buildSetup('gemini-3.1-flash-live-preview', 'Shop rules', false, '', { voice })
+    .setup.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName;
+  assert.equal(voiceOf('Kore'), 'Kore');
+  assert.equal(voiceOf('Leda'), 'Leda');
+  assert.equal(voiceOf('Zephyr'), 'Zephyr');
+  // Опечатка в настройках не должна оставить звонок без голоса.
+  assert.equal(voiceOf('Nonexistent'), 'Aoede');
+  assert.equal(voiceOf(''), 'Aoede');
+});
+
+test('affective dialog is sent only where the server knows it, and is dropped if refused', (t) => {
+  const live = voiceRelay.buildSetup('gemini-3.1-flash-live-preview', 'Shop rules', true).setup;
+  assert.equal(live.enableAffectiveDialog, undefined);
+  const model = 'gemini-2.5-flash-native-audio-preview-12-2025';
+  const native = voiceRelay.buildSetup(model, 'Shop rules', true).setup;
+  assert.equal(native.enableAffectiveDialog, true);
+  assert.deepEqual(native.generationConfig.thinkingConfig, { thinkingBudget: 0 });
+  // Сервер не принял флаг — релей снимает его и поднимает ту же модель заново,
+  // а не оставляет звонящего без голоса (так было с 1007 на v1beta).
+  const retried = [];
+  voiceRelay.init({
+    geminiApiKey: 'test-gemini-key',
+    openGeminiSocket: (_key, name) => {
+      retried.push(name);
+      return new FakeGeminiSocket();
+    },
+  });
+  t.after(() => voiceRelay.init(null));
+  const session = {
+    callSid: 'CA-affective',
+    setupPayload: { setup: structuredClone(native) },
+    geminiModel: model,
+    geminiWs: null,
+  };
+  voiceRelay._internals.handleGeminiMessage(
+    session,
+    JSON.stringify({ error: { message: 'Unknown name "enableAffectiveDialog"' } })
+  );
+  assert.equal(session.setupPayload.setup.enableAffectiveDialog, undefined);
+  assert.equal(session.setupPayload.setup.generationConfig.thinkingConfig, undefined);
+  assert.deepEqual(retried, [model]);
+  assert.equal(session.noAffective, true);
+});
+
+test('a native-audio session that never opens is retried without the affective flag', (t) => {
+  const call = liveCall(t, { voiceProvider: 'gemini' });
+  // Доводим звонок до запасной native-audio модели: две неудачи подряд.
+  call.ready();
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  call.current().drop(1011);
+  call.tick(200);
+  call.ready();
+  call.current().drop(1011);
+  call.tick(200);
+  const native = call.sockets[2];
+  native.readyState = WebSocket.OPEN;
+  native.emit('open');
+  assert.equal(native.setup.model, 'models/gemini-2.5-flash-native-audio-preview-12-2025');
+  assert.equal(native.setup.enableAffectiveDialog, true);
+  assert.equal(call.affective.at(-1), true, 'v1alpha only while the flag is on');
+
+  // Сокет закрылся, так и не дойдя до setupComplete: интонация не стоит
+  // потерянной запасной модели — поднимаем ту же модель без флага.
+  native.drop(1011, 'Unknown name "enableAffectiveDialog"');
+  call.tick(200);
+  assert.equal(call.session.noAffective, true);
+  const plain = call.sockets[3];
+  plain.readyState = WebSocket.OPEN;
+  plain.emit('open');
+  assert.equal(plain.setup.model, 'models/gemini-2.5-flash-native-audio-preview-12-2025');
+  assert.equal(plain.setup.enableAffectiveDialog, undefined);
+  assert.equal(call.affective.at(-1), false, 'and back to v1beta');
+});
+
+test('blocking tool calls are asked for only where the model needs them', () => {
   const behaviours = (model) => voiceRelay.buildSetup(model, 'Shop rules', true).setup.tools[0]
     .functionDeclarations.map((fn) => fn.behavior);
-  // 3.8 зовёт инструменты асинхронно; отмена визита обязана дождаться сервера.
-  assert.deepEqual(behaviours('gemini-3.8-live'), ['BLOCKING', 'BLOCKING', 'BLOCKING']);
   assert.deepEqual(behaviours('gemini-3.1-flash-live-preview'), [undefined, undefined, undefined]);
   assert.deepEqual(behaviours('gemini-2.5-flash-native-audio-preview-12-2025'), [undefined, undefined, undefined]);
+  // Модели новее зовут инструменты асинхронно; отмена визита обязана дождаться
+  // сервера, иначе она подтвердит клиенту то, чего не сохранилось.
+  assert.deepEqual(behaviours('gemini-4-live'), ['BLOCKING', 'BLOCKING', 'BLOCKING']);
 });
 
 test('she is Sarah: one fixed name, honest about being a virtual assistant, calm on a bad line', () => {
@@ -561,9 +635,10 @@ class FakeGeminiSocket extends EventEmitter {
 const MODEL_AUDIO = Buffer.alloc(960).toString('base64');
 const LOUD_FRAME = Buffer.from(Array.from({ length: 160 }, (_, i) => (i % 2 ? 0x00 : 0x80))).toString('base64');
 
-function liveCall(t) {
+function liveCall(t, sessionOverrides = {}) {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
   const sockets = [];
+  const affective = [];
   const writes = [];
   const twilio = {
     readyState: WebSocket.OPEN, closed: false, sent: [],
@@ -572,9 +647,10 @@ function liveCall(t) {
   };
   voiceRelay.init({
     geminiApiKey: 'test-gemini-key',
-    openGeminiSocket: () => {
+    openGeminiSocket: (_key, _model, wantsAffective) => {
       const ws = new FakeGeminiSocket();
       sockets.push(ws);
+      affective.push(Boolean(wantsAffective));
       return ws;
     },
     callsRef: {
@@ -595,6 +671,7 @@ function liveCall(t) {
     callSid: 'CA-live-test', fromNumber: '+15195550100', streamSid: 'MZ-live-test',
     history: [], extracted: {}, turns: 0, twilioWs: twilio, outLeftover: new Int16Array(0),
     userPartial: '', assistantPartial: '', systemText: 'Shop rules.', startedAt: Date.now(),
+    ...sessionOverrides,
   };
   voiceRelay._internals.startGeminiLive(session);
   const current = () => sockets.at(-1);
@@ -612,7 +689,10 @@ function liveCall(t) {
   const tick = (ms) => t.mock.timers.tick(ms);
   const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
   const allPrompts = () => sockets.flatMap((ws) => ws.prompts);
-  return { session, sockets, twilio, writes, current, ready, modelSays, callerSays, tick, flush, allPrompts };
+  return {
+    session, sockets, affective, twilio, writes, current, ready,
+    modelSays, callerSays, tick, flush, allPrompts,
+  };
 }
 
 test('a model that keeps dropping is swapped for the next one, never looping "I\'m still here", then Gather', async (t) => {
@@ -635,14 +715,11 @@ test('a model that keeps dropping is swapped for the next one, never looping "I\
   call.current().drop(1011);
   call.tick(200);
   call.ready();
-  call.current().drop(1011);
-  call.tick(200);
-  call.ready();
+  // Первый обрыв — та же модель с ручкой сессии, второй подряд — следующая.
   assert.deepEqual(models(), [
     'gemini-3.1-flash-live-preview',
     'gemini-3.1-flash-live-preview',
-    'gemini-3.8-live',
-    'gemini-3.8-live',
+    'gemini-2.5-flash-native-audio-preview-12-2025',
     'gemini-2.5-flash-native-audio-preview-12-2025',
   ]);
   // Ручка сессии не переносится на другую модель, а история передаётся текстом.
@@ -652,11 +729,11 @@ test('a model that keeps dropping is swapped for the next one, never looping "I\
   const forced = call.sockets.slice(1).flatMap((ws) => ws.prompts).filter((p) => p.turnComplete);
   assert.deepEqual(forced, []);
 
-  // Пятый обрыв за звонок — дальше резервный Gather, новых сокетов нет.
+  // Запасных в цепочке не осталось — дальше резервный Gather, новых сокетов нет.
   call.current().drop(1011);
   call.tick(200);
   await call.flush();
-  assert.equal(call.sockets.length, 5);
+  assert.equal(call.sockets.length, 4);
   assert.ok(call.writes.some((w) => w.aiReception && w.aiReception.liveFailed === true));
   assert.equal(call.twilio.closed, true);
 });
@@ -676,15 +753,18 @@ test('a planned goAway reconnect keeps the model and is not counted as a failure
 
 test('the stall nudge waits for the caller to finish and never fires after she answered', (t) => {
   const call = liveCall(t);
+  const { STALL_MS } = voiceRelay._internals.timing;
+  // 3 с срезали живую паузу: она обрывала фразу и начинала повторяться.
+  assert.equal(STALL_MS, 4500);
   const nudges = () => call.allPrompts().filter((p) => /still on the line/.test(JSON.stringify(p)));
   call.ready();
   call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
   call.callerSays('My dryer is making');
   call.tick(2000);
   call.callerSays(' kind of a grinding noise, uh');
-  call.tick(2900);
-  assert.equal(nudges().length, 0, 'the caller spoke 2.9 s ago — too early to push her');
-  call.tick(200);
+  call.tick(STALL_MS - 100);
+  assert.equal(nudges().length, 0, 'the caller has only just stopped — too early to push her');
+  call.tick(100);
   assert.equal(nudges().length, 1);
 
   call.modelSays('Oh no — when does it grind?');
@@ -770,7 +850,7 @@ test('a deaf model (caller audibly talks, Gemini hears nothing) is replaced, and
   call.tick(SILENCE_CHECK_MS - 3000);
   assert.equal(call.sockets.length, 2, 'switched to the next model');
   call.ready();
-  assert.equal(call.sockets[1].setup.model, 'models/gemini-3.8-live');
+  assert.equal(call.sockets[1].setup.model, 'models/gemini-2.5-flash-native-audio-preview-12-2025');
   assert.equal(call.current().prompts.at(-1).turnComplete, false);
 
   talk(2000);
@@ -794,6 +874,321 @@ test('a long story from the caller is not mistaken for silence or deafness', (t)
   call.tick(SILENCE_CHECK_MS - 1);
   assert.equal(call.sockets.length, 1);
   assert.equal(call.allPrompts().filter((p) => /said anything/.test(JSON.stringify(p))).length, 0);
+});
+
+// ── Живой звонок на OpenAI Realtime ────────────────────────────────────────
+
+test('the provider chain falls back to Gemini and never offers a provider without a key', () => {
+  const chain = (session, keys) => {
+    voiceRelay.init(keys);
+    const steps = voiceRelay._internals.buildLiveChain(session);
+    voiceRelay.init(null);
+    return steps.map((step) => `${step.provider}:${step.model}`);
+  };
+  const both = { geminiApiKey: 'g', openaiApiKey: 'o' };
+  assert.deepEqual(chain({ voiceProvider: 'openai', openaiModel: 'gpt-realtime' }, both), [
+    'openai:gpt-realtime',
+    'gemini:gemini-3.1-flash-live-preview',
+    'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
+  ]);
+  // Явно выбран Gemini — OpenAI в цепочку не лезет.
+  assert.deepEqual(chain({ voiceProvider: 'gemini' }, both), [
+    'gemini:gemini-3.1-flash-live-preview',
+    'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
+  ]);
+  // Ключа OpenAI нет — звонки ведёт Gemini, как и раньше.
+  assert.deepEqual(chain({ voiceProvider: 'openai' }, { geminiApiKey: 'g' }), [
+    'gemini:gemini-3.1-flash-live-preview',
+    'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
+  ]);
+  // Нет ключа Gemini — лучше OpenAI, чем тишина в трубке.
+  assert.deepEqual(chain({ voiceProvider: 'gemini' }, { openaiApiKey: 'o' }), [
+    'openai:gpt-4o-mini-realtime-preview',
+  ]);
+  assert.deepEqual(chain({ voiceProvider: 'openai' }, {}), []);
+});
+
+test('the OpenAI session speaks Twilio\'s own audio format and declares the same three tools', () => {
+  const { session } = voiceRelay.buildOpenaiSession({ openaiVoice: 'coral' }, true, 'Shop rules.');
+  assert.equal(session.instructions, 'Shop rules.');
+  assert.deepEqual(session.modalities, ['text', 'audio']);
+  assert.equal(session.voice, 'coral');
+  // Родной формат Twilio в обе стороны: ни одного пересчёта частоты.
+  assert.equal(session.input_audio_format, 'g711_ulaw');
+  assert.equal(session.output_audio_format, 'g711_ulaw');
+  assert.deepEqual(session.input_audio_transcription, { model: 'gpt-4o-mini-transcribe', language: 'en' });
+  assert.deepEqual(session.turn_detection, {
+    type: 'server_vad', threshold: 0.6, prefix_padding_ms: 300,
+    silence_duration_ms: 500, create_response: true,
+  });
+  assert.equal(session.temperature, 0.7);
+  assert.deepEqual(session.tools.map((tool) => tool.name).sort(), [
+    'cancel_appointment', 'check_service_area', 'get_caller_appointments',
+  ]);
+  assert.ok(session.tools.every((tool) => tool.type === 'function'));
+  assert.deepEqual(session.tools.find((tool) => tool.name === 'check_service_area').parameters, {
+    type: 'object',
+    properties: {
+      place: {
+        type: 'string',
+        description: 'What the caller said: a town, a hamlet, a postal code, or a full street address. Ontario is assumed.',
+      },
+    },
+    required: ['place'],
+  });
+  // Инструмента «положить трубку» нет ни у одного провайдера.
+  assert.ok(!session.tools.some((tool) => /end_call|hangup/i.test(tool.name)));
+  const voiceOf = (voice) => voiceRelay.buildOpenaiSession({ openaiVoice: voice }, false, 'x').session.voice;
+  assert.equal(voiceOf('sage'), 'sage');
+  assert.equal(voiceOf('nonexistent'), 'coral');
+  assert.deepEqual(voiceRelay.buildOpenaiSession({}, false, 'x').session.tools, []);
+});
+
+function openaiCall(t, overrides = {}) {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const sockets = [];
+  const geminiSockets = [];
+  const writes = [];
+  const twilio = {
+    readyState: WebSocket.OPEN, closed: false, sent: [],
+    send(raw) { this.sent.push(JSON.parse(raw)); },
+    close() { this.closed = true; this.readyState = WebSocket.CLOSED; },
+  };
+  voiceRelay.init({
+    geminiApiKey: 'test-gemini-key',
+    openaiApiKey: 'test-openai-key',
+    openOpenaiSocket: () => {
+      const ws = new FakeGeminiSocket();
+      sockets.push(ws);
+      return ws;
+    },
+    openGeminiSocket: () => {
+      const ws = new FakeGeminiSocket();
+      geminiSockets.push(ws);
+      return ws;
+    },
+    callsRef: {
+      doc: () => ({
+        get: async () => ({ exists: false }),
+        set: async (data) => { writes.push(structuredClone(data)); },
+      }),
+    },
+    mergeExtracted: (prev) => ({ ...(prev || {}) }),
+    normalizePhone: (phone) => String(phone || '').replace(/\D/g, '').slice(-10),
+    hasEnoughForJob: () => false,
+    appendTranscript: (current, line) => [current, line].filter(Boolean).join('\n'),
+    generateVoiceContent: async () => ({ response: { text: () => '{}' } }),
+    extractJsonObject: (raw) => JSON.parse(raw),
+    ...overrides,
+  });
+  t.after(() => voiceRelay.init(null));
+  const session = {
+    callSid: 'CA-openai-test', fromNumber: '+15195550100', streamSid: 'MZ-openai-test',
+    history: [], extracted: {}, turns: 0, twilioWs: twilio, outLeftover: new Int16Array(0),
+    userPartial: '', assistantPartial: '', systemText: 'Shop rules.', startedAt: Date.now(),
+    voiceProvider: 'openai', openaiVoice: 'coral',
+  };
+  voiceRelay._internals.startLiveSession(session);
+  const current = () => sockets.at(-1);
+  const ready = () => {
+    current().readyState = WebSocket.OPEN;
+    current().emit('open');
+    current().server({ type: 'session.created' });
+    current().server({ type: 'session.updated' });
+  };
+  const sarahSays = (text, audio) => {
+    current().server({ type: 'response.created' });
+    if (audio) current().server({ type: 'response.audio.delta', delta: audio });
+    current().server({ type: 'response.audio_transcript.done', transcript: text });
+    current().server({ type: 'response.done' });
+  };
+  const callerSays = (text) => current().server({
+    type: 'conversation.item.input_audio_transcription.completed', transcript: text,
+  });
+  const media = () => twilio.sent.filter((m) => m.event === 'media');
+  const types = () => current().sent.map((m) => m.type);
+  const tick = (ms) => t.mock.timers.tick(ms);
+  const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  return {
+    session, sockets, geminiSockets, twilio, writes, current, ready,
+    sarahSays, callerSays, media, types, tick, flush,
+  };
+}
+
+test('OpenAI: the session is configured, Sarah greets first, and her audio is cut into 20 ms frames', (t) => {
+  const call = openaiCall(t);
+  assert.equal(call.sockets.length, 1);
+  call.ready();
+  assert.equal(call.session.provider, 'openai');
+  assert.equal(call.session.engine, 'openai-realtime');
+  const update = call.current().sent.find((m) => m.type === 'session.update');
+  assert.equal(update.session.instructions, 'Shop rules.');
+  assert.equal(update.session.output_audio_format, 'g711_ulaw');
+  // Поздоровалась сама: элемент беседы с инструкцией плюс просьба ответить.
+  const greeting = call.current().sent.find((m) => m.type === 'conversation.item.create');
+  assert.match(greeting.item.content[0].text, /first greeting only/);
+  assert.equal(greeting.item.role, 'user');
+  assert.ok(call.types().includes('response.create'));
+
+  // 170 байт — это один целый кадр и хвост в 10 байт. Хвост ждёт продолжения,
+  // а не уезжает в Twilio коротким кадром (из-за них Twilio рвал поток 1006).
+  call.current().server({ type: 'response.created' });
+  call.current().server({ type: 'response.audio.delta', delta: Buffer.alloc(170, 0x7f).toString('base64') });
+  assert.equal(call.media().length, 1);
+  call.current().server({ type: 'response.audio.delta', delta: Buffer.alloc(140, 0x7f).toString('base64') });
+  assert.equal(call.media().length, 1, '150 байт — всё ещё не кадр, ждём продолжения');
+  call.current().server({ type: 'response.done' });
+  // Конец реплики: остаток добивается тишиной, чтобы последние слова не повисли.
+  assert.equal(call.media().length, 2);
+  for (const frame of call.media()) {
+    assert.equal(Buffer.from(frame.media.payload, 'base64').length, 160);
+  }
+});
+
+test('OpenAI: transcripts land in the same history and transcript the JSON extractor reads', (t) => {
+  const call = openaiCall(t);
+  call.ready();
+  call.sarahSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  call.callerSays('My washer is leaking.');
+  call.sarahSays('Oh no — where is it leaking from?');
+  assert.deepEqual(call.session.history, [
+    { role: 'assistant', text: 'FixApplianceCA, this is Sarah — what can I do for you?' },
+    { role: 'user', text: 'My washer is leaking.' },
+    { role: 'assistant', text: 'Oh no — where is it leaking from?' },
+  ]);
+  assert.equal(
+    call.session.transcription,
+    'AI: FixApplianceCA, this is Sarah — what can I do for you?\n' +
+      'Client: My washer is leaking.\n' +
+      'AI: Oh no — where is it leaking from?'
+  );
+  assert.equal(call.session.turns, 1);
+});
+
+test('OpenAI: the caller\'s audio goes up untouched and barge-in clears both queues', (t) => {
+  const call = openaiCall(t);
+  call.ready();
+  call.sarahSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  voiceRelay._internals.sendCallerAudio(call.session, LOUD_FRAME);
+  const appended = call.current().sent.filter((m) => m.type === 'input_audio_buffer.append');
+  // Родной mulaw от Twilio, без апсемплинга в 16 кГц.
+  assert.deepEqual(appended.map((m) => m.audio), [LOUD_FRAME]);
+
+  call.current().server({ type: 'response.created' });
+  call.current().server({ type: 'response.audio.delta', delta: Buffer.alloc(400, 0x7f).toString('base64') });
+  call.current().server({ type: 'input_audio_buffer.speech_started' });
+  assert.ok(call.twilio.sent.some((m) => m.event === 'clear'));
+  assert.ok(call.types().includes('response.cancel'));
+  assert.equal(call.session.speaking, false);
+  assert.equal(call.session.silenceStage, 0);
+  // Хвост нарезчика тоже сброшен: обрывок прошлой фразы не доиграет.
+  assert.equal(call.session.outMulaw.length, 0);
+});
+
+test('OpenAI: the same three tools run with the same two-step cancellation and are spoken back', async (t) => {
+  const asked = [];
+  const call = openaiCall(t, {
+    checkServiceArea: async (place) => {
+      asked.push(place);
+      return { ok: true, inside: true, place: 'Ayr, ON' };
+    },
+  });
+  call.ready();
+  call.current().server({
+    type: 'response.function_call_arguments.done',
+    name: 'check_service_area', call_id: 'call-1', arguments: '{"place":"Ayr"}',
+  });
+  await call.flush();
+  assert.deepEqual(asked, ['Ayr']);
+  const output = call.current().sent.find((m) => m.item && m.item.type === 'function_call_output');
+  assert.equal(output.item.call_id, 'call-1');
+  assert.deepEqual(JSON.parse(output.item.output), { ok: true, inside: true, place: 'Ayr, ON' });
+  // Результат надо озвучить сразу, иначе звонящий слышит паузу.
+  assert.ok(call.types().lastIndexOf('response.create') > call.types().indexOf('conversation.item.create'));
+
+  // Трубку она не кладёт ни на одном провайдере.
+  call.current().server({
+    type: 'response.function_call_arguments.done',
+    name: 'end_call', call_id: 'call-2', arguments: '{}',
+  });
+  await call.flush();
+  const refused = call.current().sent.filter((m) => m.item && m.item.call_id === 'call-2');
+  assert.match(refused[0].item.output, /You cannot hang up/);
+});
+
+test('OpenAI: silence ladder and the deaf detector behave exactly as on Gemini', async (t) => {
+  const call = openaiCall(t);
+  const { SILENCE_CHECK_MS, SILENCE_GIVEUP_MS } = voiceRelay._internals.timing;
+  call.ready();
+  call.sarahSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  const ladder = () => call.current().sent
+    .filter((m) => m.type === 'conversation.item.create')
+    .map((m) => m.item.content[0].text)
+    .filter((text) => /said anything|Still nothing/.test(text));
+  call.tick(SILENCE_CHECK_MS);
+  assert.equal(ladder().length, 1);
+  assert.match(ladder()[0], /are you still there/);
+  call.sarahSays('Hello — are you still there?');
+  call.tick(SILENCE_GIVEUP_MS);
+  assert.equal(ladder().length, 2);
+  assert.match(ladder()[1], /trouble hearing them/);
+});
+
+test('OpenAI: a deaf session (caller audibly talks, nothing heard) is handed to Gemini', (t) => {
+  const deaf = openaiCall(t);
+  const { SILENCE_CHECK_MS } = voiceRelay._internals.timing;
+  deaf.ready();
+  deaf.sarahSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  deaf.tick(1000);
+  for (let at = 0; at < 2000; at += 20) {
+    voiceRelay._internals.sendCallerAudio(deaf.session, LOUD_FRAME);
+    deaf.tick(20);
+  }
+  deaf.tick(SILENCE_CHECK_MS - 3000);
+  assert.equal(deaf.geminiSockets.length, 1, 'switched from OpenAI to Gemini');
+  assert.equal(deaf.sockets.length, 1, 'and did not try OpenAI again');
+  assert.equal(deaf.session.provider, 'gemini');
+  deaf.geminiSockets[0].readyState = WebSocket.OPEN;
+  deaf.geminiSockets[0].emit('open');
+  assert.equal(
+    deaf.geminiSockets[0].sent.find((m) => m.setup).setup.model,
+    'models/gemini-3.1-flash-live-preview'
+  );
+});
+
+test('OpenAI: a dropped session switches to Gemini after the second failure in a row', (t) => {
+  const call = openaiCall(t);
+  call.ready();
+  call.sarahSays('FixApplianceCA, this is Sarah — what can I do for you?');
+  call.current().drop(1011);
+  call.tick(200);
+  // Первый обрыв — пробуем того же провайдера ещё раз.
+  assert.equal(call.sockets.length, 2);
+  assert.equal(call.geminiSockets.length, 0);
+  call.ready();
+  call.current().drop(1011);
+  call.tick(200);
+  assert.equal(call.geminiSockets.length, 1);
+  assert.equal(call.session.provider, 'gemini');
+  assert.equal(call.session.engine, 'gemini-live');
+  const gemini = call.geminiSockets[0];
+  gemini.readyState = WebSocket.OPEN;
+  gemini.emit('open');
+  gemini.server({ setupComplete: {} });
+  // Разговор переносится текстом, а не начинается заново.
+  const carried = JSON.stringify(gemini.sent.filter((m) => m.clientContent));
+  assert.match(carried, /this is Sarah/);
+  assert.match(carried, /Same caller, not a new call/);
+});
+
+test('OpenAI: a session the server refuses falls through to the next provider', (t) => {
+  const call = openaiCall(t);
+  call.current().readyState = WebSocket.OPEN;
+  call.current().emit('open');
+  call.current().server({ type: 'error', error: { message: 'Unsupported model' } });
+  // Сокет закрыт, но цепочка обязана продолжиться, а не оставить звонок немым.
+  assert.equal(call.sockets.length + call.geminiSockets.length, 2);
+  assert.equal(call.geminiSockets.length, 1);
 });
 
 test('bad stream keys are still rejected before starting Gemini', { timeout: 5000 }, async (t) => {
