@@ -903,25 +903,29 @@ test('the provider chain falls back to Gemini and never offers a provider withou
   ]);
   // Нет ключа Gemini — лучше OpenAI, чем тишина в трубке.
   assert.deepEqual(chain({ voiceProvider: 'gemini' }, { openaiApiKey: 'o' }), [
-    'openai:gpt-4o-mini-realtime-preview',
+    'openai:gpt-realtime-mini',
   ]);
   assert.deepEqual(chain({ voiceProvider: 'openai' }, {}), []);
 });
 
 test('the OpenAI session speaks Twilio\'s own audio format and declares the same three tools', () => {
   const { session } = voiceRelay.buildOpenaiSession({ openaiVoice: 'coral' }, true, 'Shop rules.');
+  // Схема GA, снятая с живого сокета. Бета-форма (modalities, voice и
+  // input_audio_format в корне, temperature) сервером больше не принимается.
+  assert.equal(session.type, 'realtime');
   assert.equal(session.instructions, 'Shop rules.');
-  assert.deepEqual(session.modalities, ['text', 'audio']);
-  assert.equal(session.voice, 'coral');
+  assert.deepEqual(session.output_modalities, ['audio']);
+  assert.equal(session.audio.output.voice, 'coral');
   // Родной формат Twilio в обе стороны: ни одного пересчёта частоты.
-  assert.equal(session.input_audio_format, 'g711_ulaw');
-  assert.equal(session.output_audio_format, 'g711_ulaw');
-  assert.deepEqual(session.input_audio_transcription, { model: 'gpt-4o-mini-transcribe', language: 'en' });
-  assert.deepEqual(session.turn_detection, {
+  assert.deepEqual(session.audio.input.format, { type: 'audio/pcmu' });
+  assert.deepEqual(session.audio.output.format, { type: 'audio/pcmu' });
+  assert.deepEqual(session.audio.input.transcription, { model: 'gpt-4o-mini-transcribe', language: 'en' });
+  assert.deepEqual(session.audio.input.turn_detection, {
     type: 'server_vad', threshold: 0.6, prefix_padding_ms: 300,
-    silence_duration_ms: 500, create_response: true,
+    silence_duration_ms: 500, create_response: true, interrupt_response: true,
   });
-  assert.equal(session.temperature, 0.7);
+  // session.temperature в GA не существует и отбивает весь setup.
+  assert.equal(session.temperature, undefined);
   assert.deepEqual(session.tools.map((tool) => tool.name).sort(), [
     'cancel_appointment', 'check_service_area', 'get_caller_appointments',
   ]);
@@ -938,10 +942,30 @@ test('the OpenAI session speaks Twilio\'s own audio format and declares the same
   });
   // Инструмента «положить трубку» нет ни у одного провайдера.
   assert.ok(!session.tools.some((tool) => /end_call|hangup/i.test(tool.name)));
-  const voiceOf = (voice) => voiceRelay.buildOpenaiSession({ openaiVoice: voice }, false, 'x').session.voice;
+  const voiceOf = (voice) =>
+    voiceRelay.buildOpenaiSession({ openaiVoice: voice }, false, 'x').session.audio.output.voice;
   assert.equal(voiceOf('sage'), 'sage');
   assert.equal(voiceOf('nonexistent'), 'coral');
   assert.deepEqual(voiceRelay.buildOpenaiSession({}, false, 'x').session.tools, []);
+});
+
+test('conversation items use the strict GA content types in both directions', (t) => {
+  const call = openaiCall(t);
+  call.ready();
+  // Реплика секретаря обязана быть output_text: на 'text' GA отвечает
+  // «Invalid value», и история при обрыве потока не переносится.
+  call.session.history = [
+    { role: 'user', text: 'My dryer is dead.' },
+    { role: 'assistant', text: 'What brand is it?' },
+  ];
+  call.session.needsContinue = true;
+  call.session.greeted = false;
+  voiceRelay.greetLive(call.session);
+  const items = call.current().sent
+    .filter((m) => m.type === 'conversation.item.create')
+    .map((m) => [m.item.role, m.item.content[0].type]);
+  assert.ok(items.some(([role, type]) => role === 'assistant' && type === 'output_text'));
+  assert.ok(items.every(([role, type]) => (role === 'user' ? type === 'input_text' : type === 'output_text')));
 });
 
 function openaiCall(t, overrides = {}) {
@@ -1023,7 +1047,7 @@ test('OpenAI: the session is configured, Sarah greets first, and her audio is cu
   assert.equal(call.session.engine, 'openai-realtime');
   const update = call.current().sent.find((m) => m.type === 'session.update');
   assert.equal(update.session.instructions, 'Shop rules.');
-  assert.equal(update.session.output_audio_format, 'g711_ulaw');
+  assert.deepEqual(update.session.audio.output.format, { type: 'audio/pcmu' });
   // Поздоровалась сама: элемент беседы с инструкцией плюс просьба ответить.
   const greeting = call.current().sent.find((m) => m.type === 'conversation.item.create');
   assert.match(greeting.item.content[0].text, /first greeting only/);

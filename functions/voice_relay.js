@@ -34,9 +34,14 @@ const GEMINI_MODELS = [
   'gemini-2.5-flash-native-audio-preview-12-2025',
 ];
 
-const DEFAULT_OPENAI_MODEL =
-  process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-mini-realtime-preview';
+// Проверено живым сокетом 06.10.2026 нашим боевым setup: поднимаются
+// gpt-realtime-mini и gpt-realtime, обе за ~0,97 с до session.updated.
+// gpt-4o-mini-realtime-preview этому ключу уже недоступна, её в API нет —
+// ставить её основной значило бы платить отказом за каждый звонок.
 // Полная модель — 'gpt-realtime'; переключается настройкой openaiModel.
+const DEFAULT_OPENAI_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-mini';
+// Расшифровка речи звонящего. Живёт отдельно от голосовой модели.
+const OPENAI_TRANSCRIBE_MODEL = 'gpt-4o-mini-transcribe';
 const OPENAI_VOICES = ['coral', 'sage', 'ash', 'shimmer', 'verse'];
 const DEFAULT_OPENAI_VOICE = 'coral';
 // Zephyr звучит сухо; Aoede теплее. Остальные — на выбор из настроек.
@@ -250,6 +255,9 @@ function openGeminiSocket(apiKey, model, affective) {
 }
 
 /// Сокет к OpenAI Realtime. Тесты подставляют свой через deps.openOpenaiSocket.
+/// Заголовка «OpenAI-Beta: realtime=v1» здесь нет намеренно: с ним сервер
+/// отвечает «The Realtime Beta API is no longer supported» и рвёт сессию.
+/// Проверено живым сокетом 06.10.2026.
 function openOpenaiSocket(apiKey, model) {
   if (deps && typeof deps.openOpenaiSocket === 'function') {
     return deps.openOpenaiSocket(apiKey, model);
@@ -257,10 +265,7 @@ function openOpenaiSocket(apiKey, model) {
   return new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
     {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'OpenAI-Beta': 'realtime=v1',
-      },
+      headers: { Authorization: `Bearer ${apiKey}` },
       perMessageDeflate: false,
     }
   );
@@ -527,29 +532,40 @@ function buildSetup(model, systemText, withTools, resumeHandle, options = {}) {
   return { setup };
 }
 
-/// Настройка сессии OpenAI Realtime. Звук в обе стороны — родной для Twilio
-/// g711_ulaw 8 кГц: ни одного пересчёта частоты, ни одного артефакта от
+/// Настройка сессии OpenAI Realtime, схема GA (проверена живым сокетом
+/// 06.10.2026). Звук в обе стороны — `audio/pcmu`, то есть родной для Twilio
+/// g711 μ-law 8 кГц: ни одного пересчёта частоты, ни одного артефакта от
 /// ресемплинга. Пороги VAD те же, что у Gemini (PREFIX_MS / SILENCE_MS), чтобы
 /// паузы звонящего слушались одинаково на обоих провайдерах.
+///
+/// Чего здесь нет и почему: `temperature` в GA-сессии не существует — сервер
+/// отвечает «Unknown parameter: 'session.temperature'» и отбивает весь setup.
+/// Манеру речи задаёт промпт (блок VOICE DELIVERY), а не температура.
 function buildOpenaiSession(session, withTools, instructions) {
   const voice = pickFrom(session && session.openaiVoice, OPENAI_VOICES, DEFAULT_OPENAI_VOICE);
   return {
     type: 'session.update',
     session: {
-      modalities: ['text', 'audio'],
+      type: 'realtime',
+      output_modalities: ['audio'],
       instructions: String(instructions || (session && session.systemText) || ''),
-      voice,
-      input_audio_format: 'g711_ulaw',
-      output_audio_format: 'g711_ulaw',
-      input_audio_transcription: { model: 'gpt-4o-mini-transcribe', language: 'en' },
-      turn_detection: {
-        type: 'server_vad',
-        threshold: 0.6,
-        prefix_padding_ms: PREFIX_MS,
-        silence_duration_ms: SILENCE_MS,
-        create_response: true,
+      audio: {
+        input: {
+          format: { type: 'audio/pcmu' },
+          transcription: { model: OPENAI_TRANSCRIBE_MODEL, language: 'en' },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.6,
+            prefix_padding_ms: PREFIX_MS,
+            silence_duration_ms: SILENCE_MS,
+            create_response: true,
+            // Сервер сам гасит её реплику, когда звонящий заговорил. Наш
+            // response.cancel на speech_started остаётся второй подстраховкой.
+            interrupt_response: true,
+          },
+        },
+        output: { format: { type: 'audio/pcmu' }, voice },
       },
-      temperature: 0.7,
       tools: withTools ? openaiToolDeclarations() : [],
       tool_choice: 'auto',
     },
@@ -1113,12 +1129,15 @@ function sendOpenaiTurns(session, turns, turnComplete) {
       .join('\n');
     if (!text) continue;
     const assistant = turn.role === 'model' || turn.role === 'assistant';
+    // Типы содержимого в GA строгие: реплика секретаря — только output_text
+    // («Invalid value: 'text'. Value must be 'output_text'»), реплика
+    // звонящего — input_text. Ошибёшься — история при обрыве не перенесётся.
     sendJson(ws, {
       type: 'conversation.item.create',
       item: {
         type: 'message',
         role: assistant ? 'assistant' : 'user',
-        content: [assistant ? { type: 'text', text } : { type: 'input_text', text }],
+        content: [{ type: assistant ? 'output_text' : 'input_text', text }],
       },
     });
   }

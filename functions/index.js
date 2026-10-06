@@ -1702,8 +1702,10 @@ const HOURS_POLICY_VERSION = 4;
 // перевод, отчёты об ошибках) этих настроек не касается: он остаётся на
 // VOICE_MODEL_CANDIDATES.
 const DEFAULT_VOICE_PROVIDER = process.env.VOICE_PROVIDER === 'gemini' ? 'gemini' : 'openai';
+// gpt-4o-mini-realtime-preview в API больше нет; живые модели на нашем ключе —
+// gpt-realtime-mini (по умолчанию) и gpt-realtime (полная, дороже).
 const DEFAULT_OPENAI_REALTIME_MODEL =
-  process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-mini-realtime-preview';
+  process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-mini';
 const DEFAULT_OPENAI_VOICE = process.env.OPENAI_VOICE || 'coral';
 const DEFAULT_GEMINI_VOICE = process.env.GEMINI_VOICE || 'Aoede';
 

@@ -53,12 +53,31 @@ adb -s 44c25486 shell am start -n com.example.fix_appliance_crm/.MainActivity
 - **Phone secretary** (Twilio + OpenAI Realtime, запасной Gemini Live): answers inbound calls if FIX does not pick up. Speaks English only. Files: `functions/voice_relay.js`, `functions/voice_facts.js`, `functions/index.js` (`aiVoiceRelay`, `aiVoiceTurn`, `getAiAnswerSettings`). Prompt/hangup changes are **server deploy**, no APK.
 - **In-app assistant** (FIX-Appliance / wake word): `lib/features/ai/assistant/*`. Do not mix this with the phone secretary.
 
+**OpenAI Realtime — только GA, беты больше нет (проверено живым сокетом 06.10.2026).**
+Это дорого стоило бы на первом же звонке, поэтому запомните:
+
+- Заголовок `OpenAI-Beta: realtime=v1` **убивает сессию**: «The Realtime Beta API is no
+  longer supported». Шлём только `Authorization`.
+- `gpt-4o-mini-realtime-preview` в API **нет**. Живые realtime-модели на нашем ключе:
+  `gpt-realtime-mini` (по умолчанию) и `gpt-realtime`. Обе поднимают боевой setup за
+  0,4–1,0 с.
+- Схема сессии другая: `session.type='realtime'`, `output_modalities:['audio']`, а голос,
+  форматы, расшифровка и VAD — внутри `audio.input` / `audio.output`. Формат μ-law
+  записывается объектом `{ type: 'audio/pcmu' }`, а не строкой `g711_ulaw`.
+- **`session.temperature` в GA не существует** — «Unknown parameter», и отбивается весь
+  setup. Манеру речи задаёт промпт, а не температура.
+- Типы содержимого строгие: реплика секретаря — `output_text` («Invalid value: 'text'»),
+  реплика звонящего — `input_text`. На этом держится перенос истории при обрыве.
+- Проверять изменения в setup лучше живым сокетом до деплоя: тесты ловят форму, но не то,
+  примет ли её сервер.
+
 **Голос секретаря: два провайдера в одной цепочке (06.10.2026).** Живой голос стал
 роботизированным, и тракт переделан. Основной провайдер — **OpenAI Realtime**
-(`gpt-4o-mini-realtime-preview`, голос `coral`), запасной — **Gemini Live**
+(`gpt-realtime-mini`, голос `coral`), запасной — **Gemini Live**
 (`gemini-3.1-flash-live-preview`, затем `gemini-2.5-flash-native-audio-preview-12-2025`,
 голос `Aoede`). Выбор живёт в `settings/ai_voice`: `voiceProvider` (`openai`/`gemini`),
-`openaiModel`, `openaiVoice` (coral/sage/ash/shimmer/verse), `geminiVoice`
+`openaiModel` (`gpt-realtime-mini` / `gpt-realtime`), `openaiVoice`
+(coral/sage/ash/shimmer/verse), `geminiVoice`
 (Aoede/Kore/Leda/Zephyr); значения по умолчанию — из окружения (`VOICE_PROVIDER`,
 `OPENAI_REALTIME_MODEL`, `OPENAI_VOICE`, `GEMINI_VOICE`). Ключ — `OPENAI_API_KEY` в
 `functions/.env`; **без него OpenAI в цепочку не попадает вообще**, и всё работает как
