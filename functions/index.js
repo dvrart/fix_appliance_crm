@@ -1703,10 +1703,11 @@ const HOURS_POLICY_VERSION = 4;
 // VOICE_MODEL_CANDIDATES.
 const DEFAULT_VOICE_PROVIDER = process.env.VOICE_PROVIDER === 'gemini' ? 'gemini' : 'openai';
 // gpt-4o-mini-realtime-preview в API больше нет; живые модели на нашем ключе —
-// gpt-realtime-mini (по умолчанию) и gpt-realtime (полная, дороже).
+// gpt-realtime (полная, по умолчанию — у неё живее интонация) и
+// gpt-realtime-mini (дешевле, но в трубке звучит ненатурально).
 const DEFAULT_OPENAI_REALTIME_MODEL =
-  process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-mini';
-const DEFAULT_OPENAI_VOICE = process.env.OPENAI_VOICE || 'coral';
+  process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime';
+const DEFAULT_OPENAI_VOICE = process.env.OPENAI_VOICE || 'marin';
 const DEFAULT_GEMINI_VOICE = process.env.GEMINI_VOICE || 'Aoede';
 
 function voiceEngineSettings(voice = {}) {
@@ -1715,6 +1716,8 @@ function voiceEngineSettings(voice = {}) {
     voiceProvider: provider === 'gemini' || provider === 'openai' ? provider : DEFAULT_VOICE_PROVIDER,
     openaiModel: String(voice.openaiModel || '').trim() || DEFAULT_OPENAI_REALTIME_MODEL,
     openaiVoice: String(voice.openaiVoice || '').trim() || DEFAULT_OPENAI_VOICE,
+    // Темп речи проверяет релей; здесь просто пробрасываем, что задал владелец.
+    openaiSpeed: voice.openaiSpeed,
     geminiVoice: String(voice.geminiVoice || '').trim() || DEFAULT_GEMINI_VOICE,
   };
 }

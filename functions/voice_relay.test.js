@@ -162,6 +162,21 @@ function greetingSession(overrides = {}) {
   return { session, messages };
 }
 
+test('the delivery rules ask for a natural cadence instead of a clipped, rushed one', () => {
+  const prompt = voiceRelay.liveSystemPrompt({ instructions: 'Shop rules.' }, {});
+  // Старые строки писались против медлительности Gemini и спорили с блоком
+  // VOICE DELIVERY: модель просили быть расслабленной и торопиться разом.
+  // В трубке это звучало мягко, но механически.
+  assert.doesNotMatch(prompt, /brisk, efficient pace/);
+  assert.doesNotMatch(prompt, /slightly quicker than ordinary conversation/);
+  assert.doesNotMatch(prompt, /Clip the gaps between sentences/);
+  assert.match(prompt, /let the sentence breathe/);
+  assert.match(prompt, /An even, evenly-paced voice is what makes a caller hear a machine/);
+  // Антизадержка остаётся: молчать перед первым словом по-прежнему нельзя.
+  assert.match(prompt, /never add a silent thinking beat/);
+  assert.match(prompt, /relaxed, natural human cadence/);
+});
+
 test('reply delivery stays connected while shop rules and caller pauses remain unchanged', () => {
   const profile = {
     instructions: 'Keep the existing repair intake and booking rules.',
@@ -178,9 +193,10 @@ test('reply delivery stays connected while shop rules and caller pauses remain u
     calendarBrief: 'The current visit window is occupied.',
   };
   const prompt = voiceRelay.liveSystemPrompt(profile, session);
+  // Главное здесь — не рвать реплику надвое: «ага…» и пауза на обдумывание.
+  // Требование торопиться убрано отдельно (см. тест про естественный темп).
   assert.match(prompt, /one flowing phrase/);
-  assert.match(prompt, /short pauses at punctuation only/);
-  assert.match(prompt, /Clip the gaps between sentences, not the words themselves/);
+  assert.match(prompt, /never add a silent thinking beat/);
   assert.doesNotMatch(prompt, /while you think/);
   assert.ok(prompt.includes(profile.instructions));
   assert.ok(prompt.includes(profile.workHours));
@@ -903,7 +919,7 @@ test('the provider chain falls back to Gemini and never offers a provider withou
   ]);
   // Нет ключа Gemini — лучше OpenAI, чем тишина в трубке.
   assert.deepEqual(chain({ voiceProvider: 'gemini' }, { openaiApiKey: 'o' }), [
-    'openai:gpt-realtime-mini',
+    'openai:gpt-realtime',
   ]);
   assert.deepEqual(chain({ voiceProvider: 'openai' }, {}), []);
 });
@@ -919,18 +935,19 @@ test('every call logs which keys were seen, so a missing key is never mistaken f
   assert.match(chain, /key:openai=yes/);
   assert.match(chain, /key:gemini=yes/);
   assert.match(chain, /settings=openai/);
-  assert.match(chain, /steps=\[openai:gpt-realtime-mini -> gemini:/);
+  assert.match(chain, /steps=\[openai:gpt-realtime -> gemini:/);
   assert.equal(call.sockets.length, 1);
 });
 
 test('the OpenAI session speaks Twilio\'s own audio format and declares the same three tools', () => {
-  const { session } = voiceRelay.buildOpenaiSession({ openaiVoice: 'coral' }, true, 'Shop rules.');
+  const { session } = voiceRelay.buildOpenaiSession({ openaiVoice: 'marin' }, true, 'Shop rules.');
   // Схема GA, снятая с живого сокета. Бета-форма (modalities, voice и
   // input_audio_format в корне, temperature) сервером больше не принимается.
   assert.equal(session.type, 'realtime');
   assert.equal(session.instructions, 'Shop rules.');
   assert.deepEqual(session.output_modalities, ['audio']);
-  assert.equal(session.audio.output.voice, 'coral');
+  assert.equal(session.audio.output.voice, 'marin');
+  assert.equal(session.audio.output.speed, 1);
   // Родной формат Twilio в обе стороны: ни одного пересчёта частоты.
   assert.deepEqual(session.audio.input.format, { type: 'audio/pcmu' });
   assert.deepEqual(session.audio.output.format, { type: 'audio/pcmu' });
@@ -960,11 +977,23 @@ test('the OpenAI session speaks Twilio\'s own audio format and declares the same
   const voiceOf = (voice) =>
     voiceRelay.buildOpenaiSession({ openaiVoice: voice }, false, 'x').session.audio.output.voice;
   assert.equal(voiceOf('sage'), 'sage');
-  // Самые живые голоса GA — их выбирают, если coral покажется плоским.
-  assert.equal(voiceOf('marin'), 'marin');
   assert.equal(voiceOf('cedar'), 'cedar');
-  assert.equal(voiceOf('nonexistent'), 'coral');
+  assert.equal(voiceOf('coral'), 'coral');
+  // Опечатка в настройках не должна оставить звонок без голоса.
+  assert.equal(voiceOf('nonexistent'), 'marin');
   assert.deepEqual(voiceRelay.buildOpenaiSession({}, false, 'x').session.tools, []);
+});
+
+test('speech speed is owner-tunable but never outside a sane range', () => {
+  const speedOf = (openaiSpeed) =>
+    voiceRelay.buildOpenaiSession({ openaiSpeed }, false, 'x').session.audio.output.speed;
+  assert.equal(speedOf(0.9), 0.9);
+  assert.equal(speedOf(1.15), 1.15);
+  // Мусор и крайности не должны превращать секретаря в скороговорку.
+  assert.equal(speedOf(undefined), 1);
+  assert.equal(speedOf('быстро'), 1);
+  assert.equal(speedOf(0), 1);
+  assert.equal(speedOf(3), 1);
 });
 
 test('conversation items use the strict GA content types in both directions', (t) => {

@@ -35,17 +35,25 @@ const GEMINI_MODELS = [
 ];
 
 // Проверено живым сокетом 06.10.2026 нашим боевым setup: поднимаются
-// gpt-realtime-mini и gpt-realtime, обе за ~0,97 с до session.updated.
+// gpt-realtime-mini и gpt-realtime, обе за ~0,4–1,0 с до session.updated.
 // gpt-4o-mini-realtime-preview этому ключу уже недоступна, её в API нет —
 // ставить её основной значило бы платить отказом за каждый звонок.
-// Полная модель — 'gpt-realtime'; переключается настройкой openaiModel.
-const DEFAULT_OPENAI_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-mini';
+// Основная — полная: на mini FIX услышал «мягко, но неестественно», у полной
+// заметно живее интонация. Дешёвая остаётся как 'gpt-realtime-mini' в
+// настройке openaiModel, если захочется экономить.
+const DEFAULT_OPENAI_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime';
 // Расшифровка речи звонящего. Живёт отдельно от голосовой модели.
 const OPENAI_TRANSCRIBE_MODEL = 'gpt-4o-mini-transcribe';
 // marin и cedar — самые живые из GA-голосов, проверены на нашем ключе
-// 06.10.2026. Если coral покажется плоским, менять надо в первую очередь на них.
-const OPENAI_VOICES = ['coral', 'sage', 'ash', 'shimmer', 'verse', 'marin', 'cedar'];
-const DEFAULT_OPENAI_VOICE = 'coral';
+// 06.10.2026. coral был по умолчанию до 06.10.2026: в трубке он звучит мягко,
+// но ненатурально, поэтому основным стал marin. Все варианты переключаются
+// настройкой openaiVoice без выкатки.
+const OPENAI_VOICES = ['marin', 'cedar', 'coral', 'sage', 'ash', 'shimmer', 'verse'];
+const DEFAULT_OPENAI_VOICE = 'marin';
+// Темп речи. 1 — как говорит модель сама; 0,9–0,95 звучит спокойнее, выше 1,1
+// начинает частить. Меняется настройкой openaiSpeed, выкатка не нужна.
+const OPENAI_SPEED_RANGE = [0.7, 1.3];
+const DEFAULT_OPENAI_SPEED = 1;
 // Zephyr звучит сухо; Aoede теплее. Остальные — на выбор из настроек.
 const GEMINI_VOICES = ['Aoede', 'Kore', 'Leda', 'Zephyr'];
 const DEFAULT_GEMINI_VOICE = 'Aoede';
@@ -386,10 +394,10 @@ SERVICE AREA — the map decides, never your memory:
 - Never tell a caller we do not serve their place unless check_service_area answered inside=false.
 
 HOW YOU SOUND — you are on a phone, not reading:
-- Start your answer promptly when the caller finishes; do not add a silent thinking beat.
+- Begin as soon as the caller finishes; never add a silent thinking beat before your first word. Once you are speaking, let the sentence breathe — do not rush to the end of it.
+- Vary the delivery the way people actually do: some sentences short, some longer, the pitch rising and falling, a touch more warmth on good news and a touch more care on a problem. An even, evenly-paced voice is what makes a caller hear a machine.
 - Keep the short human reaction and the answer in one flowing phrase. Never say "right" or "mm-hm" and then pause to plan the rest.
-- Speak at a brisk, efficient pace — slightly quicker than ordinary conversation. Contractions always: what's, that's, you're, I'll, we've.
-- Keep the flow moving: short pauses at punctuation only, no dead air between phrases. Clip the gaps between sentences, not the words themselves.
+- Contractions always: what's, that's, you're, I'll, we've. Everyday words over formal ones.
 - One thought per turn. If it needs two sentences, make the second one short.
 - Never read a list aloud. Never repeat back the whole thing they just told you. The one exception: a name or address you did not catch for sure — ask again, and if needed have them spell it and read the letters back (see the names-and-addresses rule).
 - If they pause to look something up, wait quietly. Do not fill the silence with chatter.
@@ -545,6 +553,10 @@ function buildSetup(model, systemText, withTools, resumeHandle, options = {}) {
 /// Манеру речи задаёт промпт (блок VOICE DELIVERY), а не температура.
 function buildOpenaiSession(session, withTools, instructions) {
   const voice = pickFrom(session && session.openaiVoice, OPENAI_VOICES, DEFAULT_OPENAI_VOICE);
+  const asked = Number(session && session.openaiSpeed);
+  const speed = Number.isFinite(asked) && asked >= OPENAI_SPEED_RANGE[0] && asked <= OPENAI_SPEED_RANGE[1]
+    ? asked
+    : DEFAULT_OPENAI_SPEED;
   return {
     type: 'session.update',
     session: {
@@ -566,7 +578,7 @@ function buildOpenaiSession(session, withTools, instructions) {
             interrupt_response: true,
           },
         },
-        output: { format: { type: 'audio/pcmu' }, voice },
+        output: { format: { type: 'audio/pcmu' }, voice, speed },
       },
       tools: withTools ? openaiToolDeclarations() : [],
       tool_choice: 'auto',
@@ -2284,6 +2296,7 @@ async function onLiveStart(session, message) {
   session.voiceProvider = pickFrom(profile.voiceProvider, VOICE_PROVIDERS, DEFAULT_VOICE_PROVIDER);
   session.openaiModel = String(profile.openaiModel || '').trim() || DEFAULT_OPENAI_MODEL;
   session.openaiVoice = pickFrom(profile.openaiVoice, OPENAI_VOICES, DEFAULT_OPENAI_VOICE);
+  session.openaiSpeed = profile.openaiSpeed;
   session.geminiVoice = pickFrom(profile.geminiVoice, GEMINI_VOICES, DEFAULT_GEMINI_VOICE);
   session.systemText = liveSystemPrompt(profile, session);
   if (session.twilioKeepalive) clearInterval(session.twilioKeepalive);
