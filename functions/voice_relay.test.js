@@ -908,6 +908,21 @@ test('the provider chain falls back to Gemini and never offers a provider withou
   assert.deepEqual(chain({ voiceProvider: 'openai' }, {}), []);
 });
 
+test('every call logs which keys were seen, so a missing key is never mistaken for a choice', (t) => {
+  const lines = [];
+  const log = console.log;
+  console.log = (text) => lines.push(String(text));
+  t.after(() => { console.log = log; });
+  const call = openaiCall(t);
+  console.log = log;
+  const chain = lines.find((line) => line.includes('voiceLive chain'));
+  assert.match(chain, /key:openai=yes/);
+  assert.match(chain, /key:gemini=yes/);
+  assert.match(chain, /settings=openai/);
+  assert.match(chain, /steps=\[openai:gpt-realtime-mini -> gemini:/);
+  assert.equal(call.sockets.length, 1);
+});
+
 test('the OpenAI session speaks Twilio\'s own audio format and declares the same three tools', () => {
   const { session } = voiceRelay.buildOpenaiSession({ openaiVoice: 'coral' }, true, 'Shop rules.');
   // Схема GA, снятая с живого сокета. Бета-форма (modalities, voice и
@@ -945,6 +960,9 @@ test('the OpenAI session speaks Twilio\'s own audio format and declares the same
   const voiceOf = (voice) =>
     voiceRelay.buildOpenaiSession({ openaiVoice: voice }, false, 'x').session.audio.output.voice;
   assert.equal(voiceOf('sage'), 'sage');
+  // Самые живые голоса GA — их выбирают, если coral покажется плоским.
+  assert.equal(voiceOf('marin'), 'marin');
+  assert.equal(voiceOf('cedar'), 'cedar');
   assert.equal(voiceOf('nonexistent'), 'coral');
   assert.deepEqual(voiceRelay.buildOpenaiSession({}, false, 'x').session.tools, []);
 });

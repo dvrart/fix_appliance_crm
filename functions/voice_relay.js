@@ -42,7 +42,9 @@ const GEMINI_MODELS = [
 const DEFAULT_OPENAI_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-mini';
 // Расшифровка речи звонящего. Живёт отдельно от голосовой модели.
 const OPENAI_TRANSCRIBE_MODEL = 'gpt-4o-mini-transcribe';
-const OPENAI_VOICES = ['coral', 'sage', 'ash', 'shimmer', 'verse'];
+// marin и cedar — самые живые из GA-голосов, проверены на нашем ключе
+// 06.10.2026. Если coral покажется плоским, менять надо в первую очередь на них.
+const OPENAI_VOICES = ['coral', 'sage', 'ash', 'shimmer', 'verse', 'marin', 'cedar'];
 const DEFAULT_OPENAI_VOICE = 'coral';
 // Zephyr звучит сухо; Aoede теплее. Остальные — на выбор из настроек.
 const GEMINI_VOICES = ['Aoede', 'Kore', 'Leda', 'Zephyr'];
@@ -2157,6 +2159,16 @@ function resumeLive(session, reason, { switchModel = false } = {}) {
 /// календаря всё ещё лучше, чем звонок без голоса.
 function startLiveSession(session) {
   session.liveChain = buildLiveChain(session);
+  // Одна строка на звонок, по которой видно, почему говорит именно этот
+  // провайдер: ключи (только наличие, не значения), что выбрано в настройках и
+  // какая цепочка из этого собралась. Без неё пропавший ключ выглядит ровно
+  // как сознательный выбор Gemini, и его ищут часами.
+  console.log(
+    `voiceLive chain ${session.callSid} key:openai=${deps && deps.openaiApiKey ? 'yes' : 'NO'} ` +
+      `key:gemini=${deps && deps.geminiApiKey ? 'yes' : 'NO'} ` +
+      `settings=${session.voiceProvider || '-'} ` +
+      `steps=[${session.liveChain.map((step) => `${step.provider}:${step.model}`).join(' -> ') || 'пусто'}]`
+  );
   if (!session.liveChain.length) {
     markLiveFailed(session, 'no live voice provider configured').then(() => closeTwilio(session));
     return;
