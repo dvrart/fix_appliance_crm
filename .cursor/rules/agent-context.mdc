@@ -72,12 +72,13 @@ adb -s 44c25486 shell am start -n com.example.fix_appliance_crm/.MainActivity
   примет ли её сервер.
 
 **Голос секретаря: два провайдера в одной цепочке (06.10.2026).** Живой голос стал
-роботизированным, и тракт переделан. Основной провайдер — **OpenAI Realtime**
-(`gpt-realtime-mini`, голос `coral`), запасной — **Gemini Live**
+роботизированным, и тракт переделан. **Основной провайдер — Gemini Live**
 (`gemini-3.1-flash-live-preview`, затем `gemini-2.5-flash-native-audio-preview-12-2025`,
-голос `Aoede`). Выбор живёт в `settings/ai_voice`: `voiceProvider` (`openai`/`gemini`),
-`openaiModel` (`gpt-realtime-mini` / `gpt-realtime`), `openaiVoice`
-(coral/sage/ash/shimmer/verse), `geminiVoice`
+голос `Aoede`): FIX послушал обоих в трубке и выбрал его. Запасной — **OpenAI Realtime**
+(`gpt-realtime`, голос `marin`), он встаёт в конец цепочки. Откат симметричный: кто не
+выбран основным, тот запасной. Выбор живёт в `settings/ai_voice`: `voiceProvider`
+(`gemini`/`openai`), `openaiModel` (`gpt-realtime` / `gpt-realtime-mini`), `openaiVoice`
+(marin/cedar/coral/sage/ash/shimmer/verse), `openaiSpeed` (0,7–1,3), `geminiVoice`
 (Aoede/Kore/Leda/Zephyr); значения по умолчанию — из окружения (`VOICE_PROVIDER`,
 `OPENAI_REALTIME_MODEL`, `OPENAI_VOICE`, `GEMINI_VOICE`). Ключ — `OPENAI_API_KEY` в
 `functions/.env`; **без него OpenAI в цепочку не попадает вообще**, и всё работает как

@@ -907,10 +907,17 @@ test('the provider chain falls back to Gemini and never offers a provider withou
     'gemini:gemini-3.1-flash-live-preview',
     'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
   ]);
-  // Явно выбран Gemini — OpenAI в цепочку не лезет.
-  assert.deepEqual(chain({ voiceProvider: 'gemini' }, both), [
+  // Выбран Gemini — он ведёт, OpenAI ждёт в конце очереди. Откат симметричный.
+  assert.deepEqual(chain({ voiceProvider: 'gemini', openaiModel: 'gpt-realtime' }, both), [
     'gemini:gemini-3.1-flash-live-preview',
     'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
+    'openai:gpt-realtime',
+  ]);
+  // По умолчанию (поле не задано) звонки ведёт Gemini.
+  assert.deepEqual(chain({}, both), [
+    'gemini:gemini-3.1-flash-live-preview',
+    'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
+    'openai:gpt-realtime',
   ]);
   // Ключа OpenAI нет — звонки ведёт Gemini, как и раньше.
   assert.deepEqual(chain({ voiceProvider: 'openai' }, { geminiApiKey: 'g' }), [

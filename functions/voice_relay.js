@@ -58,7 +58,10 @@ const DEFAULT_OPENAI_SPEED = 1;
 const GEMINI_VOICES = ['Aoede', 'Kore', 'Leda', 'Zephyr'];
 const DEFAULT_GEMINI_VOICE = 'Aoede';
 const VOICE_PROVIDERS = ['openai', 'gemini'];
-const DEFAULT_VOICE_PROVIDER = 'openai';
+// Основной провайдер — Gemini Live (решение FIX, 06.10.2026: после прослушивания
+// в трубке он ему ближе). OpenAI остаётся запасным и включается обратно одним
+// полем voiceProvider в settings/ai_voice, без выкатки.
+const DEFAULT_VOICE_PROVIDER = 'gemini';
 // Как звонок подписан в Firestore. 'relay' — резервный Gather с фиксированным
 // приветствием; index.js по этим же именам понимает, что звонок вёл живой голос.
 const LIVE_ENGINE_BY_PROVIDER = { openai: 'openai-realtime', gemini: 'gemini-live' };
@@ -107,8 +110,9 @@ function uniqueModels() {
 }
 
 /// Цепочка попыток на один звонок: первый шаг — то, что выбрано в настройках,
-/// дальше запасные. Шаги провайдера без ключа в цепочку не попадают, поэтому
-/// ошибочная настройка физически не может оставить звонок в тишине.
+/// дальше запасные. Откат симметричный: кто не выбран основным, встаёт в конец
+/// очереди. Шаги провайдера без ключа в цепочку не попадают, поэтому ошибочная
+/// настройка физически не может оставить звонок в тишине.
 function buildLiveChain(session) {
   const openaiReady = Boolean(deps && deps.openaiApiKey);
   const geminiReady = Boolean(deps && deps.geminiApiKey);
@@ -117,13 +121,22 @@ function buildLiveChain(session) {
     model: String((session && session.openaiModel) || '').trim() || DEFAULT_OPENAI_MODEL,
   };
   const geminiSteps = uniqueModels().map((model) => ({ provider: 'gemini', model }));
-  const wantsGemini = session && session.voiceProvider === 'gemini';
+  // Значение по умолчанию разрешаем здесь же: иначе сессия без настройки
+  // собирала бы цепочку не тем провайдером, чем заявлено в DEFAULT.
+  const provider = pickFrom(
+    session && session.voiceProvider,
+    VOICE_PROVIDERS,
+    DEFAULT_VOICE_PROVIDER
+  );
+  const wantsGemini = provider === 'gemini';
   const steps = [];
-  if (openaiReady && !wantsGemini) steps.push(openaiStep);
+  if (wantsGemini) {
+    if (geminiReady) steps.push(...geminiSteps);
+    if (openaiReady) steps.push(openaiStep);
+    return steps;
+  }
+  if (openaiReady) steps.push(openaiStep);
   if (geminiReady) steps.push(...geminiSteps);
-  // Основным выбран Gemini, но его ключа нет — пусть звонок ведёт OpenAI:
-  // это всяко лучше тишины в трубке.
-  if (!steps.length && openaiReady) steps.push(openaiStep);
   return steps;
 }
 

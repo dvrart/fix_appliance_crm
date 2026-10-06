@@ -1701,7 +1701,9 @@ const HOURS_POLICY_VERSION = 4;
 // нужно собрать профиль звонка. Фоновый разбор (расшифровка записи, JSON,
 // перевод, отчёты об ошибках) этих настроек не касается: он остаётся на
 // VOICE_MODEL_CANDIDATES.
-const DEFAULT_VOICE_PROVIDER = process.env.VOICE_PROVIDER === 'gemini' ? 'gemini' : 'openai';
+// Gemini Live ведёт звонки, OpenAI Realtime ждёт в запасе (решение FIX,
+// 06.10.2026). Меняется полем voiceProvider в settings/ai_voice без выкатки.
+const DEFAULT_VOICE_PROVIDER = process.env.VOICE_PROVIDER === 'openai' ? 'openai' : 'gemini';
 // gpt-4o-mini-realtime-preview в API больше нет; живые модели на нашем ключе —
 // gpt-realtime (полная, по умолчанию — у неё живее интонация) и
 // gpt-realtime-mini (дешевле, но в трубке звучит ненатурально).
