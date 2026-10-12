@@ -793,6 +793,17 @@ function nameKey(word) {
     .replace(/[^a-z]/g, '');
 }
 
+/** Кириллица → латиница с сохранением регистра: «Артём» → «Artem». */
+function toLatin(text) {
+  return String(text || '').replace(/[А-Яа-яЁё]/g, (ch) => {
+    const lower = ch.toLowerCase();
+    const latin = RU_LATIN[lower];
+    if (latin === undefined) return ch;
+    if (!latin || ch === lower) return latin;
+    return latin.charAt(0).toUpperCase() + latin.slice(1);
+  });
+}
+
 function sameNameKey(a, b) {
   if (!a || !b) return false;
   if (a === b) return true;
@@ -1388,6 +1399,7 @@ module.exports = {
   looksLikePersonName,
   isPlaceholderClientName,
   usableClientName,
+  toLatin,
   editDistance,
   snapCity,
   citiesFromClient,

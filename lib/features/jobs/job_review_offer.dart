@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/l10n/app_locale.dart';
+import '../../core/sms_text.dart';
 import '../../services/services.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
 
@@ -68,11 +69,9 @@ class JobReviewOffer {
     final config = await SettingsService.loadConfig();
     final templates = await SettingsService.loadSmsTemplates();
     final reviewUrl = SettingsService.readGoogleReviewUrl(config);
-    final who = name.trim().isEmpty ? 'there' : name.trim();
     final template =
         templates['job_done'] ?? SettingsService.defaultJobDoneSms;
-    var body = template
-        .replaceAll('{name}', who)
+    var body = SmsText.fillName(template, name)
         .replaceAll('{date}', '')
         .replaceAll('{time}', '')
         .replaceAll('{address}', address.trim())

@@ -72,6 +72,7 @@ function notificationEventId(data) {
   }
   if (type === 'job' && callId) return `call:${callId}`;
   if (type === 'job' && data.jobId) return `job:${data.jobId}`;
+  if (type === 'visit_soon' && data.jobId) return `visit_soon:${data.jobId}:${data.visitId || ''}`;
   return '';
 }
 

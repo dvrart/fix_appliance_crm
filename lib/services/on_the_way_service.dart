@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/job.dart';
 import '../core/constants.dart';
+import '../core/sms_text.dart';
 import 'job_service.dart';
 import 'local_notification_service.dart';
 import 'maps_service.dart';
@@ -260,11 +261,15 @@ class OnTheWayService extends ChangeNotifier {
     final templates = await SettingsService.loadSmsTemplates();
     final config = await SettingsService.loadConfig();
     final custom = SettingsService.readOnTheWayText(config);
-    final body = (custom.isNotEmpty
-            ? custom
-            : (templates['on_way'] ??
-                'Здравствуйте, это мастер. Буду у вас через 30 минут.'.tr))
-        .trim();
+    // Шаблон хранится с `{name}`: без подстановки клиент получал его дословно,
+    // а русский запасной текст уходил кириллицей. Обоим здесь не место.
+    final body = SmsText.fillName(
+      (custom.isNotEmpty
+              ? custom
+              : (templates['on_way'] ?? SettingsService.defaultOnWaySms))
+          .trim(),
+      offer.nextJob.contactName,
+    );
     final ok = await SmsService.sendSms(
       to: phone,
       body: body,

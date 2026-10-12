@@ -9,6 +9,7 @@ import 'package:printing/printing.dart';
 import '../core/api_keys.dart';
 import '../core/l10n/app_locale.dart';
 import '../core/motion.dart';
+import '../core/sms_text.dart';
 import '../core/utils/formatters.dart';
 import '../models/document_settings.dart';
 import '../shared/widgets/keyboard_safe.dart';
@@ -334,7 +335,7 @@ class DocumentTemplateService {
         ok = await SmsService.sendSms(
           to: data.clientPhone,
           body: text.isEmpty && asFile
-              ? 'Hi ${data.clientName}, your invoice is attached.'
+              ? SmsText.fillName('Hi {name}, your invoice is attached.', data.clientName)
               : text,
           fallbackBody: asFile ? null : _bodyWithUrl(body, pdf.fallbackUrl),
           clientId: data.clientId,

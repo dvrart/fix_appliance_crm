@@ -14,6 +14,7 @@ let clock;
 let transactionCount;
 let transactionFailures;
 let providerCalls;
+let providerFailure;
 let documentCount;
 let beforeTransaction;
 
@@ -95,7 +96,13 @@ const load = Module._load;
 Module._load = function (name, parent, isMain) {
   if (name === 'firebase-admin') return { firestore };
   if (name === 'twilio') return () => ({
-    messages: { create: async () => ({ sid: `SM-fake-${++providerCalls}`, status: 'queued' }) },
+    messages: {
+      create: async () => {
+        providerCalls++;
+        if (providerFailure) throw new Error('Simulated Twilio send failure');
+        return { sid: `SM-fake-${providerCalls}`, status: 'queued' };
+      },
+    },
   });
   if (name === 'firebase-functions/v2/firestore') return { onDocumentWritten: (_, handler) => handler };
   if (name === 'firebase-functions/v2/scheduler') return { onSchedule: (_, handler) => handler };
@@ -148,6 +155,7 @@ beforeEach(() => {
   transactionCount = 0;
   transactionFailures = new Set();
   providerCalls = 0;
+  providerFailure = false;
   documentCount = 0;
   beforeTransaction = null;
   process.env.TWILIO_ACCOUNT_SID = 'test-account';
@@ -509,6 +517,36 @@ test('legacy SMS rescheduling acknowledgement is not replaced with pending', asy
   assert.equal(providerCalls, 0);
 });
 
+test('a "1" visit confirmation is sent to the client automatically, bypassing owner approval', async () => {
+  store.set(JOB, job());
+  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
+  const saved = store.get(JOB);
+  assert.equal(saved.visits[0].smsConfirmStatus, 'confirmed');
+  // Благодарность ушла клиенту сразу через Twilio, а не легла в очередь на одобрение.
+  assert.equal(providerCalls, 1);
+  const messages = [...store.entries()]
+    .filter(([path]) => path.startsWith(`${COMPANY}/messages/`))
+    .map(([, data]) => data);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].approval, 'auto');
+  assert.notEqual(messages[0].status, 'awaiting_approval');
+  assert.equal(messages[0].direction, 'outbound');
+  assert.match(messages[0].body, /See you/);
+});
+
+test('if the automatic confirmation send fails, it falls back to the approval queue', async () => {
+  store.set(JOB, job());
+  providerFailure = true;
+  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
+  assert.equal(store.get(JOB).visits[0].smsConfirmStatus, 'confirmed');
+  const messages = [...store.entries()]
+    .filter(([path]) => path.startsWith(`${COMPANY}/messages/`))
+    .map(([, data]) => data);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].status, 'awaiting_approval');
+  assert.equal(messages[0].approval, 'pending');
+});
+
 test('SMS cancellation clears both schedule fields and uses the same visit state as phone cancellation', async () => {
   store.set(JOB, { ...job({ smsDialog: 'save_offer' }), scheduledAt: START, scheduledDate: START });
   await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '0' });
@@ -587,4 +625,54 @@ test('removing a whole trashed invoice or a cash payment is left alone', async (
   const after = { ...before, documents: [{ ...before.documents[0], payments: [] }] };
   const result = await trigger(before, after);
   assert.deepEqual(result.documents, after.documents);
+});
+
+function visitSoonJob(minutesAhead, extra = {}) {
+  return {
+    status: 'Вызов',
+    needsReview: false,
+    clientName: 'Soon Client',
+    clientPhone: '+14165550101',
+    applianceType: 'Washer',
+    visits: [{
+      id: 'soon-visit',
+      startAt: new Date(Date.now() + minutesAhead * 60000),
+      durationMinutes: 120,
+      outcome: 'scheduled',
+      ...extra,
+    }],
+  };
+}
+
+test('the owner is pushed about a visit within 1.5 hours, exactly once', async () => {
+  store.set(JOB, visitSoonJob(60));
+  await visitSms.sendOwnerVisitSoon({ morningBriefingEnabled: true });
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0][0], 'Через 1.5 часа заявка');
+  assert.equal(pushes[0][2].type, 'visit_soon');
+  assert.equal(pushes[0][2].jobId, 'audit-job');
+  assert.equal(pushes[0][2].visitId, 'soon-visit');
+  assert.ok(store.get(JOB).visits[0].ownerSoonAt);
+  // Второй прогон крона не шлёт повторно — метка ownerSoonAt держит идемпотентность.
+  await visitSms.sendOwnerVisitSoon({ morningBriefingEnabled: true });
+  assert.equal(pushes.length, 1);
+});
+
+test('a visit further than 1.5 hours away is not pushed yet', async () => {
+  store.set(JOB, visitSoonJob(180));
+  await visitSms.sendOwnerVisitSoon({ morningBriefingEnabled: true });
+  assert.equal(pushes.length, 0);
+  assert.equal(store.get(JOB).visits[0].ownerSoonAt, undefined);
+});
+
+test('a visit already in the past is not pushed', async () => {
+  store.set(JOB, visitSoonJob(-30));
+  await visitSms.sendOwnerVisitSoon({ morningBriefingEnabled: true });
+  assert.equal(pushes.length, 0);
+});
+
+test('owner visit-soon pushes respect the briefing toggle', async () => {
+  store.set(JOB, visitSoonJob(60));
+  await visitSms.sendOwnerVisitSoon({ morningBriefingEnabled: false });
+  assert.equal(pushes.length, 0);
 });

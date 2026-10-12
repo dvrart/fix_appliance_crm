@@ -1,3 +1,4 @@
+import '../core/sms_text.dart';
 import '../core/utils/formatters.dart';
 
 /// Реквизиты компании и шаблоны Invoice / Estimate, которые уходят из приложения.
@@ -344,11 +345,10 @@ class DocumentSettings {
     final kindLine = deposit
         ? 'Please pay a $amount deposit for your repair.'
         : 'Please pay $amount for your repair.';
-    final rendered = template
+    final rendered = SmsText.fillName(template, '')
         .replaceAll('{company}', company)
         .replaceAll('{amount}', amount)
         .replaceAll('{url}', url)
-        .replaceAll('{name}', '')
         .trim();
     if (rendered.contains(url) && rendered.contains(amount)) return rendered;
     return 'Thank you for choosing $company.\n\n$kindLine\n\nOpen this page to pay:\n$url';
@@ -383,8 +383,7 @@ class DocumentSettings {
     required List<dynamic> items,
     String url = '',
   }) {
-    return template
-        .replaceAll('{name}', clientName)
+    return SmsText.fillName(template, clientName)
         .replaceAll('{company}', companyName)
         .replaceAll('{phone}', companyPhone)
         .replaceAll('{email}', companyEmail)

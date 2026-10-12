@@ -1,6 +1,7 @@
 import 'package:intl/intl.dart';
 
 import '../../../core/constants.dart';
+import '../../../core/sms_text.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../models/job.dart';
 import '../../../services/app_time_service.dart';
@@ -276,6 +277,7 @@ class AssistantTools {
           templates['on_way'] ??
           'Hello, this is your technician. I am on my way.';
     }
+    body = SmsText.fillName(body, job.contactName);
     final russian = MessageTranslateService.looksRussian(body) ? body : '';
     if (russian.isNotEmpty) {
       body = await MessageTranslateService.toEnglish(body);

@@ -655,6 +655,8 @@ class SmsService {
     try {
       final urls = mediaUrls.where((url) => url.startsWith('http')).toList();
       if (body.trim().isEmpty && urls.isEmpty) return false;
+      // Кириллицу здесь не трогаем: русский текст на сервере ещё переводят на
+      // английский, и только то, что перевод не осилил, он транслитерирует.
       final fallback = (fallbackBody ?? '').trim();
       if (visitBooking != null && !await waitForWriteAcknowledgement(
         FirebaseFirestore.instance.waitForPendingWrites(),
@@ -752,6 +754,37 @@ class SmsService {
       messages.sort(
         (a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)),
       );
+      return messages;
+    });
+  }
+
+  /// Непрочитанные входящие — только они, без всей переписки: по этому
+  /// потоку живут счётчики на вкладке «Связь», и он должен быть дешёвым.
+  /// Фильтр «видно ли это в CRM» остаётся в памяти: письмо не из нашей
+  /// цепочки лежит в коллекции, но в списке переписок его нет, и считать
+  /// его нельзя.
+  static Stream<List<SmsMessage>> streamUnreadInbound() {
+    return _ref
+        .where('direction', isEqualTo: 'inbound')
+        .where('read', isEqualTo: false)
+        .snapshots()
+        .map((snapshot) {
+      final messages = <SmsMessage>[];
+      for (final doc in snapshot.docs) {
+        try {
+          final data = doc.data();
+          if (data is! Map) continue;
+          final message = SmsMessage.fromMap(
+            Map<String, dynamic>.from(data),
+            doc.id,
+          );
+          if (message.visibleInCrm && !message.isDeleted) {
+            messages.add(message);
+          }
+        } catch (error) {
+          debugPrint('SMS ${doc.id}: $error');
+        }
+      }
       return messages;
     });
   }
@@ -990,7 +1023,10 @@ class SmsService {
               normalizeEmail(from) == emailKey ||
               normalizeEmail(to) == emailKey);
       if (clientMatch || phoneMatch || emailMatch) {
-        batch.update(doc.reference, {'read': true});
+        // `emailBellPending` гасится здесь же: иначе прочитанное письмо
+        // уходило из переписки, но продолжало висеть в колокольчике и
+        // держать его счётчик — два независимых «прочитано» на один факт.
+        batch.update(doc.reference, {'read': true, 'emailBellPending': false});
         hasUpdates = true;
       }
     }

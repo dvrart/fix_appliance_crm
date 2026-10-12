@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../core/sms_text.dart';
 import 'location.dart';
 import 'contact.dart';
 
@@ -54,16 +55,8 @@ class Client {
   }
 
   /// Placeholder from the phone secretary before the caller said a name.
-  static bool isPlaceholderName(String? name) {
-    final s = (name ?? '').trim();
-    if (s.isEmpty) return true;
-    if (RegExp(r'^(клиент|client)(\s|$|\+)', caseSensitive: false).hasMatch(s)) {
-      return true;
-    }
-    if (RegExp(r'^без имени$', caseSensitive: false).hasMatch(s)) return true;
-    if (RegExp(r'^\+?\d[\d\s\-().]{6,}$').hasMatch(s)) return true;
-    return false;
-  }
+  /// Одно определение на всё приложение — им же проверяется обращение в SMS.
+  static bool isPlaceholderName(String? name) => SmsText.isPlaceholderName(name);
 
   /// Инициалы для аватара
   String get initials {

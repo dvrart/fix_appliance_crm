@@ -75,6 +75,62 @@ class SmsText {
 
   static bool _isSpace(String ch) => ch.trim().isEmpty;
 
+  static final _cyrillic = RegExp('[А-Яа-яЁё]');
+  static const _ruLatin = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+    'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+    'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+    'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+    'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+  };
+
+  /// Кириллица → латиница с сохранением регистра: «Артём» → «Artem».
+  static String toLatin(String text) {
+    return text.replaceAllMapped(_cyrillic, (match) {
+      final ch = match[0]!;
+      final latin = _ruLatin[ch.toLowerCase()];
+      if (latin == null) return ch;
+      if (latin.isEmpty || ch == ch.toLowerCase()) return latin;
+      return latin[0].toUpperCase() + latin.substring(1);
+    });
+  }
+
+  /// Служебная подпись вместо имени: карточка клиента до того, как он назвал
+  /// имя, называется «Клиент +14165550101», а контакт на заявке — «Неизвестно».
+  /// В SMS такое уходить не должно.
+  static bool isPlaceholderName(String? name) {
+    final s = (name ?? '').trim();
+    if (s.isEmpty) return true;
+    if (RegExp(r'^(клиент|client)(\s|$|\+)', caseSensitive: false).hasMatch(s)) {
+      return true;
+    }
+    if (RegExp(r'^(без имени|неизвестно|unknown|no name)$', caseSensitive: false)
+        .hasMatch(s)) {
+      return true;
+    }
+    if (RegExp(r'^\+?\d[\d\s\-().]{6,}$').hasMatch(s)) return true;
+    return false;
+  }
+
+  /// Обращение в SMS: имя клиента латиницей или «», если имени нет.
+  static String clientName(String? raw) {
+    if (isPlaceholderName(raw)) return '';
+    final first = toLatin(raw!.trim()).split(RegExp(r'\s+')).first;
+    if (!RegExp(r"^[A-Za-z][A-Za-z'\-]{1,15}$").hasMatch(first)) return '';
+    return first[0].toUpperCase() + first.substring(1).toLowerCase();
+  }
+
+  /// Подстановка `{name}`. Имени нет — убираем и обращение, и запятую перед
+  /// ним: должно получиться «Hi!», а не «Hi !» и не «Hi Клиент +14165550101!».
+  static String fillName(String template, String? rawName) {
+    final name = clientName(rawName);
+    if (name.isNotEmpty) return template.replaceAll('{name}', name);
+    return template
+        .replaceAll(RegExp(r'[ \t]*,?[ \t]*\{name\}'), '')
+        .replaceAll('{name}', '')
+        .replaceAll(RegExp(r'^[ \t]*,[ \t]*', multiLine: true), '');
+  }
+
   static String _restore(String text, List<String> tokens) {
     return text.replaceAllMapped(_placeholder, (match) {
       final idx = int.tryParse(match[1] ?? '') ?? -1;

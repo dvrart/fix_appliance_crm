@@ -7,6 +7,7 @@ const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { withSmsHeader, sanitizeSmsHeader } = require('./sms_header');
 const smsLinks = require('./sms_links');
+const smsText = require('./sms_text');
 const voiceFacts = require('./voice_facts');
 const schedule = require('./schedule');
 const jobDedupe = require('./job_dedupe');
@@ -14,6 +15,8 @@ const paymentGuard = require('./payment_guard');
 const { notifyMaster } = require('./notify');
 
 const COMPANY_ID = 'fix_appliance_ca';
+const SMS_STATUS_CB =
+  'https://us-central1-fix-appliance-crm.cloudfunctions.net/smsStatusCallback';
 const DEFAULTS = {
   booking_confirm:
     'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day',
@@ -252,9 +255,11 @@ function dedupeAddress(value) {
 }
 
 function applyTemplate(template, vars) {
-  let text = stripUnwantedSmsBits(String(template || ''));
+  // Имя — через fillName: без имени из «Hi {name}!» должно получиться «Hi!»,
+  // а не «Hi !», и уж точно не «Hi Клиент +14165550101!».
+  let text = smsText.fillName(stripUnwantedSmsBits(String(template || '')), vars.name);
   for (const [key, value] of Object.entries(vars)) {
-    if (key === 'appliance') continue;
+    if (key === 'appliance' || key === 'name') continue;
     text = text.split(`{${key}}`).join(value || '');
   }
   text = text.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
@@ -269,8 +274,19 @@ function jobPhone(job) {
   return String(job.clientPhone || job.jobSitePhone || '');
 }
 
+/** Подпись заявки для уведомлений мастеру — она остаётся русской. */
 function jobName(job) {
   return String(job.clientName || job.jobSiteName || '').trim() || 'клиент';
+}
+
+/** Обращение в SMS клиенту: только настоящее имя, иначе пусто. */
+function smsPersonName(job) {
+  return smsText.smsName(visitPersonName(job));
+}
+
+/** «, Brad» или пусто — обращение не должно превращаться в «Thanks, !». */
+function nameTail(name) {
+  return name ? `, ${name}` : '';
 }
 
 function visitPersonName(job) {
@@ -501,11 +517,17 @@ async function getCompanyName() {
  * Возвращает true, когда сообщение положено в очередь: вызывающий код считает
  * свою работу сделанной и не ставит его в очередь повторно на следующем
  * проходе. Отправлено оно или нет — решает мастер.
+ *
+ * Исключение — `auto: true` (подтверждение визита после ответа «1», решение FIX
+ * 11.10.2026): такое сообщение уходит клиенту сразу, минуя одобрение. Если живая
+ * отправка через Twilio падает, оно всё равно попадает в очередь на одобрение,
+ * чтобы мастер мог повторить вручную.
  */
-async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody }) {
-  const configured = Boolean(twilioClient());
+async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody, auto }) {
+  const sms = twilioClient();
+  const configured = Boolean(sms);
   const e164 = toE164(to);
-  const text = String(body || '').trim();
+  const text = smsText.latinizeSms(String(body || '').trim(), `sms ${kind || ''}`);
   if (!configured || !e164 || !text) {
     console.warn(
       `sendTwilioSms skip kind=${kind || ''} job=${jobId || ''} to=${e164 || '(empty)'} client=${configured}`
@@ -524,9 +546,48 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody }) 
     const wrapped = withSmsHeader(text, header);
     // Запасной текст без ссылки: если оператор зарежет (30007),
     // smsStatusCallback перешлёт его, и клиент хотя бы получит просьбу.
-    const fallbackRaw = String(fallbackBody || '').trim();
+    const fallbackRaw = smsText.latinizeSms(String(fallbackBody || '').trim(), 'sms fallback');
     const fallbackText =
       fallbackRaw && fallbackRaw !== text ? withSmsHeader(fallbackRaw, header) : '';
+    if (auto) {
+      try {
+        const sent = await sms.messages.create({
+          from,
+          to: e164,
+          body: wrapped,
+          statusCallback: SMS_STATUS_CB,
+        });
+        const sentDoc = await messagesRef().add({
+          sid: sent.sid || '',
+          from,
+          to: e164,
+          body: wrapped,
+          fallbackBody: fallbackText,
+          retried30007: false,
+          direction: 'outbound',
+          status: sent.status || 'queued',
+          approval: 'auto',
+          clientId: clientId || null,
+          jobId: jobId || null,
+          kind: kind || null,
+          channel: 'sms',
+          mediaUrls: [],
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          read: true,
+        });
+        console.log(
+          `sendTwilioSms auto-sent kind=${kind || ''} job=${jobId || ''} id=${sentDoc.id} sid=${sent.sid || ''}`
+        );
+        return true;
+      } catch (error) {
+        // Живая отправка не удалась — не теряем сообщение, кладём в очередь на
+        // одобрение, чтобы мастер мог повторить вручную.
+        console.error(
+          `sendTwilioSms auto send fail kind=${kind || ''} job=${jobId || ''} to=${e164}, queueing for approval:`,
+          error && error.message ? error.message : error
+        );
+      }
+    }
     const doc = await messagesRef().add({
       sid: '',
       from,
@@ -569,7 +630,7 @@ function outboxPreview(body) {
   return line.length <= 90 ? line : `${line.slice(0, 89)}…`;
 }
 
-async function sendSms({ to, body, clientId, jobId, kind, job, fallbackBody }) {
+async function sendSms({ to, body, clientId, jobId, kind, job, fallbackBody, auto }) {
   const wantEmail = (job && isEmailJob(job)) || String(to || '').includes('@');
   if (wantEmail) {
     const ok = await sendVisitEmail({ job, to, body, clientId, jobId, kind });
@@ -577,11 +638,11 @@ async function sendSms({ to, body, clientId, jobId, kind, job, fallbackBody }) {
     const phone = job ? jobPhone(job) : '';
     if (normalizePhone(phone)) {
       console.warn(`visit email failed, SMS fallback job=${jobId || ''}`);
-      return sendTwilioSms({ to: phone, body, clientId, jobId, kind, fallbackBody });
+      return sendTwilioSms({ to: phone, body, clientId, jobId, kind, fallbackBody, auto });
     }
     return false;
   }
-  return sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody });
+  return sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody, auto });
 }
 
 
@@ -595,7 +656,7 @@ function jobAppliance(job) {
 
 function visitVars(job, visit, reviewUrl) {
   return {
-    name: jobName(job),
+    name: smsPersonName(job),
     date: formatVisit(visit.startAt, 'date'),
     time: formatVisit(visit.startAt, 'time'),
     address: jobAddress(job),
@@ -987,7 +1048,7 @@ async function sendReviewIfNeeded(jobId, before, after, config, templates) {
   }
   const reviewUrl = String(config.googleReviewUrl || '').trim();
   const template = applyTemplate(templates.job_done, {
-    name: jobName(after),
+    name: smsPersonName(after),
     date: '',
     time: '',
     address: jobAddress(after),
@@ -1262,7 +1323,7 @@ async function sendManualConfirmAckIfNeeded(jobId, before, after, templates) {
     let body = '';
     let kind = '';
     if (nextStatus === 'confirmed') {
-      body = `Thanks, ${vars.name}! See you ${vars.date} at ${vars.time}. ✅`;
+      body = `Thanks${nameTail(vars.name)}! See you ${vars.date} at ${vars.time}. ✅`;
       kind = 'confirm_confirmed';
     } else if (nextStatus === 'reschedule') {
       body = applyTemplate(templates.reschedule_ask, vars);
@@ -1359,6 +1420,54 @@ async function sendDayBeforeReminders() {
         if (!visit.smsConfirmStatus) visit.smsConfirmStatus = 'pending';
         changed = true;
       }
+    }
+    if (changed) {
+      await doc.ref.update({
+        visits,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  }
+}
+
+/**
+ * Пуш мастеру «через ~1.5 часа заявка» по каждому ближайшему визиту. Раньше это
+ * планировалось только локально в приложении (`scheduleVisitAlerts`) и работало,
+ * пока приложение живо; визит, записанный секретарём при убитом приложении, не
+ * напоминался вовсе. Теперь источник один — сервер. Идемпотентность — метка
+ * `visit.ownerSoonAt`: повторно по тому же визиту не шлём. Нативная шторка и
+ * приложение уже умеют рисовать `type: 'visit_soon'` (канал `visit_soon`, 🔔).
+ */
+async function sendOwnerVisitSoon(config) {
+  if (!boolFlag(config, 'morningBriefingEnabled')) return;
+  const snapshot = await jobsRef().get();
+  for (const doc of snapshot.docs) {
+    const job = doc.data() || {};
+    if (isClosedJob(job) || job.needsReview === true) continue;
+    const visits = coalesceVisits(job);
+    let changed = false;
+    for (const visit of visits) {
+      if (!isScheduledVisit(visit)) continue;
+      if (visit.ownerSoonAt) continue;
+      const hours = hoursUntilVisit(visit);
+      // Крон идёт раз в 15 минут: первый тик, на котором до визита осталось не
+      // больше 1.5 ч (и он ещё впереди), и шлёт напоминание.
+      if (hours == null || hours > 1.5 || hours <= 0) continue;
+      const time = formatVisit(visit.startAt, 'time');
+      const who = String(job.clientName || job.jobSiteName || '').trim() || 'Клиент';
+      const appliance = jobAppliance(job);
+      const body = [time, [who, appliance].filter(Boolean).join(', ')]
+        .filter(Boolean)
+        .join(' — ');
+      await notifyMaster('Через 1.5 часа заявка', body, {
+        type: 'visit_soon',
+        jobId: doc.id,
+        visitId: String(visit.id || ''),
+        applianceType: appliance,
+        clientName: String(job.clientName || '').trim(),
+      });
+      visit.ownerSoonAt = admin.firestore.Timestamp.now();
+      changed = true;
     }
     if (changed) {
       await doc.ref.update({
@@ -1743,7 +1852,7 @@ async function beginRescheduleAsk(match, from, clientId, body) {
   const vars = visitVars(match.job, visits[idx]);
   await sendSms({
     to: from,
-    body: `Yes of course, ${vars.name}. What day and time should we come?`,
+    body: `Yes of course${nameTail(vars.name)}. What day and time should we come?`,
     clientId: match.job.clientId || clientId,
     jobId: match.doc.id,
     kind: 'reschedule_ask',
@@ -1850,11 +1959,14 @@ async function confirmVisitMatch(match, from, clientId) {
   });
   await sendSms({
     to: from,
-    body: `Thanks, ${vars.name}! See you ${vars.date} at ${vars.time}. ✅`,
+    body: `Thanks${nameTail(vars.name)}! See you ${vars.date} at ${vars.time}. ✅`,
     clientId: match.job.clientId || clientId,
     jobId: match.doc.id,
     kind: 'confirm_confirmed',
     job: match.job,
+    // Клиент подтвердил визит ответом «1» — благодарность уходит сразу, без
+    // одобрения мастером (решение FIX, 11.10.2026).
+    auto: true,
   });
   await notifyMaster(
     'Заявка подтверждена',
@@ -2277,6 +2389,25 @@ exports.sendVisitReminders = onSchedule(
   }
 );
 
+// Отдельный частый крон (раз в 15 минут) для напоминаний мастеру о скором
+// визите: часовой `sendVisitReminders` слишком груб для окна «за 1.5 часа».
+exports.sendOwnerReminders = onSchedule(
+  {
+    schedule: 'every 15 minutes',
+    timeZone: 'America/Toronto',
+    region: 'us-central1',
+  },
+  async () => {
+    try {
+      const config = await loadConfig();
+      await sendOwnerVisitSoon(config);
+    } catch (error) {
+      console.error('sendOwnerReminders error:', error);
+    }
+  }
+);
+
+exports.sendOwnerVisitSoon = sendOwnerVisitSoon;
 exports.tryHandleConfirmReply = tryHandleConfirmReply;
 exports.sendApprovedBookingSms = sendApprovedBookingSms;
 exports.recordBookingDelivery = recordBookingDelivery;

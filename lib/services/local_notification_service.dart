@@ -7,7 +7,6 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
-import '../core/constants.dart';
 import '../core/l10n/app_locale.dart';
 import '../core/notification_look.dart';
 import '../models/job.dart';
@@ -748,106 +747,19 @@ class LocalNotificationService {
     );
   }
 
+  /// Локальное планирование «за 1.5 часа до визита» отключено: напоминания
+  /// мастеру теперь шлёт сервер (крон `sendOwnerReminders`, `type: 'visit_soon'`).
+  /// Это один источник на все устройства — визит, записанный секретарём при
+  /// убитом приложении, тоже напомнит — и без дублей с локальным будильником.
+  /// Здесь только гасим будильники, запланированные старыми версиями приложения.
   static Future<void> scheduleVisitAlerts(List<Job> jobs) async {
     await initialize();
-    await ensureInboxChannels();
     final prefs = await SharedPreferences.getInstance();
     final old = prefs.getStringList('visit_alert_ids') ?? const [];
-
-    final android = _plugin
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >();
-    var activeIds = <int>{};
-    try {
-      final active = await android?.getActiveNotifications() ?? const [];
-      activeIds = {
-        for (final item in active)
-          if (item.id != null) item.id!,
-      };
-    } catch (e) {
-      debugPrint('LocalNotificationService: active notifications: $e');
-    }
-
-    final now = tz.TZDateTime.now(tz.local);
-    final visitBadge = await _badgeFor('visit_soon');
-    final ids = <String>[];
-    var n = 0;
-    final keepIds = <int>{};
-    for (final job in jobs) {
-      if (job.isDeleted || JobStatuses.isClosed(job.status)) continue;
-      for (final visit in job.coalescedVisits) {
-        if (!visit.isActiveSlot) continue;
-        final start = tz.TZDateTime.from(visit.startAt, tz.local);
-        if (!start.isAfter(now)) continue;
-        n += 1;
-        if (n > 48) break;
-        final id = visitAlertId(job.id, visit.id);
-        keepIds.add(id);
-        final when = start.subtract(const Duration(minutes: 90));
-        final key =
-            'visit_alert_shown_${job.id}_${visit.id}_${start.millisecondsSinceEpoch}';
-        if (prefs.getBool(key) == true) {
-          ids.add('$id');
-          continue;
-        }
-        final title = 'Через 1.5 часа заявка'.tr;
-        final who = job.contactName.trim().isEmpty
-            ? 'Клиент'.tr
-            : job.contactName.trim();
-        final body =
-            '${start.hour.toString().padLeft(2, '0')}:${start.minute.toString().padLeft(2, '0')} — $who, ${trAny(job.applianceType)}';
-        final details = _headsUpDetails(
-          channelId: visitSoonChannelId,
-          channelName: 'Скоро заявка'.tr,
-          channelDescription: 'Напоминание за 1.5 часа до визита'.tr,
-          title: title,
-          body: body,
-          largeIcon: visitBadge,
-        );
-        final visitPayload = payload({'type': 'visit_soon', 'jobId': job.id});
-        if (!when.isAfter(now)) {
-          if (!activeIds.contains(id)) {
-            if (!await _showShadeNative(
-              title: title,
-              body: body,
-              tag: 'visit_soon_${job.id}',
-              channelId: visitSoonChannelId,
-              applianceType: job.applianceType,
-              clientName: who,
-              city: job.displayCity,
-              extras: {'type': 'visit_soon', 'jobId': job.id},
-            )) {
-              await _plugin.show(
-                id,
-                title,
-                body,
-                details,
-                payload: visitPayload,
-              );
-            }
-          }
-          await prefs.setBool(key, true);
-        } else {
-          await _scheduleZoned(
-            id: id,
-            title: title,
-            body: body,
-            when: when,
-            details: details,
-            payloadValue: visitPayload,
-          );
-        }
-        ids.add('$id');
-      }
-      if (n > 48) break;
-    }
     for (final raw in old) {
       final id = int.tryParse(raw);
-      if (id != null && !keepIds.contains(id)) {
-        await _plugin.cancel(id);
-      }
+      if (id != null) await _plugin.cancel(id);
     }
-    await prefs.setStringList('visit_alert_ids', ids);
+    if (old.isNotEmpty) await prefs.remove('visit_alert_ids');
   }
 }
