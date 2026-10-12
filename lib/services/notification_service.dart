@@ -10,6 +10,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/api_keys.dart';
 import '../core/l10n/app_locale.dart';
+import 'comms_badge_service.dart';
 import 'inbox_push_mirror.dart';
 import 'local_notification_service.dart';
 import 'notification_router.dart';
@@ -121,6 +122,9 @@ class NotificationService {
     if (type == 'job' && (data['jobId'] ?? '').isNotEmpty) {
       return 'job:${data['jobId']}';
     }
+    if (type == 'visit_soon' && (data['jobId'] ?? '').isNotEmpty) {
+      return 'visit_soon:${data['jobId']}:${data['visitId'] ?? ''}';
+    }
     return '';
   }
 
@@ -215,9 +219,11 @@ class NotificationService {
       _registrationRetry?.cancel();
       registrationState.value = 'signed_out';
       InboxPushMirror.stop();
+      CommsBadgeService.stop();
       return;
     }
     unawaited(InboxPushMirror.start());
+    unawaited(CommsBadgeService.start());
     unawaited(refreshRegistration());
   }
 
@@ -475,6 +481,29 @@ class NotificationService {
     }
 
     if (type == 'secretary_lesson') {
+      return;
+    }
+
+    // Напоминание «через ~1.5 часа визит» приходит с сервера (крон
+    // sendOwnerReminders). Рисуем на своём канале, чтобы не попасть в SMS.
+    if (type == 'visit_soon') {
+      await LocalNotificationService.showInboxAlert(
+        title: title.isEmpty ? 'Через 1.5 часа заявка' : title,
+        body: body,
+        tag: tag,
+        channelId: LocalNotificationService.visitSoonChannelId,
+        channelName: 'Upcoming visit',
+        channelDescription: 'Alert 1.5 hours before the next job',
+        applianceType: (data['applianceType'] ?? '').toString(),
+        clientName: (data['clientName'] ?? '').toString(),
+        city: (data['city'] ?? '').toString(),
+        data: {
+          ...data,
+          'type': type,
+          'jobId': jobId,
+          'tag': tag,
+        },
+      );
       return;
     }
 

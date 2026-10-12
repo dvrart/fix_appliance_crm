@@ -860,6 +860,34 @@ class TwilioService {
         );
   }
 
+  /// Входящие, которые мастер ещё не открывал: счётчик на вкладке «Звонки».
+  /// Исходящие сюда не попадают — у них `reviewed` остаётся false навсегда,
+  /// и бейдж бы не гас. Идущий прямо сейчас звонок тоже не «новость».
+  static Stream<List<CallRecord>> streamNewIncomingCalls() {
+    return _callsRef
+        .where('direction', isEqualTo: 'inbound')
+        .where('reviewed', isEqualTo: false)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map(
+                (doc) =>
+                    CallRecord.fromMap(doc.data() as Map<String, dynamic>, doc.id),
+              )
+              .where(
+                (call) =>
+                    !call.isDeleted &&
+                    !const [
+                      'ringing',
+                      'in-progress',
+                      'queued',
+                      'initiated',
+                    ].contains(call.status),
+              )
+              .toList(),
+        );
+  }
+
   static Stream<List<CallRecord>> getAiProcessingCalls() {
     return _callsRef
         .where('aiStatus', isEqualTo: 'processing')

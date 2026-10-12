@@ -1,9 +1,12 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/ui_scale.dart';
+import '../../services/comms_badge_service.dart';
+import '../../shared/widgets/count_badge.dart';
 import '../calls/calls_history_screen.dart';
 import '../messages/messages_screen.dart';
 
@@ -48,7 +51,12 @@ class _CommsHubScreenState extends State<CommsHubScreen> with UiSettingsAware {
     );
   }
 
-  Widget _iconTab(int index, IconData icon, Color color) {
+  Widget _iconTab(
+    int index,
+    IconData icon,
+    Color color,
+    ValueListenable<int> count,
+  ) {
     final selected = _index == index;
     return Material(
       color: selected ? Colors.white.withValues(alpha: 0.18) : Colors.transparent,
@@ -59,10 +67,15 @@ class _CommsHubScreenState extends State<CommsHubScreen> with UiSettingsAware {
         child: SizedBox(
           width: 52,
           height: 52,
-          child: Icon(
-            icon,
-            size: 30,
-            color: selected ? color : color.withValues(alpha: 0.55),
+          child: Center(
+            child: CountBadge(
+              count: count,
+              child: Icon(
+                icon,
+                size: 30,
+                color: selected ? color : color.withValues(alpha: 0.55),
+              ),
+            ),
           ),
         ),
       ),
@@ -83,9 +96,19 @@ class _CommsHubScreenState extends State<CommsHubScreen> with UiSettingsAware {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  _iconTab(0, Icons.call, const Color(0xFF25D366)),
+                  _iconTab(
+                    0,
+                    Icons.call,
+                    const Color(0xFF25D366),
+                    CommsBadgeService.newCalls,
+                  ),
                   const SizedBox(width: 28),
-                  _iconTab(1, Icons.sms, const Color(0xFFD500F9)),
+                  _iconTab(
+                    1,
+                    Icons.sms,
+                    const Color(0xFFD500F9),
+                    CommsBadgeService.unreadMessages,
+                  ),
                 ],
               ),
             ),
