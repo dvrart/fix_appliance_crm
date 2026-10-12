@@ -13,11 +13,15 @@ import '../../services/settings_service.dart';
 import '../../services/stripe_service.dart';
 import '../../services/warehouse_service.dart';
 import '../../services/expense_service.dart';
-import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import 'classify_items_page.dart';
+import 'report_breakdown_page.dart';
+import 'report_metrics.dart';
 import 'tax_workbook_view.dart';
 import 'tax_writeoff_guide_page.dart';
 import '../expenses/expenses_screen.dart';
+import '../jobs/job_details/job_details_screen.dart';
+import '../../shared/app_nav.dart';
 import '../../services/error_log_service.dart';
 
 class ReportsScreen extends StatefulWidget {
@@ -38,7 +42,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   String _companyAddress = '';
   double _inventoryAtCost = 0;
   bool _t2Mode = true;
-  _ReportMetrics? _latestMetrics;
+  ReportMetrics? _latestMetrics;
   List<Expense> _expenses = const [];
   StreamSubscription<List<Expense>>? _expenseSub;
   late final _jobsStream = FirestoreService.jobsRef.snapshots();
@@ -137,7 +141,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
       case 'Квартал':
         final q = ((_periodStart.month - 1) ~/ 3) + 1;
         final end = _periodEndExclusive.subtract(const Duration(days: 1));
-        return '${q} ${'кв.'.tr} ${_periodStart.year} (${DateFormat('d MMM', AppLocale.instance.dateLocale).format(_periodStart)} – ${DateFormat('d MMM', AppLocale.instance.dateLocale).format(end)})';
+        return '$q ${'кв.'.tr} ${_periodStart.year} (${DateFormat('d MMM', AppLocale.instance.dateLocale).format(_periodStart)} – ${DateFormat('d MMM', AppLocale.instance.dateLocale).format(end)})';
       case 'Месяц':
         return DateFormat('LLLL yyyy', AppLocale.instance.dateLocale).format(_selectedDate);
       case 'Год':
@@ -198,9 +202,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   Future<void> _scanReceipt() => _openExpenses(camera: true);
 
+  List<Expense> get _periodExpenses =>
+      ExpenseService.inPeriod(_expenses, _periodStart, _periodEndExclusive);
+
+  ExpenseRollup get _receipts => ExpenseRollup.fromList(_periodExpenses);
+
   /// [withCash] = false убирает из всех строк ту долю, что закрыта наличными,
   /// вместе с её HST и запчастями — чтобы валовая прибыль сходилась.
-  TaxWorkbookFigures _figures(_ReportMetrics metrics, {bool withCash = true}) {
+  TaxWorkbookFigures _figures(ReportMetrics metrics, {bool withCash = true}) {
     double less(double value, double cash) =>
         withCash ? value : (value - cash).clamp(0, double.infinity);
 
@@ -216,39 +225,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
       hstCollectible: less(metrics.hstCollectible, metrics.cashTax),
       cashExHst: less(metrics.cashExHst, metrics.cashReceivedExHst),
       hstReceived: less(metrics.hstReceived, metrics.cashReceivedHst),
-      partsCost: less(metrics.expenses, metrics.cashParts),
+      partsCost: less(metrics.partsCost, metrics.cashParts),
+      tips: metrics.tips,
       inventoryAtCost: _inventoryAtCost,
       stripeAvailable: _stripeBalance?.available,
       cashSalesExHst: metrics.cashSalesExHst,
       includesCash: withCash,
-      receipts: ExpenseRollup.fromList(
-        ExpenseService.inPeriod(
-          _expenses,
-          _periodStart,
-          _periodEndExclusive,
-        ),
-      ),
+      receipts: _receipts,
     );
   }
-
-  static const _emptyMetrics = _ReportMetrics(
-    invoiced: 0,
-    paid: 0,
-    due: 0,
-    expenses: 0,
-    completedCount: 0,
-    createdCount: 0,
-    invoiceCount: 0,
-    salesExHst: 0,
-    hstCollectible: 0,
-    cashExHst: 0,
-    hstReceived: 0,
-    jobCount: 0,
-    barLabels: <String>[],
-    barValues: <double>[],
-    barMax: 0,
-    barWidth: 16,
-  );
 
   @override
   Widget build(BuildContext context) {
@@ -411,33 +396,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   );
                 }
 
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  _latestMetrics = _emptyMetrics;
-                  if (_t2Mode) {
-                    return TaxWorkbookView(
-                      figures: _figures(_emptyMetrics),
-                      figuresWithoutCash: _figures(
-                        _emptyMetrics,
-                        withCash: false,
-                      ),
-                      onSwitchToYear: () => setState(() => _selectedFilter = 'Год'),
-                      onOpenExpenses: _openExpenses,
-                      onScanReceipt: _scanReceipt,
-                    );
-                  }
-                  return Column(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                        child: _buildStripeCard(),
-                      ),
-                      Expanded(child: _buildEmptyState()),
-                    ],
-                  );
-                }
-
-                final metrics = _calculateMetrics(snapshot.data!.docs);
+                final metrics = snapshot.hasData
+                    ? _calculateMetrics(snapshot.data!.docs)
+                    : ReportMetrics.empty;
                 _latestMetrics = metrics;
+
                 if (_t2Mode) {
                   return TaxWorkbookView(
                     figures: _figures(metrics),
@@ -447,11 +410,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     onScanReceipt: _scanReceipt,
                   );
                 }
-                if (metrics.jobCount == 0 &&
+
+                final empty = metrics.jobCount == 0 &&
                     metrics.invoiced == 0 &&
                     metrics.paid == 0 &&
-                    metrics.createdCount == 0 &&
-                    _selectedFilter != 'День') {
+                    metrics.createdCount == 0;
+                if (empty && _selectedFilter != 'День') {
                   return Column(
                     children: [
                       Padding(
@@ -463,233 +427,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   );
                 }
 
-                return SingleChildScrollView(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildStripeCard(),
-                      const SizedBox(height: 12),
-                      _buildOpenT2Card(),
-                      const SizedBox(height: 20),
-                      Text(
-                        context.tr('Операции', 'Shop activity'),
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF14557F),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildKpiCard(
-                              'Новые заявки'.tr,
-                              '${metrics.createdCount}',
-                              Colors.blueGrey,
-                              Icons.post_add,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildKpiCard(
-                              'Завершено работ'.tr,
-                              '${metrics.completedCount}',
-                              Colors.teal,
-                              Icons.task_alt,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildKpiCard(
-                              'Средний чек'.tr,
-                              '\$${metrics.avgTicket.toStringAsFixed(0)}',
-                              Colors.indigo,
-                              Icons.receipt,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildKpiCard(
-                              'Собрано'.tr,
-                              '${metrics.collectionRate.toStringAsFixed(0)}%',
-                              Colors.green.shade700,
-                              Icons.percent,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildSummaryCard(
-                              'Счета с HST'.tr,
-                              metrics.invoiced,
-                              Colors.blue,
-                              Icons.receipt_long,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildSummaryCard(
-                              'Получено с HST'.tr,
-                              metrics.paid,
-                              Colors.green,
-                              Icons.payments,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildSummaryCard(
-                              'Долг'.tr,
-                              metrics.due,
-                              Colors.red,
-                              Icons.warning_amber,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildSummaryCard(
-                              'Запчасти (себест.)'.tr,
-                              metrics.expenses,
-                              Colors.orange,
-                              Icons.inventory_2,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF14557F),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          children: [
-                            Text(
-                              'После запчастей'.tr,
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 14,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '\$${(metrics.paid - metrics.expenses).toStringAsFixed(2)}',
-                              style: const TextStyle(
-                                color: Color(0xFFFCC520),
-                                fontSize: 28,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'С HST, не для налогов. Для CRA — блок выше.'.tr,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 30),
-                      Text(
-                        'Выручка без HST'.tr,
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF14557F),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Container(
-                        height: 250,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.grey.shade200,
-                              blurRadius: 10,
-                              spreadRadius: 2,
-                            ),
-                          ],
-                        ),
-                        child: BarChart(
-                          BarChartData(
-                            alignment: BarChartAlignment.spaceAround,
-                            groupsSpace: _selectedFilter == 'День' ? 2 : 8,
-                            maxY: metrics.barMax == 0
-                                ? 100.0
-                                : metrics.barMax * 1.2,
-                            barTouchData: BarTouchData(enabled: false),
-                            titlesData: FlTitlesData(
-                              show: true,
-                              bottomTitles: AxisTitles(
-                                sideTitles: SideTitles(
-                                  showTitles: true,
-                                  reservedSize: 28,
-                                  interval: 1,
-                                  getTitlesWidget:
-                                      (double value, TitleMeta meta) {
-                                    const style = TextStyle(
-                                      color: Colors.grey,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 10,
-                                    );
-                                    final index = value.toInt();
-                                    final text = index >= 0 &&
-                                            index < metrics.barLabels.length
-                                        ? metrics.barLabels[index]
-                                        : '';
-                                    return Padding(
-                                      padding: const EdgeInsets.only(top: 8.0),
-                                      child: Text(text, style: style),
-                                    );
-                                  },
-                                ),
-                              ),
-                              leftTitles: const AxisTitles(
-                                sideTitles: SideTitles(showTitles: false),
-                              ),
-                              topTitles: const AxisTitles(
-                                sideTitles: SideTitles(showTitles: false),
-                              ),
-                              rightTitles: const AxisTitles(
-                                sideTitles: SideTitles(showTitles: false),
-                              ),
-                            ),
-                            borderData: FlBorderData(show: false),
-                            barGroups: [
-                              for (var i = 0; i < metrics.barValues.length; i++)
-                                _buildBarGroup(
-                                  i,
-                                  metrics.barValues[i],
-                                  metrics.barMax,
-                                  metrics.barWidth,
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
+                return _buildActivity(metrics);
               },
             ),
           ),
@@ -698,263 +436,1258 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
-  BarChartGroupData _buildBarGroup(
-    int x,
-    double y,
-    double totalIncome,
-    double barWidth,
-  ) {
-    return BarChartGroupData(
-      x: x,
-      barRods: [
-        BarChartRodData(
-          toY: y,
-          color: const Color(0xFFFCC520),
-          width: barWidth,
-          borderRadius: BorderRadius.circular(4),
-          backDrawRodData: BackgroundBarChartRodData(
-            show: true,
-            toY: totalIncome == 0 ? 100.0 : totalIncome * 1.2,
-            color: Colors.grey.shade100,
+  // ─────────────────────────── вкладка «Операции» ───────────────────────────
+
+  Widget _buildActivity(ReportMetrics m) {
+    final receipts = _receipts;
+    final bars = _bars(m);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildStripeCard(),
+          const SizedBox(height: 12),
+          _buildOpenT2Card(),
+          const SizedBox(height: 10),
+          Text(
+            context.tr(
+              'Нажмите на любую карточку — откроется расшифровка: из чего сложилась цифра и как она считается.',
+              'Tap any card to see the breakdown: what makes up the number and how it is calculated.',
+            ),
+            style: const TextStyle(color: Colors.black54, fontSize: 12.5, height: 1.35),
           ),
+          if (m.unclassifiedItems.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _classifyBanner(m.unclassifiedItems.length),
+          ],
+          const SizedBox(height: 18),
+          _sectionTitle(context.tr('Операции', 'Shop activity')),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _kpiCard(
+                  'Новые заявки'.tr,
+                  '${m.createdCount}',
+                  Colors.blueGrey,
+                  Icons.post_add,
+                  () => _openCreatedJobs(m),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _kpiCard(
+                  'Завершено работ'.tr,
+                  '${m.completedCount}',
+                  Colors.teal,
+                  Icons.task_alt,
+                  () => _openCompletedJobs(m),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _kpiCard(
+                  'Средний чек'.tr,
+                  '\$${m.avgTicket.toStringAsFixed(0)}',
+                  Colors.indigo,
+                  Icons.receipt,
+                  () => _openAvgTicket(m),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _kpiCard(
+                  'Собрано'.tr,
+                  '${m.collectionRate.toStringAsFixed(0)}%',
+                  Colors.green.shade700,
+                  Icons.percent,
+                  () => _openCollection(m),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 22),
+          _sectionTitle(context.tr('Деньги', 'Money')),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _moneyCard(
+                  'Счета с HST'.tr,
+                  m.invoiced,
+                  Colors.blue,
+                  Icons.receipt_long,
+                  () => _openInvoices(m),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _moneyCard(
+                  'Получено с HST'.tr,
+                  m.paid,
+                  Colors.green,
+                  Icons.payments,
+                  () => _openReceived(m),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _moneyCard(
+                  'Долг'.tr,
+                  m.due,
+                  Colors.red,
+                  Icons.warning_amber,
+                  () => _openDue(m),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _moneyCard(
+                  context.tr('Чаевые', 'Tips'),
+                  m.tips,
+                  const Color(0xFF8E24AA),
+                  Icons.volunteer_activism,
+                  () => _openTips(m),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 22),
+          _sectionTitle(context.tr('Из чего выручка (без HST)', 'Revenue split (no HST)')),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _moneyCard(
+                  context.tr('Работа и выезд', 'Labour and call-out'),
+                  m.labourSales,
+                  const Color(0xFF00897B),
+                  Icons.handyman_outlined,
+                  () => _openLabour(m),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _moneyCard(
+                  context.tr('Запчасти клиенту', 'Parts billed'),
+                  m.partsSales,
+                  const Color(0xFF3949AB),
+                  Icons.settings_outlined,
+                  () => _openPartsSold(m),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 22),
+          _sectionTitle(context.tr('Расходы', 'Costs')),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _moneyCard(
+                  'Запчасти (себест.)'.tr,
+                  m.partsCost,
+                  Colors.orange,
+                  Icons.inventory_2,
+                  () => _openPartsCost(m),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _moneyCard(
+                  context.tr('Чеки расходов', 'Receipt expenses'),
+                  receipts.operatingTotal,
+                  const Color(0xFF6D4C41),
+                  Icons.receipt,
+                  () => _openReceipts(m, receipts),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _profitCard(m, receipts),
+          const SizedBox(height: 30),
+          Text(
+            'Выручка без HST'.tr,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF14557F),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            height: 250,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.grey.shade200,
+                  blurRadius: 10,
+                  spreadRadius: 2,
+                ),
+              ],
+            ),
+            child: BarChart(
+              BarChartData(
+                alignment: BarChartAlignment.spaceAround,
+                groupsSpace: _selectedFilter == 'День' ? 2 : 8,
+                maxY: bars.max == 0 ? 100.0 : bars.max * 1.2,
+                barTouchData: const BarTouchData(enabled: false),
+                titlesData: FlTitlesData(
+                  show: true,
+                  bottomTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 28,
+                      interval: 1,
+                      getTitlesWidget: (double value, TitleMeta meta) {
+                        const style = TextStyle(
+                          color: Colors.grey,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 10,
+                        );
+                        final index = value.toInt();
+                        final text = index >= 0 && index < bars.labels.length
+                            ? bars.labels[index]
+                            : '';
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text(text, style: style),
+                        );
+                      },
+                    ),
+                  ),
+                  leftTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  topTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  rightTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                ),
+                borderData: FlBorderData(show: false),
+                barGroups: [
+                  for (var i = 0; i < bars.values.length; i++)
+                    _buildBarGroup(i, bars.values[i], bars.max, bars.width),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionTitle(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 18,
+        fontWeight: FontWeight.bold,
+        color: Color(0xFF14557F),
+      ),
+    );
+  }
+
+  /// Старые счета метки «работа / запчасть» не имеют, и делёж выручки по ним
+  /// держится на догадке. Пока такие позиции есть — это видно на экране.
+  Widget _classifyBanner(int count) {
+    return Material(
+      color: const Color(0xFFFFF3CD),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => ClassifyItemsPage.open(context),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              const Icon(Icons.rule, color: Color(0xFF7A5C00)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${context.tr('Позиций без метки', 'Unlabelled lines')}: $count',
+                      style: const TextStyle(
+                        color: Color(0xFF7A5C00),
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      context.tr(
+                        'Работа это или запчасть, пока решает догадка. Нажмите, чтобы разобрать старые счета.',
+                        'Service or part is still a guess there. Tap to classify the old invoices.',
+                      ),
+                      style: const TextStyle(
+                        color: Color(0xFF7A5C00),
+                        fontSize: 12.5,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: Color(0xFF7A5C00)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Итог периода: выручка минус запчасти минус чеки. Отдельной строкой —
+  /// чаевые: это не продажа и в прибыль от ремонта они не входят.
+  Widget _profitCard(ReportMetrics m, ExpenseRollup receipts) {
+    final net = m.grossProfit - receipts.operatingTotal;
+    return Material(
+      color: const Color(0xFF14557F),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _openProfit(m, receipts),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      context.tr('Чистыми за период', 'Net for the period'),
+                      style: const TextStyle(color: Colors.white70, fontSize: 14),
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right, color: Colors.white54),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '\$${net.toStringAsFixed(2)}',
+                style: const TextStyle(
+                  color: Color(0xFFFCC520),
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _profitRow(
+                context.tr('Выручка без HST', 'Revenue excl. HST'),
+                m.salesExHst,
+              ),
+              _profitRow(
+                context.tr('− Запчасти (себест.)', '− Parts (cost)'),
+                -m.partsCost,
+              ),
+              _profitRow(
+                context.tr('− Расходы по чекам', '− Receipt expenses'),
+                -receipts.operatingTotal,
+              ),
+              if (m.tips > 0.009)
+                _profitRow(
+                  context.tr('+ Чаевые (сверх ремонта)', '+ Tips (on top)'),
+                  m.tips,
+                ),
+              const SizedBox(height: 8),
+              Text(
+                context.tr(
+                  'Без HST — это деньги компании, не налог. Для CRA цифры в «Для T2».',
+                  'HST excluded — this is the company’s money, not tax. CRA figures are in the T2 tab.',
+                ),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _profitRow(String label, double amount) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+          ),
+          Text(
+            ReportBreakdownPage.money(amount),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ───────────────────────────── расшифровки ─────────────────────────────
+
+  String _fmtDay(DateTime date) =>
+      DateFormat('d MMM yyyy', AppLocale.instance.dateLocale).format(date);
+
+  String _fmtDayTime(DateTime date) =>
+      DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(date);
+
+  String _money(double value) => ReportBreakdownPage.money(value);
+
+  String _invoiceTitle(ReportInvoice inv) {
+    final number = inv.number.isEmpty ? '' : '#${inv.number} · ';
+    final client = inv.job.clientName.trim();
+    return '$number${client.isEmpty ? context.tr('Без имени', 'No name') : client}';
+  }
+
+  void _openJob(Job job, {int tab = 0}) {
+    AppNav.openCard(
+      context,
+      key: AppNav.jobKey(job.id),
+      builder: (_) => JobDetailsScreen(
+        jobId: job.id,
+        clientId: job.clientId,
+        jobData: job.toMap(),
+        initialTab: tab,
+      ),
+    );
+  }
+
+  BreakdownRow _invoiceRow(ReportInvoice inv) {
+    final mark = inv.due <= 0.009
+        ? context.tr('оплачен', 'paid')
+        : inv.paid > 0.009
+            ? '${context.tr('остаток', 'due')} ${_money(inv.due)}'
+            : context.tr('не оплачен', 'unpaid');
+    return BreakdownRow(
+      title: _invoiceTitle(inv),
+      subtitle: '${_fmtDay(inv.date)} · ${inv.job.applianceType}',
+      amount: inv.total,
+      chips: [
+        '${context.tr('Без HST', 'Excl. HST')} ${_money(inv.subtotal)}',
+        'HST ${_money(inv.tax)}',
+        mark,
+      ],
+      onTap: () => _openJob(inv.job, tab: 1),
+    );
+  }
+
+  BreakdownRow _itemRow(ReportItem item, {required bool byCost}) {
+    final qty = item.qty == item.qty.roundToDouble()
+        ? item.qty.toStringAsFixed(0)
+        : item.qty.toStringAsFixed(2);
+    final number = item.invoiceNumber.isEmpty ? '' : '#${item.invoiceNumber} · ';
+    return BreakdownRow(
+      title: item.name,
+      subtitle: '$number${item.clientName} · ${_fmtDay(item.date)}',
+      amount: byCost ? item.cost : item.sold,
+      chips: [
+        '$qty × ${_money(byCost ? item.unitCost : item.price)}',
+        if (item.isPart && byCost)
+          '${context.tr('продано за', 'billed')} ${_money(item.sold)}',
+        if (item.isPart && !byCost)
+          '${context.tr('себест.', 'cost')} ${_money(item.cost)}',
+        if (item.isPart)
+          '${context.tr('наценка', 'margin')} ${_money(item.margin)}',
+      ],
+      warning: !item.classified
+          ? context.tr(
+              'Метки нет — работа это или запчасть, отчёт угадал. Нажмите «Разобрать позиции» выше.',
+              'No label — service or part was guessed. Use “Classify lines” above.',
+            )
+          : item.costGuessed
+              ? context.tr(
+                  'Себестоимость не указана — взято 40% цены. Проставьте закупку, и цифра станет точной.',
+                  'No cost on this part — 40% of price assumed. Set the purchase cost for an exact figure.',
+                )
+              : null,
+    );
+  }
+
+  /// Секция «разобрать старые позиции» — её видно там, где догадка искажает
+  /// цифру: в запчастях и в работе.
+  BreakdownSection _classifySection(ReportMetrics m) {
+    final rows = m.unclassifiedItems;
+    return BreakdownSection(
+      title: context.tr('Без метки — отчёт угадал', 'Unlabelled — guessed'),
+      hint: context.tr(
+        'У этих позиций никто не выбрал «Работа / Запчасть». Нажмите на любую, чтобы разобрать старые счета.',
+        'Nobody picked Service / Part for these. Tap any of them to classify the old invoices.',
+      ),
+      empty: context.tr(
+        'Все позиции периода размечены.',
+        'Every line in this period is labelled.',
+      ),
+      rows: [
+        for (final item in rows)
+          BreakdownRow(
+            title: item.name,
+            subtitle:
+                '${item.clientName} · ${_fmtDay(item.date)} · ${item.isPart ? context.tr('угадано: запчасть', 'guessed: part') : context.tr('угадано: работа', 'guessed: service')}',
+            amount: item.sold,
+            onTap: () {
+              Navigator.pop(context);
+              ClassifyItemsPage.open(context);
+            },
+          ),
+      ],
+    );
+  }
+
+  void _openCreatedJobs(ReportMetrics m) {
+    ReportBreakdownPage.open(
+      context,
+      title: 'Новые заявки'.tr,
+      periodLabel: _periodLabel,
+      headline: '${m.createdCount}',
+      headlineLabel: context.tr('заявок создано', 'jobs created'),
+      color: Colors.blueGrey,
+      icon: Icons.post_add,
+      explain: [
+        context.tr(
+          'Сколько карточек заявок появилось в CRM за период — по дате создания, неважно, выполнены они уже или нет.',
+          'How many job cards were created in this period, by creation date, finished or not.',
+        ),
+        context.tr(
+          'Денег здесь нет: у новой заявки счёта может ещё не быть.',
+          'No money here: a fresh job may have no invoice yet.',
+        ),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Заявки периода', 'Jobs in the period'),
+          hint: context.tr(
+            'Справа — сколько по заявке выставлено всего, за всё время.',
+            'On the right — total invoiced on that job, all time.',
+          ),
+          empty: context.tr('Новых заявок не было.', 'No new jobs.'),
+          rows: [
+            for (final row in m.createdJobs)
+              BreakdownRow(
+                title: row.job.clientName.isEmpty
+                    ? context.tr('Без имени', 'No name')
+                    : row.job.clientName,
+                subtitle:
+                    '${_fmtDayTime(row.date)} · ${row.job.applianceType} · ${trAny(row.job.status)}',
+                amount: row.invoiced > 0.009 ? row.invoiced : null,
+                amountText: row.invoiced > 0.009
+                    ? null
+                    : context.tr('без счёта', 'no invoice'),
+                onTap: () => _openJob(row.job),
+              ),
+          ],
         ),
       ],
     );
   }
 
-  DateTime? _parseAnyDate(dynamic raw) {
-    if (raw == null) return null;
-    if (raw is Timestamp) return raw.toDate();
-    if (raw is DateTime) return raw;
-    if (raw is String) return DateTime.tryParse(raw);
-    if (raw is num) {
-      final value = raw.toDouble();
-      if (value > 1000000000000) {
-        return DateTime.fromMillisecondsSinceEpoch(value.round());
-      }
-      if (value > 1000000000) {
-        return DateTime.fromMillisecondsSinceEpoch((value * 1000).round());
-      }
-    }
-    if (raw is Map) {
-      final seconds = raw['_seconds'] ?? raw['seconds'];
-      if (seconds is num) {
-        return DateTime.fromMillisecondsSinceEpoch((seconds * 1000).round());
-      }
-    }
-    return null;
-  }
-
-  DateTime? _invoiceDate(Map doc) {
-    return _parseAnyDate(doc['createdAt']) ??
-        _parseAnyDate(doc['issuedAt']) ??
-        _parseAnyDate(doc['date']);
-  }
-
-  DateTime? _paymentDate(Map payment, DateTime? fallback) {
-    return _parseAnyDate(payment['date']) ??
-        _parseAnyDate(payment['createdAt']) ??
-        fallback;
-  }
-
-  bool _inPeriod(DateTime? date, DateTime start, DateTime end) {
-    return date != null && !date.isBefore(start) && date.isBefore(end);
-  }
-
-  _ReportMetrics _calculateMetrics(List<DocumentSnapshot> docs) {
-    var invoiced = 0.0;
-    var paid = 0.0;
-    var due = 0.0;
-    var expenses = 0.0;
-    var completed = 0;
-    var created = 0;
-    var invoiceCount = 0;
-    var salesExHst = 0.0;
-    var hstCollectible = 0.0;
-    var cashExHst = 0.0;
-    var hstReceived = 0.0;
-    var cashSalesExHst = 0.0;
-    var cashTax = 0.0;
-    var cashParts = 0.0;
-    var cashReceivedExHst = 0.0;
-    var cashReceivedHst = 0.0;
-    final jobsInPeriod = <String>{};
-    final start = _periodStart;
-    final end = _periodEndExclusive;
-    final buckets = <String, double>{};
-
-    void addCash(
-      double amount,
-      double subtotal,
-      double tax,
-      DateTime when, {
-      bool byCash = false,
-    }) {
-      final total = subtotal + tax;
-      final net = total > 0.009 ? amount * (subtotal / total) : amount;
-      final hst = amount - net;
-      cashExHst += net;
-      hstReceived += hst;
-      paid += amount;
-      if (byCash) {
-        cashReceivedExHst += net;
-        cashReceivedHst += hst;
-      }
-      final key = _bucketKey(when);
-      buckets[key] = (buckets[key] ?? 0) + net;
-    }
-
-    for (final snap in docs) {
-      final data = snap.data() as Map<String, dynamic>? ?? <String, dynamic>{};
-      Job job;
-      try {
-        job = Job.fromMap(data, snap.id);
-      } catch (_) {
-        continue;
-      }
-      if (job.isDeleted) continue;
-
-      if (_inPeriod(job.createdAt, start, end)) {
-        created++;
-      }
-
-      if (_inPeriod(job.completedAt, start, end) &&
-          JobStatuses.isCompletedStatus(job.status)) {
-        completed++;
-        jobsInPeriod.add(job.id);
-      }
-
-      for (final inv in job.documents) {
-        if (!Job.isInvoice(inv)) continue;
-        final invDate = _invoiceDate(inv);
-        final subtotal = Job.documentSubtotal(inv);
-        final tax = Job.documentTax(inv);
-        final total = subtotal + tax;
-        final paidOnDoc = Job.documentPaid(inv);
-        final invoiceParts = _invoiceExpenses(inv);
-        if (_inPeriod(invDate, start, end)) {
-          invoiced += total;
-          salesExHst += subtotal;
-          hstCollectible += tax;
-          invoiceCount++;
-          due += (total - paidOnDoc).clamp(0, double.infinity);
-          expenses += invoiceParts;
-          jobsInPeriod.add(job.id);
-
-          // Доля счёта, закрытая наличными, — её вычитает выгрузка «без
-          // наличных». Дату платежа тут не смотрим: продажи признаём по
-          // дате счёта, а вопрос один — чем за этот счёт заплатили.
-          final cashOnDoc = _cashPaidOn(inv);
-          if (cashOnDoc > 0.009 && total > 0.009) {
-            final share = (cashOnDoc / total).clamp(0.0, 1.0);
-            cashSalesExHst += subtotal * share;
-            cashTax += tax * share;
-            cashParts += invoiceParts * share;
-          }
-        }
-
-        final payments = inv['payments'];
-        var attributedPaid = 0.0;
-        if (payments is List) {
-          for (final payment in payments) {
-            if (payment is! Map) continue;
-            final amount = (payment['amount'] as num?)?.toDouble() ?? 0;
-            if (amount <= 0) continue;
-            final payDate = _paymentDate(payment, invDate);
-            if (!_inPeriod(payDate, start, end)) continue;
-            attributedPaid += amount;
-            jobsInPeriod.add(job.id);
-            addCash(
-              amount,
-              subtotal,
-              tax,
-              payDate!,
-              byCash: _isCashPayment(payment),
-            );
-          }
-        }
-        if (attributedPaid == 0 &&
-            paidOnDoc > 0 &&
-            _inPeriod(invDate, start, end)) {
-          jobsInPeriod.add(job.id);
-          addCash(paidOnDoc, subtotal, tax, invDate!);
-        }
-      }
-    }
-
-    final labels = <String>[];
-    final values = <double>[];
-    _fillBuckets(start, end, buckets, labels, values);
-    final maxY = values.fold<double>(0, (m, v) => v > m ? v : m);
-
-    return _ReportMetrics(
-      invoiced: invoiced,
-      paid: paid,
-      due: due,
-      expenses: expenses,
-      completedCount: completed,
-      createdCount: created,
-      invoiceCount: invoiceCount,
-      salesExHst: salesExHst,
-      hstCollectible: hstCollectible,
-      cashExHst: cashExHst,
-      hstReceived: hstReceived,
-      cashSalesExHst: cashSalesExHst,
-      cashTax: cashTax,
-      cashParts: cashParts,
-      cashReceivedExHst: cashReceivedExHst,
-      cashReceivedHst: cashReceivedHst,
-      jobCount: jobsInPeriod.length,
-      barLabels: labels,
-      barValues: values,
-      barMax: maxY,
-      barWidth: _selectedFilter == 'День' ? 6 : 16,
+  void _openCompletedJobs(ReportMetrics m) {
+    final total = m.completedJobs.fold<double>(0, (s, r) => s + r.invoiced);
+    ReportBreakdownPage.open(
+      context,
+      title: 'Завершено работ'.tr,
+      periodLabel: _periodLabel,
+      headline: '${m.completedCount}',
+      headlineLabel: context.tr('заявок завершено', 'jobs completed'),
+      color: Colors.teal,
+      icon: Icons.task_alt,
+      explain: [
+        context.tr(
+          'Заявки, у которых дата завершения попала в период и статус — завершающий.',
+          'Jobs whose completion date falls in the period and whose status is a closing one.',
+        ),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Завершённые заявки', 'Completed jobs'),
+          empty: context.tr('Завершённых заявок нет.', 'No completed jobs.'),
+          total: total > 0.009 ? total : null,
+          totalLabel: context.tr('Выставлено по ним', 'Invoiced on them'),
+          rows: [
+            for (final row in m.completedJobs)
+              BreakdownRow(
+                title: row.job.clientName.isEmpty
+                    ? context.tr('Без имени', 'No name')
+                    : row.job.clientName,
+                subtitle:
+                    '${_fmtDayTime(row.date)} · ${row.job.applianceType} · ${trAny(row.job.status)}',
+                amount: row.invoiced,
+                onTap: () => _openJob(row.job),
+              ),
+          ],
+        ),
+      ],
     );
   }
 
-  /// Наличными ли платили. Пустой способ считаем безналичным — так вариант
-  /// «без наличных» не занизит доход, если способ забыли проставить.
-  bool _isCashPayment(Map payment) {
-    final method = (payment['method'] ?? '').toString().toLowerCase();
-    return method.contains('cash') || method.contains('налич');
+  void _openAvgTicket(ReportMetrics m) {
+    ReportBreakdownPage.open(
+      context,
+      title: 'Средний чек'.tr,
+      periodLabel: _periodLabel,
+      headline: '\$${m.avgTicket.toStringAsFixed(2)}',
+      headlineLabel: context.tr('средний счёт с HST', 'average invoice incl. HST'),
+      color: Colors.indigo,
+      icon: Icons.receipt,
+      explain: [
+        context.tr(
+          'Все счета периода с HST, делённые на их количество. Сметы не в счёт, отменённые счета тоже.',
+          'All invoices of the period including HST, divided by their count. Estimates and cancelled invoices are out.',
+        ),
+      ],
+      formula: [
+        (context.tr('Счета с HST', 'Invoices incl. HST'), _money(m.invoiced)),
+        (context.tr('Счетов, шт', 'Invoice count'), '${m.invoiceCount}'),
+        ('= ${context.tr('Средний чек', 'Average ticket')}', _money(m.avgTicket)),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Все счета периода', 'Every invoice in the period'),
+          empty: context.tr('Счетов не было.', 'No invoices.'),
+          total: m.invoiced,
+          rows: [for (final inv in m.invoices) _invoiceRow(inv)],
+        ),
+      ],
+    );
   }
 
-  double _cashPaidOn(Map doc) {
-    final payments = doc['payments'];
-    if (payments is! List) return 0;
-    var sum = 0.0;
-    for (final payment in payments) {
-      if (payment is! Map) continue;
-      if (!_isCashPayment(payment)) continue;
-      final amount = (payment['amount'] as num?)?.toDouble() ?? 0;
-      if (amount <= 0) continue;
-      sum += amount;
-    }
-    return sum;
+  void _openCollection(ReportMetrics m) {
+    final paid = m.invoices.where((i) => i.due <= 0.009).toList();
+    final open = m.unpaidInvoices;
+    ReportBreakdownPage.open(
+      context,
+      title: 'Собрано'.tr,
+      periodLabel: _periodLabel,
+      headline: '${m.collectionRate.toStringAsFixed(0)}%',
+      headlineLabel: context.tr('выставленного уже пришло', 'of invoiced is collected'),
+      color: Colors.green.shade700,
+      icon: Icons.percent,
+      explain: [
+        context.tr(
+          'Доля денег, которые уже пришли, от суммы выставленных счетов. 100% — всё оплачено.',
+          'Share of money already received against invoices issued. 100% means everything is paid.',
+        ),
+        context.tr(
+          'Больше 100% бывает, когда в период пришла оплата по счёту прошлого периода.',
+          'Over 100% happens when a payment for an older invoice lands in this period.',
+        ),
+      ],
+      formula: [
+        (context.tr('Получено с HST', 'Collected incl. HST'), _money(m.paid)),
+        (context.tr('Счета с HST', 'Invoices incl. HST'), _money(m.invoiced)),
+        ('= ${context.tr('Собрано', 'Collected')}', '${m.collectionRate.toStringAsFixed(1)}%'),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Закрытые счета', 'Settled invoices'),
+          empty: context.tr('Полностью оплаченных нет.', 'Nothing fully paid.'),
+          rows: [for (final inv in paid) _invoiceRow(inv)],
+        ),
+        BreakdownSection(
+          title: context.tr('Ещё не закрыты', 'Still open'),
+          empty: context.tr('Долгов по периоду нет.', 'No open balance.'),
+          total: open.fold<double>(0, (s, i) => s + i.due),
+          totalLabel: context.tr('Остаток', 'Outstanding'),
+          rows: [for (final inv in open) _invoiceRow(inv)],
+        ),
+      ],
+    );
   }
 
-  double _invoiceExpenses(Map doc) {
-    var expenses = 0.0;
-    final items = doc['items'];
-    if (items is! List) return 0;
-    for (final item in items) {
-      if (item is! Map) continue;
-      final qty = (item['qty'] as num?)?.toDouble() ?? 1;
-      var cost = (item['costPrice'] as num?)?.toDouble();
-      final warehouseId = (item['warehouseItemId'] ?? '').toString();
-      if (cost == null && warehouseId.isNotEmpty) {
-        cost = _warehouseCosts[warehouseId];
-      }
-      if (cost != null) {
-        expenses += qty * cost;
+  void _openInvoices(ReportMetrics m) {
+    ReportBreakdownPage.open(
+      context,
+      title: 'Счета с HST'.tr,
+      periodLabel: _periodLabel,
+      headline: _money(m.invoiced),
+      headlineLabel: context.tr('выставлено счетов', 'invoiced'),
+      headlineHint: context.tr(
+        'Это выставлено, а не получено. Сколько реально пришло — в карточке «Получено с HST».',
+        'This is billed, not received. Money actually in is on the Collected card.',
+      ),
+      color: Colors.blue,
+      icon: Icons.receipt_long,
+      explain: [
+        context.tr(
+          'Сумма всех счетов, выписанных внутри периода, вместе с HST. Считаем по дате счёта, а не по дате оплаты.',
+          'Total of all invoices issued inside the period, HST included. Counted by invoice date, not payment date.',
+        ),
+        context.tr(
+          'Сметы и отменённые счета сюда не попадают.',
+          'Estimates and cancelled invoices are excluded.',
+        ),
+      ],
+      formula: [
+        (context.tr('Работа и выезд', 'Labour and call-out'), _money(m.labourSales)),
+        (context.tr('Запчасти клиенту', 'Parts billed'), _money(m.partsSales)),
+        (context.tr('HST с счетов', 'HST on invoices'), _money(m.hstCollectible)),
+        ('= ${context.tr('Счета с HST', 'Invoices incl. HST')}', _money(m.invoiced)),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Счета', 'Invoices'),
+          hint: context.tr(
+            'Нажмите на строку — откроется счёт в заявке.',
+            'Tap a row to open the invoice inside the job.',
+          ),
+          empty: context.tr('Счетов не выставляли.', 'No invoices issued.'),
+          total: m.invoiced,
+          rows: [for (final inv in m.invoices) _invoiceRow(inv)],
+        ),
+      ],
+    );
+  }
+
+  void _openReceived(ReportMetrics m) {
+    final repair = m.repairPayments;
+    final refunds = m.refundPayments;
+    final incoming = repair
+        .where((p) => p.amount > 0)
+        .fold<double>(0, (s, p) => s + p.amount);
+    ReportBreakdownPage.open(
+      context,
+      title: 'Получено с HST'.tr,
+      periodLabel: _periodLabel,
+      headline: _money(m.paid),
+      headlineLabel: context.tr('пришло денег', 'money received'),
+      headlineHint: context.tr(
+        'Чаевых здесь нет — они отдельной карточкой. Возвраты вычтены.',
+        'Tips are not here — they have their own card. Refunds are subtracted.',
+      ),
+      color: Colors.green,
+      icon: Icons.payments,
+      explain: [
+        context.tr(
+          'Деньги, пришедшие внутри периода, по дате платежа. Счёт мог быть выставлен и раньше.',
+          'Money that arrived inside the period, by payment date. The invoice itself may be older.',
+        ),
+        context.tr(
+          'В сумме сидит HST: клиент платит его вместе с ремонтом. Чистая часть — в строке «Без HST».',
+          'HST is inside this amount: the client pays it together with the repair. The clean part is the excl. HST line.',
+        ),
+      ],
+      formula: [
+        (context.tr('Поступления', 'Payments in'), _money(incoming)),
+        if (m.refunds > 0.009)
+          (context.tr('Возвраты', 'Refunds'), _money(-m.refunds)),
+        ('= ${context.tr('Получено с HST', 'Collected incl. HST')}', _money(m.paid)),
+        (context.tr('из них без HST', 'of that, excl. HST'), _money(m.cashExHst)),
+        (context.tr('из них HST', 'of that, HST'), _money(m.hstReceived)),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Оплаты', 'Payments'),
+          empty: context.tr('Денег за период не приходило.', 'No money came in.'),
+          total: incoming,
+          rows: [
+            for (final p in repair.where((p) => p.amount > 0))
+              BreakdownRow(
+                title: p.job.clientName.isEmpty
+                    ? context.tr('Без имени', 'No name')
+                    : p.job.clientName,
+                subtitle:
+                    '${_fmtDayTime(p.date)}${p.number.isEmpty ? '' : ' · #${p.number}'}',
+                amount: p.amount,
+                chips: [
+                  p.method.isEmpty
+                      ? context.tr('способ не указан', 'method not set')
+                      : p.method,
+                  '${context.tr('без HST', 'excl. HST')} ${_money(p.net)}',
+                  'HST ${_money(p.hst)}',
+                ],
+                onTap: () => _openJob(p.job, tab: 1),
+              ),
+          ],
+        ),
+        BreakdownSection(
+          title: context.tr('Возвраты', 'Refunds'),
+          hint: context.tr(
+            'Эти деньги ушли обратно клиенту и уже вычтены сверху.',
+            'This money went back to the client and is already subtracted above.',
+          ),
+          empty: context.tr('Возвратов не было.', 'No refunds.'),
+          total: refunds.isEmpty ? null : -m.refunds,
+          rows: [
+            for (final p in refunds)
+              BreakdownRow(
+                title: p.job.clientName.isEmpty
+                    ? context.tr('Без имени', 'No name')
+                    : p.job.clientName,
+                subtitle:
+                    '${_fmtDayTime(p.date)}${p.number.isEmpty ? '' : ' · #${p.number}'}',
+                amount: p.amount,
+                negative: true,
+                chips: [
+                  p.method.isEmpty
+                      ? context.tr('возврат', 'refund')
+                      : p.method,
+                ],
+                onTap: () => _openJob(p.job, tab: 1),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _openDue(ReportMetrics m) {
+    final open = m.unpaidInvoices;
+    ReportBreakdownPage.open(
+      context,
+      title: 'Долг'.tr,
+      periodLabel: _periodLabel,
+      headline: _money(m.due),
+      headlineLabel: context.tr('не оплачено по счетам периода', 'unpaid on this period’s invoices'),
+      color: Colors.red,
+      icon: Icons.warning_amber,
+      explain: [
+        context.tr(
+          'Сколько осталось получить по счетам, выписанным в этом периоде. Состояние на сегодня: если клиент заплатит завтра, цифра уменьшится.',
+          'What is still to be collected on invoices issued in this period. As of today: once the client pays, it drops.',
+        ),
+        context.tr(
+          'Депозит уже вычтен — в строке видно, сколько внесли и сколько осталось.',
+          'Deposits are already subtracted — each row shows paid and remaining.',
+        ),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Кто должен', 'Who owes'),
+          empty: context.tr('Долгов нет — всё закрыто.', 'No debt — everything is settled.'),
+          total: m.due,
+          totalLabel: context.tr('Всего долг', 'Total owing'),
+          rows: [
+            for (final inv in open)
+              BreakdownRow(
+                title: _invoiceTitle(inv),
+                subtitle: '${_fmtDay(inv.date)} · ${inv.job.applianceType}',
+                amount: inv.due,
+                negative: true,
+                chips: [
+                  '${context.tr('счёт', 'invoice')} ${_money(inv.total)}',
+                  '${context.tr('внесено', 'paid')} ${_money(inv.paid)}',
+                  if (inv.job.contactPhone.isNotEmpty) inv.job.contactPhone,
+                ],
+                onTap: () => _openJob(inv.job, tab: 1),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _openTips(ReportMetrics m) {
+    final tips = m.tipPayments;
+    ReportBreakdownPage.open(
+      context,
+      title: context.tr('Чаевые', 'Tips'),
+      periodLabel: _periodLabel,
+      headline: _money(m.tips),
+      headlineLabel: context.tr('чаевых за период', 'tips in the period'),
+      headlineHint: context.tr(
+        'Чаевые не часть счёта и не облагаются HST, поэтому в «Получено с HST» их нет.',
+        'Tips are not part of the invoice and carry no HST, so they are not in Collected.',
+      ),
+      color: const Color(0xFF8E24AA),
+      icon: Icons.volunteer_activism,
+      explain: [
+        context.tr(
+          'Клиент выбирает чаевые на экране оплаты до списания. В заявке они лежат отдельной строкой платежа с методом Tip.',
+          'The client picks a tip on the payment screen before the charge. In the job it is a separate payment line with method Tip.',
+        ),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Кто оставил', 'Who tipped'),
+          empty: context.tr('Чаевых за период нет.', 'No tips in this period.'),
+          total: m.tips,
+          rows: [
+            for (final p in tips)
+              BreakdownRow(
+                title: p.job.clientName.isEmpty
+                    ? context.tr('Без имени', 'No name')
+                    : p.job.clientName,
+                subtitle:
+                    '${_fmtDayTime(p.date)}${p.number.isEmpty ? '' : ' · #${p.number}'}',
+                amount: p.amount,
+                onTap: () => _openJob(p.job, tab: 1),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _openLabour(ReportMetrics m) {
+    final items = m.labourItems;
+    ReportBreakdownPage.open(
+      context,
+      title: context.tr('Работа и выезд', 'Labour and call-out'),
+      periodLabel: _periodLabel,
+      headline: _money(m.labourSales),
+      headlineLabel: context.tr('работа в счетах, без HST', 'labour billed, excl. HST'),
+      color: const Color(0xFF00897B),
+      icon: Icons.handyman_outlined,
+      explain: [
+        context.tr(
+          'Всё в счетах, что не запчасть: диагностика, выезд, работа. Это чистая выручка — своих затрат у неё нет.',
+          'Everything on the invoices that is not a part: diagnostics, call-out, labour. This is clean revenue with no direct cost.',
+        ),
+        context.tr(
+          'Позиция считается запчастью, если у неё стоит себестоимость, она со склада или помечена типом Part.',
+          'A line counts as a part when it has a cost, comes from the warehouse, or is typed as Part.',
+        ),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Позиции счетов', 'Invoice lines'),
+          empty: context.tr('Работы в счетах не было.', 'No labour lines.'),
+          total: m.labourSales,
+          rows: [for (final item in items) _itemRow(item, byCost: false)],
+        ),
+        if (m.unclassifiedItems.isNotEmpty) _classifySection(m),
+      ],
+    );
+  }
+
+  void _openPartsSold(ReportMetrics m) {
+    final parts = m.parts;
+    ReportBreakdownPage.open(
+      context,
+      title: context.tr('Запчасти клиенту', 'Parts billed'),
+      periodLabel: _periodLabel,
+      headline: _money(m.partsSales),
+      headlineLabel: context.tr('запчастей продано, без HST', 'parts billed, excl. HST'),
+      color: const Color(0xFF3949AB),
+      icon: Icons.settings_outlined,
+      explain: [
+        context.tr(
+          'Сколько вы взяли с клиентов за сами запчасти, без HST. Во сколько они обошлись вам — в карточке «Запчасти (себест.)».',
+          'What you charged clients for the parts themselves, excl. HST. What they cost you is on the Parts (cost) card.',
+        ),
+      ],
+      formula: [
+        (context.tr('Продано запчастей', 'Parts billed'), _money(m.partsSales)),
+        (context.tr('Себестоимость', 'Cost'), _money(-m.partsCost)),
+        ('= ${context.tr('Наценка на запчастях', 'Parts margin')}', _money(m.partsSales - m.partsCost)),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Какие запчасти', 'Which parts'),
+          empty: context.tr('Запчастей в счетах нет.', 'No parts on invoices.'),
+          total: m.partsSales,
+          rows: [for (final item in parts) _itemRow(item, byCost: false)],
+        ),
+        if (m.unclassifiedItems.isNotEmpty) _classifySection(m),
+      ],
+    );
+  }
+
+  void _openPartsCost(ReportMetrics m) {
+    final parts = m.parts;
+    final receiptParts =
+        _periodExpenses.where((e) => e.category == ExpenseCategories.parts.id).toList();
+    final receiptPartsTotal =
+        receiptParts.fold<double>(0, (s, e) => s + e.amountExHst);
+    ReportBreakdownPage.open(
+      context,
+      title: 'Запчасти (себест.)'.tr,
+      periodLabel: _periodLabel,
+      headline: _money(m.partsCost),
+      headlineLabel: context.tr('запчасти обошлись', 'parts cost you'),
+      headlineHint: context.tr(
+        'Это запчасти, списанные по счетам периода, по закупочной цене.',
+        'Parts written off on this period’s invoices, at purchase cost.',
+      ),
+      color: Colors.orange,
+      icon: Icons.inventory_2,
+      explain: [
+        context.tr(
+          'Себестоимость берётся из позиции счёта, если она там есть; иначе — со склада; если нигде нет, прикидывается как 40% цены, и такая строка помечена.',
+          'Cost comes from the invoice line if present, otherwise from the warehouse; if neither, 40% of price is assumed and the row is flagged.',
+        ),
+        context.tr(
+          'Закупки по чекам — это другая цифра: там деньги, потраченные в магазине, даже если запчасть ещё лежит на складе.',
+          'Receipt purchases are a different number: money spent at the shop, even if the part is still on the shelf.',
+        ),
+      ],
+      formula: [
+        (context.tr('Списано по счетам', 'Used on invoices'), _money(m.partsCost)),
+        (context.tr('Куплено по чекам', 'Bought on receipts'), _money(receiptPartsTotal)),
+        (context.tr('Продано клиентам за', 'Billed to clients'), _money(m.partsSales)),
+        ('= ${context.tr('Наценка на запчастях', 'Parts margin')}', _money(m.partsSales - m.partsCost)),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Списано по счетам', 'Used on invoices'),
+          empty: context.tr('Запчастей в счетах нет.', 'No parts on invoices.'),
+          total: m.partsCost,
+          rows: [for (final item in parts) _itemRow(item, byCost: true)],
+        ),
+        BreakdownSection(
+          title: context.tr('Куплено по чекам', 'Bought on receipts'),
+          hint: context.tr(
+            'Суммы без HST. В прибыль они не вычитаются второй раз — иначе запчасть ушла бы в расход дважды.',
+            'Amounts excl. HST. Not subtracted from profit again — that would expense a part twice.',
+          ),
+          empty: context.tr('Чеков на запчасти нет.', 'No parts receipts.'),
+          total: receiptParts.isEmpty ? null : receiptPartsTotal,
+          rows: [
+            for (final e in receiptParts)
+              BreakdownRow(
+                title: e.vendor.isEmpty ? context.tr('Чек', 'Receipt') : e.vendor,
+                subtitle: '${_fmtDay(e.date)}${e.note.isEmpty ? '' : ' · ${e.note}'}',
+                amount: e.amountExHst,
+                chips: ['HST ${_money(e.hst)}'],
+              ),
+          ],
+        ),
+        if (m.unclassifiedItems.isNotEmpty) _classifySection(m),
+      ],
+    );
+  }
+
+  void _openReceipts(ReportMetrics m, ExpenseRollup receipts) {
+    final items = _periodExpenses
+        .where((e) => !e.capitalAsset && e.category != ExpenseCategories.parts.id)
+        .toList();
+    final capital = _periodExpenses.where((e) => e.capitalAsset).toList();
+    ReportBreakdownPage.open(
+      context,
+      title: context.tr('Чеки расходов', 'Receipt expenses'),
+      periodLabel: _periodLabel,
+      headline: _money(receipts.operatingTotal),
+      headlineLabel: context.tr('расходов по чекам, без HST', 'receipt expenses, excl. HST'),
+      color: const Color(0xFF6D4C41),
+      icon: Icons.receipt,
+      explain: [
+        context.tr(
+          'Сфотографированные чеки: бензин, страховка, связь, инструмент. Суммы без HST — HST с них возвращается через ITC в GST/HST декларации.',
+          'Photographed receipts: fuel, insurance, phone, tools. Amounts excl. HST — the HST comes back as an ITC on the GST/HST return.',
+        ),
+        context.tr(
+          'Еда идёт в расход наполовину, запчасти с чеков и оборудование под CCA в этот итог не входят.',
+          'Meals count at 50%; parts receipts and CCA equipment are not in this total.',
+        ),
+      ],
+      formula: [
+        for (final line in receipts.operatingLines)
+          (
+            'GIFI ${line.gifi} · ${AppLocale.instance.isEn ? line.labelEn : line.labelRu}',
+            _money(line.amount),
+          ),
+        ('= ${context.tr('Итого расходы', 'Total expenses')}', _money(receipts.operatingTotal)),
+        (context.tr('HST к возврату (ITC)', 'HST to reclaim (ITC)'), _money(receipts.itc)),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Чеки', 'Receipts'),
+          empty: context.tr(
+            'Чеков нет. Снимите их в меню «Расходы» — ИИ сам разложит по статьям.',
+            'No receipts. Photograph them under Expenses — the AI files them by category.',
+          ),
+          total: items.isEmpty ? null : receipts.operatingTotal,
+          rows: [
+            for (final e in items)
+              BreakdownRow(
+                title: e.vendor.isEmpty ? context.tr('Чек', 'Receipt') : e.vendor,
+                subtitle: '${_fmtDay(e.date)} · ${e.categoryInfo.label(AppLocale.instance.isEn)}',
+                amount: e.t2Amount,
+                chips: [
+                  'GIFI ${e.gifi}',
+                  if ((e.t2Amount - e.amountExHst).abs() > 0.009)
+                    '${context.tr('с чека', 'on receipt')} ${_money(e.amountExHst)}',
+                  'HST ${_money(e.hst)}',
+                ],
+                onTap: () => _openExpenses(),
+              ),
+          ],
+        ),
+        BreakdownSection(
+          title: context.tr('Оборудование (CCA)', 'Equipment (CCA)'),
+          hint: context.tr(
+            'Списывается годами, в расход периода не идёт.',
+            'Written off over years, not an expense of this period.',
+          ),
+          empty: context.tr('Покупок оборудования нет.', 'No equipment purchases.'),
+          total: capital.isEmpty ? null : receipts.capitalTotal,
+          rows: [
+            for (final e in capital)
+              BreakdownRow(
+                title: e.vendor.isEmpty ? context.tr('Чек', 'Receipt') : e.vendor,
+                subtitle: _fmtDay(e.date),
+                amount: e.amountExHst,
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _openProfit(ReportMetrics m, ExpenseRollup receipts) {
+    final net = m.grossProfit - receipts.operatingTotal;
+    ReportBreakdownPage.open(
+      context,
+      title: context.tr('Чистыми за период', 'Net for the period'),
+      periodLabel: _periodLabel,
+      headline: _money(net),
+      headlineLabel: context.tr('заработано чистыми', 'net earnings'),
+      headlineHint: context.tr(
+        'Это бухгалтерская прибыль по счетам, а не остаток на счёте: часть денег может быть ещё в долгах.',
+        'Accounting profit on invoices, not your bank balance: part of it may still be owed to you.',
+      ),
+      color: const Color(0xFF14557F),
+      icon: Icons.savings_outlined,
+      explain: [
+        context.tr(
+          'Считается по счетам периода: выручка без HST минус запчасти по себестоимости минус расходы по чекам.',
+          'Based on the period’s invoices: revenue excl. HST, minus parts at cost, minus receipt expenses.',
+        ),
+        context.tr(
+          'HST в прибыль не входит никогда: это деньги CRA, вы их только собираете.',
+          'HST is never profit: it is the CRA’s money, you only collect it.',
+        ),
+        context.tr(
+          'Чаевые показаны отдельно — это не продажа ремонта.',
+          'Tips are shown separately — they are not repair sales.',
+        ),
+      ],
+      formula: [
+        (context.tr('Работа и выезд', 'Labour and call-out'), _money(m.labourSales)),
+        (context.tr('Запчасти клиенту', 'Parts billed'), _money(m.partsSales)),
+        ('= ${context.tr('Выручка без HST', 'Revenue excl. HST')}', _money(m.salesExHst)),
+        ('− ${context.tr('Запчасти (себест.)', 'Parts (cost)')}', _money(-m.partsCost)),
+        ('= ${context.tr('Валовая прибыль', 'Gross profit')}', _money(m.grossProfit)),
+        ('− ${context.tr('Расходы по чекам', 'Receipt expenses')}', _money(-receipts.operatingTotal)),
+        ('= ${context.tr('Чистая прибыль', 'Net profit')}', _money(net)),
+        ('+ ${context.tr('Чаевые', 'Tips')}', _money(m.tips)),
+        ('= ${context.tr('Всего на руки', 'Total in hand')}', _money(net + m.tips)),
+      ],
+      sections: [
+        BreakdownSection(
+          title: context.tr('Куда нажать дальше', 'Where to dig deeper'),
+          rows: [
+            BreakdownRow(
+              title: context.tr('Выручка без HST', 'Revenue excl. HST'),
+              subtitle: context.tr('по счетам периода', 'from this period’s invoices'),
+              amount: m.salesExHst,
+              onTap: () {
+                Navigator.pop(context);
+                _openInvoices(m);
+              },
+            ),
+            BreakdownRow(
+              title: 'Запчасти (себест.)'.tr,
+              subtitle: context.tr('что списано по счетам', 'written off on invoices'),
+              amount: -m.partsCost,
+              negative: true,
+              onTap: () {
+                Navigator.pop(context);
+                _openPartsCost(m);
+              },
+            ),
+            BreakdownRow(
+              title: context.tr('Расходы по чекам', 'Receipt expenses'),
+              subtitle: context.tr('бензин, связь, страховка', 'fuel, phone, insurance'),
+              amount: -receipts.operatingTotal,
+              negative: true,
+              onTap: () {
+                Navigator.pop(context);
+                _openReceipts(m, receipts);
+              },
+            ),
+            BreakdownRow(
+              title: context.tr('Чаевые', 'Tips'),
+              subtitle: context.tr('не продажа, сверх ремонта', 'not sales, on top of the repair'),
+              amount: m.tips,
+              onTap: () {
+                Navigator.pop(context);
+                _openTips(m);
+              },
+            ),
+          ],
+        ),
+        BreakdownSection(
+          title: context.tr('Деньгами, а не по счетам', 'Cash view, not invoices'),
+          hint: context.tr(
+            'Прибыль выше — по выставленным счетам. Здесь то, что физически пришло за период.',
+            'The profit above is on invoices issued. Here is what physically arrived in the period.',
+          ),
+          rows: [
+            BreakdownRow(
+              title: context.tr('Пришло без HST', 'Received excl. HST'),
+              amount: m.cashExHst,
+            ),
+            BreakdownRow(
+              title: context.tr('Пришло HST (не ваше)', 'HST received (not yours)'),
+              amount: m.hstReceived,
+            ),
+            BreakdownRow(
+              title: context.tr('Ещё должны', 'Still owed to you'),
+              amount: m.due,
+              negative: true,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // ───────────────────────────── расчёт и график ─────────────────────────────
+
+  ReportMetrics _calculateMetrics(List<DocumentSnapshot> docs) {
+    final jobs = <Job>[];
+    for (final snap in docs) {
+      final data = snap.data() as Map<String, dynamic>? ?? <String, dynamic>{};
+      try {
+        jobs.add(Job.fromMap(data, snap.id));
+      } catch (_) {
         continue;
       }
-      final type = (item['type'] ?? '').toString().toLowerCase();
-      if (type.contains('запчаст') || type.contains('part')) {
-        expenses += qty * ((item['price'] as num?)?.toDouble() ?? 0) * 0.4;
-      }
     }
-    return expenses;
+    return ReportMetrics.build(
+      jobs: jobs,
+      start: _periodStart,
+      endExclusive: _periodEndExclusive,
+      warehouseCosts: _warehouseCosts,
+    );
+  }
+
+  _BarData _bars(ReportMetrics metrics) {
+    final buckets = <String, double>{};
+    for (final payment in metrics.repairPayments) {
+      final key = _bucketKey(payment.date);
+      buckets[key] = (buckets[key] ?? 0) + payment.net;
+    }
+    final labels = <String>[];
+    final values = <double>[];
+    _fillBuckets(_periodStart, _periodEndExclusive, buckets, labels, values);
+    return _BarData(
+      labels: labels,
+      values: values,
+      max: values.fold<double>(0, (m, v) => v > m ? v : m),
+      width: _selectedFilter == 'День' ? 6 : 16,
+    );
   }
 
   String _bucketKey(DateTime date) {
@@ -1020,6 +1753,32 @@ class _ReportsScreenState extends State<ReportsScreen> {
       values.add(buckets['${start.year}-${start.month}-${start.day}-$hour'] ?? 0);
     }
   }
+
+  BarChartGroupData _buildBarGroup(
+    int x,
+    double y,
+    double totalIncome,
+    double barWidth,
+  ) {
+    return BarChartGroupData(
+      x: x,
+      barRods: [
+        BarChartRodData(
+          toY: y,
+          color: const Color(0xFFFCC520),
+          width: barWidth,
+          borderRadius: BorderRadius.circular(4),
+          backDrawRodData: BackgroundBarChartRodData(
+            show: true,
+            toY: totalIncome == 0 ? 100.0 : totalIncome * 1.2,
+            color: Colors.grey.shade100,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ───────────────────────────── карточки ─────────────────────────────
 
   Widget _buildStripeCard() {
     final balance = _stripeBalance;
@@ -1095,20 +1854,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
-  Widget _buildKpiCard(String title, String value, Color color, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.shade200,
-            blurRadius: 8,
-            spreadRadius: 1,
-          ),
-        ],
-      ),
+  Widget _kpiCard(
+    String title,
+    String value,
+    Color color,
+    IconData icon,
+    VoidCallback onTap,
+  ) {
+    return _tappableCard(
+      onTap: onTap,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1122,6 +1876,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   style: const TextStyle(color: Colors.grey, fontSize: 13),
                 ),
               ),
+              const Icon(Icons.chevron_right, size: 16, color: Colors.black26),
             ],
           ),
           const SizedBox(height: 8),
@@ -1138,25 +1893,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
-  Widget _buildSummaryCard(
+  Widget _moneyCard(
     String title,
     double amount,
     Color iconColor,
     IconData icon,
+    VoidCallback onTap,
   ) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.shade200,
-            blurRadius: 10,
-            spreadRadius: 2,
-          ),
-        ],
-      ),
+    return _tappableCard(
+      onTap: onTap,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1164,18 +1909,35 @@ class _ReportsScreenState extends State<ReportsScreen> {
             children: [
               Icon(icon, color: iconColor, size: 16),
               const SizedBox(width: 4),
-              Text(
-                title,
-                style: const TextStyle(color: Colors.grey, fontSize: 14),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(color: Colors.grey, fontSize: 13),
+                ),
               ),
+              const Icon(Icons.chevron_right, size: 16, color: Colors.black26),
             ],
           ),
           const SizedBox(height: 8),
           Text(
             '\$${amount.toStringAsFixed(2)}',
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _tappableCard({required Widget child, required VoidCallback onTap}) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      elevation: 1.5,
+      shadowColor: Colors.grey.shade300,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(padding: const EdgeInsets.all(14), child: child),
       ),
     );
   }
@@ -1185,12 +1947,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.insert_chart_outlined, size: 80, color: Colors.grey),
-          SizedBox(height: 16),
+          const Icon(Icons.insert_chart_outlined, size: 80, color: Colors.grey),
+          const SizedBox(height: 16),
           Text(
             'За выбранный период нет данных.'.tr,
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey, fontSize: 16),
+            style: const TextStyle(color: Colors.grey, fontSize: 16),
           ),
         ],
       ),
@@ -1198,57 +1960,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 }
 
-class _ReportMetrics {
-  final double invoiced;
-  final double paid;
-  final double due;
-  final double expenses;
-  final int completedCount;
-  final int createdCount;
-  final int invoiceCount;
-  final double salesExHst;
-  final double hstCollectible;
-  final double cashExHst;
-  final double hstReceived;
+class _BarData {
+  final List<String> labels;
+  final List<double> values;
+  final double max;
+  final double width;
 
-  /// Доли периода, оплаченные наличными. Нужны, чтобы выгрузить второй
-  /// вариант отчёта — только банк и Stripe.
-  final double cashSalesExHst;
-  final double cashTax;
-  final double cashParts;
-  final double cashReceivedExHst;
-  final double cashReceivedHst;
-  final int jobCount;
-  final List<String> barLabels;
-  final List<double> barValues;
-  final double barMax;
-  final double barWidth;
-
-  const _ReportMetrics({
-    required this.invoiced,
-    required this.paid,
-    required this.due,
-    required this.expenses,
-    required this.completedCount,
-    required this.createdCount,
-    required this.invoiceCount,
-    required this.salesExHst,
-    required this.hstCollectible,
-    required this.cashExHst,
-    required this.hstReceived,
-    this.cashSalesExHst = 0,
-    this.cashTax = 0,
-    this.cashParts = 0,
-    this.cashReceivedExHst = 0,
-    this.cashReceivedHst = 0,
-    required this.jobCount,
-    required this.barLabels,
-    required this.barValues,
-    required this.barMax,
-    required this.barWidth,
+  const _BarData({
+    required this.labels,
+    required this.values,
+    required this.max,
+    required this.width,
   });
-
-  double get avgTicket => invoiceCount <= 0 ? 0 : invoiced / invoiceCount;
-
-  double get collectionRate => invoiced <= 0 ? 0 : (paid / invoiced * 100).clamp(0, 999);
 }

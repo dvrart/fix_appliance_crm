@@ -281,6 +281,23 @@ class _FinanceTabState extends State<FinanceTab> {
     return doc['convertedToInvoice'] == true;
   }
 
+  /// Открыть документ (смету или счёт) по типу и номеру — тап по связке
+  /// «смета ↔ счёт» в объединённой карточке.
+  void _openDocByTypeNumber(String type, dynamic number) {
+    if (number == null) return;
+    for (var i = 0; i < ctrl.documents.length; i++) {
+      final d = ctrl.documents[i];
+      if (Job.isDocumentTrashed(d)) continue;
+      final t = (d['type'] ?? 'Invoice').toString();
+      if (type == 'Estimate' ? t != 'Estimate' : t == 'Estimate') continue;
+      if (d['number'] == number) {
+        ctrl.setViewingDocumentIndex(i);
+        ctrl.setFinanceMode('view_document');
+        return;
+      }
+    }
+  }
+
   Future<void> _convertEstimateToInvoice(int index) async {
     if (_busy) return;
     if (index < 0 || index >= ctrl.documents.length) return;
@@ -366,7 +383,8 @@ class _FinanceTabState extends State<FinanceTab> {
                   : ListView.builder(
                       itemCount: ctrl.documents.length,
                       itemBuilder: (context, index) {
-                        if (Job.isDocumentTrashed(ctrl.documents[index])) {
+                        final d = ctrl.documents[index];
+                        if (Job.isDocumentTrashed(d)) {
                           return const SizedBox.shrink();
                         }
                         return _buildDocumentCard(index);
@@ -504,6 +522,7 @@ class _FinanceTabState extends State<FinanceTab> {
     final type = doc['type'] ?? 'Invoice';
     final isEstimate = type == 'Estimate';
     final isCancelled = doc['status'] == 'cancelled';
+    final stamp = Formatters.messageStamp(Job.documentCreatedAt(doc));
 
     final subtotal = ctrl.calcSubtotal(doc['items'] ?? []);
     final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
@@ -580,7 +599,10 @@ class _FinanceTabState extends State<FinanceTab> {
         side: BorderSide(color: borderColor),
       ),
       margin: const EdgeInsets.only(bottom: 12),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
         children: [
           Expanded(
             child: InkWell(
@@ -613,6 +635,17 @@ class _FinanceTabState extends State<FinanceTab> {
                               fontSize: 16,
                             ),
                           ),
+                          // Когда выставлен: в заявке счетов бывает
+                          // несколько, и по номеру не видно, какой свежий.
+                          if (stamp.isNotEmpty)
+                            Text(
+                              stamp,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
                           const SizedBox(height: 4),
                           Text(
                             statusText,
@@ -744,7 +777,66 @@ class _FinanceTabState extends State<FinanceTab> {
             icon: const Icon(Icons.delete_outline, color: Colors.red),
             onPressed: _busy ? null : () => _confirmDeleteDocument(index),
           ),
+            ],
+          ),
+          if (!isCancelled &&
+              !isEstimate &&
+              doc['fromEstimateNumber'] != null)
+            _buildDocLinkStrip(
+              icon: Icons.description_outlined,
+              color: Colors.orange.shade700,
+              label: '${'Смета'.tr} #${doc['fromEstimateNumber']}',
+              onTap: () =>
+                  _openDocByTypeNumber('Estimate', doc['fromEstimateNumber']),
+            ),
+          if (!isCancelled &&
+              isEstimate &&
+              doc['convertedInvoiceNumber'] != null)
+            _buildDocLinkStrip(
+              icon: Icons.receipt_long,
+              color: Colors.green.shade700,
+              label: '${'Счёт'.tr} #${doc['convertedInvoiceNumber']}',
+              onTap: () =>
+                  _openDocByTypeNumber('Invoice', doc['convertedInvoiceNumber']),
+            ),
         ],
+      ),
+    );
+  }
+
+  /// Нижняя строка-связка в объединённой карточке: ведёт к парному документу
+  /// (из счёта — к смете, из сметы — к созданному счёту).
+  Widget _buildDocLinkStrip({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: Colors.grey.shade300)),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 16, color: color),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            Icon(Icons.chevron_right, size: 18, color: Colors.grey.shade500),
+          ],
+        ),
       ),
     );
   }
@@ -811,8 +903,20 @@ class _FinanceTabState extends State<FinanceTab> {
                               child: ListTile(
                                 onTap: () => _editBuilderItem(index),
                                 title: Text(item['name'] ?? 'Item'),
-                                subtitle: Text(
-                                  '${item['qty']} × \$${_money(item['price']).toStringAsFixed(2)}',
+                                isThreeLine: true,
+                                subtitle: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '${item['qty']} × \$${_money(item['price']).toStringAsFixed(2)}',
+                                    ),
+                                    const SizedBox(height: 4),
+                                    _itemKindChip(
+                                      isPart: Job.isPartItem(item),
+                                      classified: Job.isItemClassified(item),
+                                    ),
+                                  ],
                                 ),
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
@@ -1081,6 +1185,10 @@ class _FinanceTabState extends State<FinanceTab> {
     } catch (_) {}
     if (!mounted) return;
     WarehouseItem? picked;
+    // Работа или запчасть — это выбирает мастер, а не угадывают отчёты.
+    // По умолчанию работа: выезд и диагностика добавляются чаще всего.
+    var isPart = false;
+    final costCtrl = TextEditingController();
 
     // Замены: сначала то, что уже записано в карточке детали, потом — что
     // подсказал ИИ. Ключ — нормализованный искомый номер.
@@ -1221,6 +1329,9 @@ class _FinanceTabState extends State<FinanceTab> {
                   : item.price;
               priceCtrl.text = price.toStringAsFixed(2);
               priceFresh = true;
+              // Со склада — всегда запчасть, себестоимость уже известна.
+              isPart = true;
+              if (cost != null) costCtrl.text = cost.toStringAsFixed(2);
               // Взяли замену — запоминаем её в карточке, чтобы в следующий раз
               // она нашлась сразу и без интернета.
               if (remember != null && !item.replaces(remember)) {
@@ -1238,6 +1349,8 @@ class _FinanceTabState extends State<FinanceTab> {
               nameCtrl.text = name;
               priceCtrl.text = price.toStringAsFixed(2);
               priceFresh = true;
+              isPart = false;
+              costCtrl.clear();
               setDialog(() {});
             }
 
@@ -1416,6 +1529,13 @@ class _FinanceTabState extends State<FinanceTab> {
                         ),
                       ],
                     ),
+                    const SizedBox(height: 12),
+                    _itemKindField(
+                      isPart: isPart,
+                      costCtrl: costCtrl,
+                      fromWarehouse: picked != null,
+                      onChanged: (next) => setDialog(() => isPart = next),
+                    ),
                   ],
                 ),
               ),
@@ -1428,16 +1548,21 @@ class _FinanceTabState extends State<FinanceTab> {
                   onPressed: () {
                     if (nameCtrl.text.trim().isEmpty) return;
                     final selected = picked;
+                    final cost = double.tryParse(
+                      costCtrl.text.trim().replaceAll(',', '.'),
+                    );
                     setState(() {
                       ctrl.builderItems.add({
                         'name': nameCtrl.text.trim(),
                         'price': double.tryParse(priceCtrl.text) ?? 0,
                         'qty': int.tryParse(qtyCtrl.text) ?? 1,
-                        if (selected != null) ...{
-                          'type': 'Part',
+                        'type': isPart ? 'Part' : 'Service',
+                        if (selected != null)
                           'warehouseItemId': selected.id,
-                          'costPrice': selected.costPrice,
-                        },
+                        if (isPart && cost != null)
+                          'costPrice': cost
+                        else if (isPart && selected?.costPrice != null)
+                          'costPrice': selected!.costPrice,
                       });
                     });
                     ctrl.notifyBuilderChanged();
@@ -1455,16 +1580,83 @@ class _FinanceTabState extends State<FinanceTab> {
     nameCtrl.dispose();
     priceCtrl.dispose();
     qtyCtrl.dispose();
+    costCtrl.dispose();
   }
 
-  /// Правка уже добавленной позиции: имя, цена, количество.
+  /// Переключатель «Работа / Запчасть» и себестоимость под ним.
   ///
-  /// Связь со складом (`warehouseItemId`, себестоимость) не трогаем: деталь
-  /// физически та же, меняется только то, что увидит клиент в счёте. Цена и
-  /// количество выделяются на первый тап — обычно их перебивают целиком.
+  /// Без этой метки отчёт делил позиции на глаз — по складу и себестоимости,
+  /// и «control board for a washing machine» за $300 уезжал в работу.
+  /// Себестоимость спрашиваем только у запчасти: без неё отчёт берёт 40%
+  /// цены и честно помечает цифру как прикидку.
+  Widget _itemKindField({
+    required bool isPart,
+    required TextEditingController costCtrl,
+    required ValueChanged<bool> onChanged,
+    bool fromWarehouse = false,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<bool>(
+            showSelectedIcon: false,
+            segments: [
+              ButtonSegment(
+                value: false,
+                icon: const Icon(Icons.handyman_outlined, size: 18),
+                label: Text(context.tr('Работа', 'Service')),
+              ),
+              ButtonSegment(
+                value: true,
+                icon: const Icon(Icons.settings_outlined, size: 18),
+                label: Text(context.tr('Запчасть', 'Part')),
+              ),
+            ],
+            selected: {isPart},
+            onSelectionChanged: fromWarehouse
+                ? null
+                : (next) => onChanged(next.first),
+          ),
+        ),
+        if (isPart) ...[
+          const SizedBox(height: 10),
+          TextField(
+            controller: costCtrl,
+            enabled: !fromWarehouse,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: context.tr('Закупка (себестоимость)', 'Cost'),
+              prefixText: '\$ ',
+              helperMaxLines: 3,
+              helperText: fromWarehouse
+                  ? context.tr(
+                      'Со склада — себестоимость уже известна.',
+                      'From the warehouse — cost is already known.',
+                    )
+                  : context.tr(
+                      'Можно не заполнять: в отчёте возьмётся 40% цены и будет помечено как прикидка.',
+                      'Optional: reports fall back to 40% of price and flag it as a guess.',
+                    ),
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// Правка уже добавленной позиции: имя, цена, количество, работа/запчасть.
+  ///
+  /// Связь со складом (`warehouseItemId`) не трогаем: деталь физически та же.
+  /// Цена и количество выделяются на первый тап — обычно их перебивают
+  /// целиком. [kindOnly] — счёт уже оплачен: деньги не меняем, но пометить
+  /// позицию работой или запчастью можно, на сумму это не влияет.
   Future<Map<String, dynamic>?> _showEditItemDialog(
-    Map<String, dynamic> item,
-  ) async {
+    Map<String, dynamic> item, {
+    bool kindOnly = false,
+  }) async {
     final nameCtrl = TextEditingController(
       text: (item['name'] ?? '').toString(),
     );
@@ -1474,93 +1666,150 @@ class _FinanceTabState extends State<FinanceTab> {
     final qtyCtrl = TextEditingController(
       text: '${_money(item['qty'], 1).toInt()}',
     );
+    final fromWarehouse =
+        (item['warehouseItemId'] ?? '').toString().isNotEmpty;
+    final costCtrl = TextEditingController(
+      text: item['costPrice'] == null
+          ? ''
+          : _money(item['costPrice']).toStringAsFixed(2),
+    );
+    var isPart = Job.isPartItem(item);
     var priceFresh = true;
     var qtyFresh = true;
 
     final edited = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Edit item'),
-          scrollable: true,
-          content: SizedBox(
-            width: 360,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Name',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextField(
-                        controller: priceCtrl,
-                        keyboardType: TextInputType.number,
-                        onTap: () {
-                          if (!priceFresh) return;
-                          priceFresh = false;
-                          clearAutoNumber(priceCtrl);
-                        },
-                        decoration: const InputDecoration(
-                          labelText: 'Price',
-                          prefixText: '\$ ',
-                          border: OutlineInputBorder(),
-                        ),
+        return StatefulBuilder(
+          builder: (context, setDialog) => AlertDialog(
+            title: Text(
+              kindOnly
+                  ? context.tr('Работа или запчасть', 'Service or part')
+                  : 'Edit item',
+            ),
+            scrollable: true,
+            content: SizedBox(
+              width: 360,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (kindOnly) ...[
+                    Text(
+                      (item['name'] ?? 'Item').toString(),
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      context.tr(
+                        'Счёт оплачен, поэтому имя, цену и количество менять нельзя. Метка на сумму не влияет — она нужна только отчётам.',
+                        'The invoice is paid, so name, price and qty are locked. This label does not change any amount — reports use it.',
+                      ),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                        height: 1.35,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextField(
-                        controller: qtyCtrl,
-                        keyboardType: TextInputType.number,
-                        onTap: () {
-                          if (!qtyFresh) return;
-                          qtyFresh = false;
-                          clearAutoNumber(qtyCtrl);
-                        },
-                        decoration: const InputDecoration(
-                          labelText: 'Qty',
-                          border: OutlineInputBorder(),
-                        ),
+                    const SizedBox(height: 12),
+                  ] else ...[
+                    TextField(
+                      controller: nameCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Name',
+                        border: OutlineInputBorder(),
                       ),
                     ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: TextField(
+                            controller: priceCtrl,
+                            keyboardType: TextInputType.number,
+                            onTap: () {
+                              if (!priceFresh) return;
+                              priceFresh = false;
+                              clearAutoNumber(priceCtrl);
+                            },
+                            decoration: const InputDecoration(
+                              labelText: 'Price',
+                              prefixText: '\$ ',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextField(
+                            controller: qtyCtrl,
+                            keyboardType: TextInputType.number,
+                            onTap: () {
+                              if (!qtyFresh) return;
+                              qtyFresh = false;
+                              clearAutoNumber(qtyCtrl);
+                            },
+                            decoration: const InputDecoration(
+                              labelText: 'Qty',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
                   ],
-                ),
-              ],
+                  _itemKindField(
+                    isPart: isPart,
+                    costCtrl: costCtrl,
+                    fromWarehouse: fromWarehouse,
+                    onChanged: (next) => setDialog(() => isPart = next),
+                  ),
+                ],
+              ),
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: Text('Отмена'.tr),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  final name = nameCtrl.text.trim();
+                  if (name.isEmpty) return;
+                  final cost = double.tryParse(
+                    costCtrl.text.trim().replaceAll(',', '.'),
+                  );
+                  final next = {
+                    ...item,
+                    'type': isPart ? 'Part' : 'Service',
+                  };
+                  if (!kindOnly) {
+                    next['name'] = name;
+                    next['price'] = double.tryParse(priceCtrl.text) ?? 0;
+                    next['qty'] = int.tryParse(qtyCtrl.text) ?? 1;
+                  }
+                  if (isPart && cost != null) {
+                    next['costPrice'] = cost;
+                  } else if (!isPart) {
+                    // Работе себестоимость не нужна: иначе она утянет
+                    // позицию обратно в запчасти при следующем чтении.
+                    next.remove('costPrice');
+                  }
+                  Navigator.pop(dialogContext, next);
+                },
+                child: Text('Сохранить'.tr),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: Text('Отмена'.tr),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final name = nameCtrl.text.trim();
-                if (name.isEmpty) return;
-                Navigator.pop(dialogContext, {
-                  ...item,
-                  'name': name,
-                  'price': double.tryParse(priceCtrl.text) ?? 0,
-                  'qty': int.tryParse(qtyCtrl.text) ?? 1,
-                });
-              },
-              child: Text('Сохранить'.tr),
-            ),
-          ],
         );
       },
     );
     nameCtrl.dispose();
     priceCtrl.dispose();
     qtyCtrl.dispose();
+    costCtrl.dispose();
     return edited;
   }
 
@@ -1575,7 +1824,14 @@ class _FinanceTabState extends State<FinanceTab> {
 
   /// Позицию уже сохранённого документа правим на месте. Склад доводим до
   /// нового состава: иначе списанное количество разойдётся со счётом.
-  Future<void> _editDocumentItem(int docIndex, int itemIndex) async {
+  ///
+  /// [kindOnly] — счёт оплачен: меняется только метка «работа / запчасть» и
+  /// себестоимость. Сумма та же, поэтому склад не трогаем.
+  Future<void> _editDocumentItem(
+    int docIndex,
+    int itemIndex, {
+    bool kindOnly = false,
+  }) async {
     if (_busy) return;
     if (docIndex < 0 || docIndex >= ctrl.documents.length) return;
     final doc = Map<String, dynamic>.from(ctrl.documents[docIndex]);
@@ -1584,17 +1840,22 @@ class _FinanceTabState extends State<FinanceTab> {
         if (item is Map) Map<String, dynamic>.from(item),
     ];
     if (itemIndex < 0 || itemIndex >= items.length) return;
-    final edited = await _showEditItemDialog(items[itemIndex]);
+    final edited = await _showEditItemDialog(
+      items[itemIndex],
+      kindOnly: kindOnly,
+    );
     if (edited == null || !mounted) return;
     final nextItems = [...items];
     nextItems[itemIndex] = edited;
 
     setState(() => _busy = true);
     try {
-      await WarehouseService.applyDocumentStockChange(
-        {...doc, 'items': items},
-        {...doc, 'items': nextItems},
-      );
+      if (!kindOnly) {
+        await WarehouseService.applyDocumentStockChange(
+          {...doc, 'items': items},
+          {...doc, 'items': nextItems},
+        );
+      }
       await ctrl.updateDocument(docIndex, {...doc, 'items': nextItems});
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -1691,11 +1952,16 @@ class _FinanceTabState extends State<FinanceTab> {
                         'Нажмите на позицию, чтобы поправить имя, цену или количество',
                         'Tap a line to change its name, price or qty',
                       )
-                    : _itemsLockedReason(
-                        context,
-                        cancelled: isCancelled,
-                        paid: payments.isNotEmpty,
-                      ),
+                    : isCancelled
+                        ? _itemsLockedReason(
+                            context,
+                            cancelled: true,
+                            paid: false,
+                          )
+                        : context.tr(
+                            'Суммы уже не меняются, но пометить позицию работой или запчастью можно — нажмите на неё.',
+                            'Amounts are locked, but you can still mark a line as service or part — tap it.',
+                          ),
                 style: const TextStyle(fontSize: 12, color: Colors.black54),
               ),
             ),
@@ -1704,17 +1970,28 @@ class _FinanceTabState extends State<FinanceTab> {
               final name = (item['name'] ?? 'Item').toString();
               final qty = _money(item['qty'], 1);
               final price = _money(item['price']);
+              final isPart = Job.isPartItem(item);
+              final classified = Job.isItemClassified(item);
               return Card(
                 margin: const EdgeInsets.only(bottom: 8),
                 child: ListTile(
-                  onTap: itemsEditable && !_busy
-                      ? () => _editDocumentItem(
+                  onTap: _busy || isCancelled
+                      ? null
+                      : () => _editDocumentItem(
                             ctrl.viewingDocumentIndex!,
                             entry.key,
-                          )
-                      : null,
+                            kindOnly: !itemsEditable,
+                          ),
                   title: Text(name),
-                  subtitle: Text('$qty × \$${price.toStringAsFixed(2)}'),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('$qty × \$${price.toStringAsFixed(2)}'),
+                      const SizedBox(height: 4),
+                      _itemKindChip(isPart: isPart, classified: classified),
+                    ],
+                  ),
+                  isThreeLine: true,
                   trailing: Text(
                     '\$${(qty * price).toStringAsFixed(2)}',
                     style: const TextStyle(fontWeight: FontWeight.bold),
@@ -1917,6 +2194,33 @@ class _FinanceTabState extends State<FinanceTab> {
           ],
         ),
       );
+  }
+
+  /// Плашка у позиции счёта. Серая с вопросом — метки нет, отчёт гадает.
+  Widget _itemKindChip({required bool isPart, required bool classified}) {
+    final color = !classified
+        ? const Color(0xFF9E9E9E)
+        : isPart
+            ? const Color(0xFF3949AB)
+            : const Color(0xFF00897B);
+    final text = isPart
+        ? context.tr('Запчасть', 'Part')
+        : context.tr('Работа', 'Service');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        classified ? text : '$text?',
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.w700,
+          color: color,
+        ),
+      ),
+    );
   }
 
   String _itemsLockedReason(

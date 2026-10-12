@@ -700,6 +700,17 @@ class Job {
 
   static bool isDocumentTrashed(Map doc) => documentDeletedAt(doc) != null;
 
+  /// Когда счёт или смета были выставлены. Приложение и `estimateConfirm`
+  /// пишут сюда строку ISO, но ранние документы могли приехать Timestamp —
+  /// на этой дате держится сортировка списка «Счета», молча ронять её нельзя.
+  static DateTime? documentCreatedAt(Map doc) {
+    final raw = doc['createdAt'];
+    if (raw is Timestamp) return raw.toDate();
+    if (raw is DateTime) return raw;
+    if (raw is String) return DateTime.tryParse(raw);
+    return null;
+  }
+
   static int documentTrashDaysLeft(Map doc) {
     final deleted = documentDeletedAt(doc);
     if (deleted == null) return 0;
@@ -910,6 +921,38 @@ class Job {
       return documentTotal(doc);
     }
     return total;
+  }
+
+  /// Позиция счёта: запчасть или работа.
+  ///
+  /// `Part` / `Service` проставляет мастер в редакторе позиции — по этой
+  /// метке отчёты делят выручку на работу и запчасти. У старых счетов метки
+  /// нет, и тогда это догадка по складу и себестоимости; такие позиции
+  /// показываются в «Разобрать позиции», чтобы их пометили руками.
+  /// Возвращает `part`, `service` или пустую строку.
+  static String itemKind(Map item) {
+    final type = (item['type'] ?? '').toString().toLowerCase().trim();
+    if (type.isEmpty) return '';
+    if (type.contains('part') || type.contains('запчаст')) return 'part';
+    if (type.contains('service') ||
+        type.contains('labour') ||
+        type.contains('labor') ||
+        type.contains('работ') ||
+        type.contains('услуг')) {
+      return 'service';
+    }
+    return '';
+  }
+
+  /// Метку поставил человек (или склад), а не угадали мы.
+  static bool isItemClassified(Map item) => itemKind(item).isNotEmpty;
+
+  static bool isPartItem(Map item) {
+    final kind = itemKind(item);
+    if (kind.isNotEmpty) return kind == 'part';
+    // Старая позиция без метки: со склада или с себестоимостью — запчасть.
+    return (item['warehouseItemId'] ?? '').toString().isNotEmpty ||
+        item['costPrice'] != null;
   }
 
   static bool isInvoice(Map doc) {

@@ -23,6 +23,11 @@ class TaxWorkbookFigures {
   final double cashExHst;
   final double hstReceived;
   final double partsCost;
+
+  /// Чаевые периода. В продажи и в HST не входят: клиент платит их сверх
+  /// счёта, налога в них нет. Показываем отдельной строкой, чтобы цифра не
+  /// потерялась и не попала в строку 101.
+  final double tips;
   final double inventoryAtCost;
   final double? stripeAvailable;
   final ExpenseRollup receipts;
@@ -47,6 +52,7 @@ class TaxWorkbookFigures {
     required this.cashExHst,
     required this.hstReceived,
     required this.partsCost,
+    this.tips = 0,
     required this.inventoryAtCost,
     this.stripeAvailable,
     this.receipts = ExpenseRollup.empty,
@@ -130,6 +136,8 @@ class TaxWorkbookView extends StatelessWidget {
         'Parts from receipts (do not also add to 8320 if already in invoices): ${m(f.receipts.partsTotal)}',
       if (f.receipts.capitalTotal > 0)
         'Tools/equipment flagged CCA (not an expense): ${m(f.receipts.capitalTotal)}',
+      if (f.tips > 0.009)
+        'Tips received (other income, no HST, NOT in line 101): ${m(f.tips)}',
       'Do not also type warehouse stock into 8500 on the simple method.',
       'Warehouse at cost TODAY (only if this date is year-end AND you use inventory): ${m(f.inventoryAtCost)}',
       'GIFI 8300 opening inventory: not in CRM — count at start of the tax year.',
@@ -488,6 +496,15 @@ class TaxWorkbookView extends StatelessWidget {
               muted: true,
             ),
           _moneyRow(context.tr('− Запчасти (себестоимость)', '− Parts (cost)'), f.partsCost),
+          if (f.tips > 0.009)
+            _moneyRow(
+              context.tr(
+                'Чаевые — отдельно, не продажа и без HST',
+                'Tips — separate, not sales, no HST',
+              ),
+              f.tips,
+              muted: true,
+            ),
           const Divider(),
           _moneyRow(
             context.tr('Валовая прибыль', 'Gross profit'),
@@ -968,6 +985,12 @@ class TaxWorkbookView extends StatelessWidget {
           if (f.receipts.operatingTotal > 0)
             moneyRow('Profit after receipt expenses', '', f.profitAfterReceipts),
           moneyRow('Total revenue', '8299', f.salesExHst),
+          if (f.tips > 0.009)
+            pw.Text(
+              'Tips received: \$${f.tips.toStringAsFixed(2)}. Other income, no HST. '
+              'Not included in sales above and not in GST34 line 101.',
+              style: const pw.TextStyle(fontSize: 9),
+            ),
           pw.SizedBox(height: 14),
           pw.Text(
             '2. Where to type in UFile T2 / TurboTax Business',
