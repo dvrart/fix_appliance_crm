@@ -16,6 +16,7 @@ import '../../services/job_service.dart';
 import '../../services/message_translate_service.dart';
 import '../../services/secretary_learn_service.dart';
 import '../../services/twilio_service.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/call_transcript_chat.dart';
 import '../../shared/widgets/linked_text.dart';
 import '../ai/job_preview_screen.dart';
@@ -44,6 +45,9 @@ class CallReviewPage extends StatelessWidget {
     AppFeedback.pleasant();
     final id = callId.trim().isNotEmpty ? callId : (call?.id ?? '');
     if (id.isEmpty) return Future.value();
+    // Открыл звонок — значит, посмотрел: гасим «новое» и на вкладке
+    // «Звонки», и в колокольчике. Иначе счётчик входящих не обнулить.
+    unawaited(TwilioService.markReviewed(id));
     return Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute(
         builder: (_) => CallReviewPage(
@@ -586,6 +590,7 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
                 text: _transcript,
                 translating: _translating,
                 answeredBy: call.answeredBy,
+                startedAt: call.startTime,
               ),
             ],
           ),
@@ -635,13 +640,14 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
 Future<void> _openJob(BuildContext context, String jobId) async {
   final job = await JobService.getById(jobId);
   if (!context.mounted || job == null) return;
-  await Navigator.of(context, rootNavigator: true).push(
-    MaterialPageRoute(
-      builder: (_) => JobDetailsScreen(
-        jobId: job.id,
-        clientId: job.clientId,
-        jobData: job.toMap(),
-      ),
+  await AppNav.openCard(
+    context,
+    rootNavigator: true,
+    key: AppNav.jobKey(job.id),
+    builder: (_) => JobDetailsScreen(
+      jobId: job.id,
+      clientId: job.clientId,
+      jobData: job.toMap(),
     ),
   );
 }

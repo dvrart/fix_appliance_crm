@@ -229,10 +229,12 @@ void main() {
           ),
         ),
       );
-      // 7 подписок: заявки на проверку, два списка звонков, письма-заявки,
+      // 6 подписок: заявки на проверку, звонки на разбор, письма-заявки,
       // SMS-заявки, недоставленные SMS и сообщения, ждущие отправки.
+      // Звонков в обработке здесь больше нет: «ИИ разбирает запись» — это
+      // новость, а не решение, и её показывает вкладка «Звонки».
       await tester.pump();
-      expect(backend.paths.length, 7);
+      expect(backend.paths.length, 6);
       final ids = backend.paths.keys.toList();
       for (final id in ids) {
         backend.emit(id);
@@ -240,12 +242,41 @@ void main() {
       }
       rebuild(() {});
       await tester.pump();
-      expect(backend.paths.length, 7);
+      expect(backend.paths.length, 6);
       await tester.pumpWidget(const SizedBox());
       await tester.pump();
       expect(backend.active, isEmpty);
     },
   );
+
+  testWidgets('empty inbox tells where calls and messages went', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: ReviewInboxPanel(
+              hostContext: context,
+              sheetContext: context,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    for (final id in backend.paths.keys.toList()) {
+      backend.emit(id);
+    }
+    await tester.pump();
+    expect(find.text('Решений не ждут'), findsOneWidget);
+    // Пустой колокольчик обязан сказать, где теперь смотреть события —
+    // иначе переезд выглядит как пропажа.
+    expect(find.textContaining('Связь'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(backend.active, isEmpty);
+  });
 
   testWidgets('typing a message does not resubscribe to the entire inbox', (
     tester,
