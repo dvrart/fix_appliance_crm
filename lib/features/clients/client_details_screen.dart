@@ -14,6 +14,7 @@ import '../messages/conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/motion.dart';
 import '../../models/job.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/stale_routes.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
 import 'edit_client_sheet.dart';
@@ -163,16 +164,18 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
       if (chosen == null || !mounted) return;
     }
     if (chosen.phone.isEmpty && !chosen.hasEmail) return;
-    await Navigator.push(
+    await AppNav.openCard(
       context,
-      MaterialPageRoute(
-        builder: (context) => ConversationScreen(
-          phoneNumber: chosen!.phone,
-          email: chosen.hasEmail ? chosen.email : null,
-          contactName: chosen.displayName,
-          clientId: widget.clientId,
-          recipients: peers.length > 1 ? peers : const [],
-        ),
+      key: AppNav.chatKey(
+        phone: chosen.phone,
+        email: chosen.hasEmail ? chosen.email : null,
+      ),
+      builder: (context) => ConversationScreen(
+        phoneNumber: chosen!.phone,
+        email: chosen.hasEmail ? chosen.email : null,
+        contactName: chosen.displayName,
+        clientId: widget.clientId,
+        recipients: peers.length > 1 ? peers : const [],
       ),
     );
   }
@@ -217,6 +220,30 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     messenger.showSnackBar(
       SnackBar(
         content: Text('Клиент удалён'.tr),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
+  /// Заявку можно убрать прямо из истории клиента — корзина на плитке,
+  /// чтобы не открывать карточку заявки ради удаления.
+  Future<void> _deleteJob(Job job) async {
+    final confirm = await showConfirmCancelSheet(
+      context,
+      title: 'Удалить заявку?'.tr,
+      message:
+          'Заявка попадёт в корзину на 30 дней. Потом удалится навсегда.'.tr,
+      confirmLabel: 'Удалить'.tr,
+    );
+    if (!confirm || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    await JobService.delete(job.id);
+    // Та же заявка может быть открыта глубже в стеке — снимаем её с экрана,
+    // иначе «Назад» вернёт на удалённую карточку.
+    StaleRoutes.dropJob(job.id);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('Заявка удалена'.tr),
         backgroundColor: Colors.red,
       ),
     );
@@ -731,30 +758,53 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                     if (job.status == JobStatuses.completed) 'Прошлый визит'.tr,
                   ].join(' · '),
                 ),
-                trailing: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: StatusService.colorOf(status).withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    trAny(status),
-                    style: TextStyle(
-                      color: StatusService.colorOf(status),
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: StatusService.colorOf(status).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          trAny(status),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: StatusService.colorOf(status),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
+                    IconButton(
+                      tooltip: 'Удалить заявку'.tr,
+                      onPressed: () => _deleteJob(job),
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints(
+                        minWidth: 40,
+                        minHeight: 40,
+                      ),
+                      color: Colors.red,
+                      icon: const Icon(Icons.delete_outline),
+                    ),
+                  ],
                 ),
                 onTap: () {
-                  Navigator.push(
+                  AppNav.openCard(
                     context,
-                    MaterialPageRoute(
-                      builder: (context) => JobDetailsScreen(
-                        jobId: job.id,
-                        clientId: widget.clientId,
-                        jobData: job.toMap(),
-                      ),
+                    key: AppNav.jobKey(job.id),
+                    builder: (context) => JobDetailsScreen(
+                      jobId: job.id,
+                      clientId: widget.clientId,
+                      jobData: job.toMap(),
                     ),
                   );
                 },

@@ -140,6 +140,7 @@ const Map<String, String> kEnglishUi = {
   '3-й фильтр': '3rd filter',
   'Вызов': 'Call-out',
   'Ожидание запчасти': 'Waiting for part',
+  'Ожидание оплаты': 'Awaiting payment',
   'Перенос': 'Rescheduled',
   'Перенесено': 'Moved',
   'Завершено': 'Completed',
@@ -205,6 +206,7 @@ const Map<String, String> kEnglishUi = {
   'Типы техники': 'Appliance types',
   'Типы техники и бренды': 'Appliance types and brands',
   'Бренд': 'Brand',
+  'Без бренда': 'No brand',
   'Бренды': 'Brands',
   'Список для создания заявки': 'Used when creating a job',
   'Эти значения предлагаются в поле «Тип»': 'These values appear in the Type field',
@@ -387,10 +389,21 @@ const Map<String, String> kEnglishUi = {
       'After saving, the status will become “Rescheduled”.',
   'Эта заявка останется на своей дате со статусом «Перенос», а на новую дату создастся отдельная заявка.':
       'This job stays on its date as “Rescheduled”, and a separate job is created for the new date.',
-  'Эта заявка останется на своей дате, а на новую дату создастся отдельная заявка с этим статусом.':
-      'This job stays on its date, and a separate job with this status is created for the new date.',
-  'Не удалось создать заявку на новую дату':
-      'Could not create the job for the new date',
+  'Новый визит добавится в эту же заявку: счёт и оплаты останутся на месте. Прошлые выезды закроются.':
+      'The new visit is added to this same job: the invoice and payments stay put. Earlier visits are closed.',
+  'Удалить визит?': 'Delete this visit?',
+  'Остальные визиты заявки останутся на месте.':
+      'The other visits of this job stay where they are.',
+  'Остальные визиты, счёт и оплаты останутся на месте.':
+      'The other visits, the invoice and the payments stay where they are.',
+  'Что удалить?': 'Delete what?',
+  'В этой заявке несколько выездов. Нажмите на тот, который убрать — остальные останутся.':
+      'This job has several visits. Tap the one to remove — the rest stay.',
+  'Удалить всю заявку': 'Delete the whole job',
+  'вместе со счетами, оплатами и фото':
+      'together with the invoices, payments and photos',
+  'У заявки не останется даты. Сама заявка, счёт и оплаты никуда не денутся.':
+      'The job will have no date left. The job itself, the invoice and the payments stay.',
   'Сам, после нового визита': 'Automatic, after a new visit',
   'Больше не используется': 'No longer used',
   'Налог по умолчанию': 'Default tax',
@@ -779,6 +792,9 @@ const Map<String, String> kEnglishUi = {
   '🟡 Средний': '🟡 Medium',
   '🔴 Срочный': '🔴 Urgent',
   'Описание': 'Description',
+  'Информация': 'Info',
+  'Доставка': 'Delivery',
+  'К визиту': 'For the visit',
   'Нажмите, чтобы добавить описание...': 'Tap to add a description...',
   'Решение проблемы': 'Solution',
   'Что сделали, какая деталь, результат...':

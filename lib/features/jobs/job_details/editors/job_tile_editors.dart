@@ -10,6 +10,7 @@ import '../../../../core/utils/thumb_image.dart';
 import '../../../../services/catalog_service.dart';
 import '../../../../services/message_translate_service.dart';
 import '../../../../shared/widgets/appliance_picture.dart';
+import '../../../../shared/widgets/catalog_picker.dart';
 import '../../../../shared/widgets/app_bar_save.dart';
 import '../../../../shared/widgets/dirty_leave_scope.dart';
 import '../widgets/full_screen_gallery.dart';
@@ -36,33 +37,140 @@ Future<T?> _openEditor<T>(BuildContext context, Widget page) {
   return Navigator.push<T>(context, MaterialPageRoute(builder: (_) => page));
 }
 
-Future<void> openPackingEditor(
-  BuildContext context,
-  JobDetailsController ctrl,
-) async {
-  final saved = await _openEditor<String>(
-    context,
-    _PackingEditorPage(initial: ctrl.packingNotes),
-  );
-  if (saved != null) await ctrl.updatePackingNotes(saved);
+const _kTrackingSuppliers = <String, String>{
+  'amazon': 'Amazon',
+  'reliable_parts': 'Reliable Parts',
+  'partselect': 'PartSelect',
+  'encompass': 'Encompass / RepairClinic',
+  'marcone': 'Marcone',
+  'ebay': 'eBay',
+  'carrier': 'UPS / FedEx / Purolator / Canada Post',
+  'other': 'Другой',
+};
+
+String visitDurationLabel(int minutes) {
+  switch (minutes) {
+    case 30:
+      return '30 мин'.tr;
+    case 45:
+      return '45 мин'.tr;
+    case 60:
+      return '1 час'.tr;
+    case 90:
+      return '1.5 часа'.tr;
+    case 120:
+      return '2 часа'.tr;
+    case 180:
+      return '3 часа'.tr;
+    default:
+      return '$minutes ${'мин'.tr}';
+  }
 }
 
-Future<void> openDescriptionEditor(
+String trackingStatusLabel(String status) {
+  switch (status) {
+    case 'delivered':
+      return 'Доставлено'.tr;
+    case 'out_for_delivery':
+      return 'Курьер сегодня'.tr;
+    case 'shipped':
+      return 'Отправлено'.tr;
+    default:
+      return status;
+  }
+}
+
+String _cleanJobText(String raw) {
+  final text = raw.trim();
+  if (text.isEmpty || text == 'Нет описания') return '';
+  return text;
+}
+
+class _JobInfo {
+  final String problem;
+  final String solution;
+  final String packing;
+  final String trackingNumber;
+  final String amazonOrderId;
+  final String carrier;
+  final int durationMinutes;
+
+  const _JobInfo({
+    required this.problem,
+    required this.solution,
+    required this.packing,
+    required this.trackingNumber,
+    required this.amazonOrderId,
+    required this.carrier,
+    required this.durationMinutes,
+  });
+
+  bool sameTracking(_JobInfo other) =>
+      trackingNumber == other.trackingNumber &&
+      amazonOrderId == other.amazonOrderId &&
+      carrier == other.carrier;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _JobInfo &&
+      problem == other.problem &&
+      solution == other.solution &&
+      packing == other.packing &&
+      sameTracking(other) &&
+      durationMinutes == other.durationMinutes;
+
+  @override
+  int get hashCode => Object.hash(
+    problem,
+    solution,
+    packing,
+    trackingNumber,
+    amazonOrderId,
+    carrier,
+    durationMinutes,
+  );
+}
+
+Future<void> openJobInfoEditor(
   BuildContext context,
   JobDetailsController ctrl,
 ) async {
-  final saved = await _openEditor<Map<String, String>>(
-    context,
-    _DescriptionEditorPage(
-      initialProblem: ctrl.currentDescription,
-      initialSolution: ctrl.currentSolution,
-    ),
+  final carrier = (ctrl.jobData['trackingCarrier'] ?? '').toString().trim();
+  final amazonId = ctrl.amazonOrderId.trim();
+  final before = _JobInfo(
+    problem: _cleanJobText(ctrl.currentDescription),
+    solution: _cleanJobText(ctrl.currentSolution),
+    packing: packingItemsFromNotes(ctrl.packingNotes).join('\n'),
+    trackingNumber: ctrl.trackingNumber.trim(),
+    amazonOrderId: amazonId,
+    carrier: _kTrackingSuppliers.containsKey(carrier)
+        ? carrier
+        : (carrier.isEmpty && amazonId.isNotEmpty ? 'amazon' : 'other'),
+    durationMinutes: ctrl.durationMinutes,
   );
-  if (saved != null) {
+  final after = await _openEditor<_JobInfo>(
+    context,
+    _JobInfoEditorPage(initial: before, trackingStatus: ctrl.trackingStatus),
+  );
+  if (after == null) return;
+  if (after.problem != before.problem || after.solution != before.solution) {
     await ctrl.updateProblemAndSolution(
-      problem: saved['problem'] ?? '',
-      solution: saved['solution'] ?? '',
+      problem: after.problem,
+      solution: after.solution,
     );
+  }
+  if (after.packing != before.packing) {
+    await ctrl.updatePackingNotes(after.packing);
+  }
+  if (!after.sameTracking(before)) {
+    await ctrl.updateTracking(
+      number: after.trackingNumber,
+      amazonId: after.amazonOrderId,
+      carrier: after.carrier,
+    );
+  }
+  if (after.durationMinutes != before.durationMinutes) {
+    await ctrl.updateDurationMinutes(after.durationMinutes);
   }
 }
 
@@ -70,24 +178,35 @@ Future<void> openApplianceEditor(
   BuildContext context,
   JobDetailsController ctrl,
 ) async {
-  final appliances = ctrl.jobData['appliances'];
-  Map<String, dynamic>? primary;
-  if (appliances is List && appliances.isNotEmpty && appliances.first is Map) {
-    primary = Map<String, dynamic>.from(appliances.first as Map);
+  final raw = ctrl.jobData['appliances'];
+  final initial = <Map<String, String>>[];
+  if (raw is List) {
+    for (final item in raw) {
+      if (item is! Map) continue;
+      initial.add({
+        'type': (item['type'] ?? '').toString(),
+        'brand': (item['brand'] ?? '').toString(),
+        'model': (item['model'] ?? '').toString(),
+        'serialNumber': (item['serialNumber'] ?? '').toString(),
+        'issue': (item['issue'] ?? '').toString(),
+      });
+    }
   }
-  final currentType = (ctrl.jobData['applianceType'] ?? primary?['type'] ?? '')
-      .toString();
-  final currentBrand = (ctrl.jobData['brand'] ?? primary?['brand'] ?? '')
-      .toString();
-  final saved = await _openEditor<Map<String, String>>(
+  if (initial.isEmpty) {
+    initial.add({
+      'type': (ctrl.jobData['applianceType'] ?? '').toString(),
+      'brand': (ctrl.jobData['brand'] ?? '').toString(),
+      'model': (ctrl.jobData['model'] ?? '').toString(),
+      'serialNumber': (ctrl.jobData['serialNumber'] ?? '').toString(),
+      'issue': ctrl.currentDescription,
+    });
+  }
+  final saved = await _openEditor<List<Map<String, String>>>(
     context,
-    _ApplianceEditorPage(initialType: currentType, initialBrand: currentBrand),
+    _ApplianceEditorPage(initial: initial),
   );
   if (saved != null) {
-    await ctrl.updateAppliance(
-      type: saved['type'] ?? currentType,
-      brand: saved['brand'] ?? '',
-    );
+    await ctrl.updateAppliances(saved);
   }
 }
 
@@ -176,171 +295,60 @@ class _EditorScaffold extends StatelessWidget {
   }
 }
 
-class _PackingEditorPage extends StatefulWidget {
-  final String initial;
-  const _PackingEditorPage({required this.initial});
-
-  @override
-  State<_PackingEditorPage> createState() => _PackingEditorPageState();
-}
-
-class _PackingEditorPageState extends State<_PackingEditorPage> {
-  late List<String> _items;
-  final _input = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _items = packingItemsFromNotes(widget.initial);
-  }
-
-  @override
-  void dispose() {
-    _input.dispose();
-    super.dispose();
-  }
-
-  bool get _dirty {
-    final original = packingItemsFromNotes(widget.initial);
-    if (original.length != _items.length) return true;
-    for (var i = 0; i < _items.length; i++) {
-      if (original[i] != _items[i]) return true;
-    }
-    return false;
-  }
-
-  void _add() {
-    final value = _input.text.trim();
-    if (value.isEmpty) return;
-    setState(() {
-      _items.add(value);
-      _input.clear();
-    });
-  }
-
-  void _save() {
-    Navigator.pop(context, _items.join('\n'));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return _EditorScaffold(
-      title: 'Что взять с собой'.tr,
-      dirty: _dirty,
-      onSave: _save,
-      body: Column(
-        children: [
-          Expanded(
-            child: _items.isEmpty
-                ? Center(
-                    child: Text(
-                      'Список пуст — добавьте позицию'.tr,
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                  )
-                : ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                    itemCount: _items.length,
-                    separatorBuilder: (_, index) => const SizedBox(height: 8),
-                    itemBuilder: (context, index) {
-                      return Material(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        child: ListTile(
-                          title: Text(_items[index]),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.close, color: Colors.grey),
-                            onPressed: () =>
-                                setState(() => _items.removeAt(index)),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _input,
-                      textInputAction: TextInputAction.done,
-                      onSubmitted: (_) => _add(),
-                      decoration: InputDecoration(
-                        hintText: 'Фильтр, плата, ключи…'.tr,
-                        filled: true,
-                        fillColor: Colors.white,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton.filled(
-                    onPressed: _add,
-                    style: IconButton.styleFrom(
-                      backgroundColor: AppColors.accent,
-                      foregroundColor: Colors.black,
-                      minimumSize: const Size(48, 48),
-                    ),
-                    icon: const Icon(Icons.add),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _DescriptionEditorPage extends StatefulWidget {
-  final String initialProblem;
-  final String initialSolution;
-  const _DescriptionEditorPage({
-    required this.initialProblem,
-    required this.initialSolution,
+class _JobInfoEditorPage extends StatefulWidget {
+  final _JobInfo initial;
+  final String trackingStatus;
+  const _JobInfoEditorPage({
+    required this.initial,
+    required this.trackingStatus,
   });
 
   @override
-  State<_DescriptionEditorPage> createState() => _DescriptionEditorPageState();
+  State<_JobInfoEditorPage> createState() => _JobInfoEditorPageState();
 }
 
-class _DescriptionEditorPageState extends State<_DescriptionEditorPage>
+class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     with SingleTickerProviderStateMixin {
   static const _problemTint = Color(0xFFFFF1F0);
   static const _problemAccent = Color(0xFFB71C1C);
   static const _solutionTint = Color(0xFFEFF8F1);
   static const _solutionAccent = Color(0xFF1B5E20);
+  static const _durationOptions = [30, 45, 60, 90, 120, 180];
 
   late final TabController _tabs;
   late final TextEditingController _problem;
   late final TextEditingController _solution;
+  late final TextEditingController _packingInput;
+  late final TextEditingController _trackingNumber;
+  late final TextEditingController _amazonOrder;
+  late final List<String> _packing;
+  late String _carrier;
+  late int _duration;
   Animation<double>? _tabAnimation;
   int _hapticTab = 0;
   bool _translating = false;
   bool _swapLock = false;
   String _problemOther = '';
 
-  static String _clean(String raw) {
-    final text = raw.trim();
-    if (text.isEmpty || text == 'Нет описания') return '';
-    return text;
-  }
+  Color get _plainTint =>
+      Color.alphaBlend(AppColors.primary.withValues(alpha: 0.05), Colors.white);
 
   @override
   void initState() {
     super.initState();
+    final initial = widget.initial;
     _tabs = TabController(length: 2, vsync: this);
     _tabAnimation = _tabs.animation;
     _tabAnimation?.addListener(_onTabAnimation);
     _tabs.addListener(_onTabs);
-    _problem = TextEditingController(text: _clean(widget.initialProblem));
-    _solution = TextEditingController(text: _clean(widget.initialSolution));
+    _problem = TextEditingController(text: initial.problem);
+    _solution = TextEditingController(text: initial.solution);
+    _packingInput = TextEditingController();
+    _trackingNumber = TextEditingController(text: initial.trackingNumber);
+    _amazonOrder = TextEditingController(text: initial.amazonOrderId);
+    _packing = packingItemsFromNotes(initial.packing);
+    _carrier = initial.carrier;
+    _duration = initial.durationMinutes;
   }
 
   @override
@@ -350,11 +358,14 @@ class _DescriptionEditorPageState extends State<_DescriptionEditorPage>
     _tabs.dispose();
     _problem.dispose();
     _solution.dispose();
+    _packingInput.dispose();
+    _trackingNumber.dispose();
+    _amazonOrder.dispose();
     super.dispose();
   }
 
   void _buzzTab(int index) {
-    final next = index.clamp(0, 1);
+    final next = index.clamp(0, _tabs.length - 1);
     if (next == _hapticTab) return;
     _hapticTab = next;
     AppFeedback.pleasant();
@@ -372,15 +383,31 @@ class _DescriptionEditorPageState extends State<_DescriptionEditorPage>
     if (!_tabs.indexIsChanging) setState(() {});
   }
 
-  bool get _dirty =>
-      _clean(_problem.text) != _clean(widget.initialProblem) ||
-      _clean(_solution.text) != _clean(widget.initialSolution);
+  _JobInfo get _current {
+    final typed = _packingInput.text.trim();
+    return _JobInfo(
+      problem: _cleanJobText(_problem.text),
+      solution: _cleanJobText(_solution.text),
+      packing: [..._packing, if (typed.isNotEmpty) typed].join('\n'),
+      trackingNumber: _trackingNumber.text.trim(),
+      amazonOrderId: _amazonOrder.text.trim(),
+      carrier: _carrier,
+      durationMinutes: _duration,
+    );
+  }
+
+  bool get _dirty => _current != widget.initial;
 
   void _save() {
-    Navigator.pop(context, {
-      'problem': _clean(_problem.text),
-      'solution': _clean(_solution.text),
-    });
+    FocusScope.of(context).unfocus();
+    Navigator.pop(context, _current);
+  }
+
+  void _addPacking() {
+    final value = _packingInput.text.trim();
+    if (value.isEmpty) return;
+    _packing.add(value);
+    _packingInput.clear();
   }
 
   Future<void> _translateProblem() async {
@@ -412,7 +439,23 @@ class _DescriptionEditorPageState extends State<_DescriptionEditorPage>
     }
   }
 
-  Widget _pane({
+  InputDecoration _field({String? label, String? hint}) {
+    return InputDecoration(
+      labelText: label,
+      hintText: hint,
+      filled: true,
+      fillColor: Colors.white,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+    );
+  }
+
+  TextStyle get _sectionStyle => TextStyle(
+    fontSize: 13,
+    fontWeight: FontWeight.w800,
+    color: Colors.grey.shade700,
+  );
+
+  Widget _textPane({
     required Color tint,
     required TextEditingController controller,
     required String hint,
@@ -449,18 +492,381 @@ class _DescriptionEditorPageState extends State<_DescriptionEditorPage>
                 maxLines: null,
                 expands: true,
                 textAlignVertical: TextAlignVertical.top,
-                decoration: InputDecoration(
-                  hintText: hint,
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
+                decoration: _field(hint: hint),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Future<void> _openSheet(
+    String title,
+    Widget Function(BuildContext sheetContext, VoidCallback refresh) body,
+  ) async {
+    FocusScope.of(context).unfocus();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheet) {
+            void refresh() {
+              setSheet(() {});
+              if (mounted) setState(() {});
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.viewInsetsOf(context).bottom,
+              ),
+              child: SafeArea(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(context).height * 0.75,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 4, 0),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 18,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              onPressed: () => Navigator.pop(sheetContext),
+                              icon: const Icon(
+                                Icons.keyboard_arrow_down_rounded,
+                                size: 30,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Flexible(child: body(sheetContext, refresh)),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    if (mounted) setState(() {});
+  }
+
+  void _openPackingSheet() {
+    _openSheet('Что взять с собой'.tr, (sheetContext, refresh) {
+      void add() {
+        _addPacking();
+        refresh();
+      }
+
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: _packing.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      'Список пуст — добавьте позицию'.tr,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                  )
+                : ListView.separated(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    itemCount: _packing.length,
+                    separatorBuilder: (_, index) => const SizedBox(height: 8),
+                    itemBuilder: (context, index) {
+                      return Material(
+                        color: _plainTint,
+                        borderRadius: BorderRadius.circular(12),
+                        child: ListTile(
+                          title: Text(_packing[index]),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.close, color: Colors.grey),
+                            onPressed: () {
+                              _packing.removeAt(index);
+                              refresh();
+                            },
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _packingInput,
+                    autofocus: _packing.isEmpty,
+                    textInputAction: TextInputAction.done,
+                    onChanged: (_) => refresh(),
+                    onSubmitted: (_) => add(),
+                    decoration: _field(hint: 'Фильтр, плата, ключи…'.tr),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  onPressed: add,
+                  style: IconButton.styleFrom(
+                    backgroundColor: AppColors.accent,
+                    foregroundColor: Colors.black,
+                    minimumSize: const Size(48, 48),
+                  ),
+                  icon: const Icon(Icons.add),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    });
+  }
+
+  void _openTrackingSheet() {
+    final status = widget.trackingStatus.trim();
+    _openSheet('Доставка'.tr, (sheetContext, refresh) {
+      return ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+        children: [
+          if (status.isNotEmpty) ...[
+            Row(
+              children: [
+                Icon(
+                  Icons.local_shipping_outlined,
+                  size: 20,
+                  color: AppColors.primary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${'Статус'.tr}: ${trackingStatusLabel(status)}',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
+          Text('Поставщик'.tr, style: _sectionStyle),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final entry in _kTrackingSuppliers.entries)
+                ChoiceChip(
+                  label: Text(entry.value.tr),
+                  selected: _carrier == entry.key,
+                  onSelected: (_) {
+                    _carrier = entry.key;
+                    refresh();
+                  },
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _trackingNumber,
+            textInputAction: TextInputAction.next,
+            onChanged: (_) => refresh(),
+            decoration: _field(label: 'Трек-номер'.tr),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _amazonOrder,
+            textInputAction: TextInputAction.done,
+            onChanged: (_) => refresh(),
+            decoration: _field(
+              label: 'Номер заказа'.tr,
+              hint: '123-1234567-1234567',
+            ),
+          ),
+        ],
+      );
+    });
+  }
+
+  void _openDurationSheet() {
+    final options = {
+      ..._durationOptions,
+      widget.initial.durationMinutes,
+    }.toList()..sort();
+    _openSheet('Длительность нового визита'.tr, (sheetContext, refresh) {
+      return ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.only(bottom: 8),
+        children: [
+          for (final minutes in options)
+            ListTile(
+              leading: Icon(
+                _duration == minutes
+                    ? Icons.check_circle
+                    : Icons.circle_outlined,
+                color: AppColors.primary,
+              ),
+              title: Text(
+                visitDurationLabel(minutes),
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              selected: _duration == minutes,
+              onTap: () {
+                _duration = minutes;
+                refresh();
+                Navigator.pop(sheetContext);
+              },
+            ),
+        ],
+      );
+    });
+  }
+
+  Widget _visitTile({
+    required IconData icon,
+    required String caption,
+    required String value,
+    required VoidCallback onTap,
+  }) {
+    final empty = value.isEmpty;
+    return Material(
+      color: _plainTint,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: AppColors.primary.withValues(alpha: 0.18)),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(6, 10, 6, 10),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 19, color: AppColors.primary),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                caption,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                empty ? '—' : value,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.2,
+                  fontWeight: FontWeight.w800,
+                  color: empty ? Colors.grey : const Color(0xFF1A1A1A),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _visitPanel() {
+    final typed = _packingInput.text.trim();
+    final packing = [..._packing, if (typed.isNotEmpty) typed];
+    final number = _trackingNumber.text.trim();
+    final order = _amazonOrder.text.trim();
+    final status = widget.trackingStatus.trim();
+    final tracking = number.isEmpty && order.isEmpty
+        ? ''
+        : (status.isNotEmpty && _current.sameTracking(widget.initial)
+              ? trackingStatusLabel(status)
+              : (number.isNotEmpty ? number : order));
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 6),
+            child: Text('К визиту'.tr, style: _sectionStyle),
+          ),
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: _visitTile(
+                    icon: Icons.inventory_2_outlined,
+                    caption: 'С собой'.tr,
+                    value: packing.isEmpty
+                        ? ''
+                        : (packing.length == 1
+                              ? packing.first
+                              : '${packing.length}'),
+                    onTap: _openPackingSheet,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _visitTile(
+                    icon: Icons.local_shipping_outlined,
+                    caption: 'Доставка'.tr,
+                    value: tracking,
+                    onTap: _openTrackingSheet,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _visitTile(
+                    icon: Icons.timer_outlined,
+                    caption: 'Длительность'.tr,
+                    value: visitDurationLabel(_duration),
+                    onTap: _openDurationSheet,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -478,7 +884,7 @@ class _DescriptionEditorPageState extends State<_DescriptionEditorPage>
           return Scaffold(
             backgroundColor: AppColors.surface,
             appBar: AppBar(
-              title: Text('Описание'.tr),
+              title: Text('Информация'.tr),
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
               automaticallyImplyLeading: false,
@@ -519,13 +925,13 @@ class _DescriptionEditorPageState extends State<_DescriptionEditorPage>
                   child: TabBarView(
                     controller: _tabs,
                     children: [
-                      _pane(
+                      _textPane(
                         tint: _problemTint,
                         controller: _problem,
                         hint: 'Нажмите, чтобы добавить описание...'.tr,
                         translate: true,
                       ),
-                      _pane(
+                      _textPane(
                         tint: _solutionTint,
                         controller: _solution,
                         hint: 'Что сделали, какая деталь, результат...'.tr,
@@ -535,9 +941,16 @@ class _DescriptionEditorPageState extends State<_DescriptionEditorPage>
                 ),
               ],
             ),
-            bottomNavigationBar: BottomConfirmButton(
-              dirty: _dirty,
-              onPressed: _save,
+            bottomNavigationBar: Material(
+              color: Colors.white,
+              elevation: 8,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _visitPanel(),
+                  BottomConfirmButton(dirty: _dirty, onPressed: _save),
+                ],
+              ),
             ),
           );
         },
@@ -546,68 +959,277 @@ class _DescriptionEditorPageState extends State<_DescriptionEditorPage>
   }
 }
 
+class _ApplianceEditItem {
+  final TextEditingController type;
+  final TextEditingController brand;
+  final TextEditingController model;
+  final TextEditingController serial;
+  final TextEditingController issue;
+
+  _ApplianceEditItem(Map<String, String> initial)
+    : type = TextEditingController(text: initial['type'] ?? ''),
+      brand = TextEditingController(text: initial['brand'] ?? ''),
+      model = TextEditingController(text: initial['model'] ?? ''),
+      serial = TextEditingController(text: initial['serialNumber'] ?? ''),
+      issue = TextEditingController(text: initial['issue'] ?? '');
+
+  _ApplianceEditItem.empty()
+    : type = TextEditingController(),
+      brand = TextEditingController(),
+      model = TextEditingController(),
+      serial = TextEditingController(),
+      issue = TextEditingController();
+
+  void dispose() {
+    type.dispose();
+    brand.dispose();
+    model.dispose();
+    serial.dispose();
+    issue.dispose();
+  }
+}
+
 class _ApplianceEditorPage extends StatefulWidget {
-  final String initialType;
-  final String initialBrand;
-  const _ApplianceEditorPage({
-    required this.initialType,
-    required this.initialBrand,
-  });
+  final List<Map<String, String>> initial;
+  const _ApplianceEditorPage({required this.initial});
 
   @override
   State<_ApplianceEditorPage> createState() => _ApplianceEditorPageState();
 }
 
 class _ApplianceEditorPageState extends State<_ApplianceEditorPage> {
-  late String _type;
-  late String _brand;
+  late List<_ApplianceEditItem> _items;
 
   @override
   void initState() {
     super.initState();
-    _type = widget.initialType.trim();
-    _brand = widget.initialBrand.trim();
+    _items = [for (final item in widget.initial) _ApplianceEditItem(item)];
+    if (_items.isEmpty) _items.add(_ApplianceEditItem.empty());
+    for (final item in _items) {
+      _attach(item);
+    }
   }
 
-  bool get _dirty =>
-      _type != widget.initialType.trim() ||
-      _brand != widget.initialBrand.trim();
+  void _attach(_ApplianceEditItem item) {
+    for (final controller in [
+      item.type,
+      item.brand,
+      item.model,
+      item.serial,
+      item.issue,
+    ]) {
+      controller.addListener(_changed);
+    }
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    for (final item in _items) {
+      item.dispose();
+    }
+    super.dispose();
+  }
+
+  bool get _dirty {
+    if (_items.length != widget.initial.length) return true;
+    for (var i = 0; i < _items.length; i++) {
+      final item = _items[i];
+      final original = widget.initial[i];
+      if (item.type.text != (original['type'] ?? '') ||
+          item.brand.text != (original['brand'] ?? '') ||
+          item.model.text != (original['model'] ?? '') ||
+          item.serial.text != (original['serialNumber'] ?? '') ||
+          item.issue.text != (original['issue'] ?? '')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _add() {
+    final item = _ApplianceEditItem.empty();
+    _attach(item);
+    setState(() => _items.add(item));
+  }
+
+  void _remove(int index) {
+    final item = _items[index];
+    setState(() => _items.removeAt(index));
+    item.dispose();
+  }
+
+  Future<void> _pickType(_ApplianceEditItem item) async {
+    final result = await showCatalogPicker(
+      context: context,
+      title: 'Тип техники'.tr,
+      itemsStream: CatalogService.streamApplianceTypes(),
+      onAdd: CatalogService.addApplianceType,
+    );
+    if (result != null) {
+      setState(() => item.type.text = result);
+    }
+  }
+
+  Future<void> _pickBrand(_ApplianceEditItem item) async {
+    final result = await showCatalogPicker(
+      context: context,
+      title: 'Бренд'.tr,
+      itemsStream: CatalogService.streamBrands(),
+      onAdd: CatalogService.addBrand,
+    );
+    if (result != null) {
+      setState(() => item.brand.text = result);
+    }
+  }
 
   void _save() {
-    if (_type.isEmpty) return;
-    Navigator.pop(context, {'type': _type, 'brand': _brand});
+    for (final item in _items) {
+      if (item.type.text.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Укажите тип техники'.tr)),
+        );
+        return;
+      }
+    }
+    Navigator.pop(context, [
+      for (final item in _items)
+        {
+          'type': item.type.text,
+          'brand': item.brand.text,
+          'model': item.model.text,
+          'serialNumber': item.serial.text,
+          'issue': item.issue.text,
+        },
+    ]);
   }
 
-  Widget _sectionTitle(String text) {
+  Widget _field({
+    required TextEditingController controller,
+    required String label,
+    IconData? icon,
+    String? hint,
+    int maxLines = 1,
+    bool readOnly = false,
+    VoidCallback? onTap,
+  }) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 8, 4, 10),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontWeight: FontWeight.w800,
-          fontSize: 14,
-          color: Color(0xFF14557F),
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextFormField(
+        controller: controller,
+        maxLines: maxLines,
+        readOnly: readOnly,
+        onTap: onTap,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          prefixIcon: icon == null
+              ? null
+              : Icon(icon, color: Colors.grey, size: 20),
+          suffixIcon: readOnly
+              ? const Icon(Icons.arrow_drop_down, color: Colors.grey)
+              : null,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 12,
+          ),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade300),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFFFCC520), width: 2),
+          ),
+          filled: true,
+          fillColor: Colors.grey.shade50,
         ),
       ),
     );
   }
 
-  Widget _choiceTile({
-    required String label,
-    required bool selected,
-    Widget? leading,
-    required VoidCallback onTap,
-  }) {
-    return Material(
-      color: selected ? AppColors.accent.withValues(alpha: 0.28) : Colors.white,
-      borderRadius: BorderRadius.circular(12),
-      child: ListTile(
-        leading: leading,
-        title: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
-        trailing: selected
-            ? const Icon(Icons.check_circle, color: Color(0xFF14557F))
-            : null,
-        onTap: onTap,
+  Widget _applianceCard(int index) {
+    final item = _items[index];
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.shade300),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '${'Аппарат'.tr} ${index + 1}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF14557F),
+                  ),
+                ),
+                if (_items.length > 1)
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    onPressed: () => _remove(index),
+                    constraints: const BoxConstraints(),
+                    padding: EdgeInsets.zero,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: AppliancePicture(type: item.type.text, size: 48),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _field(
+                    controller: item.type,
+                    label: 'Тип техники'.tr,
+                    readOnly: true,
+                    onTap: () => _pickType(item),
+                  ),
+                ),
+              ],
+            ),
+            _field(
+              controller: item.brand,
+              label: 'Бренд'.tr,
+              hint: 'Без бренда'.tr,
+              icon: Icons.branding_watermark,
+              readOnly: true,
+              onTap: () => _pickBrand(item),
+            ),
+            _field(
+              controller: item.model,
+              label: 'Модель'.tr,
+              icon: Icons.qr_code,
+            ),
+            _field(
+              controller: item.serial,
+              label: 'Серийный номер'.tr,
+              icon: Icons.pin,
+            ),
+            _field(
+              controller: item.issue,
+              label: 'Описание'.tr,
+              icon: Icons.build,
+              maxLines: 2,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -621,64 +1243,23 @@ class _ApplianceEditorPageState extends State<_ApplianceEditorPage> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
-          _sectionTitle('Тип техники'.tr),
-          StreamBuilder<List<String>>(
-            stream: CatalogService.streamApplianceTypes(),
-            builder: (context, snapshot) {
-              final items = [
-                ...(snapshot.data ?? CatalogService.defaultApplianceTypes),
-              ];
-              if (_type.isNotEmpty && !items.contains(_type)) {
-                items.insert(0, _type);
-              }
-              return Column(
-                children: [
-                  for (var index = 0; index < items.length; index++) ...[
-                    if (index > 0) const SizedBox(height: 8),
-                    _choiceTile(
-                      label: trAny(items[index]),
-                      selected: items[index] == _type,
-                      leading: AppliancePicture(type: items[index], size: 48),
-                      onTap: () => setState(() => _type = items[index]),
-                    ),
-                  ],
-                ],
-              );
-            },
-          ),
-          const SizedBox(height: 20),
-          _sectionTitle('Бренд'.tr),
-          StreamBuilder<List<String>>(
-            stream: CatalogService.streamBrands(),
-            builder: (context, snapshot) {
-              final items = [...(snapshot.data ?? const <String>[])];
-              if (_brand.isNotEmpty && !items.contains(_brand)) {
-                items.insert(0, _brand);
-              }
-              if (items.isEmpty) {
-                return Text(
-                  'Добавьте бренды в настройках каталога'.tr,
-                  style: const TextStyle(color: Colors.grey),
-                );
-              }
-              return Column(
-                children: [
-                  _choiceTile(
-                    label: 'Без бренда'.tr,
-                    selected: _brand.isEmpty,
-                    onTap: () => setState(() => _brand = ''),
-                  ),
-                  for (final brand in items) ...[
-                    const SizedBox(height: 8),
-                    _choiceTile(
-                      label: brand,
-                      selected: brand == _brand,
-                      onTap: () => setState(() => _brand = brand),
-                    ),
-                  ],
-                ],
-              );
-            },
+          for (var index = 0; index < _items.length; index++)
+            _applianceCard(index),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _add,
+              icon: const Icon(Icons.add),
+              label: Text('Добавить еще технику'.tr),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF14557F),
+                side: const BorderSide(color: Color(0xFF14557F)),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
           ),
         ],
       ),

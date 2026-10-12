@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import '../../../../core/app_feedback.dart';
 import '../../../../core/constants.dart';
 import '../../../../core/motion.dart';
+import '../../../../core/sms_text.dart';
 import '../../../../core/utils/app_date_picker.dart';
 import '../../../../core/utils/thumb_image.dart';
 import '../../../../models/job.dart';
@@ -19,6 +20,7 @@ import '../editors/call_recording_page.dart';
 import '../editors/source_email_page.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/utils/formatters.dart';
+import '../../../../shared/app_nav.dart';
 import '../../../../shared/stale_routes.dart';
 import '../../../../shared/widgets/app_bar_save.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
@@ -189,26 +191,28 @@ class _DetailsTabState extends State<DetailsTab> {
   Future<void> _smsSelected() async {
     final contact = await _pickContact('Кому написать?'.tr);
     if (contact == null || !mounted) return;
-    await Navigator.push(
+    await AppNav.openCard(
       context,
-      MaterialPageRoute(
-        builder: (context) => ConversationScreen(
-          phoneNumber: contact.phone,
-          email: contact.email.contains('@') ? contact.email : null,
-          contactName: contact.displayName,
-          clientId: ctrl.clientId,
-          jobId: ctrl.jobId,
-          recipients: [
-            for (final item in ctrl.chatContacts)
-              ConversationPeer(
-                id: item.id,
-                label: item.label,
-                name: item.displayName,
-                phone: item.phone,
-                email: item.email,
-              ),
-          ],
-        ),
+      key: AppNav.chatKey(
+        phone: contact.phone,
+        email: contact.email.contains('@') ? contact.email : null,
+      ),
+      builder: (context) => ConversationScreen(
+        phoneNumber: contact.phone,
+        email: contact.email.contains('@') ? contact.email : null,
+        contactName: contact.displayName,
+        clientId: ctrl.clientId,
+        jobId: ctrl.jobId,
+        recipients: [
+          for (final item in ctrl.chatContacts)
+            ConversationPeer(
+              id: item.id,
+              label: item.label,
+              name: item.displayName,
+              phone: item.phone,
+              email: item.email,
+            ),
+        ],
       ),
     );
   }
@@ -314,8 +318,9 @@ class _DetailsTabState extends State<DetailsTab> {
   /// «Дата визита» — только календарь, время и галочка SMS: правим дату/время
   /// этого визита (или ставим первый), статус заявки не меняется.
   /// [followUpStatus] — «Установка» / «Повторный визит» из меню статусов:
-  /// эта заявка остаётся на своей дате, а на новую дату создаётся отдельная
-  /// заявка с этим статусом.
+  /// новый визит добавляется в эту же заявку, прошлые выезды закрываются.
+  /// Отдельную заявку перенос больше не заводит — счёт, депозит, фото и
+  /// переписка должны остаться в одной карточке.
   Future<void> _editVisit({JobVisit? existing, String? followUpStatus}) async {
     final followUp = followUpStatus != null && existing == null;
     final now = DateTime.now();
@@ -338,7 +343,7 @@ class _DetailsTabState extends State<DetailsTab> {
         ? trAny(StatusService.labelOf(followUpStatus))
         : '';
 
-    final saved = await showModalBottomSheet<bool>(
+    final saved = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       useRootNavigator: true,
@@ -355,18 +360,35 @@ class _DetailsTabState extends State<DetailsTab> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(
-                      followUp ? statusLabel : 'Дата визита'.tr,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            followUp ? statusLabel : 'Дата визита'.tr,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                            ),
+                          ),
+                        ),
+                        // Корзина в заголовке, а не под кнопкой «Сохранить»:
+                        // окно с календарём и колесом времени высокое, и
+                        // кнопку внизу FIX просто не видел (11.10.2026).
+                        if (existing != null)
+                          IconButton(
+                            onPressed: () =>
+                                Navigator.pop(sheetContext, 'delete'),
+                            icon: const Icon(Icons.delete_outline),
+                            color: Colors.red.shade700,
+                            tooltip: 'Удалить визит'.tr,
+                          ),
+                      ],
                     ),
                     if (followUp)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
                         child: Text(
-                          'Эта заявка останется на своей дате, а на новую дату создастся отдельная заявка с этим статусом.'
+                          'Новый визит добавится в эту же заявку: счёт и оплаты останутся на месте. Прошлые выезды закроются.'
                               .tr,
                           style: const TextStyle(
                             fontWeight: FontWeight.w600,
@@ -439,7 +461,7 @@ class _DetailsTabState extends State<DetailsTab> {
                     SizedBox(
                       height: 52,
                       child: ElevatedButton.icon(
-                        onPressed: () => Navigator.pop(sheetContext, true),
+                        onPressed: () => Navigator.pop(sheetContext, 'save'),
                         icon: const Icon(Icons.check_circle, size: 22),
                         label: Text(
                           followUp ? 'Заказ принят'.tr : 'Сохранить'.tr,
@@ -466,7 +488,23 @@ class _DetailsTabState extends State<DetailsTab> {
         );
       },
     );
-    if (saved != true) return;
+    if (saved == 'delete' && existing != null) {
+      if (!mounted) return;
+      final onlyOne = ctrl.visits.length <= 1;
+      final ok = await showConfirmCancelSheet(
+        context,
+        title: 'Удалить визит?'.tr,
+        message: onlyOne
+            ? '${appDateTimeLabel(existing.startAt)}\n\n${'У заявки не останется даты. Сама заявка, счёт и оплаты никуда не денутся.'.tr}'
+            : '${appDateTimeLabel(existing.startAt)}\n\n${'Остальные визиты заявки останутся на месте.'.tr}',
+        confirmLabel: 'Удалить'.tr,
+      );
+      if (!ok || !mounted) return;
+      await ctrl.removeVisit(existing.id);
+      await ctrl.commitChanges();
+      return;
+    }
+    if (saved != 'save') return;
 
     if (existing != null) {
       final visit = existing.copyWith(startAt: startAt);
@@ -482,209 +520,171 @@ class _DetailsTabState extends State<DetailsTab> {
       durationMinutes: ctrl.durationMinutes,
       note: followUp ? followUpStatus : '',
     ).withManualConfirm(JobVisit.confirmConfirmed);
-    if (followUp && ctrl.visits.isNotEmpty) {
-      final newJobId = await ctrl.rescheduleToNewJob(visit, followUpStatus);
-      if (!mounted) return;
-      if (newJobId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Не удалось создать заявку на новую дату'.tr),
-            backgroundColor: Colors.orange.shade800,
-          ),
-        );
-        return;
-      }
-      if (sendSms) {
-        await _resendVisitBookingSms(visit, jobId: newJobId);
-        if (!mounted) return;
-      }
-      final newJob = await JobService.getById(newJobId);
-      if (newJob != null && mounted) _openJobCard(newJob);
-      return;
-    }
-    // Заявка без даты: визит ставится в неё же. Статус не трогаем, кроме
-    // выбранного в меню «Установка» / «Повторный визит».
-    await ctrl.saveVisits([...ctrl.visits, visit]);
+    // Визит всегда ставится в эту же заявку. Для «Установки» / «Повторного
+    // визита» прошлые выезды закрываются, чтобы календарь не держал два окна.
+    await ctrl.saveVisits([
+      ...(followUp ? JobVisit.markAllScheduledDone(ctrl.visits) : ctrl.visits),
+      visit,
+    ]);
     if (followUp) await ctrl.updateStatus(followUpStatus);
     if (!await ctrl.commitChanges() || !mounted) return;
     if (sendSms) await _resendVisitBookingSms(visit);
   }
 
-  /// Всё про саму работу — одним листом вместо россыпи плиток:
-  /// описание и фото — рядом, мелочи — одной строкой из трёх ячеек.
-  Widget _buildWorkSection() {
-    final fromEmail = Job.intakeSourceOf(ctrl.jobData) == 'email';
-    final line = Colors.grey.shade200;
-    final divider = Divider(height: 1, thickness: 1, color: line);
-    final split = VerticalDivider(width: 1, thickness: 1, color: line);
-    return Material(
-      color: Colors.white,
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: line),
-      ),
-      child: Column(
+  Widget _tilePair(Widget left, Widget right) {
+    return IntrinsicHeight(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(child: _descriptionRow()),
-                split,
-                Expanded(child: _photosRow()),
-              ],
-            ),
-          ),
-          divider,
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: _workCell(
-                    icon: Icons.timer_outlined,
-                    title: 'Длительность'.tr,
-                    value: _visitDurationLabel(ctrl.durationMinutes),
-                    onTap: _pickVisitDuration,
-                  ),
-                ),
-                split,
-                Expanded(child: _packingCell()),
-                split,
-                Expanded(child: _trackingCell()),
-              ],
-            ),
-          ),
-          if (fromEmail) ...[divider, _emailRow()],
+          Expanded(child: left),
+          const SizedBox(width: 8),
+          Expanded(child: right),
         ],
       ),
     );
   }
 
-  Widget _workRow({
-    required IconData icon,
-    required String title,
+  Widget _sideTile({
+    required Widget icon,
     required Widget child,
+    Color? band,
     VoidCallback? onTap,
     VoidCallback? onLongPress,
   }) {
-    return InkWell(
-      onTap: onTap,
-      onLongPress: onLongPress,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 8, 8, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(icon, size: 16, color: AppColors.primary),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            child,
-          ],
-        ),
+    return Material(
+      color: Colors.white,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.grey.shade200),
       ),
-    );
-  }
-
-  Widget _workCell({
-    required IconData icon,
-    required String title,
-    required String value,
-    VoidCallback? onTap,
-    bool muted = false,
-    String? copyValue,
-  }) {
-    final valueToCopy = copyValue ?? value;
-    final canCopy = valueToCopy.isNotEmpty && valueToCopy != '—';
-    return InkWell(
-      onTap: onTap,
-      onLongPress: canCopy
-          ? () => AppFeedback.copy(context, valueToCopy)
-          : null,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(6, 10, 6, 10),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(icon, size: 16, color: AppColors.primary),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              value,
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 13,
-                height: 1.2,
-                fontWeight: FontWeight.w700,
-                color: muted ? Colors.grey : Colors.black87,
+      child: InkWell(
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Ink(
+                width: 38,
+                color: band ?? AppColors.primary.withValues(alpha: 0.08),
+                child: Center(child: icon),
               ),
-            ),
-          ],
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 6, 8, 7),
+                  child: child,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _descriptionRow() {
+  Widget _tileIcon(IconData icon) =>
+      Icon(icon, size: 22, color: AppColors.primary);
+
+  Widget _tileCaption(String caption, {Widget? badge}) {
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            caption,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.bold,
+              color: Colors.grey.shade600,
+            ),
+          ),
+        ),
+        if (badge != null) ...[const SizedBox(width: 4), badge],
+      ],
+    );
+  }
+
+  Widget _infoChip(IconData icon, String text) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 13, color: Colors.grey.shade600),
+        const SizedBox(width: 3),
+        Flexible(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w700,
+              color: Colors.grey.shade700,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _infoTile() {
     final description = ctrl.currentDescription.trim();
     final empty = description.isEmpty || description == 'Нет описания';
-    return _workRow(
-      icon: Icons.notes,
-      title: 'Описание'.tr,
-      onTap: () => openDescriptionEditor(context, ctrl),
+    final packing = packingItemsFromNotes(ctrl.packingNotes);
+    final hasTracking =
+        ctrl.trackingNumber.isNotEmpty || ctrl.amazonOrderId.isNotEmpty;
+    final tracking = !hasTracking
+        ? ''
+        : ctrl.trackingStatus.isNotEmpty
+        ? trackingStatusLabel(ctrl.trackingStatus)
+        : (ctrl.trackingNumber.isNotEmpty
+              ? ctrl.trackingNumber
+              : ctrl.amazonOrderId);
+    return _sideTile(
+      icon: _tileIcon(Icons.info_outline),
+      onTap: () => openJobInfoEditor(context, ctrl),
       onLongPress: empty ? null : () => AppFeedback.copy(context, description),
-      child: Text(
-        empty ? 'Нажмите, чтобы описать неисправность'.tr : description,
-        maxLines: 4,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: 13,
-          height: 1.25,
-          fontWeight: FontWeight.w600,
-          color: empty ? Colors.grey : Colors.black87,
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _tileCaption('Информация'.tr),
+          const SizedBox(height: 3),
+          Text(
+            empty ? 'Нажмите, чтобы описать неисправность'.tr : description,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 13,
+              height: 1.25,
+              fontWeight: FontWeight.w600,
+              color: empty ? Colors.grey : Colors.black87,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Wrap(
+            spacing: 8,
+            runSpacing: 2,
+            children: [
+              _infoChip(
+                Icons.timer_outlined,
+                visitDurationLabel(ctrl.durationMinutes),
+              ),
+              if (packing.isNotEmpty)
+                _infoChip(
+                  Icons.inventory_2_outlined,
+                  packing.length == 1 ? packing.first : '${packing.length}',
+                ),
+              if (tracking.isNotEmpty)
+                _infoChip(Icons.local_shipping_outlined, tracking),
+            ],
+          ),
+        ],
       ),
     );
   }
 
-  Widget _photosRow() {
+  Widget _photosTile() {
     final photos = ctrl.attachments.where((item) {
       final kind = (item['kind'] ?? '').toString();
       return kind != 'call' && kind != 'signature';
@@ -717,39 +717,46 @@ class _DetailsTabState extends State<DetailsTab> {
         children: [
           for (var i = 0; i < shown; i++) ...[
             if (i > 0) const SizedBox(width: gap),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: SizedBox(
-                width: thumb,
-                height: thumb,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (_tileImage(photos[i]) case final image?)
-                      Image(image: image, fit: BoxFit.cover)
-                    else
-                      ColoredBox(
-                        color: Colors.grey.shade200,
-                        child: Icon(
-                          Icons.image_outlined,
-                          color: Colors.grey.shade500,
-                        ),
-                      ),
-                    if (hidden > 0 && i == shown - 1)
-                      ColoredBox(
-                        color: Colors.black54,
-                        child: Center(
-                          child: Text(
-                            '+$hidden',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w800,
-                              fontSize: 16,
+            Flexible(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: thumb,
+                  maxHeight: thumb,
+                ),
+                child: AspectRatio(
+                  aspectRatio: 1,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (_tileImage(photos[i]) case final image?)
+                          Image(image: image, fit: BoxFit.cover)
+                        else
+                          ColoredBox(
+                            color: Colors.grey.shade200,
+                            child: Icon(
+                              Icons.image_outlined,
+                              color: Colors.grey.shade500,
                             ),
                           ),
-                        ),
-                      ),
-                  ],
+                        if (hidden > 0 && i == shown - 1)
+                          ColoredBox(
+                            color: Colors.black54,
+                            child: Center(
+                              child: Text(
+                                '+$hidden',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -757,45 +764,17 @@ class _DetailsTabState extends State<DetailsTab> {
         ],
       );
     }
-    return _workRow(
-      icon: Icons.photo_camera_outlined,
-      title: count == 0 ? 'Фото'.tr : '${'Фото'.tr} · $count',
+    return _sideTile(
+      icon: _tileIcon(Icons.add_a_photo_outlined),
       onTap: () => openPhotosEditor(context, ctrl),
-      child: body,
-    );
-  }
-
-  Widget _packingCell() {
-    final packingItems = packingItemsFromNotes(ctrl.packingNotes);
-    final packing = packingItems.isEmpty
-        ? ''
-        : packingItems.length == 1
-        ? packingItems.first
-        : '${packingItems.length}';
-    return _workCell(
-      icon: Icons.inventory_2_outlined,
-      title: 'С собой'.tr,
-      value: packing.isEmpty ? '—' : packing,
-      muted: packing.isEmpty,
-      onTap: () => openPackingEditor(context, ctrl),
-    );
-  }
-
-  Widget _trackingCell() {
-    final tracking = ctrl.trackingNumber.isEmpty
-        ? ''
-        : [
-            ctrl.trackingNumber,
-            if (ctrl.trackingStatus.isNotEmpty)
-              _trackingLabel(ctrl.trackingStatus),
-          ].join(' · ');
-    return _workCell(
-      icon: Icons.local_shipping_outlined,
-      title: 'Отслеживание'.tr,
-      value: tracking.isEmpty ? '—' : tracking,
-      copyValue: ctrl.trackingNumber.isNotEmpty ? ctrl.trackingNumber : null,
-      muted: tracking.isEmpty,
-      onTap: _editTracking,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _tileCaption(count == 0 ? 'Фото'.tr : '${'Фото'.tr} · $count'),
+          const SizedBox(height: 5),
+          body,
+        ],
+      ),
     );
   }
 
@@ -807,9 +786,17 @@ class _DetailsTabState extends State<DetailsTab> {
         .toString()
         .trim();
     final emailFrom = (ctrl.jobData['sourceEmailFrom'] ?? '').toString().trim();
-    return _workRow(
-      icon: Icons.email_outlined,
-      title: context.tr('Письмо', 'Email'),
+    return _compactStrip(
+      icon: _tileIcon(Icons.email_outlined),
+      caption: context.tr('Письмо', 'Email'),
+      value: emailSubject.isNotEmpty
+          ? emailSubject
+          : (emailFrom.isNotEmpty
+                ? emailFrom
+                : (emailPreview.isNotEmpty
+                      ? emailPreview
+                      : context.tr('Открыть письмо', 'Open the email'))),
+      subvalue: emailSubject.isNotEmpty ? emailFrom : '',
       onTap: () => openSourceEmailSheet(
         context,
         jobData: ctrl.jobData,
@@ -817,18 +804,6 @@ class _DetailsTabState extends State<DetailsTab> {
         clientId: ctrl.clientId,
         clientName: (ctrl.jobData['clientName'] ?? '').toString(),
         clientEmail: ctrl.clientEmail,
-      ),
-      child: Text(
-        emailSubject.isNotEmpty
-            ? emailSubject
-            : (emailFrom.isNotEmpty
-                  ? emailFrom
-                  : (emailPreview.isNotEmpty
-                        ? emailPreview
-                        : context.tr('Открыть письмо', 'Open the email'))),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -848,97 +823,26 @@ class _DetailsTabState extends State<DetailsTab> {
     return null;
   }
 
-  ({String type, String brand, String model}) _applianceSummary() {
+  List<Map<String, dynamic>> _applianceList() {
     final appliances = ctrl.jobData['appliances'];
-    Map<String, dynamic>? primary;
-    if (appliances is List &&
-        appliances.isNotEmpty &&
-        appliances.first is Map) {
-      primary = Map<String, dynamic>.from(appliances.first as Map);
+    final list = <Map<String, dynamic>>[];
+    if (appliances is List) {
+      for (final item in appliances) {
+        if (item is Map) list.add(Map<String, dynamic>.from(item));
+      }
     }
+    return list;
+  }
+
+  ({String type, String brand, String model}) _applianceSummary() {
+    final list = _applianceList();
+    final primary = list.isNotEmpty ? list.first : null;
     final type =
         (ctrl.jobData['applianceType'] ?? primary?['type'] ?? 'Техника')
             .toString();
     final brand = (ctrl.jobData['brand'] ?? primary?['brand'] ?? '').toString();
     final model = (ctrl.jobData['model'] ?? primary?['model'] ?? '').toString();
     return (type: type, brand: brand.trim(), model: model.trim());
-  }
-
-  Future<void> _pickVisitDuration() async {
-    const options = [30, 45, 60, 90, 120, 180];
-    final picked = await showModalBottomSheet<int>(
-      context: context,
-      useRootNavigator: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(
-                  'Длительность нового визита'.tr,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                  ),
-                ),
-              ),
-              for (final minutes in options)
-                ListTile(
-                  leading: Icon(
-                    ctrl.durationMinutes == minutes
-                        ? Icons.check_circle
-                        : Icons.circle_outlined,
-                    color: AppColors.primary,
-                  ),
-                  title: Text(_visitDurationLabel(minutes)),
-                  selected: ctrl.durationMinutes == minutes,
-                  onTap: () => Navigator.pop(context, minutes),
-                ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
-    );
-    if (picked != null) await ctrl.updateDurationMinutes(picked);
-  }
-
-  String _trackingLabel(String status) {
-    switch (status) {
-      case 'delivered':
-        return 'Доставлено'.tr;
-      case 'out_for_delivery':
-        return 'Курьер сегодня'.tr;
-      case 'shipped':
-        return 'Отправлено'.tr;
-      default:
-        return status;
-    }
-  }
-
-  Future<void> _editTracking() async {
-    final stored = (ctrl.jobData['trackingCarrier'] ?? '').toString().trim();
-    final result = await showDialog<_TrackingEditResult>(
-      context: context,
-      builder: (context) => _TrackingEditDialog(
-        trackingNumber: ctrl.trackingNumber,
-        amazonOrderId: ctrl.amazonOrderId,
-        carrier: stored.isNotEmpty
-            ? stored
-            : (ctrl.amazonOrderId.isNotEmpty ? 'amazon' : 'other'),
-      ),
-    );
-    if (result == null || !mounted) return;
-    await ctrl.updateTracking(
-      number: result.number,
-      amazonId: result.amazonId,
-      carrier: result.carrier,
-    );
   }
 
   /// Сравнение «на глаз»: регистр и лишние пробелы ничего не значат.
@@ -1205,13 +1109,8 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 
   Map<String, String> _applianceFields() {
-    final appliances = ctrl.jobData['appliances'];
-    Map<String, dynamic>? primary;
-    if (appliances is List &&
-        appliances.isNotEmpty &&
-        appliances.first is Map) {
-      primary = Map<String, dynamic>.from(appliances.first as Map);
-    }
+    final list = _applianceList();
+    final primary = list.isNotEmpty ? list.first : null;
     return {
       'type': (ctrl.jobData['applianceType'] ?? primary?['type'] ?? '')
           .toString(),
@@ -1260,14 +1159,13 @@ class _DetailsTabState extends State<DetailsTab> {
       ),
       trailing: const Icon(Icons.chevron_right),
       onTap: () {
-        Navigator.push(
+        AppNav.openCard(
           context,
-          MaterialPageRoute(
-            builder: (_) => JobDetailsScreen(
-              jobId: job.id,
-              clientId: job.clientId,
-              jobData: job.toMap(),
-            ),
+          key: AppNav.jobKey(job.id),
+          builder: (_) => JobDetailsScreen(
+            jobId: job.id,
+            clientId: job.clientId,
+            jobData: job.toMap(),
           ),
         );
       },
@@ -1310,8 +1208,8 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  /// «Установка» и «Повторный визит» — это новый выезд: сразу дата, время и SMS.
-  /// Остальные статусы дату карточки не трогают.
+  /// «Установка» и «Повторный визит» — это новый выезд в той же заявке: сразу
+  /// дата, время и SMS. Остальные статусы дату карточки не трогают.
   bool _statusNeedsNewDate(String status) =>
       status == JobStatuses.repeatVisit || JobStatuses.isInstallStatus(status);
 
@@ -1424,13 +1322,9 @@ class _DetailsTabState extends State<DetailsTab> {
 
     final templates = await SettingsService.loadSmsTemplates();
     final reviewUrl = SettingsService.readGoogleReviewUrl(config);
-    final name = ctrl.contactName.trim().isEmpty
-        ? 'there'
-        : ctrl.contactName.trim();
     final address = ctrl.workAddress.trim();
     final template = templates['job_done'] ?? SettingsService.defaultJobDoneSms;
-    var body = template
-        .replaceAll('{name}', name)
+    var body = SmsText.fillName(template, ctrl.contactName)
         .replaceAll('{date}', '')
         .replaceAll('{time}', '')
         .replaceAll('{address}', address)
@@ -1486,9 +1380,38 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
+  Widget _applianceCountBadge(int count) {
+    return Container(
+      width: 18,
+      height: 18,
+      decoration: BoxDecoration(
+        color: AppColors.primary,
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        '$count',
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+          height: 1.1,
+        ),
+      ),
+    );
+  }
+
   Widget _buildApplianceHero() {
     final appliance = _applianceSummary();
+    final appliances = _applianceList();
     final model = appliance.model;
+    final extraTypes = appliances.length > 1
+        ? appliances
+              .sublist(1)
+              .map((a) => trAny((a['type'] ?? '').toString()))
+              .where((type) => type.trim().isNotEmpty)
+              .join(', ')
+        : '';
     return Material(
       color: Colors.white,
       shape: RoundedRectangleBorder(
@@ -1505,7 +1428,17 @@ class _DetailsTabState extends State<DetailsTab> {
           padding: const EdgeInsets.all(8),
           child: Row(
             children: [
-              AppliancePicture(type: appliance.type, size: 72),
+              Stack(
+                children: [
+                  AppliancePicture(type: appliance.type, size: 72),
+                  if (appliances.length > 1)
+                    Positioned(
+                      top: 0,
+                      right: 0,
+                      child: _applianceCountBadge(appliances.length),
+                    ),
+                ],
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -1548,6 +1481,19 @@ class _DetailsTabState extends State<DetailsTab> {
                             : Colors.grey,
                       ),
                     ),
+                    if (extraTypes.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        '+ $extraTypes',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -2091,9 +2037,6 @@ class _DetailsTabState extends State<DetailsTab> {
     setState(() => _bookingBusy = true);
     try {
       final templates = await SettingsService.loadSmsTemplates();
-      final name = ctrl.contactName.trim().isEmpty
-          ? 'there'
-          : ctrl.contactName.trim();
       final clock = AppTimeService.bookingWallClock(visit.startAt);
       final date = DateFormat('MMMM d', 'en_US').format(clock);
       final time = DateFormat('HH:mm').format(clock);
@@ -2101,8 +2044,7 @@ class _DetailsTabState extends State<DetailsTab> {
       final template =
           templates['booking_confirm'] ??
           SettingsService.defaultBookingConfirmSms;
-      final body = template
-          .replaceAll('{name}', name)
+      final body = SmsText.fillName(template, ctrl.contactName)
           .replaceAll('{date}', date)
           .replaceAll('{time}', time)
           .replaceAll('{address}', ctrl.workAddress.trim())
@@ -2176,25 +2118,6 @@ class _DetailsTabState extends State<DetailsTab> {
     }
   }
 
-  String _visitDurationLabel(int minutes) {
-    switch (minutes) {
-      case 30:
-        return '30 мин'.tr;
-      case 45:
-        return '45 мин'.tr;
-      case 60:
-        return '1 час'.tr;
-      case 90:
-        return '1.5 часа'.tr;
-      case 120:
-        return '2 часа'.tr;
-      case 180:
-        return '3 часа'.tr;
-      default:
-        return '$minutes ${'мин'.tr}';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -2215,9 +2138,13 @@ class _DetailsTabState extends State<DetailsTab> {
                 ],
                 _buildTopRow(),
                 const SizedBox(height: 12),
-                _buildJobSiteAndCallsRow(),
-                const SizedBox(height: 10),
-                _buildWorkSection(),
+                _tilePair(_sitePiece(), _recordingPiece()),
+                const SizedBox(height: 8),
+                _tilePair(_infoTile(), _photosTile()),
+                if (_jobSource() == 'email') ...[
+                  const SizedBox(height: 8),
+                  _emailRow(),
+                ],
                 const SizedBox(height: 12),
                 _buildVisitsCard(),
                 if (!ctrl.needsReview && _pendingSmsVisit != null) ...[
@@ -2389,14 +2316,13 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 
   void _openJobCard(Job job) {
-    Navigator.push(
+    AppNav.openCard(
       context,
-      MaterialPageRoute(
-        builder: (_) => JobDetailsScreen(
-          jobId: job.id,
-          clientId: job.clientId,
-          jobData: job.toMap(),
-        ),
+      key: AppNav.jobKey(job.id),
+      builder: (_) => JobDetailsScreen(
+        jobId: job.id,
+        clientId: job.clientId,
+        jobData: job.toMap(),
       ),
     );
   }
@@ -2558,19 +2484,6 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  Widget _buildJobSiteAndCallsRow() {
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(child: _sitePiece()),
-          const SizedBox(width: 8),
-          Expanded(child: _recordingPiece()),
-        ],
-      ),
-    );
-  }
-
   Widget _buildContactActions() {
     return Material(
       color: Colors.white,
@@ -2680,60 +2593,111 @@ class _DetailsTabState extends State<DetailsTab> {
     return direction != 'outbound';
   }
 
+  /// Кто говорил: секретарь или мастер. Ради этой строки список и затевался —
+  /// разговор с ИИ надо находить глазами, а не угадывать по времени.
+  String _callAnsweredBy(Map<String, dynamic> item) {
+    switch ((item['answeredBy'] ?? '').toString()) {
+      case 'ai':
+        return 'ответил ИИ'.tr;
+      case 'master':
+        return 'ответили вы'.tr;
+      default:
+        return '';
+    }
+  }
+
+  Widget _callChoiceTile(BuildContext sheetContext, Map<String, dynamic> item) {
+    final who = _callAnsweredBy(item);
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(
+        _callInbound(item) ? Icons.call_received : Icons.call_made,
+        color: _callInbound(item) ? const Color(0xFF008F3B) : AppColors.primary,
+      ),
+      title: Text(
+        _callWhen(item) == null
+            ? 'Звонок'.tr
+            : Formatters.formatDateTime(_callWhen(item)),
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+      subtitle: Text(
+        [
+          _callInbound(item) ? 'Клиент звонил'.tr : 'Мы звонили'.tr,
+          if (who.isNotEmpty) who,
+        ].join(' · '),
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => Navigator.pop(sheetContext, item),
+    );
+  }
+
+  Widget _callGroupTitle(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 4),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontWeight: FontWeight.w700,
+          fontSize: 13,
+          color: Colors.black54,
+        ),
+      ),
+    );
+  }
+
   Future<void> _openJobCalls() async {
     final items = ctrl.callItems;
-    if (items.isEmpty) return;
-    if (items.length == 1) {
-      await openCallRecordingSheet(context, items.last, jobId: ctrl.jobId);
+    final others = ctrl.otherClientCalls;
+    if (items.isEmpty && others.isEmpty) return;
+    if (items.length + others.length == 1) {
+      await openCallRecordingSheet(
+        context,
+        items.isEmpty ? others.first : items.last,
+        jobId: ctrl.jobId,
+      );
       return;
     }
     final chosen = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
       useRootNavigator: true,
+      isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (sheetContext) {
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Звонки по заявке'.tr,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 18,
-                  ),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.7,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Какой разговор открыть'.tr,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 18,
+                      ),
+                    ),
+                    if (items.isNotEmpty) ...[
+                      _callGroupTitle('Звонки по заявке'.tr),
+                      for (final item in items.reversed)
+                        _callChoiceTile(sheetContext, item),
+                    ],
+                    if (others.isNotEmpty) ...[
+                      _callGroupTitle('Другие звонки клиента'.tr),
+                      for (final item in others.reversed)
+                        _callChoiceTile(sheetContext, item),
+                    ],
+                  ],
                 ),
-                const SizedBox(height: 8),
-                for (final item in items.reversed)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(
-                      _callInbound(item)
-                          ? Icons.call_received
-                          : Icons.call_made,
-                      color: _callInbound(item)
-                          ? const Color(0xFF008F3B)
-                          : AppColors.primary,
-                    ),
-                    title: Text(
-                      _callWhen(item) == null
-                          ? 'Звонок'.tr
-                          : Formatters.formatDateTime(_callWhen(item)),
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    subtitle: Text(
-                      _callInbound(item) ? 'Клиент звонил'.tr : 'Мы звонили'.tr,
-                    ),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () => Navigator.pop(sheetContext, item),
-                  ),
-              ],
+              ),
             ),
           ),
         );
@@ -2761,12 +2725,17 @@ class _DetailsTabState extends State<DetailsTab> {
 
   Widget _recordingPiece() {
     final callItems = ctrl.callItems;
-    final lastCall = callItems.isEmpty ? null : callItems.last;
+    // Разговоры клиента до заявки тоже считаем — иначе «+1» не появится и
+    // список выбора будет выглядеть сюрпризом.
+    final total = callItems.length + ctrl.otherClientCalls.length;
+    final lastCall = callItems.isNotEmpty
+        ? callItems.last
+        : (ctrl.otherClientCalls.isEmpty ? null : ctrl.otherClientCalls.last);
     return _compactRecordingCard(
       source: _jobSource(),
       when: lastCall == null ? null : _callWhen(lastCall),
       inbound: lastCall == null ? true : _callInbound(lastCall),
-      extraCount: callItems.length > 1 ? callItems.length - 1 : 0,
+      extraCount: total > 1 ? total - 1 : 0,
       onTap: lastCall != null
           ? _openJobCalls
           : (_jobSource() == 'email' || _jobSource() == 'website'
@@ -2786,82 +2755,51 @@ class _DetailsTabState extends State<DetailsTab> {
   /// Под значением можно дать вторую, более мелкую строку — так в «Где работа»
   /// помещается и имя, и адрес.
   Widget _compactStrip({
-    required Widget leading,
+    required Widget icon,
     required String caption,
     required String value,
+    Color? band,
     String subvalue = '',
     Color? subvalueColor,
     Widget? badge,
     VoidCallback? onTap,
     VoidCallback? onLongPress,
   }) {
-    return Material(
-      color: Colors.white,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: Colors.grey.shade200),
-      ),
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        borderRadius: BorderRadius.circular(10),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
-          child: Row(
-            children: [
-              leading,
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            caption,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
-                        ),
-                        if (badge != null) ...[const SizedBox(width: 4), badge],
-                      ],
-                    ),
-                    Text(
-                      value,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        height: 1.2,
-                        fontWeight: FontWeight.w800,
-                        color: Color(0xFF1A1A1A),
-                      ),
-                    ),
-                    if (subvalue.isNotEmpty)
-                      Text(
-                        subvalue,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          height: 1.15,
-                          fontWeight: FontWeight.w600,
-                          color: subvalueColor ?? Colors.grey.shade700,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ],
+    return _sideTile(
+      icon: icon,
+      band: band,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _tileCaption(caption, badge: badge),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 13,
+              height: 1.2,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF1A1A1A),
+            ),
           ),
-        ),
+          if (subvalue.isNotEmpty)
+            Text(
+              subvalue,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                height: 1.15,
+                fontWeight: FontWeight.w600,
+                color: subvalueColor ?? Colors.grey.shade700,
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -2880,11 +2818,7 @@ class _DetailsTabState extends State<DetailsTab> {
       if (address.isNotEmpty) address,
     ].join(', ');
     return _compactStrip(
-      leading: Icon(
-        Icons.location_on_outlined,
-        size: 22,
-        color: AppColors.primary,
-      ),
+      icon: _tileIcon(Icons.location_on_outlined),
       caption: 'Где работа'.tr,
       value: name,
       subvalue: address.isEmpty ? 'Адрес не указан'.tr : address,
@@ -2916,15 +2850,8 @@ class _DetailsTabState extends State<DetailsTab> {
             if (extraCount > 0) '+$extraCount',
           ].join(' · ');
     return _compactStrip(
-      leading: Container(
-        width: 28,
-        height: 28,
-        decoration: BoxDecoration(
-          color: AppColors.accent,
-          shape: BoxShape.circle,
-        ),
-        child: const Icon(Icons.mic, color: Colors.black, size: 16),
-      ),
+      icon: const _CassetteIcon(),
+      band: AppColors.accent.withValues(alpha: 0.35),
       caption: caption,
       value: value,
       badge: when != null && sourceLabel.isNotEmpty
@@ -2961,14 +2888,13 @@ class _DetailsTabState extends State<DetailsTab> {
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
-              Navigator.push(
+              AppNav.openCard(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => JobDetailsScreen(
-                    jobId: job.id,
-                    clientId: job.clientId,
-                    jobData: job.toMap(),
-                  ),
+                key: AppNav.jobKey(job.id),
+                builder: (_) => JobDetailsScreen(
+                  jobId: job.id,
+                  clientId: job.clientId,
+                  jobData: job.toMap(),
                 ),
               );
             },
@@ -3110,169 +3036,68 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 }
 
-class _TrackingEditResult {
-  final String number;
-  final String amazonId;
-  final String carrier;
-
-  const _TrackingEditResult({
-    required this.number,
-    required this.amazonId,
-    required this.carrier,
-  });
-}
-
-const _kTrackingSuppliers = <String, String>{
-  'amazon': 'Amazon',
-  'reliable_parts': 'Reliable Parts',
-  'partselect': 'PartSelect',
-  'encompass': 'Encompass / RepairClinic',
-  'marcone': 'Marcone',
-  'ebay': 'eBay',
-  'carrier': 'UPS / FedEx / Purolator / Canada Post',
-  'other': 'Другой',
-};
-
-class _TrackingEditDialog extends StatefulWidget {
-  final String trackingNumber;
-  final String amazonOrderId;
-  final String carrier;
-
-  const _TrackingEditDialog({
-    required this.trackingNumber,
-    required this.amazonOrderId,
-    required this.carrier,
-  });
-
-  @override
-  State<_TrackingEditDialog> createState() => _TrackingEditDialogState();
-}
-
-class _TrackingEditDialogState extends State<_TrackingEditDialog> {
-  late final TextEditingController _numberCtrl;
-  late final TextEditingController _amazonCtrl;
-  late String _carrier;
-  bool _pickingSupplier = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _numberCtrl = TextEditingController(text: widget.trackingNumber);
-    _amazonCtrl = TextEditingController(text: widget.amazonOrderId);
-    _carrier = _kTrackingSuppliers.containsKey(widget.carrier)
-        ? widget.carrier
-        : 'other';
-  }
-
-  @override
-  void dispose() {
-    _numberCtrl.dispose();
-    _amazonCtrl.dispose();
-    super.dispose();
-  }
-
-  void _save() {
-    FocusScope.of(context).unfocus();
-    Navigator.pop(
-      context,
-      _TrackingEditResult(
-        number: _numberCtrl.text,
-        amazonId: _amazonCtrl.text,
-        carrier: _carrier,
-      ),
-    );
-  }
+class _CassetteIcon extends StatelessWidget {
+  const _CassetteIcon();
 
   @override
   Widget build(BuildContext context) {
-    final label = (_kTrackingSuppliers[_carrier] ?? 'Другой').tr;
-    return AlertDialog(
-      title: Text('Отслеживание'.tr),
-      scrollable: true,
-      content: SizedBox(
-        width: (MediaQuery.sizeOf(context).width - 72).clamp(240.0, 320.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            InkWell(
-              onTap: () => setState(() => _pickingSupplier = !_pickingSupplier),
-              borderRadius: BorderRadius.circular(8),
-              child: InputDecorator(
-                decoration: InputDecoration(
-                  labelText: 'Поставщик'.tr,
-                  border: const OutlineInputBorder(),
-                  suffixIcon: Icon(
-                    _pickingSupplier ? Icons.expand_less : Icons.expand_more,
-                  ),
-                ),
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ),
-            if (_pickingSupplier) ...[
-              const SizedBox(height: 8),
-              for (final entry in _kTrackingSuppliers.entries)
-                ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  selected: entry.key == _carrier,
-                  title: Text(
-                    entry.value.tr,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: entry.key == _carrier
-                      ? const Icon(Icons.check, size: 18)
-                      : null,
-                  onTap: () {
-                    setState(() {
-                      _carrier = entry.key;
-                      _pickingSupplier = false;
-                    });
-                  },
-                ),
-            ],
-            const SizedBox(height: 12),
-            TextField(
-              controller: _numberCtrl,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _save(),
-              decoration: InputDecoration(
-                labelText: 'Трек-номер'.tr,
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _amazonCtrl,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _save(),
-              decoration: InputDecoration(
-                labelText: 'Номер заказа'.tr,
-                hintText: '123-1234567-1234567',
-                border: const OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        IconButton(
-          onPressed: () => Navigator.pop(context),
-          icon: const Icon(Icons.close, color: Colors.redAccent),
-          tooltip: 'Отмена'.tr,
-        ),
-        IconButton(
-          onPressed: _save,
-          icon: const Icon(Icons.check_rounded, color: Color(0xFF22C55E)),
-          tooltip: 'Сохранить'.tr,
-        ),
-      ],
+    return const SizedBox(
+      width: 27,
+      height: 18,
+      child: CustomPaint(painter: _CassettePainter()),
     );
   }
+}
+
+class _CassettePainter extends CustomPainter {
+  const _CassettePainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    const ink = Color(0xFF1A1A1A);
+    final stroke = w * 0.065;
+    final line = Paint()
+      ..color = ink
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
+    final thin = Paint()
+      ..color = ink
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke * 0.75;
+    final body = RRect.fromRectAndRadius(
+      Rect.fromLTWH(stroke / 2, stroke / 2, w - stroke, h - stroke),
+      Radius.circular(w * 0.1),
+    );
+    canvas.drawRRect(body, Paint()..color = Colors.white);
+    canvas.drawRRect(body, line);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTRB(w * 0.2, h * 0.2, w * 0.8, h * 0.62),
+        Radius.circular(h * 0.16),
+      ),
+      thin,
+    );
+    for (final x in [w * 0.37, w * 0.63]) {
+      final center = Offset(x, h * 0.41);
+      canvas.drawCircle(center, h * 0.12, Paint()..color = ink);
+      canvas.drawCircle(center, h * 0.045, Paint()..color = Colors.white);
+    }
+    canvas.drawPath(
+      Path()
+        ..moveTo(w * 0.24, h - stroke / 2)
+        ..lineTo(w * 0.31, h * 0.77)
+        ..lineTo(w * 0.69, h * 0.77)
+        ..lineTo(w * 0.76, h - stroke / 2),
+      line,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _GoogleMapsLogoIcon extends StatelessWidget {

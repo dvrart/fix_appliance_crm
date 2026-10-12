@@ -53,6 +53,7 @@ class JobDetailsController extends ChangeNotifier {
     _initFromJobData();
     _listenJobDocuments();
     _listenRelatedCalls();
+    _listenClientCalls();
     _loadTaxDefault();
     _calculateTravelTime();
     _listenClient();
@@ -105,7 +106,10 @@ class JobDetailsController extends ChangeNotifier {
   StreamSubscription<DocumentSnapshot>? _clientSub;
   StreamSubscription<QuerySnapshot>? _callsCreatedSub;
   StreamSubscription<QuerySnapshot>? _callsJobSub;
+  final List<StreamSubscription<QuerySnapshot>> _clientCallSubs = [];
   final Map<String, Map<String, dynamic>> _relatedCalls = {};
+  final Map<String, Map<String, dynamic>> _clientCalls = {};
+  String _clientCallsKey = '';
   bool _disposed = false;
   bool _financeTabRequested = false;
 
@@ -303,6 +307,7 @@ class JobDetailsController extends ChangeNotifier {
         }
         if (data.containsKey('clientPhone')) {
           jobData['clientPhone'] = data['clientPhone'];
+          _listenClientCalls();
         }
         if (data.containsKey('description')) {
           currentDescription = (data['description'] ?? currentDescription)
@@ -388,18 +393,36 @@ class JobDetailsController extends ChangeNotifier {
       };
     }
     final items = merged.values.toList();
-    items.sort((a, b) {
-      final aAt =
-          CallRecord.parseStamp(a['startTime']) ??
-          CallRecord.parseStamp(a['uploadedAt']) ??
-          DateTime.fromMillisecondsSinceEpoch(0);
-      final bAt =
-          CallRecord.parseStamp(b['startTime']) ??
-          CallRecord.parseStamp(b['uploadedAt']) ??
-          DateTime.fromMillisecondsSinceEpoch(0);
-      return aAt.compareTo(bAt);
-    });
+    _sortCallsByTime(items);
     return items;
+  }
+
+  /// Разговоры с тем же клиентом, которые к заявке не привязаны.
+  ///
+  /// Секретарь часто говорит с человеком до того, как заявка появилась, и та
+  /// беседа висит на черновике или вовсе без заявки. Без этого списка на
+  /// карточке открывался только последний звонок, а разговор с ИИ было не
+  /// послушать.
+  List<Map<String, dynamic>> get otherClientCalls {
+    final linked = {
+      for (final item in callItems)
+        if ((item['callId'] ?? '').toString().trim().isNotEmpty)
+          (item['callId'] ?? '').toString().trim(),
+    };
+    final items = [
+      for (final entry in _clientCalls.entries)
+        if (!linked.contains(entry.key)) entry.value,
+    ];
+    _sortCallsByTime(items);
+    return items;
+  }
+
+  static void _sortCallsByTime(List<Map<String, dynamic>> items) {
+    DateTime at(Map<String, dynamic> item) =>
+        CallRecord.parseStamp(item['startTime']) ??
+        CallRecord.parseStamp(item['uploadedAt']) ??
+        DateTime.fromMillisecondsSinceEpoch(0);
+    items.sort((a, b) => at(a).compareTo(at(b)));
   }
 
   static String _transcriptFromCallHistory(dynamic raw) {
@@ -433,49 +456,49 @@ class JobDetailsController extends ChangeNotifier {
     return a.trim().length >= b.trim().length ? a : b;
   }
 
-  void _listenRelatedCalls() {
-    Map<String, dynamic> toAttachment(QueryDocumentSnapshot doc) {
-      final data = (doc.data() as Map<String, dynamic>?) ?? {};
-      final callId = doc.id;
-      final url =
-          (data['playableUrl'] ??
-                  data['storageUrl'] ??
-                  data['recordingUrl'] ??
-                  '')
-              .toString();
-      final history = (data['aiReception'] is Map)
-          ? (data['aiReception'] as Map)['history']
-          : null;
-      final fromHistory = _transcriptFromCallHistory(history);
-      final stored = (data['transcription'] ?? '').toString();
-      final ru = (data['transcriptionRu'] ?? '').toString();
-      final en = (data['transcriptionEn'] ?? '').toString();
-      final transcription = _preferCallTranscript(
-        _preferCallTranscript(stored, ru),
-        _preferCallTranscript(en, fromHistory),
-      );
-      return {
-        'kind': 'call',
-        'callId': callId,
-        'url': url,
-        'storageUrl': (data['storageUrl'] ?? '').toString(),
-        'name': 'Звонок',
-        'transcription': transcription,
-        'transcriptionRu': (data['transcriptionRu'] ?? transcription)
-            .toString(),
-        'transcriptionEn': (data['transcriptionEn'] ?? '').toString(),
-        'summary': (data['summary'] ?? '').toString(),
-        'history': history,
-        'answeredBy': (data['answeredBy'] ?? '').toString(),
-        'startTime': data['startTime'] ?? data['createdAt'],
-        'direction': (data['direction'] ?? '').toString(),
-        'fromNumber': (data['fromNumber'] ?? '').toString(),
-      };
-    }
+  static Map<String, dynamic> _callAttachment(DocumentSnapshot doc) {
+    final data = (doc.data() as Map<String, dynamic>?) ?? {};
+    final callId = doc.id;
+    final url =
+        (data['playableUrl'] ??
+                data['storageUrl'] ??
+                data['recordingUrl'] ??
+                '')
+            .toString();
+    final history = (data['aiReception'] is Map)
+        ? (data['aiReception'] as Map)['history']
+        : null;
+    final fromHistory = _transcriptFromCallHistory(history);
+    final stored = (data['transcription'] ?? '').toString();
+    final ru = (data['transcriptionRu'] ?? '').toString();
+    final en = (data['transcriptionEn'] ?? '').toString();
+    final transcription = _preferCallTranscript(
+      _preferCallTranscript(stored, ru),
+      _preferCallTranscript(en, fromHistory),
+    );
+    return {
+      'kind': 'call',
+      'callId': callId,
+      'url': url,
+      'storageUrl': (data['storageUrl'] ?? '').toString(),
+      'name': 'Звонок',
+      'transcription': transcription,
+      'transcriptionRu': (data['transcriptionRu'] ?? transcription).toString(),
+      'transcriptionEn': (data['transcriptionEn'] ?? '').toString(),
+      'summary': (data['summary'] ?? '').toString(),
+      'history': history,
+      'answeredBy': (data['answeredBy'] ?? '').toString(),
+      'startTime': data['startTime'] ?? data['createdAt'],
+      'direction': (data['direction'] ?? '').toString(),
+      'fromNumber': (data['fromNumber'] ?? '').toString(),
+      'toNumber': (data['toNumber'] ?? '').toString(),
+    };
+  }
 
+  void _listenRelatedCalls() {
     void ingest(QuerySnapshot snap) {
       for (final doc in snap.docs) {
-        _relatedCalls[doc.id] = toAttachment(doc);
+        _relatedCalls[doc.id] = _callAttachment(doc);
       }
       if (!_disposed) notifyListeners();
     }
@@ -490,6 +513,56 @@ class JobDetailsController extends ChangeNotifier {
         .listen(ingest);
   }
 
+  /// Подписка на звонки этого клиента — по его карточке и по номеру.
+  ///
+  /// Телефон приходит позже самой заявки, поэтому метод можно звать повторно:
+  /// пока ключ не изменился, он ничего не делает.
+  void _listenClientCalls() {
+    final phone = SmsService.toE164(
+      (jobData['clientPhone'] ?? '').toString().trim(),
+    );
+    final key = '$clientId|$phone';
+    if (key == _clientCallsKey) return;
+    _clientCallsKey = key;
+    for (final sub in _clientCallSubs) {
+      sub.cancel();
+    }
+    _clientCallSubs.clear();
+    _clientCalls.clear();
+    final queries = <Query>[
+      if (clientId.trim().isNotEmpty)
+        FirestoreService.callsRef.where('clientId', isEqualTo: clientId),
+      if (phone.length >= 11) ...[
+        FirestoreService.callsRef.where('fromNumber', isEqualTo: phone),
+        FirestoreService.callsRef.where('toNumber', isEqualTo: phone),
+      ],
+    ];
+    for (final query in queries) {
+      _clientCallSubs.add(
+        query.snapshots().listen((snap) {
+          var changed = false;
+          for (final doc in snap.docs) {
+            final data = (doc.data() as Map<String, dynamic>?) ?? {};
+            if (data['deletedAt'] != null) continue;
+            final item = _callAttachment(doc);
+            // Пустые звонки (сорвался гудок) слушать нечего — только шум в списке.
+            final hasAudio =
+                (item['url'] ?? '').toString().trim().isNotEmpty ||
+                (item['storageUrl'] ?? '').toString().trim().isNotEmpty;
+            final hasText = (item['transcription'] ?? '')
+                .toString()
+                .trim()
+                .isNotEmpty;
+            if (!hasAudio && !hasText) continue;
+            _clientCalls[doc.id] = item;
+            changed = true;
+          }
+          if (changed && !_disposed) notifyListeners();
+        }),
+      );
+    }
+  }
+
   @override
   void dispose() {
     _disposed = true;
@@ -497,6 +570,10 @@ class JobDetailsController extends ChangeNotifier {
     _clientSub?.cancel();
     _callsCreatedSub?.cancel();
     _callsJobSub?.cancel();
+    for (final sub in _clientCallSubs) {
+      sub.cancel();
+    }
+    _clientCallSubs.clear();
     super.dispose();
   }
 
@@ -601,6 +678,7 @@ class JobDetailsController extends ChangeNotifier {
         clientEmail = email;
         changed = true;
       }
+      _listenClientCalls();
       if (changed && !_disposed) notifyListeners();
     });
   }
@@ -801,33 +879,6 @@ class JobDetailsController extends ChangeNotifier {
     );
   }
 
-  /// «Перенос визита» из меню статусов: эта заявка остаётся на своей дате
-  /// (визиты закрываются, статус — «Перенос»), а на новую дату создаётся
-  /// отдельная заявка с выбранным статусом (Вызов / Установка / Повторный
-  /// визит). Возвращает id новой заявки или null, если сохранить не удалось.
-  Future<String?> rescheduleToNewJob(JobVisit visit, String status) async {
-    if (!await commitChanges()) return null;
-    final String newJobId;
-    try {
-      newJobId = await JobService.createRescheduledFrom(
-        Job.fromMap(Map<String, dynamic>.from(jobData), jobId),
-        visit: visit,
-        status: status,
-      );
-    } catch (_) {
-      return null;
-    }
-    _applyVisitFields(JobVisit.markAllScheduledDone(visits));
-    _visitsDirty = true;
-    if (JobStatuses.canMarkRescheduled(currentStatus)) {
-      currentStatus = JobStatuses.rescheduled;
-      _queue({'status': JobStatuses.rescheduled});
-    }
-    notifyListeners();
-    await commitChanges();
-    return newJobId;
-  }
-
   /// [correction] — исправление даты/времени этого же визита: статус не
   /// меняется на «Перенос» / «Установка».
   Future<void> updateVisit(JobVisit visit, {bool correction = false}) {
@@ -918,37 +969,33 @@ class JobDetailsController extends ChangeNotifier {
     _queue({'packingNotes': notes});
   }
 
-  Future<void> updateApplianceType(String type) async {
-    await updateAppliance(type: type);
-  }
-
-  Future<void> updateAppliance({required String type, String? brand}) async {
-    final nextType = type.trim();
-    if (nextType.isEmpty) return;
-    final nextBrand = (brand ?? jobData['brand'] ?? '').toString().trim();
-    jobData['applianceType'] = nextType;
-    jobData['brand'] = nextBrand;
-    final raw = jobData['appliances'];
+  Future<void> updateAppliances(List<Map<String, dynamic>> items) async {
     final list = <Map<String, dynamic>>[];
-    if (raw is List) {
-      for (final item in raw) {
-        if (item is Map) list.add(Map<String, dynamic>.from(item));
-      }
+    for (final item in items) {
+      final normalized = <String, String>{
+        'type': (item['type'] ?? '').toString().trim(),
+        'brand': (item['brand'] ?? '').toString().trim(),
+        'model': (item['model'] ?? '').toString().trim(),
+        'serialNumber': (item['serialNumber'] ?? '').toString().trim(),
+        'issue': (item['issue'] ?? '').toString().trim(),
+      };
+      if (normalized['type']!.isEmpty) continue;
+      list.add(normalized);
     }
-    if (list.isEmpty) {
-      list.add({
-        'type': nextType,
-        'brand': nextBrand,
-        'model': (jobData['model'] ?? '').toString(),
-        'serialNumber': (jobData['serialNumber'] ?? '').toString(),
-        'issue': currentDescription,
-      });
-    } else {
-      list[0]['type'] = nextType;
-      list[0]['brand'] = nextBrand;
-    }
+    if (list.isEmpty) return;
+    final first = list.first;
     jobData['appliances'] = list;
-    _queue({'applianceType': nextType, 'brand': nextBrand, 'appliances': list});
+    jobData['applianceType'] = first['type'];
+    jobData['brand'] = first['brand'];
+    jobData['model'] = first['model'];
+    jobData['serialNumber'] = first['serialNumber'];
+    _queue({
+      'appliances': list,
+      'applianceType': first['type'],
+      'brand': first['brand'],
+      'model': first['model'],
+      'serialNumber': first['serialNumber'],
+    });
   }
 
   void replaceAttachments(List<Map<String, dynamic>> next) {

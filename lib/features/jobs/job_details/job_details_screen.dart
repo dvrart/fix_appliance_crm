@@ -3,11 +3,14 @@ import 'package:flutter/material.dart';
 import '../../../core/app_feedback.dart';
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
+import '../../../core/utils/app_date_picker.dart';
 import '../../../models/client.dart';
+import '../../../models/job.dart';
 import '../../../services/services.dart';
 import '../../clients/client_details_screen.dart';
 import '../../../shared/widgets/confirm_action_sheet.dart';
 import '../../../shared/widgets/unsaved_changes_dialog.dart';
+import '../../../shared/app_nav.dart';
 import '../../../shared/stale_routes.dart';
 import '../../../shared/unsaved_navigation_gate.dart';
 import 'job_details_controller.dart';
@@ -56,7 +59,10 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
       clientId: widget.clientId,
       jobData: widget.jobData,
     );
-    UnsavedNavigationGate.push(_allowNavigateAway);
+    UnsavedNavigationGate.push(
+      _allowNavigateAway,
+      unsaved: () => _controller.hasUnsavedChanges,
+    );
     StaleRoutes.watchJob(widget.jobId, this);
 
     if (widget.openDocumentIndex != null) {
@@ -98,7 +104,23 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
     super.dispose();
   }
 
+  /// Ответ списка «Что удалить?»: вся заявка, а не отдельный визит.
+  static const String _wholeJobChoice = '*job*';
+
+  /// Корзина в шапке. Пока визит один — как раньше. Если их несколько, она
+  /// сначала спрашивает, что убрать: один выезд или всю заявку. Раньше она
+  /// молча уносила всё вместе со счётом и оплатами (FIX, 11.10.2026).
   Future<void> _deleteJob() async {
+    final visits = _controller.visits;
+    if (visits.length > 1) {
+      final choice = await _pickDeleteTarget(visits);
+      if (choice == null || !mounted) return;
+      if (choice != _wholeJobChoice) {
+        await _deleteOneVisit(visits, choice);
+        return;
+      }
+    }
+
     final confirm = await showConfirmCancelSheet(
       context,
       title: 'Удалить заявку?'.tr,
@@ -114,6 +136,117 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
     // Закрывает эту карточку и все её копии глубже в стеке (заявка → клиент →
     // та же заявка), иначе «Назад» вернёт на удалённую заявку.
     StaleRoutes.dropJob(jobId);
+  }
+
+  Future<void> _deleteOneVisit(List<JobVisit> visits, String visitId) async {
+    JobVisit? visit;
+    for (final item in visits) {
+      if (item.id == visitId) visit = item;
+    }
+    if (visit == null) return;
+    final ok = await showConfirmCancelSheet(
+      context,
+      title: 'Удалить визит?'.tr,
+      message:
+          '${appDateTimeLabel(visit.startAt)}\n\n${'Остальные визиты, счёт и оплаты останутся на месте.'.tr}',
+      confirmLabel: 'Удалить'.tr,
+    );
+    if (!ok || !mounted) return;
+    await _controller.removeVisit(visitId);
+    await _controller.commitChanges();
+  }
+
+  /// Список выездов заявки: свежий сверху. Возвращает id визита,
+  /// [_wholeJobChoice] или null, если закрыли не выбрав.
+  Future<String?> _pickDeleteTarget(List<JobVisit> visits) {
+    final sorted = [...visits]..sort((a, b) => b.startAt.compareTo(a.startAt));
+    return showModalBottomSheet<String>(
+      context: context,
+      useRootNavigator: true,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Что удалить?'.tr,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'В этой заявке несколько выездов. Нажмите на тот, который убрать — остальные останутся.'
+                          .tr,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                        color: Color(0xFF3D3D3D),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 20),
+              for (final visit in sorted)
+                ListTile(
+                  leading: Icon(
+                    Icons.event_rounded,
+                    color: Colors.grey.shade600,
+                  ),
+                  title: Text(
+                    appDateTimeLabel(visit.startAt),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 15,
+                    ),
+                  ),
+                  subtitle: Text(_visitStateLabel(visit)),
+                  trailing: Icon(
+                    Icons.delete_outline,
+                    color: Colors.red.shade700,
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, visit.id),
+                ),
+              const Divider(height: 20),
+              ListTile(
+                leading: Icon(Icons.delete_forever, color: Colors.red.shade700),
+                title: Text(
+                  'Удалить всю заявку'.tr,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 15,
+                    color: Colors.red.shade700,
+                  ),
+                ),
+                subtitle: Text(
+                  '${'Визитов'.tr}: ${visits.length} — ${'вместе со счетами, оплатами и фото'.tr}',
+                ),
+                onTap: () => Navigator.pop(sheetContext, _wholeJobChoice),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _visitStateLabel(JobVisit visit) {
+    if (visit.isDone) return 'Выполнен'.tr;
+    if (visit.isCancelled) return 'Отменён'.tr;
+    return 'Запланирован'.tr;
   }
 
   Future<bool> _applyLeaveAction(
@@ -229,19 +362,18 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
       }
     }
 
-    Navigator.push(
+    AppNav.openCard(
       context,
-      MaterialPageRoute(
-        builder: (context) => ClientDetailsScreen(
-          clientId: clientId,
-          clientData: {
-            'name': name,
-            'fullName': name,
-            'phone': phone,
-            'address': address,
-            'email': email,
-          },
-        ),
+      key: AppNav.clientKey(clientId),
+      builder: (context) => ClientDetailsScreen(
+        clientId: clientId,
+        clientData: {
+          'name': name,
+          'fullName': name,
+          'phone': phone,
+          'address': address,
+          'email': email,
+        },
       ),
     );
   }

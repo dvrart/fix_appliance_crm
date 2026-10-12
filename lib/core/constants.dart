@@ -33,6 +33,7 @@ class JobStatuses {
   static const String deposit = 'Депозит';
   static const String rescheduled = 'Перенос';
   static const String waitingPart = 'Ожидание запчасти';
+  static const String waitingPayment = 'Ожидание оплаты';
   static const String install = 'Установка';
   static const String callBack = 'Позвонить';
   static const String repeatVisit = 'Повторный визит';
@@ -44,6 +45,7 @@ class JobStatuses {
     call,
     deposit,
     waitingPart,
+    waitingPayment,
     install,
     repeatVisit,
     callBack,
@@ -55,7 +57,8 @@ class JobStatuses {
 
   /// Не предлагаем вручную: «В работе» убран, «Перенос» ставится сам,
   /// «Повтор» («Перенесено») ставит только createRepeatFrom — перенос визита
-  /// делается пунктом «Перенос визита» в меню статусов.
+  /// делается статусами «Установка» и «Повторный визит», и новый визит
+  /// добавляется в ту же заявку.
   static const List<String> hideFromPicker = [inProgress, rescheduled, repeat];
 
   static String defaultLabel(String status) {
@@ -183,6 +186,8 @@ class JobStatuses {
         return Colors.deepPurple;
       case waitingPart:
         return Colors.orange;
+      case waitingPayment:
+        return const Color(0xFF546E7A);
       case install:
         return const Color(0xFF3F51B5);
       case callBack:

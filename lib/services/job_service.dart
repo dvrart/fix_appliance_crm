@@ -362,26 +362,6 @@ class JobService {
   static Future<String> createRepeatFrom(Job original) =>
       create(_followUpOf(original, status: JobStatuses.repeat));
 
-  /// «Перенос визита»: исходная заявка остаётся на своей дате, а на новую
-  /// дату — отдельная заявка с выбранным статусом и ссылкой на исходную.
-  static Future<String> createRescheduledFrom(
-    Job original, {
-    required JobVisit visit,
-    required String status,
-  }) {
-    return create(
-      _followUpOf(
-        original,
-        status: status,
-      ).copyWith(
-        visits: [visit],
-        scheduledAt: visit.startAt,
-        durationMinutes: visit.durationMinutes,
-        needsReview: original.needsReview,
-      ),
-    );
-  }
-
   static Job _followUpOf(Job original, {required String status}) {
     final appliances = original.appliances
         .map(

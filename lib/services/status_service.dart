@@ -57,6 +57,7 @@ class StatusService {
     JobStatuses.deposit: 0xFFFFB300,
     JobStatuses.rescheduled: 0xFF7E57C2,
     JobStatuses.waitingPart: 0xFFFB8C00,
+    JobStatuses.waitingPayment: 0xFF546E7A,
     JobStatuses.install: 0xFF3F51B5,
     JobStatuses.callBack: 0xFF00897B,
     JobStatuses.repeatVisit: 0xFF5C6BC0,
@@ -452,12 +453,14 @@ class StatusService {
     if (!rawIds.contains(JobStatuses.repeatVisit)) return true;
     if (!rawIds.contains(JobStatuses.repeat)) return true;
     if (!rawIds.contains(JobStatuses.deposit)) return true;
+    if (!rawIds.contains(JobStatuses.waitingPayment)) return true;
     final parsedIds = {for (final item in parsed) item.id};
     if (!parsedIds.contains(JobStatuses.install)) return true;
     if (!parsedIds.contains(JobStatuses.callBack)) return true;
     if (!parsedIds.contains(JobStatuses.repeatVisit)) return true;
     if (!parsedIds.contains(JobStatuses.repeat)) return true;
     if (!parsedIds.contains(JobStatuses.deposit)) return true;
+    if (!parsedIds.contains(JobStatuses.waitingPayment)) return true;
     return false;
   }
 
