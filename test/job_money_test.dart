@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fix_appliance_crm/models/job.dart';
 import 'package:fix_appliance_crm/services/job_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -373,6 +374,30 @@ void main() {
         ]),
         'none',
       );
+    });
+  });
+
+  // На этой дате держатся подпись в списке «Счета» и его сортировка.
+  group('дата документа', () {
+    test('строку ISO разбирает', () {
+      expect(
+        Job.documentCreatedAt({'createdAt': '2026-10-05T14:32:00.000'}),
+        DateTime(2026, 10, 5, 14, 32),
+      );
+    });
+
+    test('Timestamp из Firestore разбирает', () {
+      final when = DateTime(2026, 10, 5, 14, 32);
+      expect(
+        Job.documentCreatedAt({'createdAt': Timestamp.fromDate(when)}),
+        when,
+      );
+    });
+
+    test('без даты и с мусором отдаёт null, а не 1970 год', () {
+      expect(Job.documentCreatedAt(invoice()), isNull);
+      expect(Job.documentCreatedAt({'createdAt': 'позавчера'}), isNull);
+      expect(Job.documentCreatedAt({'createdAt': 42}), isNull);
     });
   });
 }

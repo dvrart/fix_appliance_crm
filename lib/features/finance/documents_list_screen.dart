@@ -7,6 +7,7 @@ import '../../core/utils/formatters.dart';
 import '../../models/job.dart';
 import '../../services/job_service.dart';
 import '../jobs/job_details/job_details_screen.dart';
+import '../../shared/app_nav.dart';
 
 class DocumentsListScreen extends StatefulWidget {
   final int initialPage;
@@ -114,8 +115,36 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
         rows.add(_DocRow(job: job, doc: doc, index: i));
       }
     }
-    rows.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    rows.sort((a, b) => b.sortKey.compareTo(a.sortKey));
     return rows;
+  }
+
+  /// Индекс документа в заявке по типу и номеру — для перехода по связке
+  /// «смета ↔ счёт».
+  int _docIndexByTypeNumber(Job job, String type, dynamic number) {
+    if (number == null) return -1;
+    for (var i = 0; i < job.documents.length; i++) {
+      final d = job.documents[i];
+      final t = (d['type'] ?? 'Invoice').toString();
+      if (type == 'Estimate' ? t != 'Estimate' : t == 'Estimate') continue;
+      if (d['number'] == number) return i;
+    }
+    return -1;
+  }
+
+  void _openDocument(Job job, int index) {
+    final data = Map<String, dynamic>.from(job.toMap())..remove('updatedAt');
+    AppNav.openCard(
+      context,
+      key: AppNav.jobKey(job.id),
+      builder: (_) => JobDetailsScreen(
+        jobId: job.id,
+        clientId: job.clientId,
+        jobData: data,
+        initialTab: 1,
+        openDocumentIndex: index,
+      ),
+    );
   }
 
   Widget _list(List<_DocRow> rows, {required String empty}) {
@@ -137,27 +166,19 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
         final title = number == null
             ? '${row.doc['type'] ?? 'Invoice'} #${row.index + 1}'
             : '${row.doc['type'] ?? 'Invoice'} #$number';
+        final stamp = Formatters.messageStamp(row.createdAt);
         final mark = row.isEstimate ? '' : Job.documentPayMark(row.doc);
         final look = _payLook(mark, estimate: row.isEstimate);
+        final linkedNumber = row.isEstimate
+            ? row.doc['convertedInvoiceNumber']
+            : row.doc['fromEstimateNumber'];
         return Card(
           clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: () {
-              final data = Map<String, dynamic>.from(row.job.toMap())
-                ..remove('updatedAt');
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => JobDetailsScreen(
-                    jobId: row.job.id,
-                    clientId: row.job.clientId,
-                    jobData: data,
-                    initialTab: 1,
-                    openDocumentIndex: row.index,
-                  ),
-                ),
-              );
-            },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+          InkWell(
+            onTap: () => _openDocument(row.job, row.index),
             child: IntrinsicHeight(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -177,12 +198,33 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  title,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 16,
-                                  ),
+                                Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.baseline,
+                                  textBaseline: TextBaseline.alphabetic,
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        title,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 16,
+                                        ),
+                                      ),
+                                    ),
+                                    // Когда выставлен. По одному номеру не
+                                    // понять, этот счёт вчерашний или
+                                    // прошлогодний.
+                                    if (stamp.isNotEmpty)
+                                      Text(
+                                        stamp,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.grey.shade600,
+                                        ),
+                                      ),
+                                  ],
                                 ),
                                 const SizedBox(height: 2),
                                 Text(row.job.clientName),
@@ -217,8 +259,66 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
               ),
             ),
           ),
+          if (linkedNumber != null)
+            _buildDocLinkStrip(
+              estimate: !row.isEstimate,
+              label:
+                  '${row.isEstimate ? 'Счёт'.tr : 'Смета'.tr} #$linkedNumber',
+              onTap: () {
+                final idx = _docIndexByTypeNumber(
+                  row.job,
+                  row.isEstimate ? 'Invoice' : 'Estimate',
+                  linkedNumber,
+                );
+                if (idx < 0) return;
+                _openDocument(row.job, idx);
+              },
+            ),
+            ],
+          ),
         );
       },
+    );
+  }
+
+  /// Нижняя строка-связка в объединённой карточке: из счёта ведёт к смете,
+  /// из сметы — к созданному счёту.
+  Widget _buildDocLinkStrip({
+    required bool estimate,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    final color = estimate ? Colors.orange.shade800 : Colors.green.shade700;
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade50,
+          border: Border(top: BorderSide(color: Colors.grey.shade300)),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              estimate ? Icons.description_outlined : Icons.receipt_long,
+              size: 16,
+              color: color,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            Icon(Icons.chevron_right, size: 18, color: Colors.grey.shade500),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -232,12 +332,12 @@ class _DocRow {
 
   bool get isEstimate => (doc['type'] ?? '') == 'Estimate';
 
-  DateTime get createdAt {
-    final raw = doc['createdAt'];
-    if (raw is DateTime) return raw;
-    if (raw is String) return DateTime.tryParse(raw) ?? DateTime(1970);
-    return DateTime(1970);
-  }
+  /// Дата самого документа. У давних счетов её может не быть — тогда в
+  /// карточке даты нет, а в сортировке подставляется дата заявки, чтобы
+  /// такой счёт не падал в 1970 год в самый низ списка.
+  DateTime? get createdAt => Job.documentCreatedAt(doc);
+
+  DateTime get sortKey => createdAt ?? job.createdAt;
 }
 
 class _PayLook {
