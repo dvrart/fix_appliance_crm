@@ -13,6 +13,7 @@ import '../../services/job_service.dart';
 import '../../services/sms_service.dart';
 import '../../services/twilio_service.dart';
 import '../../services/warehouse_service.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/job_agenda_card.dart';
 import 'job_details/job_details_screen.dart';
 
@@ -773,14 +774,13 @@ class UnscheduledJobsScreen extends StatelessWidget {
                   child: JobAgendaCard(
                     job: job,
                     onTap: () {
-                      Navigator.push(
+                      AppNav.openCard(
                         context,
-                        MaterialPageRoute(
-                          builder: (_) => JobDetailsScreen(
-                            jobId: job.id,
-                            clientId: job.clientId,
-                            jobData: job.toMap(),
-                          ),
+                        key: AppNav.jobKey(job.id),
+                        builder: (_) => JobDetailsScreen(
+                          jobId: job.id,
+                          clientId: job.clientId,
+                          jobData: job.toMap(),
                         ),
                       );
                     },

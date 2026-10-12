@@ -13,6 +13,7 @@ import 'features/messages/global_sms_listener.dart';
 import 'features/ai/assistant/assistant_host.dart';
 import 'features/ai/assistant/assistant_screen_sight.dart';
 import 'features/field/field_assistant_host.dart';
+import 'shared/app_nav.dart';
 import 'shared/widgets/app_lock_gate.dart';
 
 class FixApplianceCrmApp extends StatelessWidget {
@@ -29,6 +30,7 @@ class FixApplianceCrmApp extends StatelessWidget {
         final ui = AppUiSettings.instance;
         return MaterialApp(
       navigatorKey: rootNavigatorKey,
+      navigatorObservers: [AppNav.rootObserver],
       title: 'Fix Appliance CRM',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(

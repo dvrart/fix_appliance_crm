@@ -22,6 +22,7 @@ import '../jobs/delivery_van_button.dart';
 import '../jobs/jobs_screen.dart';
 import '../jobs/basket_screen.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/animated_app_logo.dart';
 import '../../shared/widgets/appliance_logo.dart';
 import '../../shared/widgets/calendar_hatch.dart';
@@ -1770,20 +1771,21 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                                             .opaque,
                                                                     onTap: () {
                                                                       AppFeedback.pleasant();
-                                                                      Navigator.push(
+                                                                      AppNav.openCard(
                                                                         context,
-                                                                        MaterialPageRoute(
-                                                                          builder:
-                                                                              (
-                                                                                context,
-                                                                              ) => JobDetailsScreen(
-                                                                                jobId: jobId,
-                                                                                clientId:
-                                                                                    jobData['clientId'] ??
-                                                                                    '',
-                                                                                jobData: jobData,
-                                                                              ),
+                                                                        key: AppNav.jobKey(
+                                                                          jobId,
                                                                         ),
+                                                                        builder:
+                                                                            (
+                                                                              context,
+                                                                            ) => JobDetailsScreen(
+                                                                              jobId: jobId,
+                                                                              clientId:
+                                                                                  jobData['clientId'] ??
+                                                                                  '',
+                                                                              jobData: jobData,
+                                                                            ),
                                                                       );
                                                                     },
                                                                     // Пункт 19: перехватываем долгое нажатие на выполненной

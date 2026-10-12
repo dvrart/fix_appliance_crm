@@ -4,6 +4,7 @@ import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../models/job.dart';
 import '../../services/job_service.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/job_agenda_card.dart';
 import 'job_details/job_details_screen.dart';
 
@@ -82,14 +83,13 @@ class ActiveJobsScreen extends StatelessWidget {
                       ? job.latestVisit
                       : (job.visitOn(target) ?? job.latestVisit),
                   onTap: () {
-                    Navigator.push(
+                    AppNav.openCard(
                       context,
-                      MaterialPageRoute(
-                        builder: (_) => JobDetailsScreen(
-                          jobId: job.id,
-                          clientId: job.clientId,
-                          jobData: job.toMap(),
-                        ),
+                      key: AppNav.jobKey(job.id),
+                      builder: (_) => JobDetailsScreen(
+                        jobId: job.id,
+                        clientId: job.clientId,
+                        jobData: job.toMap(),
                       ),
                     );
                   },

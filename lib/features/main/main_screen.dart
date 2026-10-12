@@ -7,9 +7,11 @@ import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/motion.dart';
 import '../../core/ui_scale.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/custom_drawer.dart';
 import '../../shared/unsaved_navigation_gate.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
+import '../../shared/widgets/count_badge.dart';
 import '../../shared/widgets/fade_indexed_stack.dart';
 import '../../shared/widgets/offline_chip.dart';
 import '../calendar/calendar_screen.dart';
@@ -22,6 +24,7 @@ import '../messages/compose_speed_dial.dart';
 import '../messages/conversation_screen.dart';
 import '../ai/assistant/assistant_face.dart';
 import '../ai/assistant/review_bell_button.dart';
+import '../../services/comms_badge_service.dart';
 import '../../services/job_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/offline_queue_service.dart';
@@ -112,6 +115,16 @@ class _MainScreenState extends State<MainScreen>
   void _onCommsTabChanged() {
     if (!mounted) return;
     setState(() => _composeOpen = false);
+    _markCallsSeenIfVisible();
+  }
+
+  /// «Новое» на вкладке «Звонки» гаснет, когда список действительно перед
+  /// глазами. Подвкладка живёт в дереве всегда, поэтому одного её индекса
+  /// мало — нужна ещё и выбранная вкладка «Связь».
+  void _markCallsSeenIfVisible() {
+    if (_currentIndex == 1 && AppCommands.commsTab.value == 0) {
+      CommsBadgeService.markCallsSeen();
+    }
   }
 
   void _syncRoot() {
@@ -140,24 +153,38 @@ class _MainScreenState extends State<MainScreen>
       AppFeedback.pleasant();
       await _popToRoot(_navigatorKeys[index].currentState);
       _syncRoot();
+      _markCallsSeenIfVisible();
       return;
     }
     if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
     if (!mounted) return;
     AppFeedback.pleasant();
+    final leaving = _currentIndex;
     setState(() {
       _currentIndex = index;
       _composeOpen = false;
     });
+    _forgetTab(leaving);
     _syncRoot();
+    _markCallsSeenIfVisible();
+  }
+
+  /// Вкладку, с которой ушли, возвращаем на корень: нажал «Календарь» —
+  /// видишь календарь, а не заявку, открытую полчаса назад. Ждём конец
+  /// кроссфейда, иначе сброс видно на уходящей вкладке.
+  void _forgetTab(int index) {
+    Future.delayed(const Duration(milliseconds: 360), () {
+      if (!mounted || _currentIndex == index) return;
+      final navigator = _navigatorKeys[index].currentState;
+      if (navigator == null) return;
+      AppNav.resetToRoot(navigator);
+      _syncRoot();
+    });
   }
 
   Future<void> _popToRoot(NavigatorState? navigator) async {
     if (navigator == null) return;
-    while (navigator.canPop()) {
-      final popped = await navigator.maybePop();
-      if (!popped) return;
-    }
+    await AppNav.popToRoot(navigator);
   }
 
   bool get _isDefaultHome {
@@ -168,7 +195,9 @@ class _MainScreenState extends State<MainScreen>
     if (_currentIndex != 0) {
       if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
       if (!mounted) return;
+      final leaving = _currentIndex;
       setState(() => _currentIndex = 0);
+      _forgetTab(leaving);
     }
     await _popToRoot(_navigatorKeys[0].currentState);
     if (!mounted) return;
@@ -481,6 +510,16 @@ class _MainScreenState extends State<MainScreen>
   Widget _dockTab(int index, IconData icon) {
     final selected = _currentIndex == index;
     final scale = AppUiSettings.instance.scale;
+    Widget glyph = Icon(
+      icon,
+      size: 32 * scale,
+      color: selected ? AppColors.primary : Colors.white,
+    );
+    // Новый звонок и непрочитанное сообщение теперь видно там, где их
+    // разбирают, а не в колокольчике.
+    if (index == 1) {
+      glyph = CountBadge(count: CommsBadgeService.total, child: glyph);
+    }
     return InkWell(
       onTap: () => _selectTab(index),
       child: Padding(
@@ -496,11 +535,7 @@ class _MainScreenState extends State<MainScreen>
             color: selected ? AppColors.accent : Colors.transparent,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: Icon(
-            icon,
-            size: 32 * scale,
-            color: selected ? AppColors.primary : Colors.white,
-          ),
+          child: glyph,
         ),
       ),
     );
@@ -524,26 +559,34 @@ class _MainScreenState extends State<MainScreen>
   }
 }
 
-class _TabNavObserver extends NavigatorObserver {
+class _TabNavObserver extends AppNavObserver {
   final VoidCallback onChange;
 
   _TabNavObserver(this.onChange);
 
   @override
-  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) =>
-      onChange();
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPush(route, previousRoute);
+    onChange();
+  }
 
   @override
-  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) =>
-      onChange();
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPop(route, previousRoute);
+    onChange();
+  }
 
   @override
-  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) =>
-      onChange();
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didRemove(route, previousRoute);
+    onChange();
+  }
 
   @override
-  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) =>
-      onChange();
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
+    onChange();
+  }
 }
 
 class _LeftMenuHandle extends StatelessWidget {

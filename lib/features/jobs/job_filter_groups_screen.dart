@@ -6,6 +6,7 @@ import '../../models/job.dart';
 import '../../services/job_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/status_service.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/job_agenda_card.dart';
 import 'job_details/job_details_screen.dart';
 
@@ -150,15 +151,14 @@ class _JobFilterGroupsScreenState extends State<JobFilterGroupsScreen> {
                                           job: job,
                                           visit: job.latestVisit,
                                           onTap: () {
-                                            Navigator.push(
+                                            AppNav.openCard(
                                               context,
-                                              MaterialPageRoute(
-                                                builder: (context) =>
-                                                    JobDetailsScreen(
-                                                  jobId: job.id,
-                                                  clientId: job.clientId,
-                                                  jobData: job.toMap(),
-                                                ),
+                                              key: AppNav.jobKey(job.id),
+                                              builder: (context) =>
+                                                  JobDetailsScreen(
+                                                jobId: job.id,
+                                                clientId: job.clientId,
+                                                jobData: job.toMap(),
                                               ),
                                             );
                                           },

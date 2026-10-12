@@ -9,6 +9,7 @@ import '../../../models/job.dart';
 import '../../../services/client_service.dart';
 import '../../../services/job_service.dart';
 import '../../../services/maps_service.dart';
+import '../../../shared/app_nav.dart';
 import '../../calls/call_screen.dart';
 import '../../clients/client_details_screen.dart';
 import '../../jobs/job_details/job_details_screen.dart';
@@ -67,14 +68,14 @@ class AssistantActions {
         final jobId = (args['job_id'] as String?) ?? '';
         if (jobId.isEmpty) return;
         final job = await JobService.getById(jobId);
-        if (job == null) return;
-        nav.push(
-          MaterialPageRoute(
-            builder: (_) => JobDetailsScreen(
-              jobId: job.id,
-              clientId: job.clientId,
-              jobData: job.toMap(),
-            ),
+        if (job == null || !nav.mounted) return;
+        AppNav.openCard(
+          nav.context,
+          key: AppNav.jobKey(job.id),
+          builder: (_) => JobDetailsScreen(
+            jobId: job.id,
+            clientId: job.clientId,
+            jobData: job.toMap(),
           ),
         );
         return;
@@ -82,13 +83,13 @@ class AssistantActions {
         final clientId = (args['client_id'] as String?) ?? '';
         if (clientId.isEmpty) return;
         final client = await ClientService.getById(clientId);
-        if (client == null) return;
-        nav.push(
-          MaterialPageRoute(
-            builder: (_) => ClientDetailsScreen(
-              clientId: client.id,
-              clientData: client.toMap(),
-            ),
+        if (client == null || !nav.mounted) return;
+        AppNav.openCard(
+          nav.context,
+          key: AppNav.clientKey(client.id),
+          builder: (_) => ClientDetailsScreen(
+            clientId: client.id,
+            clientData: client.toMap(),
           ),
         );
         return;

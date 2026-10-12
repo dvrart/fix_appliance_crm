@@ -2,12 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/motion.dart';
+import '../../core/sms_text.dart';
 import '../../core/utils/app_date_picker.dart';
+import '../../core/utils/formatters.dart';
 import '../../core/utils/thumb_image.dart';
 import '../../services/ai_service.dart';
 import '../../services/client_service.dart';
@@ -23,6 +24,7 @@ import '../calls/call_screen.dart';
 import '../clients/client_details_screen.dart';
 import '../clients/edit_client_sheet.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/linked_text.dart';
 import '../../shared/widgets/selection_action_bar.dart';
 import '../../services/error_log_service.dart';
@@ -336,22 +338,27 @@ class ConversationScreen extends StatefulWidget {
           )
         : const <ConversationPeer>[];
     if (!context.mounted) return;
-    await Navigator.of(context, rootNavigator: rootNavigator).push(
-      MaterialPageRoute(
-        builder: (_) => ConversationScreen(
-          phoneNumber: phoneNumber,
-          email: email,
-          contactName: websiteInbox
-              ? kWebsiteInboxTitle
-              : (resolvedName.isNotEmpty ? resolvedName : contactName),
-          clientId: websiteInbox ? null : clientId,
-          jobId: jobId,
-          recipients: recipients,
-          initialChannel: websiteInbox
-              ? ConversationChannel.email
-              : initialChannel,
-          websiteInbox: websiteInbox,
-        ),
+    await AppNav.openCard<void>(
+      context,
+      rootNavigator: rootNavigator,
+      key: AppNav.chatKey(
+        phone: phoneNumber,
+        email: email,
+        websiteInbox: websiteInbox,
+      ),
+      builder: (_) => ConversationScreen(
+        phoneNumber: phoneNumber,
+        email: email,
+        contactName: websiteInbox
+            ? kWebsiteInboxTitle
+            : (resolvedName.isNotEmpty ? resolvedName : contactName),
+        clientId: websiteInbox ? null : clientId,
+        jobId: jobId,
+        recipients: recipients,
+        initialChannel: websiteInbox
+            ? ConversationChannel.email
+            : initialChannel,
+        websiteInbox: websiteInbox,
       ),
     );
   }
@@ -622,7 +629,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '${'Запланировано на'.tr} ${DateFormat('d MMM · HH:mm', 'ru').format(sendAt)}',
+            '${'Запланировано на'.tr} ${Formatters.messageStamp(sendAt)}',
           ),
           backgroundColor: Colors.green.shade700,
         ),
@@ -847,13 +854,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
       );
       return;
     }
-    await Navigator.push(
+    await AppNav.openCard(
       context,
-      MaterialPageRoute(
-        builder: (_) => ClientDetailsScreen(
-          clientId: client!.id,
-          clientData: client.toUiMap(),
-        ),
+      key: AppNav.clientKey(client.id),
+      builder: (_) => ClientDetailsScreen(
+        clientId: client!.id,
+        clientData: client.toUiMap(),
       ),
     );
   }
@@ -1003,13 +1009,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Future<String> _resolveTemplate(String body) async {
     var text = body;
     if (text.contains('{name}')) {
-      final name = (_contactName.isNotEmpty
-              ? _contactName
-              : (widget.contactName ?? ''))
-          .trim()
-          .split(RegExp(r'\s+'))
-          .first;
-      text = text.replaceAll('{name}', name.isEmpty ? 'there' : name);
+      // «Клиент +14165550101» — это подпись карточки, а не имя: такое уходило
+      // клиенту в SMS. Нет имени — нет и обращения.
+      text = SmsText.fillName(
+        text,
+        _contactName.isNotEmpty ? _contactName : (widget.contactName ?? ''),
+      );
     }
     if (text.contains('{review}')) {
       final config = await SettingsService.loadConfig();
@@ -1525,7 +1530,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             Align(
               alignment: Alignment.centerRight,
               child: Text(
-                message.createdAt != null ? DateFormat('HH:mm').format(message.createdAt!) : '',
+                Formatters.messageStamp(message.createdAt),
                 style: TextStyle(
                   color: onDark ? Colors.white70 : Colors.grey.shade500,
                   fontSize: 11,
@@ -1826,7 +1831,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 Text(
                   failed
                       ? '${'Ошибка'.tr}: ${msg.errorMsg ?? ''}'
-                      : DateFormat('d MMM · HH:mm', 'ru').format(msg.sendAt.toLocal()),
+                      : Formatters.messageStamp(msg.sendAt.toLocal()),
                   style: TextStyle(
                     fontSize: 11,
                     color: failed ? Colors.red : Colors.grey.shade700,

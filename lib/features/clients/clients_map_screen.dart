@@ -8,6 +8,7 @@ import '../../models/client.dart';
 import '../../models/location.dart';
 import '../../services/client_service.dart';
 import '../../services/maps_service.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/animated_app_logo.dart';
 import '../calls/call_screen.dart';
 import 'client_details_screen.dart';
@@ -213,12 +214,12 @@ class _ClientsMapScreenState extends State<ClientsMapScreen> {
   }
 
   void _openClient(_ClientPin pin) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ClientDetailsScreen(
-          clientId: pin.client.id,
-          clientData: _clientData(pin.client),
-        ),
+    AppNav.openCard(
+      context,
+      key: AppNav.clientKey(pin.client.id),
+      builder: (_) => ClientDetailsScreen(
+        clientId: pin.client.id,
+        clientData: _clientData(pin.client),
       ),
     );
   }

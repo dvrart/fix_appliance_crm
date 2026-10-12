@@ -1,0 +1,194 @@
+import 'package:flutter/material.dart';
+
+import '../services/sms_service.dart';
+import 'unsaved_navigation_gate.dart';
+
+/// Стек карточек. Заявки, клиенты и переписки открываются только через
+/// [AppNav.openCard], и тогда «Назад» не перематывает всё, что открывали за
+/// день:
+///
+/// * уже открытая карточка не кладётся второй копией — навигатор возвращается
+///   к той, что лежит в стеке (заявка → клиент → та же заявка = два экрана, а
+///   не три);
+/// * глубже [maxCards] карточек стек не растёт — самая старая снимается молча;
+/// * выход на корень вкладки снимает промежуточные экраны без анимации, видно
+///   только последний переход.
+///
+/// Чтобы это работало, к каждому навигатору должен быть подключён
+/// [AppNavObserver] — он и есть источник порядка страниц.
+class AppNav {
+  AppNav._();
+
+  /// Сколько карточек держим в одной ветке. Шестая снимает самую старую:
+  /// «Назад» обязан выводить на главную за несколько нажатий.
+  static const int maxCards = 5;
+
+  static const String _cardPrefix = 'card:';
+
+  static final Map<NavigatorState, AppNavObserver> _observers =
+      <NavigatorState, AppNavObserver>{};
+
+  /// Наблюдатель корневого навигатора (`MaterialApp.navigatorObservers`).
+  static final AppNavObserver rootObserver = AppNavObserver();
+
+  static String jobKey(String id) => '${_cardPrefix}job:${id.trim()}';
+
+  static String clientKey(String id) => '${_cardPrefix}client:${id.trim()}';
+
+  /// Переписка узнаётся по собеседнику: телефон (последние 10 цифр, как в
+  /// [SmsService.normalizePhone]), иначе почта.
+  static String chatKey({
+    String phone = '',
+    String? email,
+    bool websiteInbox = false,
+  }) {
+    if (websiteInbox) return '${_cardPrefix}chat:website';
+    final digits = SmsService.normalizePhone(phone);
+    if (digits.isNotEmpty) return '${_cardPrefix}chat:$digits';
+    return '${_cardPrefix}chat:${(email ?? '').trim().toLowerCase()}';
+  }
+
+  static bool isCard(Route<dynamic> route) =>
+      route.settings.name?.startsWith(_cardPrefix) ?? false;
+
+  /// Страницы навигатора снизу вверх. Диалоги и шторки сюда не попадают.
+  static List<Route<dynamic>> pagesOf(NavigatorState navigator) =>
+      _observers[navigator]?.pages ?? const <Route<dynamic>>[];
+
+  /// Открывает карточку [key]. Если она уже в стеке — возвращается к ней.
+  static Future<T?> openCard<T>(
+    BuildContext context, {
+    required String key,
+    required WidgetBuilder builder,
+    bool rootNavigator = false,
+  }) async {
+    final navigator = Navigator.of(context, rootNavigator: rootNavigator);
+    final existing = _find(navigator, key);
+    if (existing != null) {
+      if (!existing.isCurrent) {
+        if (!await UnsavedNavigationGate.allowLeave(host: context)) return null;
+        if (!navigator.mounted || !existing.isActive) return null;
+        backTo(navigator, existing);
+      }
+      // Ждём закрытия карточки, как ждал бы `Navigator.push`.
+      return existing.popped.then((value) => value is T ? value : null);
+    }
+    final result = navigator.push<T>(
+      MaterialPageRoute<T>(builder: builder, settings: RouteSettings(name: key)),
+    );
+    _trim(navigator);
+    return result;
+  }
+
+  /// Возвращает к [target]: всё, что над ним, снимается молча, и только
+  /// верхняя страница уходит со своей анимацией.
+  static void backTo(NavigatorState navigator, Route<dynamic> target) {
+    final pages = pagesOf(navigator);
+    final from = pages.indexOf(target);
+    if (from < 0) return;
+    for (final route in pages.skip(from + 1)) {
+      if (route.isActive && !route.isCurrent) navigator.removeRoute(route);
+    }
+    navigator.popUntil((route) => route == target);
+  }
+
+  /// Выход на корень навигатора: промежуточные экраны снимаются без анимации.
+  /// Пока есть несохранённые правки, идём по одному — каждый экран должен
+  /// успеть спросить про сохранение.
+  static Future<void> popToRoot(NavigatorState navigator) async {
+    if (!UnsavedNavigationGate.hasUnsavedWork) collapse(navigator);
+    while (navigator.mounted && navigator.canPop()) {
+      final popped = await navigator.maybePop();
+      if (!popped) return;
+    }
+  }
+
+  /// Снимает всё между корнем и верхней страницей — без анимации и без вопросов.
+  static void collapse(NavigatorState navigator) {
+    for (final route in pagesOf(navigator).skip(1)) {
+      if (route.isActive && !route.isCurrent) navigator.removeRoute(route);
+    }
+  }
+
+  /// Полный сброс стека до корня, без анимации: для вкладки, которую покинули.
+  /// Несохранённые правки не трогаем — иначе работа пропадёт молча.
+  static void resetToRoot(NavigatorState navigator) {
+    if (UnsavedNavigationGate.hasUnsavedWork) return;
+    for (final route in pagesOf(navigator).skip(1).toList().reversed) {
+      if (route.isActive) navigator.removeRoute(route);
+    }
+  }
+
+  static Route<dynamic>? _find(NavigatorState navigator, String key) {
+    Route<dynamic>? found;
+    for (final route in pagesOf(navigator)) {
+      if (route.isActive && route.settings.name == key) found = route;
+    }
+    return found;
+  }
+
+  /// Снимает самые старые карточки сверх [maxCards]. Если где-то есть
+  /// несохранённые правки — пропускаем: лучше длинный стек, чем потерянная
+  /// работа.
+  static void _trim(NavigatorState navigator) {
+    if (UnsavedNavigationGate.hasUnsavedWork) return;
+    final cards = pagesOf(navigator).where(isCard).toList();
+    for (var i = 0; cards.length - i > maxCards; i++) {
+      final route = cards[i];
+      if (!route.isActive || route.isFirst || route.isCurrent) continue;
+      navigator.removeRoute(route);
+    }
+  }
+}
+
+/// Помнит порядок страниц своего навигатора: без него нельзя снять экран из
+/// середины стека — у [NavigatorState] такого списка наружу нет.
+class AppNavObserver extends NavigatorObserver {
+  final List<Route<dynamic>> _pages = <Route<dynamic>>[];
+  NavigatorState? _owner;
+
+  /// Копия списка: по нему ходят, пока удаляют маршруты.
+  List<Route<dynamic>> get pages => List<Route<dynamic>>.unmodifiable(_pages);
+
+  /// Навигатор пересоздали (перезапуск приложения, новый тест) — старые
+  /// страницы к нему отношения не имеют.
+  void _attach() {
+    final nav = navigator;
+    if (nav == null || identical(nav, _owner)) return;
+    AppNav._observers.remove(_owner);
+    _owner = nav;
+    _pages.clear();
+    AppNav._observers[nav] = this;
+  }
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    _attach();
+    if (route is PageRoute) _pages.add(route);
+  }
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    _pages.remove(route);
+  }
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    _pages.remove(route);
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    _attach();
+    final at = oldRoute == null ? -1 : _pages.indexOf(oldRoute);
+    if (at < 0) {
+      if (newRoute is PageRoute) _pages.add(newRoute);
+      return;
+    }
+    if (newRoute is PageRoute) {
+      _pages[at] = newRoute;
+    } else {
+      _pages.removeAt(at);
+    }
+  }
+}

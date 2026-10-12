@@ -7,6 +7,7 @@ import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
 import '../../services/services.dart';
 import '../../models/job.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/job_agenda_card.dart';
 import '../../shared/widgets/job_status_filter_bar.dart';
 import 'job_details/job_details_screen.dart';
@@ -770,14 +771,13 @@ class _JobsScreenState extends State<JobsScreen> {
 
   Future<void> _openJob(Job job) async {
     AppFeedback.pleasant();
-    await Navigator.push(
+    await AppNav.openCard(
       context,
-      MaterialPageRoute(
-        builder: (context) => JobDetailsScreen(
-          jobId: job.id,
-          clientId: job.clientId,
-          jobData: job.toMap(),
-        ),
+      key: AppNav.jobKey(job.id),
+      builder: (context) => JobDetailsScreen(
+        jobId: job.id,
+        clientId: job.clientId,
+        jobData: job.toMap(),
       ),
     );
     if (!mounted) return;

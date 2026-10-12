@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
 import '../../shared/widgets/unsaved_changes_dialog.dart';
 import '../../core/motion.dart';
@@ -188,13 +189,12 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 );
                 if (open && context.mounted) {
                   if (sheetContext.mounted) Navigator.pop(sheetContext);
-                  Navigator.push(
+                  AppNav.openCard(
                     context,
-                    MaterialPageRoute(
-                      builder: (_) => ClientDetailsScreen(
-                        clientId: client.id,
-                        clientData: client.toUiMap(),
-                      ),
+                    key: AppNav.clientKey(client.id),
+                    builder: (_) => ClientDetailsScreen(
+                      clientId: client.id,
+                      clientData: client.toUiMap(),
                     ),
                   );
                 }
@@ -331,13 +331,12 @@ class _ClientsScreenState extends State<ClientsScreen> {
                               onSelect: (client) {
                                 phoneDebounce?.cancel();
                                 Navigator.pop(sheetContext);
-                                Navigator.push(
+                                AppNav.openCard(
                                   context,
-                                  MaterialPageRoute(
-                                    builder: (_) => ClientDetailsScreen(
-                                      clientId: client.id,
-                                      clientData: client.toUiMap(),
-                                    ),
+                                  key: AppNav.clientKey(client.id),
+                                  builder: (_) => ClientDetailsScreen(
+                                    clientId: client.id,
+                                    clientData: client.toUiMap(),
                                   ),
                                 );
                               },
@@ -557,13 +556,12 @@ class _ClientsScreenState extends State<ClientsScreen> {
               return;
             }
             AppFeedback.pleasant();
-            Navigator.push(
+            AppNav.openCard(
               context,
-              MaterialPageRoute(
-                builder: (context) => ClientDetailsScreen(
-                  clientId: data['id'],
-                  clientData: data,
-                ),
+              key: AppNav.clientKey('${data['id']}'),
+              builder: (context) => ClientDetailsScreen(
+                clientId: data['id'],
+                clientData: data,
               ),
             );
           },

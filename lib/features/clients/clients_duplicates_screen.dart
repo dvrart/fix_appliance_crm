@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
 
 import '../../core/constants.dart';
@@ -383,13 +384,12 @@ class _ClientsDuplicatesScreenState extends State<ClientsDuplicatesScreen> {
               .join(' · '),
         ),
         onTap: () {
-          Navigator.push(
+          AppNav.openCard(
             context,
-            MaterialPageRoute(
-              builder: (_) => ClientDetailsScreen(
-                clientId: id,
-                clientData: data,
-              ),
+            key: AppNav.clientKey(id),
+            builder: (_) => ClientDetailsScreen(
+              clientId: id,
+              clientData: data,
             ),
           );
         },

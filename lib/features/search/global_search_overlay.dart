@@ -7,6 +7,7 @@ import '../../core/l10n/app_locale.dart';
 import '../../core/motion.dart';
 import '../../models/models.dart';
 import '../../services/services.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/highlight_text.dart';
 import '../clients/client_details_screen.dart';
 import '../jobs/job_details/job_details_screen.dart';
@@ -107,9 +108,14 @@ class _GlobalSearchPageState extends State<_GlobalSearchPage> {
     Navigator.of(context).pop();
   }
 
-  void _openRoute(Widget page) {
+  /// [card] — ключ карточки (заявка, клиент): по нему стек не плодит копии.
+  void _openRoute(Widget page, {String? card}) {
     final nav = Navigator.of(context, rootNavigator: true);
     nav.pop();
+    if (card != null) {
+      AppNav.openCard<void>(nav.context, key: card, builder: (_) => page);
+      return;
+    }
     nav.push(MaterialPageRoute<void>(builder: (_) => page));
   }
 
@@ -292,7 +298,7 @@ class _SearchField extends StatelessWidget {
 class _ResultsCard extends StatelessWidget {
   final String query;
   final _Hits hits;
-  final void Function(Widget page) onOpen;
+  final void Function(Widget page, {String? card}) onOpen;
 
   const _ResultsCard({
     required this.query,
@@ -383,6 +389,7 @@ class _ResultsCard extends StatelessWidget {
             'companyName': client.companyName,
           },
         ),
+        card: AppNav.clientKey(client.id),
       ),
     );
   }
@@ -423,6 +430,7 @@ class _ResultsCard extends StatelessWidget {
             'description': job.description,
           },
         ),
+        card: AppNav.jobKey(job.id),
       ),
     );
   }

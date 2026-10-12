@@ -6,6 +6,7 @@ import '../../services/job_service.dart';
 import '../../services/sms_service.dart';
 import '../ai/job_preview_screen.dart';
 import 'job_details/job_details_screen.dart';
+import '../../shared/app_nav.dart';
 
 /// Offer from a repair email: create a client card and a visit.
 class EmailOfferPage {
@@ -29,13 +30,14 @@ class EmailOfferPage {
       final job = await JobService.getById(jobId);
       if (!context.mounted) return;
       if (job != null) {
-        await Navigator.of(context, rootNavigator: true).push(
-          MaterialPageRoute(
-            builder: (_) => JobDetailsScreen(
-              jobId: job.id,
-              clientId: job.clientId,
-              jobData: job.toMap(),
-            ),
+        await AppNav.openCard(
+          context,
+          rootNavigator: true,
+          key: AppNav.jobKey(job.id),
+          builder: (_) => JobDetailsScreen(
+            jobId: job.id,
+            clientId: job.clientId,
+            jobData: job.toMap(),
           ),
         );
         return;

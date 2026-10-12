@@ -11,6 +11,7 @@ import '../features/jobs/email_offer_page.dart';
 import '../features/jobs/job_details/job_details_screen.dart';
 import '../features/messages/conversation_screen.dart';
 import '../models/client.dart';
+import '../shared/app_nav.dart';
 import 'app_lock_service.dart';
 import 'auth_service.dart';
 import 'client_service.dart';
@@ -157,13 +158,13 @@ class NotificationRouter {
       final job = await JobService.getById(jobId);
       if (job != null) {
         if (!nav.mounted) return;
-        await nav.push(
-          MaterialPageRoute(
-            builder: (_) => JobDetailsScreen(
-              jobId: job.id,
-              clientId: job.clientId,
-              jobData: job.toMap(),
-            ),
+        await AppNav.openCard(
+          nav.context,
+          key: AppNav.jobKey(job.id),
+          builder: (_) => JobDetailsScreen(
+            jobId: job.id,
+            clientId: job.clientId,
+            jobData: job.toMap(),
           ),
         );
         return;
@@ -204,12 +205,12 @@ class NotificationRouter {
       if (!nav.mounted) return;
       if (client != null &&
           (type == 'client' || type.isEmpty && jobId.isEmpty)) {
-        await nav.push(
-          MaterialPageRoute(
-            builder: (_) => ClientDetailsScreen(
-              clientId: client.id,
-              clientData: client.toMap(),
-            ),
+        await AppNav.openCard(
+          nav.context,
+          key: AppNav.clientKey(client.id),
+          builder: (_) => ClientDetailsScreen(
+            clientId: client.id,
+            clientData: client.toMap(),
           ),
         );
         return;

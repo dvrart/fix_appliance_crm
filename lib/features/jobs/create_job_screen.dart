@@ -118,7 +118,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
   @override
   void initState() {
     super.initState();
-    UnsavedNavigationGate.push(_allowLeave);
+    UnsavedNavigationGate.push(_allowLeave, unsaved: () => _dirty);
     final pre = widget.preselectedDate;
     if (pre != null) {
       _selectedDate = DateTime(pre.year, pre.month, pre.day);

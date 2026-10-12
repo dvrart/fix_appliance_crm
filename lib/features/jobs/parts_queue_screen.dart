@@ -5,6 +5,7 @@ import '../../core/constants.dart';
 import '../../models/job.dart';
 import '../../services/services.dart';
 import '../jobs/job_details/job_details_screen.dart';
+import '../../shared/app_nav.dart';
 import '../../core/l10n/app_locale.dart';
 
 class PartsQueueScreen extends StatelessWidget {
@@ -63,14 +64,13 @@ class PartsQueueScreen extends StatelessWidget {
                 child: InkWell(
                   borderRadius: BorderRadius.circular(12),
                   onTap: () {
-                    Navigator.push(
+                    AppNav.openCard(
                       context,
-                      MaterialPageRoute(
-                        builder: (_) => JobDetailsScreen(
-                          jobId: job.id,
-                          clientId: job.clientId,
-                          jobData: job.toMap(),
-                        ),
+                      key: AppNav.jobKey(job.id),
+                      builder: (_) => JobDetailsScreen(
+                        jobId: job.id,
+                        clientId: job.clientId,
+                        jobData: job.toMap(),
                       ),
                     );
                   },

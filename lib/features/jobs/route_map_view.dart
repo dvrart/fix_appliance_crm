@@ -9,6 +9,7 @@ import '../../models/job.dart';
 import '../../services/services.dart';
 import 'job_details/job_details_screen.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../shared/app_nav.dart';
 import '../../shared/widgets/job_agenda_card.dart';
 
 /// Карта оптимального маршрута на сегодня + список остановок
@@ -624,14 +625,13 @@ class _RouteMapViewState extends State<RouteMapView> {
           routeIndexColor: _statusColorFor(job),
           footer: footer.isEmpty ? null : footer,
           onTap: () {
-            Navigator.push(
+            AppNav.openCard(
               context,
-              MaterialPageRoute(
-                builder: (_) => JobDetailsScreen(
-                  jobId: job.id,
-                  clientId: job.clientId,
-                  jobData: job.toMap(),
-                ),
+              key: AppNav.jobKey(job.id),
+              builder: (_) => JobDetailsScreen(
+                jobId: job.id,
+                clientId: job.clientId,
+                jobData: job.toMap(),
               ),
             );
           },

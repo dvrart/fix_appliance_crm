@@ -38,7 +38,7 @@ class DirtyLeaveScopeState extends State<DirtyLeaveScope> {
   void initState() {
     super.initState();
     if (widget.registerGate) {
-      UnsavedNavigationGate.push(_allowLeave);
+      UnsavedNavigationGate.push(_allowLeave, unsaved: () => widget.dirty);
     }
   }
 
