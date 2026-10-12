@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../core/utils/formatters.dart';
 import '../../models/client.dart';
 import '../../services/client_service.dart';
 import '../../services/firestore_service.dart';
@@ -399,10 +399,14 @@ class _MessagesScreenState extends State<MessagesScreen>
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
+                  // День и время в две строки: «Сегодня · 14:32» одной
+                  // строкой не влезает в узкую колонку справа.
                   Text(
-                    last.createdAt != null
-                        ? DateFormat('dd.MM HH:mm').format(last.createdAt!)
-                        : '',
+                    Formatters.messageDay(last.createdAt),
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                  ),
+                  Text(
+                    Formatters.formatTime(last.createdAt),
                     style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
                   ),
                   if (hasUnread) ...[

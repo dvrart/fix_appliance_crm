@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import '../../../shared/widgets/confirm_action_sheet.dart';
 import 'package:flutter/services.dart';
-import 'package:intl/intl.dart';
 
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
+import '../../../core/utils/formatters.dart';
 import '../../../models/secretary_lesson.dart';
 import '../../../services/secretary_learn_service.dart';
 import '../../calls/call_review_page.dart';
@@ -505,9 +505,7 @@ class _ErrorCardState extends State<_ErrorCard> {
   Widget build(BuildContext context) {
     final lesson = widget.lesson;
     final when = lesson.createdAt;
-    final stamp = when == null
-        ? ''
-        : DateFormat('dd.MM HH:mm').format(when.toLocal());
+    final stamp = Formatters.messageStamp(when?.toLocal());
     final phone = lesson.fromNumber.trim();
     final problem = lesson.problemRu.trim().isNotEmpty
         ? lesson.problemRu.trim()

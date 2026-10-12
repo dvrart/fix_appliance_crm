@@ -42,6 +42,31 @@ class Formatters {
     return AppTimeService.format(date, 'dd.MM HH:mm');
   }
 
+  /// День сообщения словами: «Сегодня», «Вчера», «Завтра», иначе «5 окт».
+  /// Год дописывается, только если он не нынешний — иначе подпись длинная.
+  static String messageDay(DateTime? date) {
+    if (date == null) return '';
+    final value = AppTimeService.wallClock(date);
+    final now = AppTimeService.wallClock(DateTime.now());
+    final shift = DateTime(value.year, value.month, value.day)
+        .difference(DateTime(now.year, now.month, now.day))
+        .inDays;
+    if (shift == 0) return 'Сегодня'.tr;
+    if (shift == -1) return 'Вчера'.tr;
+    if (shift == 1) return 'Завтра'.tr;
+    return DateFormat(
+      value.year == now.year ? 'd MMM' : 'd MMM yyyy',
+      AppLocale.instance.dateLocale,
+    ).format(value);
+  }
+
+  /// Подпись под сообщением: «Сегодня · 14:32». Одного времени в переписке
+  /// мало — по «14:32» не понять, пришло это сегодня или в марте.
+  static String messageStamp(DateTime? date) {
+    if (date == null) return '';
+    return '${messageDay(date)} · ${AppTimeService.format(date, 'HH:mm')}';
+  }
+
   static String formatCurrency(num amount) {
     return '\$${amount.toDouble().toStringAsFixed(2)}';
   }

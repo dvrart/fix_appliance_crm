@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../core/utils/formatters.dart';
 import 'linked_text.dart';
 
 class _SpeakerLine {
@@ -116,11 +117,16 @@ class CallTranscriptChat extends StatelessWidget {
   final bool translating;
   final String answeredBy;
 
+  /// Начало разговора. Отдельного времени у реплик нет — расшифровка
+  /// приходит одним текстом, — поэтому день и время ставим на весь разговор.
+  final DateTime? startedAt;
+
   const CallTranscriptChat({
     super.key,
     required this.text,
     this.translating = false,
     this.answeredBy = '',
+    this.startedAt,
   });
 
   @override
@@ -139,9 +145,31 @@ class CallTranscriptChat extends StatelessWidget {
     }
 
     final lines = parseCallTranscript(text);
+    final stamp = Formatters.messageStamp(startedAt);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (stamp.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFECEFF1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  stamp,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF546E7A),
+                  ),
+                ),
+              ),
+            ),
+          ),
         for (var i = 0; i < lines.length; i++) ...[
           if (i > 0) const SizedBox(height: 8),
           _Bubble(
