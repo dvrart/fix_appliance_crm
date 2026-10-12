@@ -11,11 +11,12 @@ import 'auth_service.dart';
 class MessageTranslateService {
   static final Map<String, String> _enCache = {};
   static final Map<String, String> _ruCache = {};
+  // Запасной путь, когда сервер недоступен. Моделей, которых нет на нашем
+  // ключе, тут быть не должно: каждая стоит таймаута перед живой
+  // (gemini-3.6-flash и gemini-2.5-flash отвечали 404 и 429).
   static const _models = [
-    'gemini-3.6-flash',
-    'gemini-2.5-flash',
-    'gemini-flash-latest',
     'gemini-flash-lite-latest',
+    'gemini-flash-latest',
   ];
 
   static final _cyrillic = RegExp(r'[А-Яа-яЁё]');
@@ -94,11 +95,19 @@ class MessageTranslateService {
     return translated;
   }
 
+  /// Перевод записи разговора. Идёт на сервер: там диалог переводится
+  /// построчно и со сверкой количества реплик, поэтому реплики не пропадают.
+  /// Локальная модель остаётся только на случай, когда сервер не ответил.
   static Future<String> toRussianDialog(String text) async {
     final t = text.trim();
     if (!needsRussian(t)) return t;
     final cached = _ruCache['dialog:$t'];
     if (cached != null) return cached;
+    final cloud = await _fromCloud(t, 'ru', mode: 'dialog', timeoutSeconds: 110);
+    if (cloud != null && cloud.trim().isNotEmpty) {
+      _ruCache['dialog:$t'] = cloud.trim();
+      return cloud.trim();
+    }
     final translated = await _translate(
       t,
       'ru',
@@ -224,6 +233,7 @@ class MessageTranslateService {
     int? variant,
     String? emoji,
     String? previous,
+    int timeoutSeconds = 20,
   }) async {
     try {
       final response = await http
@@ -239,7 +249,7 @@ class MessageTranslateService {
               'previous': ?previous,
             }),
           )
-          .timeout(const Duration(seconds: 20));
+          .timeout(Duration(seconds: timeoutSeconds));
       if (response.statusCode != 200) {
         debugPrint('MessageTranslate cloud ${response.statusCode}: ${response.body}');
         return null;

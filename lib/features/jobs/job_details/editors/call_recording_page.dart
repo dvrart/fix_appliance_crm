@@ -3,9 +3,11 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/api_keys.dart';
 import '../../../../core/constants.dart';
@@ -32,7 +34,14 @@ String playableCallUrl(Map<String, dynamic> attachment) {
   return (attachment['url'] ?? '').toString().trim();
 }
 
-List<String> _callAudioUrls(String primary, {String storageUrl = '', String callId = ''}) {
+/// Ссылки на запись. `lang: 'ru'` — это озвучка перевода: её собирает сервер
+/// по расшифровке, поэтому в хранилище оригинала её искать бесполезно.
+List<String> _callAudioUrls(
+  String primary, {
+  String storageUrl = '',
+  String callId = '',
+  String lang = '',
+}) {
   final urls = <String>[];
   void add(String value) {
     final url = value.trim();
@@ -40,18 +49,21 @@ List<String> _callAudioUrls(String primary, {String storageUrl = '', String call
     urls.add(url);
   }
 
-  add(storageUrl);
-  add(primary);
   final uri = Uri.tryParse(primary);
   final id = callId.isNotEmpty
       ? callId
       : (uri?.queryParameters['callId'] ?? '');
+  final suffix = lang.isEmpty ? '' : '&lang=${Uri.encodeQueryComponent(lang)}';
+  if (lang.isEmpty) {
+    add(storageUrl);
+    add(primary);
+  }
   if (id.isNotEmpty) {
     add(AuthService.withAuthQuery(
-      '$kCallRecordingAudioUrl?callId=${Uri.encodeQueryComponent(id)}',
+      '$kCallRecordingAudioUrl?callId=${Uri.encodeQueryComponent(id)}$suffix',
     ));
     add(AuthService.withAuthQuery(
-      '$kFirebaseFunctionsUrl/callRecordingAudio?callId=${Uri.encodeQueryComponent(id)}',
+      '$kFirebaseFunctionsUrl/callRecordingAudio?callId=${Uri.encodeQueryComponent(id)}$suffix',
     ));
   }
   return urls;
@@ -423,6 +435,9 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                   translating: _translating,
                   answeredBy:
                       (widget.attachment['answeredBy'] ?? '').toString(),
+                  startedAt: CallRecord.parseStamp(
+                    widget.attachment['startTime'],
+                  ),
                 ),
                 if ((widget.attachment['answeredBy'] ?? '').toString() ==
                         'ai' &&
@@ -451,6 +466,11 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
   }
 }
 
+/// Русской расшифровки ещё нет — озвучивать нечего.
+class _TranslationNotReady implements Exception {
+  const _TranslationNotReady();
+}
+
 class CallAudioPlayer extends StatefulWidget {
   final String url;
   final Map<String, dynamic> attachment;
@@ -475,12 +495,17 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
   Future<void>? _playTask;
   bool _loading = true;
   bool _disposed = false;
+  bool _saving = false;
   String? _error;
   Uint8List? _bytes;
   String? _filePath;
   String _mime = 'audio/mpeg';
+  /// Какую дорожку слушаем: '' — оригинал звонка, 'ru' — русская озвучка.
+  String _lang = '';
 
   bool get _playing => _state == PlayerState.playing;
+
+  String get _callId => (widget.attachment['callId'] ?? '').toString().trim();
 
   @override
   void initState() {
@@ -555,6 +580,15 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
         _loading = false;
         _error = null;
       });
+    } on _TranslationNotReady {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = context.tr(
+          'Перевод записи ещё не готов',
+          'The translated recording is not ready yet',
+        );
+      });
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -573,6 +607,8 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
       attempt += 1;
       try {
         return await _download();
+      } on _TranslationNotReady {
+        rethrow;
       } catch (error) {
         lastError = error;
         debugPrint('Call player download try $attempt: $error');
@@ -589,8 +625,31 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
     return _callAudioUrls(
       widget.url,
       storageUrl: (widget.attachment['storageUrl'] ?? '').toString(),
-      callId: (widget.attachment['callId'] ?? '').toString(),
+      callId: _callId,
+      lang: _lang,
     );
+  }
+
+  /// Переключение языка озвучки: это другая дорожка, поэтому плеер
+  /// перезаряжается с начала.
+  Future<void> _switchLang(String lang) async {
+    if (_lang == lang || _loading) return;
+    try {
+      await _player.stop();
+    } catch (_) {}
+    AssistantAudioService.playback.release(_player);
+    if (!mounted) return;
+    setState(() {
+      _lang = lang;
+      _bytes = null;
+      _filePath = null;
+      _resumePosition = null;
+      _position = Duration.zero;
+      _duration = Duration.zero;
+      _state = PlayerState.stopped;
+      _error = null;
+    });
+    await _prepare();
   }
 
   Future<Uint8List> _download() async {
@@ -604,6 +663,10 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
         if (response.statusCode == 404) {
           lastError = Exception('recording not ready');
           continue;
+        }
+        // Озвучивать нечего, пока нет русской расшифровки: ждать бессмысленно.
+        if (response.statusCode == 409 || response.statusCode == 503) {
+          throw const _TranslationNotReady();
         }
         if (response.statusCode < 200 || response.statusCode >= 300) {
           lastError = Exception('HTTP ${response.statusCode} $url');
@@ -631,13 +694,84 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
 
   Future<String> _writeTemp(Uint8List bytes, String mime) async {
     final dir = await getTemporaryDirectory();
-    final callId = (widget.attachment['callId'] ?? '').toString().trim();
+    final callId = _callId;
     final ext = mime.contains('wav') ? 'wav' : 'mp3';
+    final suffix = _lang.isEmpty ? '' : '_$_lang';
     final file = File(
-      '${dir.path}/call_${callId.isEmpty ? bytes.length : callId}.$ext',
+      '${dir.path}/call_${callId.isEmpty ? bytes.length : callId}$suffix.$ext',
     );
     await file.writeAsBytes(bytes, flush: true);
     return file.path;
+  }
+
+  /// Имя скачиваемого файла: дата звонка понятнее, чем Twilio-идентификатор.
+  String _downloadName(String ext) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    final stamp = CallRecord.parseStamp(widget.attachment['startTime']);
+    if (stamp != null) {
+      return 'call_${stamp.year}-${two(stamp.month)}-${two(stamp.day)}'
+          '_${two(stamp.hour)}-${two(stamp.minute)}.$ext';
+    }
+    final callId = (widget.attachment['callId'] ?? '').toString().trim();
+    if (callId.isNotEmpty) return 'call_$callId.$ext';
+    return 'call_${DateTime.now().millisecondsSinceEpoch}.$ext';
+  }
+
+  /// Сохраняем запись в телефон: сначала системное «Сохранить как»
+  /// (там есть «Загрузки»), а если его нет — отдаём файл через «Поделиться».
+  Future<void> _saveToPhone() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      final bytes = _bytes ?? await _download();
+      if (!mounted || _disposed) return;
+      _bytes ??= bytes;
+      final mime = _audioMime(bytes);
+      final name = _downloadName(mime.contains('wav') ? 'wav' : 'mp3');
+      Uri? saved;
+      try {
+        saved = await FilePicker.saveFile(
+          dialogTitle: context.tr('Скачать запись', 'Download the recording'),
+          fileName: name,
+          bytes: bytes,
+          mimeType: mime,
+        );
+      } catch (error) {
+        debugPrint('Call recording saveFile: $error');
+      }
+      if (!mounted || _disposed) return;
+      if (saved != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(context.tr('Запись сохранена', 'Recording saved')),
+          ),
+        );
+        return;
+      }
+      final path = _filePath ?? await _writeTemp(bytes, mime);
+      _filePath ??= path;
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(path, mimeType: mime, name: name)],
+          title: name,
+        ),
+      );
+    } catch (error) {
+      debugPrint('Call recording save: $error');
+      if (!mounted || _disposed) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            context.tr(
+              'Не удалось скачать запись',
+              'Could not download the recording',
+            ),
+          ),
+        ),
+      );
+    } finally {
+      if (mounted && !_disposed) setState(() => _saving = false);
+    }
   }
 
   Future<void> _toggle() {
@@ -720,6 +854,26 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
     return pos > 0 ? pos : 1;
   }
 
+  Widget _langChip(String lang, String label) {
+    final selected = _lang == lang;
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: _loading ? null : (_) => _switchLang(lang),
+      labelStyle: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: selected ? Colors.white : const Color(0xFF475569),
+      ),
+      selectedColor: AppColors.primary,
+      backgroundColor: Colors.white,
+      side: const BorderSide(color: Color(0xFFE2E8F0)),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      showCheckmark: false,
+    );
+  }
+
   String _fmt(Duration value) {
     final m = value.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = value.inSeconds.remainder(60).toString().padLeft(2, '0');
@@ -796,6 +950,44 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
                 ),
               ),
             ],
+          ),
+          if (_callId.isNotEmpty)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 2),
+                child: Wrap(
+                  spacing: 6,
+                  children: [
+                    _langChip('', context.tr('Оригинал', 'Original')),
+                    _langChip('ru', context.tr('По-русски', 'In Russian')),
+                  ],
+                ),
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _saving ? null : _saveToPhone,
+              icon: _saving
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.download_outlined, size: 18),
+              label: Text(
+                _saving
+                    ? context.tr('Скачиваю...', 'Downloading...')
+                    : context.tr('Скачать MP3', 'Download MP3'),
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
           ),
           if (_loading && _bytes == null)
             Padding(

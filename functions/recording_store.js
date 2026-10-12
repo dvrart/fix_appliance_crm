@@ -52,10 +52,41 @@ function createRecordingStore({ storage, callsRef, companyId, projectId, playabl
     return buffer;
   }
 
-  async function cacheRecordingToStorage(callId, buffer) {
+  // Вариант записи: '' — оригинал (mp3), 'ru' — русская озвучка (wav).
+  // Лежат рядом, под разными именами, чтобы озвучку не пересобирать на
+  // каждое прослушивание.
+  function variantPath(callId, variant, extension) {
+    return `companies/${companyId}/calls/${callId}${variant ? `-${variant}` : ''}.${extension}`;
+  }
+
+  function downloadUrl(bucketName, path, token) {
+    return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+  }
+
+  async function cachedRecordingUrl(callId, { variant = '', extension = 'mp3' } = {}) {
+    if (!callId) return null;
+    try {
+      const bucket = bucketForWrite();
+      const file = bucket.file(variantPath(callId, variant, extension));
+      const [metadata] = await deadline(file.getMetadata(), 15000);
+      const token = String(metadata?.metadata?.firebaseStorageDownloadTokens || '').split(',').find(Boolean);
+      if (!token || !Number(metadata.size || 0)) return null;
+      return downloadUrl(bucket.name, file.name, token);
+    } catch (error) {
+      if (Number(error.code) !== 404) console.warn('cachedRecordingUrl:', error.code || error.message);
+      return null;
+    }
+  }
+
+  async function cacheRecordingToStorage(callId, buffer, {
+    variant = '',
+    extension = 'mp3',
+    contentType = 'audio/mpeg',
+    field = 'storageUrl',
+  } = {}) {
     if (!callId || !buffer?.length) return null;
     const bucket = bucketForWrite();
-    const path = `companies/${companyId}/calls/${callId}.mp3`;
+    const path = variantPath(callId, variant, extension);
     const file = bucket.file(path);
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -79,7 +110,7 @@ function createRecordingStore({ storage, callsRef, companyId, projectId, playabl
                 timeout: 25000,
                 preconditionOpts: { ifGenerationMatch: metadata?.generation || 0 },
                 metadata: {
-                  contentType: 'audio/mpeg',
+                  contentType,
                   cacheControl: 'private, max-age=604800',
                   metadata: { ...metadata?.metadata, firebaseStorageDownloadTokens: token },
                 },
@@ -90,8 +121,11 @@ function createRecordingStore({ storage, callsRef, companyId, projectId, playabl
             throw error;
           }
         }
-        const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
-        await callsRef.doc(callId).set({ storageUrl: url, playableUrl: playableUrl(callId) }, { merge: true });
+        const url = downloadUrl(bucket.name, path, token);
+        await callsRef.doc(callId).set(
+          variant ? { [field]: url } : { [field]: url, playableUrl: playableUrl(callId) },
+          { merge: true }
+        );
         return url;
       }
       throw new Error('Recording changed concurrently; retry required');
@@ -101,17 +135,22 @@ function createRecordingStore({ storage, callsRef, companyId, projectId, playabl
     }
   }
 
-  async function downloadRecordingBuffer(recordingUrl) {
+  async function downloadRecordingBuffer(recordingUrl, { format = 'mp3' } = {}) {
     const raw = String(recordingUrl || '').trim();
     const stored = storedLocation(raw);
     if (stored) {
+      // В хранилище лежит только mp3 для прослушивания; разбор по дорожкам
+      // просит wav и должен идти прямо к Twilio.
+      if (format !== 'mp3') throw new Error('Unsupported recording source');
       const [bytes] = await deadline(storage().bucket(stored.bucket).file(stored.path).download(), 30000);
       return audioBuffer(bytes);
     }
     if (!isTwilioMediaUrl(raw)) throw new Error('Unsupported recording source');
-    const mp3 = new URL(raw);
-    if (!/\.mp3$/i.test(mp3.pathname)) mp3.pathname = `${mp3.pathname.replace(/\.wav$/i, '').replace(/\/$/, '')}.mp3`;
-    const urls = [...new Set([mp3.toString(), raw])];
+    const direct = new URL(raw);
+    direct.pathname = `${direct.pathname.replace(/\.(mp3|wav)$/i, '').replace(/\/$/, '')}.${format}`;
+    // Дорожки разделены только в wav: mp3 Twilio отдаёт сведённым в моно.
+    if (format === 'wav') direct.searchParams.set('RequestedChannels', '2');
+    const urls = format === 'wav' ? [direct.toString()] : [...new Set([direct.toString(), raw])];
     const credentials = authHeaders();
     if (!credentials.length) throw new Error('Recording authentication unavailable');
     let lastError;
@@ -138,7 +177,7 @@ function createRecordingStore({ storage, callsRef, companyId, projectId, playabl
     throw lastError || new Error('Recording download failed');
   }
 
-  return { cacheRecordingToStorage, downloadRecordingBuffer };
+  return { cacheRecordingToStorage, cachedRecordingUrl, downloadRecordingBuffer };
 }
 
 function appendCallRecording(twiml, callbackUrl) {

@@ -18,6 +18,7 @@ const voiceRelay = require('./voice_relay');
 const voiceFacts = require('./voice_facts');
 const { withSmsHeader, sanitizeSmsHeader } = require('./sms_header');
 const smsLinks = require('./sms_links');
+const smsText = require('./sms_text');
 const visitSms = require('./visit_sms');
 const schedule = require('./schedule');
 const serviceArea = require('./service_area');
@@ -25,6 +26,8 @@ const jobDedupe = require('./job_dedupe');
 const { notifyMaster, registerDeviceToken } = require('./notify');
 const { requireAppUser, requireTwilioSignature } = require('./auth_guard');
 const { createRecordingStore, isTwilioMediaUrl, appendCallRecording } = require('./recording_store');
+const { createCallTranscriber } = require('./call_transcribe');
+const { createCallDubber } = require('./call_dub');
 const { withProcessingLease } = require('./processing_lease');
 
 admin.initializeApp();
@@ -936,6 +939,14 @@ async function patchDraftJobFromCall(jobId, extracted, { noBooking = false } = {
   ) {
     updates.clientName = name;
   }
+  // Имя узнали позже самой заявки: подпись-заглушка «Клиент +1…» на месте
+  // работы должна поехать следом, иначе мастер по-прежнему видит там номер.
+  // Пустое поле не трогаем — его заполняет только разбор места работы ниже.
+  const ownerName = voiceFacts.usableClientName(updates.clientName || job.clientName || '');
+  const siteName = String(job.jobSiteName || '').trim();
+  if (ownerName && siteName && voiceFacts.isPlaceholderClientName(siteName)) {
+    updates.jobSiteName = ownerName;
+  }
   const address = buildFullAddress(extracted, null);
   if (address && !String(job.clientAddress || '').trim()) {
     updates.clientAddress = address;
@@ -1339,7 +1350,7 @@ async function resolveCallRecordingSource(callId, data = {}) {
   return null;
 }
 
-const { cacheRecordingToStorage, downloadRecordingBuffer } = createRecordingStore({
+const { cacheRecordingToStorage, cachedRecordingUrl, downloadRecordingBuffer } = createRecordingStore({
   storage: () => admin.storage(),
   callsRef,
   companyId: COMPANY_ID,
@@ -1917,7 +1928,9 @@ function twimlDialPstn(req, toNumber) {
     callerId: TWILIO_PHONE_NUMBER,
     timeout: 25,
     answerOnBridge: false,
-    record: 'record-from-answer',
+    // Каждая сторона в своей дорожке: расшифровка потом не гадает, кто
+    // говорил, а читает это прямо из записи (см. call_transcribe.js).
+    record: 'record-from-answer-dual',
     recordingStatusCallback: recordingUrl(req),
     recordingStatusCallbackEvent: 'completed',
     action: dialActionUrl(req),
@@ -1932,7 +1945,7 @@ function twimlDialMaster(req, fromNumber, timeoutSeconds) {
     callerId: fromNumber,
     timeout: timeoutSeconds > 0 ? timeoutSeconds : 20,
     answerOnBridge: true,
-    record: 'record-from-answer',
+    record: 'record-from-answer-dual',
     recordingStatusCallback: recordingUrl(req),
     recordingStatusCallbackEvent: 'completed',
     action: dialActionUrl(req),
@@ -3489,6 +3502,73 @@ exports.processQueuedCallRecording = onDocumentWritten({
   }
 });
 
+// Русская озвучка записи. Собирается при первом прослушивании и ложится в
+// хранилище рядом с оригиналом, поэтому второй раз отдаётся сразу. Карта
+// незавершённых сборок нужна, чтобы два нажатия подряд не озвучивали один и
+// тот же разговор дважды.
+const callDubber = createCallDubber({ apiKey: OPENAI_API_KEY });
+const dubsInFlight = new Map();
+
+async function russianTranscriptFor(callId, data) {
+  for (const field of ['transcriptionRu', 'transcription']) {
+    const stored = String(data[field] || '').trim();
+    if (hasCyrillic(stored)) return stored;
+  }
+  const english = String(data.transcriptionEn || data.transcription || '').trim();
+  if (!english) return '';
+  const russian = await translateCallTranscriptFull(english, String(data.answeredBy || ''));
+  if (russian) {
+    await callsRef.doc(callId).set({ transcriptionRu: russian }, { merge: true });
+  }
+  return russian;
+}
+
+async function serveRussianDub(callId, data, res) {
+  const cached = await cachedRecordingUrl(callId, { variant: 'ru', extension: 'wav' });
+  if (cached) {
+    res.set('Cache-Control', 'private, max-age=86400');
+    res.redirect(302, cached);
+    return;
+  }
+  if (!OPENAI_API_KEY) {
+    res.status(503).send('voice translation unavailable');
+    return;
+  }
+  let task = dubsInFlight.get(callId);
+  if (!task) {
+    task = (async () => {
+      const russian = await russianTranscriptFor(callId, data);
+      if (!russian) throw Object.assign(new Error('no russian transcript'), { status: 409 });
+      const dub = await callDubber.buildRussianDub(russian);
+      console.log(`callRecordingAudio ru ${callId}: ${dub.turns} реплик, ${Math.round(dub.seconds)} с`);
+      await cacheRecordingToStorage(callId, dub.wav, {
+        variant: 'ru',
+        extension: 'wav',
+        contentType: 'audio/wav',
+        field: 'storageUrlRu',
+      });
+      return dub.wav;
+    })();
+    dubsInFlight.set(callId, task);
+    task.catch(() => {}).finally(() => dubsInFlight.delete(callId));
+  }
+  try {
+    const wav = await task;
+    res.set('Content-Type', 'audio/wav');
+    res.set('Content-Length', String(wav.length));
+    res.set('Accept-Ranges', 'bytes');
+    res.set('Content-Disposition', 'inline; filename="call-ru.wav"');
+    res.set('Cache-Control', 'private, max-age=86400');
+    res.status(200).send(wav);
+  } catch (error) {
+    if (Number(error.status) === 409) {
+      res.status(409).send('no russian transcript');
+      return;
+    }
+    throw error;
+  }
+}
+
 // Аудиозапись без Twilio-логина: приложение открывает эту ссылку.
 exports.callRecordingAudio = onRequestV2(
   {
@@ -3511,6 +3591,10 @@ exports.callRecordingAudio = onRequestV2(
       const callId = await resolveLoggedCallId(requested);
       const snap = await callsRef.doc(callId).get();
       const data = snap.exists ? snap.data() || {} : {};
+      if (String(req.query.lang || '').toLowerCase() === 'ru') {
+        await serveRussianDub(callId, data, res);
+        return;
+      }
       const ready = await ensureRecordingReady(callId, data);
       if (ready.storageUrl) {
         res.set('Cache-Control', 'private, max-age=86400');
@@ -3681,6 +3765,23 @@ async function translateChat(text, to) {
       : isDialogue
         ? 'Переведи этот диалог на естественный русский. Сохрани метки говорящих ИИ: и Клиент: на каждой строке. Нельзя выкидывать реплики ИИ. Верни ТОЛЬКО диалог, без кавычек и пояснений.'
         : 'Переведи сообщение клиента мастеру на естественный русский. Имена, адреса, модели и ссылки не меняй. Верни ТОЛЬКО перевод, без кавычек и пояснений.';
+  if (OPENAI_API_KEY) {
+    try {
+      const parsed = await openaiJsonResponse(
+        `${to === 'en' ? 'You translate for an appliance repair shop in Ontario.' : TRANSLATE_RULES}
+
+${instruction}
+Верни строго JSON {"text":"перевод"}.
+
+${t}`,
+        { maxOutputTokens: 6000 }
+      );
+      const out = String((parsed && parsed.text) || '').trim();
+      if (out) return out;
+    } catch (error) {
+      console.warn('translateChat OpenAI:', error.message);
+    }
+  }
   const result = await generateContentWithModelFallback([
     { text: `${instruction}\n\n${t}` },
   ]);
@@ -3818,6 +3919,49 @@ Return STRICT JSON only:
   return extractJsonObject(raw.trim());
 }
 
+// Подсказка распознаванию: марки техники и наши города модель иначе слышит
+// как попало («Fix Appliance CA» превращалось в «6 Supply and CA»).
+const TRANSCRIBE_VOCABULARY = [
+  'Appliance repair phone call for FixApplianceCA in Ontario, Canada.',
+  'Brands: Bosch, Whirlpool, Samsung, LG, GE, Frigidaire, Maytag, KitchenAid, Electrolux, Kenmore, Amana, Inglis, Miele, Danby.',
+  `Towns: ${voiceFacts.SERVICE_TOWNS.slice(0, 22).map((town) => town.name).join(', ')}.`,
+  'Keep phone numbers, postal codes, street addresses and model numbers exact.',
+].join(' ');
+
+const callTranscriber = createCallTranscriber({ apiKey: OPENAI_API_KEY });
+
+/**
+ * Точная расшифровка по дорожкам. Twilio пишет каждую сторону отдельно,
+ * поэтому говорящего не надо угадывать, а распознавание слышит чистый голос
+ * без наложения. Сюда попадает только запись, которую ещё можно забрать у
+ * Twilio в wav; на всё остальное (моно, старые записи, нет ключа OpenAI)
+ * остаётся прежний разбор всей записи одной моделью.
+ */
+async function transcribeDualChannelRecording({ callId, twilioUrl, direction, shopEn }) {
+  // Молчаливый отказ здесь стоил живой заявки (07.10.2026): разбор уходил на
+  // сведённую дорожку, та пишется одним голосом, и реплики клиента — имя,
+  // адрес, описание поломки — пропадали целиком, а в журнале не было ничего.
+  if (!OPENAI_API_KEY) {
+    console.warn(`dual-channel(${callId}): пропуск — нет OPENAI_API_KEY`);
+    return '';
+  }
+  if (!twilioUrl || !isTwilioMediaUrl(twilioUrl)) {
+    console.warn(`dual-channel(${callId}): пропуск — запись не у Twilio: ${twilioUrl || 'ссылки нет'}`);
+    return '';
+  }
+  const wav = await downloadRecordingBuffer(twilioUrl, { format: 'wav' });
+  const result = await callTranscriber.transcribeDualWav(wav, {
+    direction,
+    prompt: TRANSCRIBE_VOCABULARY,
+    labels: { shop: shopEn, client: 'Client' },
+  });
+  console.log(
+    `dual-channel(${callId}): реплик=${result.turns.length} симв=${result.text.length} ` +
+      `дорожка мастерской=${result.shopChannel} запись=${Math.round(result.duration)}с`
+  );
+  return result.text;
+}
+
 async function transcribeCallRecordingAudio({ audioBase64, shopEn, shopWho }) {
   const transcriptPrompt = `Listen to the WHOLE phone recording from the first sound to the last. Take your time.
 Who spoke for the shop: ${shopWho}.
@@ -3838,7 +3982,117 @@ Client: ...`;
   return relabelTranscript(raw, shopEn === 'Me' ? 'master' : 'ai');
 }
 
+// Перевод разговора. На gemini-flash-lite он терял метки говорящих, по своему
+// вкусу переписывал адреса кириллицей («Стратфорд») и иногда молча возвращал
+// половину разговора — а проверка на полноту отбрасывала такой перевод
+// целиком, и мастер видел английский. Теперь переводим построчно и сверяем
+// количество строк, поэтому потерять реплику нельзя.
+const OPENAI_TEXT_MODELS = [
+  process.env.OPENAI_TEXT_MODEL || 'gpt-5.4-mini',
+  'gpt-5-mini',
+];
+const TRANSLATE_BATCH_LINES = 40;
+
+async function openaiJsonResponse(prompt, { maxOutputTokens = 12000 } = {}) {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY не настроен');
+  let lastError;
+  for (const model of OPENAI_TEXT_MODELS) {
+    try {
+      const response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          input: prompt,
+          reasoning: { effort: 'low' },
+          text: { format: { type: 'json_object' }, verbosity: 'low' },
+          max_output_tokens: maxOutputTokens,
+        }),
+        signal: AbortSignal.timeout(90000),
+      });
+      const raw = await response.text();
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${raw.slice(0, 200)}`);
+      const body = JSON.parse(raw);
+      const text = (body.output || [])
+        .flatMap((item) => (item.content || []).map((part) => part.text || ''))
+        .join('')
+        .trim();
+      if (!text) throw new Error('пустой ответ');
+      return extractJsonObject(stripModelFences(text));
+    } catch (error) {
+      lastError = error;
+      console.warn(`OpenAI ${model}: ${error.message}`);
+    }
+  }
+  throw lastError || new Error('OpenAI не ответил');
+}
+
+const TRANSLATE_RULES = `Ты переводишь запись телефонного разговора ремонтной мастерской бытовой техники в Онтарио для мастера.
+Переводи живым разговорным русским, а не подстрочником. Английских слов в переводе остаться не должно.
+Латиницей оставляй ТОЛЬКО имена людей, названия городов и улиц, марки техники и номера моделей — мастер по ним ищет адрес и деталь. Всё остальное переводи: technician — мастер, model sticker — наклейка с моделью, warranty — гарантия, part — деталь.
+Номера телефонов и цифры переноси точно. Время пиши по-русски: before 5 p.m. — до 17:00, at 2 — в 14:00.
+Техника по-русски: dishwasher — посудомойка, washer — стиральная машина, dryer — сушилка, fridge/freezer — холодильник/морозильник, stove/range — плита, oven — духовка, spray arm — разбрызгиватель, drum — барабан, compressor — компрессор, igniter — свеча розжига, service call — выезд мастера.
+Ничего не добавляй, не сокращай и не объединяй реплики.`;
+
+function transcriptLines(text) {
+  return String(text || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^([^:]{1,24}):\s*(.*)$/);
+      return match ? { label: match[1].trim(), text: match[2].trim() } : { label: '', text: line };
+    });
+}
+
+async function translateLineBatch(batch) {
+  const prompt = `${TRANSLATE_RULES}
+
+Переведи каждую реплику из массива. Верни строго JSON {"lines":[...]} — ровно ${batch.length} строк, в том же порядке, без меток говорящих.
+
+${JSON.stringify(batch.map((line) => line.text))}`;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const parsed = await openaiJsonResponse(prompt);
+    const lines = Array.isArray(parsed && parsed.lines) ? parsed.lines.map((line) => String(line || '').trim()) : [];
+    if (lines.length === batch.length && lines.every(Boolean)) return lines;
+    console.warn(`translateLineBatch: получено ${lines.length} строк вместо ${batch.length}, попытка ${attempt}`);
+  }
+  throw new Error('перевод вернул не все реплики');
+}
+
+async function translateCallTranscriptLines(english, answeredBy) {
+  const shopRu = shopSpeaker(answeredBy, 'ru');
+  const lines = transcriptLines(english);
+  if (!lines.length) return '';
+  const translated = [];
+  for (let i = 0; i < lines.length; i += TRANSLATE_BATCH_LINES) {
+    const batch = lines.slice(i, i + TRANSLATE_BATCH_LINES);
+    translated.push(...(await translateLineBatch(batch)));
+  }
+  return lines
+    .map((line, index) => {
+      const label = /^(client|caller|user|клиент)$/i.test(line.label) ? 'Клиент' : line.label ? shopRu : '';
+      return label ? `${label}: ${translated[index]}` : translated[index];
+    })
+    .join('\n')
+    .trim();
+}
+
 async function translateCallTranscriptFull(english, answeredBy) {
+  const source = String(english || '').trim();
+  if (!source) return '';
+  if (OPENAI_API_KEY) {
+    try {
+      const russian = await translateCallTranscriptLines(source, answeredBy);
+      if (russian) return russian;
+    } catch (error) {
+      console.warn('translateCallTranscriptLines:', error.message);
+    }
+  }
+  return translateCallTranscriptWithGemini(source, answeredBy);
+}
+
+async function translateCallTranscriptWithGemini(english, answeredBy) {
   const source = String(english || '').trim();
   if (!source) return '';
   const shopRu = shopSpeaker(answeredBy, 'ru');
@@ -3877,15 +4131,12 @@ ${chunk}`,
 }
 
 async function processRecordingWithAiOnce(callId, recordingUrl) {
-    const audioBuffer = await downloadRecordingBuffer(recordingUrl);
-    const storedUrl = await cacheRecordingToStorage(callId, audioBuffer);
-    const audioBase64 = audioBuffer.toString('base64');
-
     let callerNumber = '';
     let direction = 'inbound';
     let liveHistory = [];
     let liveTranscription = '';
     let answeredBy = '';
+    let twilioUrl = '';
     try {
       const callDoc = await callsRef.doc(callId).get();
       const data = callDoc.data() || {};
@@ -3895,6 +4146,7 @@ async function processRecordingWithAiOnce(callId, recordingUrl) {
       liveHistory = (data.aiReception && data.aiReception.history) || [];
       liveTranscription = data.transcription || '';
       answeredBy = String(data.answeredBy || '').trim();
+      twilioUrl = String(data.twilioRecordingUrl || '').trim();
       if (!answeredBy && direction === 'outbound') answeredBy = 'master';
       if (!answeredBy) answeredBy = liveHistory.length ? 'ai' : 'master';
       if (callAiBlocked(data)) {
@@ -3902,6 +4154,10 @@ async function processRecordingWithAiOnce(callId, recordingUrl) {
         return;
       }
     } catch (_) {}
+    if (!twilioUrl && isTwilioMediaUrl(recordingUrl)) twilioUrl = recordingUrl;
+
+    const audioBuffer = await downloadRecordingBuffer(recordingUrl);
+    const storedUrl = await cacheRecordingToStorage(callId, audioBuffer);
 
     const today = voiceFacts.torontoTodayYmd();
     const shopEn = shopSpeaker(answeredBy, 'en');
@@ -3924,35 +4180,35 @@ async function processRecordingWithAiOnce(callId, recordingUrl) {
           })
           .join('\n')
       : '';
-    const fromAudioEn = await transcribeCallRecordingAudio({
-      audioBase64,
-      shopEn,
-      shopWho,
-    });
+    let fromAudioEn = '';
+    try {
+      fromAudioEn = await transcribeDualChannelRecording({ callId, twilioUrl, direction, shopEn });
+    } catch (error) {
+      console.warn(`dual-channel transcription(${callId}):`, error.message);
+    }
+    if (!fromAudioEn) {
+      console.warn(`transcript(${callId}): по дорожкам текста нет, разбираем сведённую запись`);
+      fromAudioEn = await transcribeCallRecordingAudio({
+        audioBase64: audioBuffer.toString('base64'),
+        shopEn,
+        shopWho,
+      });
+    }
     const transcriptionEn = pickLongestTranscript(
       fromAudioEn,
       liveEn,
       liveTranscription,
       liveLabeled
     );
-    let fromAudioRu = '';
-    if (transcriptionEn) {
-      fromAudioRu = await translateCallTranscriptFull(transcriptionEn, answeredBy);
+    // Один голос на всю расшифровку — это не молчаливый клиент, а слипшиеся
+    // дорожки: вместе с его репликами пропадают имя, адрес и описание поломки.
+    if (speakerCount(transcriptionEn) < 2) {
+      console.warn(`transcript(${callId}): в расшифровке один голос — реплики клиента потеряны`);
     }
-    const transcriptionRu = pickLongestTranscript(
-      fromAudioRu,
-      hasCyrillic(liveLabeled) ? liveLabeled : '',
-      hasCyrillic(liveTranscription) ? liveTranscription : ''
-    );
-    const transcription = pickLongestTranscript(
-      transcriptionRu,
-      transcriptionEn,
-      liveLabeled,
-      liveTranscription,
-      liveEn,
-      fromAudioEn
-    );
-
+    // Перевод и разбор заявки смотрят в одну и ту же английскую расшифровку и
+    // друг от друга не зависят, поэтому идут вместе: раньше мастер ждал их по
+    // очереди.
+    const extractSource = transcriptionEn || liveLabeled || liveTranscription;
     const extractPrompt = `From this complete appliance-repair phone transcript, write a short Russian summary and extract job fields.
 Do not change or shorten the transcript. Use only what is written.
 ${voiceFacts.EXTRACT_CARD_RULES}
@@ -3971,26 +4227,40 @@ Return STRICT JSON only:
 {"summary":"2-4 Russian sentences","extracted":{"client_name":null,"client_phone":null,"address":null,"city":null,"postal_code":null,"owner_address":null,"appliance_type":null,"brand":null,"model":null,"problem_description":null,"scheduled_date":null,"scheduled_time":null,"wants_callback":false,"contact_on_site_name":null,"contact_on_site_phone":null,"has_job_site":false,"notes":null,"service_declined":false,"decline_reason":null}}
 
 TRANSCRIPT:
-${transcription || transcriptionEn || liveLabeled}`;
+${extractSource}`;
 
-    let summary = '';
-    let extracted = {};
-    try {
-      const extractResult = await generateContentWithModelFallback([
-        { text: extractPrompt },
-      ]);
-      let extractRaw = String(
-        (extractResult.response && extractResult.response.text()) || ''
-      ).trim();
-      if (extractRaw.startsWith('```json')) extractRaw = extractRaw.slice(7);
-      else if (extractRaw.startsWith('```')) extractRaw = extractRaw.slice(3);
-      if (extractRaw.endsWith('```')) extractRaw = extractRaw.slice(0, -3);
-      const extractedParsed = extractJsonObject(extractRaw.trim()) || {};
-      summary = String(extractedParsed.summary || '').trim();
-      extracted = extractedParsed.extracted || {};
-    } catch (error) {
-      console.warn(`extract from transcript(${callId}):`, error.message);
-    }
+    const [fromAudioRu, card] = await Promise.all([
+      transcriptionEn
+        ? translateCallTranscriptFull(transcriptionEn, answeredBy).catch((error) => {
+            console.warn(`translate transcript(${callId}):`, error.message);
+            return '';
+          })
+        : Promise.resolve(''),
+      generateContentWithModelFallback([{ text: extractPrompt }])
+        .then((result) =>
+          extractJsonObject(stripModelFences((result.response && result.response.text()) || '')) || {}
+        )
+        .catch((error) => {
+          console.warn(`extract from transcript(${callId}):`, error.message);
+          return {};
+        }),
+    ]);
+    const summary = String(card.summary || '').trim();
+    let extracted = card.extracted || {};
+
+    const transcriptionRu = pickLongestTranscript(
+      fromAudioRu,
+      hasCyrillic(liveLabeled) ? liveLabeled : '',
+      hasCyrillic(liveTranscription) ? liveTranscription : ''
+    );
+    const transcription = pickLongestTranscript(
+      transcriptionRu,
+      transcriptionEn,
+      liveLabeled,
+      liveTranscription,
+      liveEn,
+      fromAudioEn
+    );
     // Реплики мастерской и клиента раздельно: иначе «меня зовут Артём»
     // мастера читалось как имя звонящего. История — по английской расшифровке:
     // имя приходит латиницей («Brad»), а в русском переводе оно «Брэд», и
@@ -4712,11 +4982,17 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
         res.status(500).json({ error: 'Не удалось перевести SMS на английский' });
         return;
       }
+      // Перевод бережёт имена, поэтому «Hi Клиент!» он оставлял как есть —
+      // латиница в тексте была, и проверка выше такое пропускала.
+      sendBody = smsText.latinizeSms(sendBody, 'sendSms');
     }
     const review = await prepareReviewSms(sendBody || '');
     sendBody = review.body;
     const text = withSmsHeader(sendBody || '', header);
-    const fallbackRaw = String(fallbackBody || '').trim() || review.fallbackBody;
+    const fallbackRaw = smsText.latinizeSms(
+      String(fallbackBody || '').trim() || review.fallbackBody,
+      'sendSms fallback'
+    );
     const fallbackText = fallbackRaw && fallbackRaw !== sendBody
       ? withSmsHeader(fallbackRaw, header)
       : '';
@@ -4844,7 +5120,7 @@ exports.approveOutbox = functions.https.onRequest(async (req, res) => {
     const message = await client.messages.create({
       from: TWILIO_PHONE_NUMBER,
       to: String(data.to || ''),
-      body: String(data.body || ''),
+      body: smsText.latinizeSms(String(data.body || ''), 'approveOutbox'),
       statusCallback: SMS_STATUS_CB,
     });
     await docRef.set(
@@ -4872,7 +5148,7 @@ exports.approveOutbox = functions.https.onRequest(async (req, res) => {
 });
 
 exports.translateMessage = functions.https.onRequest(
-  { timeoutSeconds: 30, memory: '256MiB', invoker: 'public' },
+  { timeoutSeconds: 120, memory: '256MiB', invoker: 'public' },
   async (req, res) => {
     setCors(res);
     if (handleOptions(req, res)) return;
@@ -4893,6 +5169,14 @@ exports.translateMessage = functions.https.onRequest(
           previous: payload.previous,
         });
         res.json({ success: true, polished, translated: polished });
+        return;
+      }
+      // Разговор переводится построчно и со сверкой количества реплик —
+      // тем же путём, что и расшифровка записи. Приложению гонять диалог
+      // через обычный перевод нельзя: оно теряло реплики и метки.
+      if (mode === 'dialog') {
+        const dialog = await translateCallTranscriptFull(text, String(payload.answeredBy || ''));
+        res.json({ success: true, translated: dialog || text, to: 'ru' });
         return;
       }
       const translated = await translateChat(text, to);
@@ -5100,6 +5384,7 @@ async function processIncomingSmsData(docRef, data) {
 
 exports.onJobWritten = visitSms.onJobWritten;
 exports.sendVisitReminders = visitSms.sendVisitReminders;
+exports.sendOwnerReminders = visitSms.sendOwnerReminders;
 
 
 // ============================================================================
@@ -6291,6 +6576,7 @@ async function sendScheduledSms(data) {
     if (hasCyrillic(sendBody) && !hasLatin(sendBody)) {
       throw new Error('Не удалось перевести SMS на английский');
     }
+    sendBody = smsText.latinizeSms(sendBody, 'sendSms');
   }
   const review = await prepareReviewSms(sendBody || '');
   sendBody = review.body;

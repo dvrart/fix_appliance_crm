@@ -147,6 +147,29 @@ function base64ToInt16(b64) {
   return out;
 }
 
+/// Готовый WAV из сырых отсчётов: его понимает и плеер в приложении, и
+/// распознавание. Заголовок всегда 44 байта, 16 бит, один канал.
+function wavFromPcm16(pcm, rate = 8000) {
+  const body = Buffer.isBuffer(pcm)
+    ? pcm
+    : Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + body.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(rate, 24);
+  header.writeUInt32LE(rate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(body.length, 40);
+  return Buffer.concat([header, body]);
+}
+
 function parsePcmRate(mimeType) {
   const match = String(mimeType || '').match(/rate=(\d+)/i);
   return match ? Number(match[1]) : 24000;
@@ -164,6 +187,7 @@ module.exports = {
   createLowPass,
   int16ToBase64,
   base64ToInt16,
+  wavFromPcm16,
   parsePcmRate,
   MULAW_SILENCE,
 };
