@@ -12,7 +12,7 @@
 
 - **Репозиторий:** `C:\Projects\fix_appliance_crm`, ветка **FIX-APP**
 - **НЕ трогать:** `C:\Projects\fix_appliance_cloud`
-- **Устройство:** Samsung `R5CW421KFXH`
+- **Устройство:** `44c25486` (Xiaomi/HyperOS; старый Samsung `R5CW421KFXH` заменён 03.10.2026)
 - **Пакет:** `com.example.fix_appliance_crm`
 - **Firebase:** `fix-appliance-crm`, компания `fix_appliance_ca`
 - **Язык UI:** русский, код на английском
@@ -32,8 +32,8 @@
 
 ```powershell
 flutter build apk --release
-adb -s R5CW421KFXH install -r build\app\outputs\flutter-apk\app-release.apk
-adb -s R5CW421KFXH shell am start -n com.example.fix_appliance_crm/.MainActivity
+adb -s 44c25486 install -r build\app\outputs\flutter-apk\app-release.apk
+adb -s 44c25486 shell am start -n com.example.fix_appliance_crm/.MainActivity
 ```
 
 ### Deploy после Functions-изменений
@@ -225,7 +225,7 @@ firebase deploy --only functions:aiVoiceRelay,functions:aiVoiceTurn,functions:in
 
 1. `flutter analyze <изменённые файлы>` — без новых ошибок.
 2. `flutter build apk --release` собирается.
-3. APK установлен на `R5CW421KFXH`, изменённый сценарий проверен на устройстве.
+3. APK установлен на `44c25486`, изменённый сценарий проверен на устройстве.
 4. Для Functions: деплой прошёл + `node tools/read_logs.js 10 all app` чистый.
 5. Не коммить без явной просьбы. Не утверждать, что задеплоено/проверено, если этого не было.
 6. Если сценарий неясен — задать владельцу конкретный вопрос, не угадывать.

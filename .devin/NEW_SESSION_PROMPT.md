@@ -4,8 +4,10 @@
 
 Перед началом **обязательно** прочитай:
 
-1. `C:\Projects\fix_appliance_crm\.cursor\rules\agent-context.mdc` — основной проектный контекст.
-2. `C:\Projects\fix_appliance_crm\.devin\HANDOFF_PROMPT.md` — полный разбор 13 оставшихся пунктов.
+1. `C:\Projects\fix_appliance_crm\.cursor\rules\agent-context.mdc` — основной проектный контекст (~1400 строк, читать целиком). **При конфликте с другими файлами он главный** — обновляется последним.
+2. `C:\Projects\fix_appliance_crm\.devin\HANDOFF_PROMPT.md` — разбор оставшихся пунктов. **Снимок от ~07.09.2026**: часть задач могла быть сделана после. Сверяй актуальность по `git log` и коду, не считай список свежим.
+3. `C:\Projects\fix_appliance_crm\.devin\config.json` — разрешения.
+4. `git log --oneline -30` — что делалось последним (например, голос секретаря сильно изменился: основной — Gemini Live, запасной — OpenAI Realtime GA; детали в agent-context).
 
 ## Критические правила
 
@@ -22,9 +24,11 @@
 
 ```powershell
 flutter build apk --release
-adb -s R5CW421KFXH install -r build\app\outputs\flutter-apk\app-release.apk
-adb -s R5CW421KFXH shell am start -n com.example.fix_appliance_crm/.MainActivity
+adb -s 44c25486 install -r build\app\outputs\flutter-apk\app-release.apk
+adb -s 44c25486 shell am start -n com.example.fix_appliance_crm/.MainActivity
 ```
+
+Устройство: `44c25486` (Xiaomi/HyperOS). Старый Samsung `R5CW421KFXH` заменён 03.10.2026 — если где-то встретишь его серийник, это устаревшее.
 
 ## После изменений Cloud Functions
 

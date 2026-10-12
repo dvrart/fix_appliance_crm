@@ -163,6 +163,59 @@ Company on the phone: **FixApplianceCA**. Polite, easy, a little erudite. Answer
 
 Spoken first name (e.g. Amelia) must go on the **client card** (`fullName`), not only the job. Do not leave `Клиент` / `Клиент +1…`. Helpers: `usableClientName` / `isPlaceholderClientName` in `functions/voice_facts.js`, `applyPersonNameToClient` in `functions/index.js`. Opening a job or client card also copies a real name from the job onto a placeholder client.
 
+**В SMS клиенту — только латиница и только настоящее имя (07.10.2026, просьба FIX).** Клиент
+получил «Hi Клиент +14165550101!»: подпись карточки, которую секретарь ставит, пока имя не
+названо, подставлялась в `{name}` как имя. Два чокпоинта, оба трогать осторожно:
+
+- **Имя.** `functions/sms_text.js` (`smsName`, `fillName`) и `SmsText.clientName` /
+  `SmsText.fillName` в `lib/core/sms_text.dart` — одно правило на сервер и приложение.
+  Заглушка, мусор, «Неизвестно» и голый номер именем не считаются; настоящее имя уходит
+  **латиницей и только первое слово** («Артём» → «Artem», «brad johnson» → «Brad»). Имени
+  нет — **обращение убирается целиком вместе с запятой**: «Hi!», а не «Hi !» и не «Hi there»
+  (решение FIX). `{name}` руками через `replaceAll` больше нигде не подставлять: так и
+  утекала заглушка. `Client.isPlaceholderName` теперь просто зовёт `SmsText`.
+  Тесты: `functions/sms_text.test.js`, `test/sms_client_name_test.dart`.
+- **Кириллица.** Транслитерация стоит **только на сервере**, последним шагом после перевода
+  (`smsText.latinizeSms` в `sendSms`, `approveOutbox`, `sendTwilioSms` в `visit_sms.js`).
+  В приложении её делать нельзя: русский текст из чата ещё должен попасть на серверный
+  перевод Gemini, а транслитерация отняла бы у него исходник. Старая проверка
+  `hasCyrillic && !hasLatin` пропускала смешанный текст — перевод «бережёт имена» и
+  «Клиент» оставлял как есть. Кириллица в SMS — это ещё и UCS-2: сегмент 70 символов
+  вместо 160.
+- Побочно починено: `on_the_way_service.sendPendingSms` отправлял шаблон с дословным
+  `{name}` (никто его не подставлял), а запасным текстом брал русскую строку через `.tr`.
+
+**Словарь-подсказка Whisper съедал дорожку клиента целиком (07.10.2026).** Звонок
+CA5d99fa… (+1 416 984 2574): клиент вслух сказал «My name is Will, and my address is
+1023 Cheesewood Road», а в заявке осталось «Клиент 4169842574» без адреса, и в расшифровке
+были только реплики мастера. Разобрано по живой записи, не по пересказу:
+
+- Запись **двухдорожечная** (`record-from-answer-dual`), разбор по дорожкам отработал —
+  и вернул 11 реплик вместо 18. Дело не в тракте, а в одном параметре.
+- `TRANSCRIBE_VOCABULARY` (марки и города, 495 символов) уходит в Whisper как `prompt`.
+  На дорожке клиента он загнал распознавание **в петлю**: 202 сегмента «Hello?» подряд
+  вместо разговора. Замер на той же записи: без подсказки — 826 символов с именем и
+  адресом, с подсказкой — 423 символа из одного «Hello?». На дорожке мастера подсказка
+  работала (она же чинит «FixApplianceEA» → «FixApplianceCA»), поэтому сторона мастерской
+  выглядела нормально и подвох был не виден.
+- Фильтр повторов в `liveSegments` схлопнул петлю в две реплики «Клиент: Алло?» — именно
+  их FIX и видел в карточке звонка.
+- Починка в `call_transcribe.js`: `looksRepetitive` (≥60% сегментов — одна и та же фраза,
+  от 8 сегментов) и `transcribeChannelSafely` — поймали петлю, переспрашиваем **эту же
+  дорожку без подсказки** и берём вариант с бо́льшим объёмом разного текста
+  (`uniqueTextLength`). Подсказку не выбрасываем: она полезна, просто больше не фатальна.
+  Тесты: «петля распознавания видна…», «сорвавшуюся в петлю дорожку переспрашивают…».
+- Разбор по дорожкам больше **не молчит**: `dual-channel(callId)` пишет в журнал причину
+  отказа (нет ключа, запись не у Twilio) и итог (реплик / символов / чья дорожка), а
+  `transcript(callId)` предупреждает, когда ушли на сведённую запись и когда в расшифровке
+  остался один голос. Именно немой `return ''` стоил двух часов поиска.
+- После починки звонок переразобран: расшифровка 1470 символов с обеими сторонами,
+  в заявке `clientName: Will` и адрес, в карточке клиента `fullName: Will`.
+  `patchDraftJobFromCall` заодно меняет подпись-заглушку в `jobSiteName` на настоящее имя.
+- Повторный разбор звонка руками: поле `recordingManualRequestId` в документе звонка
+  (`force: true` в `processRecordingWithAi`). Кнопки в приложении для этого нет.
+  Осторожно: каждый прогон **дописывает** пересказ поломки в описание заявки.
+
 **Имя клиента ≠ имя мастера/секретаря (30.09.2026).** В заявку и карточку уезжало «Artem» (мастер представился «меня зовут Артём», или клиент спросил «можно Артёма?») или имя, которым представилась секретарь. Причины: разбор записи (`processRecordingWithAiOnce`) отдавал весь диалог одной репликой `role:'user'`, а `nameFromHistory` искал «my name is / this is / I'm» во всех репликах, включая секретаря. Что сделано в `voice_facts.js`: `historyFromTranscript` разбирает «Моё:/ИИ:/Me:/AI:» → `assistant`, «Клиент:/Client:» → `user`; `selfIntroducedNames` собирает, как представилась каждая сторона; `isShopPersonName` отбрасывает имена мастерской (`SHOP_PEOPLE_NAMES` = artem/artyom/artiom, Артём через транслит, опечатки на 1 букву + как представилась сторона мастерской), если звонящий **сам** так не представился (тёзка Артём остаётся). Встроено в `nameFromHistory`/`pickClientName`/`mergeExtracted`. В промптах (`EXTRACT_CARD_RULES`, извлечение Live, текстовый режим, разбор записи и второй проход) — client_name только из реплик клиента. Тесты: `functions/voice_names.test.js`.
 
 **Контакт на адресе = клиент, если другого человека не назвали (22.09.2026).** Звонок с «я буду» оставлял `jobSiteName`/`jobSitePhone` пустыми — карточка показывала «Контакт на адресе» без имени. Теперь `voiceFacts.onSiteContactFrom(extracted, ownerName, ownerPhone)` подставляет имя и телефон клиента, если явно не назван другой человек; `explicit=true` только для другого человека (другое имя или номер). Фолбэк вшит в создание заявки, `patchDraftJobFromCall`, контакты локации карточки клиента, `applyInboundAddressToClient` и email/website-заявку. Позже названный реальный человек заменяет фолбэк, а существующий записанный контакт фолбэк не затирает. В extraction-промптах (Live `voice_relay.js`, текстовый режим и SMS/email в `index.js`): «I'll be there»/«me»/«my husband» без имени → null. Live-секретарю: «клиент будет сам — не переспрашивать имя». В приложении `JobDetailsController.contactName/contactPhone` и карточка «Где работа» (`details_tab._sitePiece`) тоже падают на данные клиента. Тесты: `voice_facts.test.js` («onSiteContactFrom…»).
@@ -211,7 +264,59 @@ Do **not** set `android:showWhenLocked` / `turnScreenOn` on `MainActivity` in th
 
 ## Bell / notifications
 
-App-bar bell: `lib/features/ai/assistant/review_bell_button.dart`. Tabs: Secretary / Calls / Jobs. Swipe left/right between tabs. Cards show date and time. Opening Secretary or Calls (seeing the tab) dismisses those items **only when the sheet is closed**, not when switching tabs. Jobs leave the bell only after confirm (`needsReview=false`) or delete. Phone tray: FCM `notifyMaster` is **data-only** (Twilio FCM service draws the shade — a system notification payload gets swallowed). `InboxPushMirror` also shows a heads-up for a new bell item, including when the app is just opened (last 6 hours, IDs stored so old cards do not re-fire). Shade stays until swipe; `number: 1` so Samsung can badge the icon. Watched / website / repair letters notify on ingest. Do not auto-dismiss inbox alerts. Sound is chosen in Android app notification settings via **Настройки → Звук уведомлений**. Do not delete notification channels (that wipes the user's sound).
+### Колокольчик считает решения, «Связь» считает события (11.10.2026)
+
+Разделение по решению FIX. Раньше в колокольчик валилось всё подряд —
+непрочитанные письма, разобранные звонки, заявки от ИИ, сбои — и его цифра
+значила «что-то произошло», то есть ничего: она не доходила до нуля, пока висит
+хоть одна неподтверждённая заявка, и на неё перестали смотреть.
+
+- **Что осталось в колокольчике** — только то, где без мастера дело не двинется.
+  Отбор — чистая функция **`InboxSelection.of`** в `review_bell_button.dart`, по
+  ней считают и бейдж, и панель, и тест `test/inbox_selection_test.dart`. Второй
+  разбор не заводить: разойдутся цифра и список.
+  - «Ждёт решения» — SMS ждёт разрешения (`approval: pending`), SMS-заявка,
+    письмо-заявка (**только `emailOfferPending`**).
+  - «Надо разобраться» — недоставленное SMS, звонок **без** созданной заявки.
+  - «Подтвердить заявки» — `needsReview`, живые и не закрытые.
+- **Чего там больше нет:** просто непрочитанных писем (`emailBellPending` без
+  предложения), звонков с уже созданной заявкой (решение принимают по заявке) и
+  звонков «в обработке» — последнее видно на вкладке «Звонки» («ИИ обрабатывает»).
+  Подписок в панели стало **6**, счёт держит `runtime_performance_test`.
+- **`emailOfferPending` сервер нигде не ставит в `true`** (проверено по всему
+  репозиторию 11.10.2026) — флаг достался от старой схемы. Письмо с сайта или от
+  наблюдаемого отправителя приходит с `emailBellPending: true`, а заявку по нему
+  создаёт сам сервер (`index.js`, ветка «Email / website: создаём заявку как
+  раньше»), и в колокольчик она попадает как **заявка на подтверждение**. Поэтому
+  строка «Письмо о ремонте» в жизни почти не появляется: она осталась ради старых
+  документов, где флаг ещё лежит. Если будете возвращать ручное подтверждение
+  писем — ставьте флаг на сервере, строка и кнопки уже готовы.
+- **Вид:** секции с заголовками и счётчиками, внутри — время. Решения и сбои —
+  **строки** `_InboxRow` с текстом и двумя кнопками (Отправить / Не отправлять,
+  Создать заявку / Не заявка, Послушать / Убрать): решение принимается не
+  открывая экран, панель при этом не закрывается. Плитки с картинкой техники
+  (`_BellCard`) остались **только** у заявок на подтверждение.
+- Кнопка в шапке — **«Убрать разобранное»**: чистит сбои и заявки, **решения не
+  трогает** (молча потерять их нельзя). Текст подтверждения больше не обещает
+  ничего про скрипт секретаря — коуча нет с 21.09.2026.
+- **Бейджи внизу** (`CommsBadgeService` + `CountBadge`): на вкладке «Связь» сумма,
+  на подвкладках свои — новые входящие звонки и непрочитанные SMS/письма. Две
+  узкие подписки на всё приложение, стартуют вместе с `InboxPushMirror` в
+  `NotificationService._onAuthChanged`. Виджеты читают `ValueNotifier` — у него
+  есть текущее значение, поэтому подписываться второй раз неоткуда.
+- **`reviewed` не годится как «видел список»:** у звонков, на которые FIX ответил
+  сам, он остаётся false навсегда, и бейдж показал бы всю историю. Счётчик
+  звонков сравнивает `startTime` с локальной отметкой `comms_calls_seen_at`
+  (prefs, по умолчанию — момент первого запуска). Отметку ставит
+  `_markCallsSeenIfVisible` в `main_screen.dart`, и только когда список реально
+  перед глазами: вкладка «Связь» **и** подвкладка «Звонки». Подвкладка живёт в
+  дереве всегда — одного её индекса мало.
+- **Одно «прочитано» на один факт:** `markConversationRead` гасит и `read`, и
+  `emailBellPending` (раньше прочитанное письмо продолжало висеть в
+  колокольчике), а `CallReviewPage.open` помечает звонок разобранным — иначе
+  счётчик входящих не обнулить.
+
+Phone tray: FCM `notifyMaster` is **data-only** (Twilio FCM service draws the shade — a system notification payload gets swallowed). `InboxPushMirror` also shows a heads-up for a new bell item, including when the app is just opened (last 6 hours, IDs stored so old cards do not re-fire). Shade stays until swipe; `number: 1` so Samsung can badge the icon. Watched / website / repair letters notify on ingest. Do not auto-dismiss inbox alerts. Sound is chosen in Android app notification settings via **Настройки → Звук уведомлений**. Do not delete notification channels (that wipes the user's sound).
 
 Shade look is Pinterest-style (`CrmShadeNotifier`): on this Samsung's One UI the left circle is the system-drawn app icon and `largeIcon` renders as the thumbnail on the right — that slot gets a big **emoji** drawn onto a Bitmap by `drawTypeBadge` (📞 call / 💬 sms / ✉️ email / 🔔 reminder / 🔕 spam). Emoji text, not vector drawables — vectors were rendering as solid circles on device. Do **not** use `BigPictureStyle` for this: collapsed it does not show, expanded it stretches full width into a giant circle (verified on device). Fallback path (`flutter_local_notifications`, incl. `zonedSchedule` reminders) gets the same badge via MethodChannel `typeBadgeBytes` → `CrmShadeNotifier.badgePng` → `ByteArrayAndroidBitmap` largeIcon; `LocalNotificationService._badgeFor` caches per `type|source`. `VoiceFirebaseMessagingService.showSmsNotification` (last-resort path when the CrmShadeNotifier reflection fails) also sets the badge via reflective `badgePng`. Incoming Twilio call = full-screen intent (`IncomingCallNotifier` + `twilio_incoming_call` lockscreen flags).
 
@@ -291,6 +396,16 @@ Twilio**. Он кладёт готовый текст (с шапкой) в `mess
 - Что по-прежнему уходит сразу: то, что мастер отправил сам из приложения
   (`exports.sendSms`, `exports.sendEmail`, ссылка на оплату Stripe, отложенные сообщения
   `processScheduledMessages`) и авто-повтор при 30007 — это повтор уже одобренного текста.
+- **Исключение из шлюза — подтверждение визита после ответа клиента «1» (решение FIX,
+  11.10.2026).** `confirmVisitMatch` зовёт `sendSms({ …, kind: 'confirm_confirmed', auto:
+  true })`, и `sendTwilioSms` при `auto: true` шлёт благодарность «Thanks! See you …»
+  **сразу** через Twilio (со `statusCallback`, `approval: 'auto'`), минуя жёлтый пузырь.
+  Клиент уже сам подтвердил визит, ждать мастера незачем. Если живая отправка падает,
+  сообщение всё равно ложится в очередь `awaiting_approval`, чтобы мастер повторил. Это
+  **единственный** авто-kind вне шлюза; `keepVisit`, `reschedule_ask` и прочие по-прежнему
+  ждут кнопку. Тесты: `visit_sms.test.js` — «a "1" visit confirmation is sent to the client
+  automatically…», «if the automatic confirmation send fails, it falls back to the approval
+  queue».
 - Деплой: `firebase deploy --only functions:onJobWritten,functions:sendVisitReminders,functions:approveOutbox`.
   Без деплоя приложение покажет кнопки, но сервер продолжит слать сам.
 - Тесты: `visit_sms.test.js` — «a reschedule waits for the owner instead of texting the
@@ -679,6 +794,83 @@ timeouts and falls back to `OfflineQueueService`, and the job card then shows «
   отчёт по звонку терял на этом сорок секунд (`aiStatus` застревал в `processing`). Переключатели:
   `GEMINI_TEXT_MODEL`, `GEMINI_QUALITY_MODEL`.
 
+## Расшифровка записи и перевод — по дорожкам, а не на слух (07.10.2026)
+
+FIX: «расшифровка приблизительная, перевод плохой, и всё это долго». Так и было, причём
+по трём разным причинам сразу.
+
+- **Говорящих больше не угадываем.** Twilio пишет разговор в две дорожки
+  (`<Record channels="dual">` у секретаря; `<Dial>` теперь тоже
+  `record-from-answer-dual` — было моно). Канал и есть говорящий, поэтому
+  `functions/call_transcribe.js` распознаёт каждую дорожку отдельно, а порядок реплик
+  собирает по отметкам времени. Раньше вся запись одним куском уходила в Gemini с просьбой
+  «напиши, кто что сказал»: голоса накладывались, реплики путались местами, а «FixApplianceCA»
+  превращалось в «6 Supply and CA» (сверено на живой записи
+  `REad07276065bfa730e2d56ec61ca3215e`).
+- **Распознаёт OpenAI `whisper-1`**, по запросу на дорожку, оба запроса разом, `language=en`,
+  `temperature=0` и подсказка со словарём (`TRANSCRIBE_VOCABULARY` в `index.js`: марки и наши
+  города). Три минуты разговора — около 6 с. Длиннее 10 минут режется на куски, сдвиг времени
+  едет вместе с сегментом.
+- **Границы реплик — по словам, знаки препинания — из сегментов.** Это не прихоть: по одним
+  сегментам порядок реплик разъезжается (сегмент накрывает паузу, внутри которой говорил
+  второй), а в разметке по словам нет ни точек, ни заглавных. `punctuatedWords` сводит их
+  двумя указателями; склеенный токен вроде `519-503-7091` закрывает все свои слова.
+- **`no_speech_prob` для отсева выдумок не годится.** На живых репликах, вокруг которых много
+  тишины, whisper ставит ему 0,70–0,86 — первая версия фильтра выкинула и адрес, и «Yes,
+  correct». Тишину определяем сами, по громкости самой дорожки (`channelEnergy`), а из
+  модели берём только совсем плохой `avg_logprob`. Это и ловит классическое
+  «Bye. Bye. Bye.» на молчащем канале.
+- **Если дорожка одна** (старые записи, звонки до этой правки, нет `OPENAI_API_KEY`) —
+  `transcribeDualWav` честно бросает ошибку, и работает прежний разбор всей записи Gemini.
+  Ничего не ломается, просто хуже.
+- **Перевод больше не теряет реплики.** `translateCallTranscriptFull` переводит **построчно**
+  (JSON-массив, сверка количества строк, повтор при расхождении) на `gpt-5.4-mini`
+  (`OPENAI_TEXT_MODEL`), запасной — прежний путь на Gemini. Старый вариант на
+  `gemini-flash-lite` при недоборе реплик возвращал **пустую строку**, и мастер видел
+  английский; плюс переписывал адреса кириллицей («Стратфорд»), а по ним ищут дом.
+  Правила перевода — `TRANSLATE_RULES`: латиницей остаются только имена, города, улицы, марки
+  и номера моделей, время по-русски (17:00, а не «5 o'clock p.m.»), словарь по технике.
+  Пункт «английских слов остаться не должно» добавлен не зря: без него в переводе жили
+  «передам technician» и «наклейка с model».
+- **Перевод и разбор заявки идут параллельно** — оба смотрят в одну английскую расшифровку и
+  друг от друга не зависят. Раньше ждали по очереди. Итог на трёхминутном звонке: ~6 с
+  расшифровка + ~6 с перевод, параллельно с разбором.
+- **Приложение диалог само не переводит.** `MessageTranslateService.toRussianDialog` ходит в
+  `translateMessage` с `mode: 'dialog'` (таймаут функции поднят до 120 с) и получает тот же
+  построчный перевод. Локальный список моделей почищен: `gemini-3.6-flash` и
+  `gemini-2.5-flash` на нашем ключе мертвы и стоили по таймауту каждая.
+- Цена вопроса: whisper — $0,006 за минуту дорожки, то есть около четырёх центов за
+  трёхминутный звонок (две дорожки). Если это станет важно, переключатель один — убрать
+  `OPENAI_API_KEY`, и всё вернётся на Gemini.
+- Тесты: `functions/call_transcribe.test.js` (разбор WAV, разделение дорожек, отсев выдумок,
+  перенос знаков препинания, сведение дорожек, нарезка длинной записи).
+
+### Запись можно слушать по-русски (07.10.2026, просьба FIX «сделай их рядом»)
+
+В плеере записи два переключателя — **«Оригинал»** и **«По-русски»**. Русская дорожка — это
+озвучка уже готового перевода (`functions/call_dub.js`), и собирается она так:
+
+- Реплики берутся из `transcriptionRu` (если её нет — перевод делается на месте и
+  сохраняется), голос у мастерской и у клиента **разный**, иначе на слух не разобрать, кто
+  говорит. Голоса и модель: `OPENAI_TTS_VOICE_SHOP` / `OPENAI_TTS_VOICE_CLIENT` / `OPENAI_TTS_MODEL`.
+- Озвучка просит у OpenAI **сырые отсчёты** (`response_format: 'pcm'`), а не mp3: склеивать
+  mp3-куски нельзя, на стыках треск. Готовая дорожка сводится к 8 кГц тем же фильтром, что и
+  живой голос секретаря (`createLowPass` + `downsampleTo8k` в `audio_codec.js`), поэтому звучит
+  как телефонная запись и весит втрое меньше: три минуты — 2,8 МБ.
+- Реплики озвучиваются **очередью по 10**, а не пачками: короткая реплика готова за секунду,
+  длинная за десять, и пачка ждала бы самую медленную. На трёхминутном разговоре 57 с → 17 с.
+- Собирается **по первому нажатию** и кладётся в хранилище рядом с оригиналом
+  (`calls/<id>-ru.wav`, поле `storageUrlRu`), второй раз отдаётся сразу. Пока сборка идёт,
+  повторное нажатие не запускает вторую (`dubsInFlight` в `index.js`).
+- Точные паузы оригинала не повторяются: озвучка всегда другой длины, чем живая речь. Между
+  репликами ровно 0,35 с.
+- Ссылка одна и та же, отличается параметром: `callRecordingAudio?callId=…&lang=ru`. Нет
+  русской расшифровки — честный **409**, приложение пишет «Перевод записи ещё не готов», а не
+  крутит загрузку три минуты.
+- Проверено обратной расшифровкой: озвучка скормлена whisper'у и распозналась как тот же
+  русский диалог.
+- Тесты: `functions/call_dub.test.js`.
+
 ## Отладка звонков — читайте журнал правильно
 
 - **`firebase functions:log` на этом проекте отдаёт устаревшие срезы.** Свежих записей в нём
@@ -821,6 +1013,66 @@ the agent cannot just curl it any more. Ask FIX to copy the pack from the page i
 `weeklyCloudBackup` drops rows older than 14 days via `pruneAppErrors`.
 Deploy `appErrors`, `weeklyCloudBackup`.
 
+## Отчёты: каждая плитка открывается (11.10.2026)
+
+FIX: «хочу нажать на „Полученные HST“ и „Долг“ и увидеть, какие запчасти, какая работа, какие
+инвойсы». Вкладка **Операции** переделана, и расчёт вынесен из виджета:
+
+- `lib/features/reports/report_metrics.dart` — **чистый** `ReportMetrics.build(jobs, start,
+  endExclusive, warehouseCosts)`. Кроме сумм он отдаёт строки, из которых они сложились:
+  `invoices`, `payments`, `items` (позиции счетов с флагом `isPart`), `createdJobs`,
+  `completedJobs`. Тесты — `test/report_metrics_test.dart` (18 шт.). Правите деньги в
+  отчётах — начинайте оттуда, а не с экрана.
+- `report_breakdown_page.dart` — общий экран расшифровки: крупная цифра, блок «Что это за
+  цифра», «Как посчитано» (формула) и секции со строками. **Глухих плиток быть не должно**:
+  даже «Средний чек» и «Собрано», где расшифровывать нечего, открывают пояснение и формулу.
+- Плитки: Новые заявки, Завершено, Средний чек, Собрано · Счета с HST, Получено с HST, Долг,
+  **Чаевые** · **Работа и выезд**, **Запчасти клиенту** · **Запчасти (себест.)**, **Чеки
+  расходов**. Внизу вместо «После запчастей» — карточка **«Чистыми за период»**: выручка без
+  HST − запчасти − чеки = чистыми, чаевые строкой сверху.
+
+Три вещи, которые были посчитаны неверно и починены заодно:
+
+- **Чаевые считались продажей.** Платёж с методом `Tip` шёл через ту же пропорцию
+  subtotal/total, то есть из $20 чаевых $2.30 попадали в «HST получено» и в строку 103
+  GST34. Теперь `paymentKind()` делит платежи на `repair` / `tip` / `refund`: чаевые идут
+  только в `tips` (HST = 0), в `Получено с HST` их нет, в `TaxWorkbookFigures.tips` они
+  отдельной строкой и в PDF/буфере помечены «not in line 101».
+- **Возвраты не вычитались.** Было `if (amount <= 0) continue;` — деньги, ушедшие обратно
+  клиенту, оставались доходом. Теперь отрицательный платёж уменьшает `paid`, `cashExHst`,
+  `hstReceived` и показывается секцией «Возвраты».
+- **Оплата считалась дважды в двух отчётах.** Запасная ветка «платежей в периоде нет, но
+  счёт оплачен» срабатывала и тогда, когда платёж просто лежал в следующем месяце: октябрь
+  считал его по дате счёта, ноябрь — по дате платежа. Теперь запасная ветка работает только
+  при `stripe.status == 'paid'` и полном отсутствии строк платежа.
+
+Себестоимость запчасти: позиция счёта → склад → 40% цены. Последний случай помечается в
+строке расшифровки («проставьте закупку») — не выкидывайте эту пометку, по ней видно, какой
+цифре нельзя верить.
+
+### Работа или запчасть — это метка, а не догадка (11.10.2026)
+
+FIX показал Invoice #2: «control board for a washing machine — $300» уезжал в работу, потому
+что делёж держался на складе и себестоимости, а руками позицию никто не помечал.
+
+- Канон — **`Job.itemKind` / `Job.isPartItem` / `Job.isItemClassified`** в `models/job.dart`.
+  `item['type']` = `Part` / `Service`. Метки нет — работает старая догадка (склад,
+  `costPrice`), и `isItemClassified` возвращает false. Не заводите второй разбор типа
+  позиции: отчёт, счёт и экран разбора обязаны думать одинаково.
+- В диалогах «Add item» и «Edit item» (`finance_tab.dart`) появился переключатель
+  **Работа / Запчасть** и поле закупки под ним. Со склада — всегда запчасть, переключатель и
+  цена закупки заблокированы, себестоимость уже известна.
+- **Оплаченный счёт теперь тоже нажимается**, но только ради метки: `_editDocumentItem(...,
+  kindOnly: true)` меняет `type` и `costPrice` и не зовёт `applyDocumentStockChange` — суммы
+  и склад не двигаются. Имя, цену и количество по-прежнему держит `itemsEditable`.
+- Старые счета разбираются оптом в **`classify_items_page.dart`** («Разобрать позиции»): все
+  непомеченные позиции из всех счетов, подсказка проставлена по названию
+  (`guessIsPart`, словари деталей и работ), сохранение — `JobService.updateDocuments`.
+  Вход — жёлтая плашка на вкладке «Операции» и секция «Без метки — отчёт угадал» в
+  расшифровках запчастей и работы. Плашка пропадает сама, когда помечать нечего.
+- Тесты: `test/invoice_item_kind_test.dart` (метки и подсказки) и группа «запчасти и работа»
+  в `test/report_metrics_test.dart`.
+
 ## Склад
 
 The warehouse dialog used to be the worst offline screen in the app; do not undo these:
@@ -947,13 +1199,12 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 
 ## Recent file history (Aug 25 2026)
 
-- Job **Описание**: details tile is the original white card. Opening it has two swipe tabs — **Решение проблемы** (green) and **Описание проблемы** (red), same tints as before, original white text field. Field `solution` on the job. After leaving a client (~2 km) ask to change that job’s status, then the existing SMS «я в пути» for the next client.
+- Job **Описание** → с 11.10.2026 плитка **«Информация»**, см. «Карточка заявки — раскладка». Field `solution` on the job. After leaving a client (~2 km) ask to change that job’s status, then the existing SMS «я в пути» for the next client.
 - Phone shade: FCM is **data-only** on Android (`functions/notify.js`) so the Twilio FCM service can always draw the tray. White `ic_stat_notify` icon. Deploy functions that call `notifyMaster` (SMS, calls, jobs, Gmail, visit confirm, estimate). Samsung: first launch may ask to ignore battery optimization.
 - Job **ДЕТАЛИ**: status 50% | client 50%. Next row: **Где работа** | **Запись разговора** (source chip Телефон/Почта/SMS/Сайт + call date/time). Unconfirmed auto job: green **Подтвердить** and red **Отменить** (trash). Several calls open a list. Visit date row: clock + date | yellow **Добавить** | confirm button with text. Call green `#008F3B`. Calendar double-tap passes slot time into create job. Manual visit confirm / reschedule sends SMS ack. Deploy `onJobWritten`.
 - Bell **Звонки ↔ Заявки**: haptic as soon as the swipe crosses the midpoint, not after the tab animation ends.
 - **«Перенос визита» из меню статусов = новая заявка (30.09.2026, решение FIX).** Раньше `addFollowUpVisit` добавлял визит в ту же заявку, и вся карточка уезжала на новую дату. Теперь `JobDetailsController.rescheduleToNewJob` → `JobService.createRescheduledFrom`: старая заявка остаётся на своей дате (визиты закрыты как выполненные, статус «Перенос», если `canMarkRescheduled`), на новую дату создаётся отдельная заявка с выбранным статусом (Диагностика→Вызов / Установка / Повторный визит), `repeatOfJobId` = старая (в карточке ссылка «Исходная заявка»). Копируются клиент, адрес, техника, описание; деньги, документы и фото — нет. SMS-галочка шлёт подтверждение уже по новой заявке (`_resendVisitBookingSms(visit, jobId:)`), затем открывается новая карточка. Правка даты существующего визита и перетаскивание в календаре по-прежнему двигают визит внутри заявки (ниже).
 - Status **Перенос**: one repair = one job card. First date on an empty job does **not** change status. A second visit, or moving a visit to another day (card, calendar drag, «Добавить»), writes `status: Перенос` — on the job-card green check draft, immediately from calendar/route. Not for Готово / Отмена / Установка. After **Ожидание запчасти**, a new visit (or day move) writes **Установка**; older visits still show as **Перенос** on the calendar via `displayStatusForVisit`. Status id **Повтор** shows as **Перенесено** (new job after a closed repair, `createRepeatFrom`). **Установка** color is indigo (`#3F51B5`), not pink-red. Route map markers and stop chips use the visit status color, not a numbered palette.
-- Job **Описание**: details tile is the original white card. Opening it has two swipe tabs — **Решение проблемы** (green) and **Описание проблемы** (red).
 - Right bell shade: do **not** `setState` the main screen when the end drawer opens (that stuttered the slide). Bell handle lives in the dock stack like the menu handle.
 - Drawer **Активные**: tap opens all non-closed jobs. One-shot `completeLegacyJobsIfNeeded` marks jobs whose last visit is **before 17 Aug 2026** as **Завершено** (`settings/config.completedJobsBefore`).
 - SMS: long unique URLs only (Stripe Checkout, `estimateConfirm`, Storage). Short `fix-appliance.ca/pay|estimate|invoice/<8-char>` is for copy in the app — carriers drop those (Twilio 30007). If 30007 still fires, `smsStatusCallback` resends once with `cloudfunctions.net/p/<code>`. Deploy `p,shortenLink,createStripePayment,sendSms,smsStatusCallback`.
@@ -980,7 +1231,7 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 - Conversation app-bar person icon opens the client card. Client card has **История звонков** (audio + transcript), no **Техника**.
 - Invoice signature is an on-site acknowledgment on the **PDF** and the invoice viewer. **Без подписи** skips. Not required for Stripe SMS. Pay SMS uses the Stripe Checkout URL; estimate SMS uses `estimateConfirm`. Short `pay.` / `doc.` / shop paths stay for copy in the app. Deploy `createStripePayment`.
 - Name fields: helper **Имя на английском**. Client-card edits sync onto that client's jobs (`ClientJobSync` + job listens to client).
-- Bell handle: swipe **left** on the yellow dock tab opens. Title **Уведомления** is at the **top**. **Звонки / Заявки** stay under it. Bottom is a full-width strip the **same grey as the panel** (`#F4F6F8`); swipe **right** (or tap) closes. No label on that strip.
+- Bell handle: swipe **left** on the yellow dock tab opens. Title **Уведомления** is at the **top**, «Убрать разобранное» — справа от него. Под ними секции **Ждёт решения / Надо разобраться / Подтвердить заявки**. Bottom is a full-width strip the **same grey as the panel** (`#F4F6F8`); swipe **right** (or tap) closes. No label on that strip.
 - Gmail: do **not** scan all mail. Only `watchedEmailSenders` create jobs (`needsReview`). WordPress site forms go to a separate **веб-сайт** inbox, not Dale Davis / the From mailbox. CRM replies still go to chat. Deploy `syncGmailInbox`, `incomingSms`.
 - Связь must show real calls/SMS, not a blank navy page. Do **not** `orderBy('startTime')` / `orderBy('createdAt')` for the hub lists (mixed types / missing fields empty the stream). Map each doc in try/catch; sort in memory. Hidden dock tabs use `Offstage` so they do not cover Связь. Light grey canvas behind the lists.
 - App exit always needs the «Хотите выйти?» sheet. Only the red button closes the app. System Back must not finish the Activity (`MainActivity.onBackPressed` + `enableOnBackInvokedCallback=false`). Tap the dimmer to stay.
@@ -1128,9 +1379,29 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 ## Визиты в карточке: «Дата визита» и статусы с новой датой (02.10.2026, решение FIX)
 
 Заменяет блок от 29.09 ниже. `details_tab._editVisit({existing, followUpStatus})`:
-- Окно **«Дата визита»** — только календарь+время, галочка SMS и «Сохранить». Ни длительности, ни заметки, ни чипов, ни «Выполнен»/«Удалить визит». Нажатие на любую точку шкалы = `ctrl.updateVisit(visit, correction: true)`; статус не меняется. У пустой заявки («Не запланировано») визит добавляется через `saveVisits` без авто-«Перенос»/«Установка».
-- Пункт **«Перенос визита» из меню статусов убран.** Его работу делают статусы **«Установка»** и **«Повторный визит»** (`_statusNeedsNewDate`): сразу то же окно (дата, время, SMS включена) → `rescheduleToNewJob` (новая заявка с этим статусом, старая остаётся на своей дате как «Перенос»). Если у заявки визитов нет — визит ставится в неё же и ей ставится выбранный статус. Отмена окна = статус не меняется.
+- Окно **«Дата визита»** — только календарь+время, галочка SMS и «Сохранить» (плюс корзина в заголовке у существующего визита — см. 11.10 ниже). Ни длительности, ни заметки, ни чипов, ни «Выполнен». Нажатие на любую точку шкалы = `ctrl.updateVisit(visit, correction: true)`; статус не меняется. У пустой заявки («Не запланировано») визит добавляется через `saveVisits` без авто-«Перенос»/«Установка».
+- Пункт **«Перенос визита» из меню статусов убран.** Его работу делают статусы **«Установка»** и **«Повторный визит»** (`_statusNeedsNewDate`): сразу то же окно (дата, время, SMS включена) → визит добавляется **в эту же заявку** (`saveVisits`), прошлые запланированные выезды закрываются `JobVisit.markAllScheduledDone`, заявке ставится выбранный статус. Отмена окна = статус не меняется.
 - Визит / Депозит / Ожидание запчасти / Позвонить / Готово / Отмена дату не трогают (запчасть закрывает последний визит как выполненный, «Готово» идёт через `_completeJobFlow`).
+
+### Перенос больше не плодит заявки (11.10.2026, разбор по Christina Atkinson)
+
+Раньше «Установка» / «Повторный визит» звали `rescheduleToNewJob` → `JobService.createRescheduledFrom`, то есть **создавали отдельную заявку** на новую дату. Это ломалось двумя способами сразу, и оба FIX увидел в бою:
+
+- **Счёт оставался в старой заявке.** `sPipWHizNCIL6KcrzUbV`: визит 08.10 15:30, смета 0012 → счёт 0079, депозит Stripe $172,43. Перенос на 13.10 уехал в пустую `kjXUzLSn9lOlKZ5Un2om` — ни документов, ни денег, ни фото. Работа в одной карточке, счёт в другой.
+- **Новая заявка — тот же телефон и адрес в пределах 48 часов, то есть дубляж.** `job_dedupe` вешал на неё `possibleDuplicateOfJobId`, FIX сливал/удалял её — и перенос «не срабатывал». 08.10 с 17:57 до 18:20 так родилось и умерло **пять** заявок (`ngPFaQPk…`, `ClDdBH41…`, `zfbma9rD…`, `mHQcqP53…`, `yapdkTn9…`, `B6tzwiY8…`). Третий перенос 09.10 в 14:30 уже вышел за 48 часов от создания главной — дедуп его не поймал, и связи между второй и третьей карточкой не осталось.
+
+Теперь визит всегда ставится в ту же заявку. `rescheduleToNewJob` и `JobService.createRescheduledFrom` **удалены** — не возвращайте их. Данные клиентки починены вручную: визит 13.10 перенесён в `sPipW…`, `kjXUzL…` закрыта как дубль (`mergedIntoJobId`, визит `cancelled`), сообщения перевешаны.
+
+**Раз визиты теперь в одной заявке, нужен был способ убрать один (11.10.2026, FIX).** На календаре каждый визит — отдельная карточка, а удаление было только одно: красная корзина в шапке, и она уносила заявку целиком.
+
+- В окне **«Дата визита»** (тап по точке на шкале визитов) есть красная корзина **в заголовке справа** — только когда правится существующий визит. Сначала она стояла кнопкой под «Сохранить», и FIX её **не нашёл**: окно с календарём и колесом времени выше экрана, низ уезжает за край. Не возвращайте её вниз.
+- **Корзина в шапке карточки спрашивает, что удалить, если визитов больше одного** (`_pickDeleteTarget` в `job_details_screen.dart`): список выездов, свежий сверху, с датой, временем и состоянием; тап по строке убирает этот визит, внизу отдельным пунктом «Удалить всю заявку». Один визит — поведение прежнее, сразу подтверждение удаления заявки.
+- Оба пути ведут в `ctrl.removeVisit(id)` + `commitChanges()`: визит уходит из массива совсем, `syncFields` пересчитывает `scheduledAt`, карточка с календаря пропадает, шкала визитов смыкается сама. Счёт, депозит, фото и переписка не трогаются. Удалить можно и единственный визит — заявка станет «Не запланировано».
+- Лист «Дата визита» теперь возвращает строку (`'save'` / `'delete'`), а не `bool`.
+
+**SMS при удалении визита не шлётся — так решил FIX.** Если клиенту уже ушло подтверждение на это время, отмену он пишет сам. Не добавляйте сюда автоматическую отбивку: правило «ни одно сообщение не уходит клиенту само» сильнее.
+
+Если будете чинить такие сцепки руками: читать и писать Firestore можно через вход Firebase CLI, как в `tools/read_app_errors.js` (refresh-токен из `~/.config/configstore/firebase-tools.json` → REST `firestore.googleapis.com`). Переносить визит у **подтверждённого** визита безопасно: `queueManualBooking` в `visit_sms.js` на `smsConfirmStatus === 'confirmed' && !slotMoved` делает `continue`, SMS клиенту не уходит. Сдвинете при этом `startAt` или `smsBookingSlotKey` — `slotMoved` станет true, и клиентке прилетит новое подтверждение.
 
 ### Старый блок (29.09.2026)
 
@@ -1198,6 +1469,27 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 `lib/shared/stale_routes.dart` (`StaleRoutes`). Было: заявка → клиент → та же заявка → «Отменить» → попадаешь в клиента, а «Назад» возвращает в отменённую заявку. Теперь `JobDetailsScreen` и `ClientDetailsScreen` регистрируются (`watchJob`/`watchClient`), и когда запись уходит в корзину или удаляется — все её карточки снимаются со всех навигаторов (глубокие `removeRoute`, верхняя `pop`); под ними остаётся живой экран или корень вкладки. Срабатывает из кнопок удаления/«Отменить»/соединения дублей и из снимка Firestore (удалили в другом месте или на другом устройстве). Закрываем только при переходе «живая → корзина»: карточку, открытую из корзины, не трогаем. Пока `serverTimestamp` не подтверждён, `deletedAt` в локальном снимке `null` — см. `StaleRoutes.isTrashed`. Не возвращайте `Navigator.pop` после удаления: он закрывает только верхнюю копию. Тест: `test/stale_routes_test.dart`.
 
 
+## «Назад» не перематывает десяток окон (11.10.2026)
+
+Жалоба FIX: заявка → другая заявка → календарь → переписка, а потом «Назад» возвращает по всем этим окнам подряд. Стек рос без ограничений, дубли копились (заявка → клиент → та же заявка = три экрана), выход на главную (`_popToRoot`) закрывал экраны **по одному с анимацией**, а переключение вкладки стек не сбрасывало — вернулся на «Календарь» и видишь заявку, открытую полчаса назад.
+
+`lib/shared/app_nav.dart` (`AppNav`, `AppNavObserver`). Три правила, выбраны FIX:
+
+- **Без дублей.** Карточка уже в стеке этого навигатора — навигатор возвращается к ней (`backTo`: всё выше снимается молча, верхний экран уходит со своей анимацией), а не кладёт копию. Узнаётся по `RouteSettings.name`: `card:job:<id>`, `card:client:<id>`, `card:chat:<10 цифр|почта|website>` (`jobKey`/`clientKey`/`chatKey`; телефон нормализует `SmsService.normalizePhone`, поэтому `+1 416…` и `(416)…` — одна переписка).
+- **Лимит глубины `AppNav.maxCards` = 5.** Шестая карточка снимает самую старую (`removeRoute` из середины стека).
+- **Мгновенный выход.** `collapse`/`popToRoot`/`resetToRoot` снимают промежуточные экраны без анимации; видно только последний переход.
+
+Карточки (`JobDetailsScreen`, `ClientDetailsScreen`, `ConversationScreen`) открываются **только** через `AppNav.openCard(context, key: …, builder: …, rootNavigator: …)` — переведены все ~25 мест, включая `ConversationScreen.open`, роутер уведомлений, колокольчик, ассистента и глобальный поиск (`onOpen(page, card: ключ)`). Новое место открытия карточки через сырой `Navigator.push` ломает и дедуп, и лимит.
+
+Порядок страниц даёт **`AppNavObserver`**: у `NavigatorState` нет публичного списка истории, а без него нельзя снять экран из середины. Подключён к корневому навигатору (`MaterialApp.navigatorObservers` в `app.dart`) и к трём вкладкам (`_TabNavObserver extends AppNavObserver` в `main_screen.dart` — переопределения обязаны звать `super`). Диалоги и шторки (не `PageRoute`) не считаются. Навигатор пересоздали — наблюдатель чистит свой список сам (`_attach`).
+
+**Вкладка, с которой ушли, сбрасывается на корень** (`_forgetTab` в `main_screen.dart`) через 360 мс — после кроссфейда `FadeIndexedStack`, иначе сброс видно на уходящей вкладке. Быстро вернулся на ту же вкладку — сброс отменяется.
+
+**Несохранённые правки молча не выбрасываются.** `UnsavedNavigationGate.push(handler, unsaved: () => …)` теперь требует предикат «есть правки» (три места: `JobDetailsScreen`, `CreateJobScreen`, `DirtyLeaveScope`), а `hasUnsavedWork` сторожит лимит глубины, сброс вкладки и мгновенный выход: пока правки есть, лучше длинный стек, чем потерянная работа. Добавляете новый обработчик — передайте `unsaved`, иначе он считается грязным всегда и лимит перестанет работать.
+
+Грабли: `AppNav.openCard`, как и `Navigator.push`, завершается только при **закрытии** карточки (в ветке дедупа возвращается `existing.popped`). В тестах его ждать нельзя — иначе тест висит до таймаута. Тест: `test/app_nav_test.dart` (7 случаев).
+
+
 ## Удобство одной рукой: главное внизу (30.09.2026)
 
 Решение FIX: всё, что жмут часто, — в нижней части экрана, под большим пальцем.
@@ -1213,7 +1505,9 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
 ## Карточка заявки — раскладка (02.10.2026)
 
 - Шапка (`job_details_screen.dart`): слева имя клиента, тап открывает карточку клиента (`_openClientCard` переехал сюда из `details_tab`). Под шапкой вкладки-папки `_FolderTabs` (Детали / Финансы / Чат, значок + подпись); открытая папка того же цвета, что и лист под ней. Нижнего TabBar больше нет.
-- «Детали»: сверху слева крупная карточка техники (`_buildApplianceHero`), справа статус и подтверждение заказа (`VisitConfirmBadge.strip`). Под ними «Где работа» и «Клиент звонил» — узкие полоски в одну строку (`_compactStrip`). Плитки заменены одним разделом `_buildWorkSection`: описание и фото рядом (фото максимум 3 миниатюры: ячейка внутри `IntrinsicHeight`, поэтому `LayoutBuilder` там нельзя), под ними одной строкой Длительность / С собой / Отслеживание. В самом низу «Дата визита» — шкала переносов (`_visitTimeline`): визиты по времени слева направо, первый «Старт», переносы зачёркнуты, текущий (`_orderConfirmVisit`) крупно с подписью «Сейчас», выполненные отмечены зелёной галочкой. Не влезают — шкала листается вбок, текущий визит виден сразу. Маршрут / Звонок / SMS закреплены внизу вкладки.
+- «Детали»: сверху слева крупная карточка техники (`_buildApplianceHero`), справа статус и подтверждение заказа (`VisitConfirmBadge.strip`). Под ними плитки парами (`_tilePair`): «Где работа» | «Клиент звонил», ниже «Информация» | «Фото», у заявки с почты ещё «Письмо» во всю ширину. В самом низу «Дата визита» — шкала переносов (`_visitTimeline`): визиты по времени слева направо, первый «Старт», переносы зачёркнуты, текущий (`_orderConfirmVisit`) крупно с подписью «Сейчас», выполненные отмечены зелёной галочкой. Не влезают — шкала листается вбок, текущий визит виден сразу. Маршрут / Звонок / SMS закреплены внизу вкладки.
+- **Плитки «Деталей» — значок на полосе слева (11.10.2026, просьба FIX).** Все плитки собраны на `_sideTile` (`details_tab.dart`): слева цветная полоса 38 dp со значком, справа подпись и содержимое; полоса тянется на всю высоту через `IntrinsicHeight` внутри плитки. Полоски «Где работа» / «Клиент звонил» / «Письмо» — `_compactStrip` поверх `_sideTile`. У «Клиент звонил» значок — **аудиокассета** (`_CassetteIcon`, свой `CustomPainter`: в Material Icons кассеты нет) на жёлтой полосе (`AppColors.accent` 35 %). Миниатюры в «Фото» — `Flexible` + `ConstrainedBox(42×42)` + `AspectRatio`: сжимаются на узком экране, а `LayoutBuilder` внутри `IntrinsicHeight` по-прежнему нельзя.
+- **«Описание» стало «Информация» (11.10.2026, просьба FIX).** Отдельной строки Длительность / С собой / Отслеживание на карточке больше нет. Плитка «Информация» показывает описание (3 строки) и под ним мелкие значки-сводку: длительность всегда, «с собой» и доставку — если заполнены. Тап открывает `openJobInfoEditor` (`job_tile_editors.dart`). Там **только две вкладки** — «Описание проблемы» (красная, с «Перевести») и «Решение проблемы» (зелёная). «С собой», «Доставка» и «Длительность» — **не вкладки** (FIX попросил вынести их отдельно, 11.10.2026): это блок «К визиту» из трёх плиток над зелёной галочкой (`_visitPanel`, лежит в `bottomNavigationBar`, поэтому при открытой клавиатуре сам прячется под неё). Плитка открывает нижний лист (`_openSheet`): список «с собой» с полем ввода; поставщик чипами + трек-номер + номер заказа + текущий статус доставки; список длительностей (выбор сразу закрывает лист). Лист правит состояние страницы, в заявку ничего не пишет — одна зелёная галочка страницы сохраняет всё; в контроллер пишется только то, что реально изменилось (`_JobInfo` сравнивает до/после), так что правка списка «с собой» не перезаписывает описание. Текст, набранный в поле «с собой» без «+», тоже сохраняется. Старые `openDescriptionEditor`, `openPackingEditor`, диалог `_TrackingEditDialog` и лист `_pickVisitDuration` удалены; `visitDurationLabel` и `trackingStatusLabel` теперь общие в `job_tile_editors.dart`.
 - Календарь → «Список» (`jobs_screen._timelineRows`): слева шкала времени (начало и конец визита), «Свободно · N ч», если между визитами окно от часа, красная черта «сейчас» на сегодняшнем дне. У `JobAgendaCard` есть `showTime: false`, чтобы время не дублировалось.
 
 ## Переписка дёргалась — лента перевёрнута (05.10.2026)
