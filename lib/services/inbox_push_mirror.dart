@@ -7,6 +7,8 @@ import '../core/constants.dart';
 import '../models/job.dart';
 import 'auth_service.dart';
 import 'job_service.dart';
+import 'local_notification_service.dart';
+import 'network_status_service.dart';
 import 'notification_service.dart';
 import 'sms_service.dart';
 import 'twilio_service.dart';
@@ -15,8 +17,27 @@ import 'twilio_service.dart';
 /// Закрытое приложение будит FCM (системная шторка + нативный сервис).
 /// Первый снимок потока только запоминает уже виденные id — иначе при
 /// открытии снова сыпятся уведомления за полдня.
+///
+/// Он же убирает карточки обратно. Гасить их по месту — в переписке, в
+/// списке звонков, в колокольчике — приходится в десятке мест, и каждое
+/// новое легко забыть; к тому же прочитать письмо или открыть звонок
+/// можно было и на другом устройстве. Поэтому последнее слово за сверкой
+/// [sweep]: что висит в шторке, но ничему не соответствует — снимается.
 class InboxPushMirror {
   static const _prefKey = 'inbox_push_shown_ids';
+
+  /// Карточку снимаем не в тот же миг, как она «осиротела»: push почти
+  /// всегда приходит раньше, чем Firestore присылает сам документ, и
+  /// иначе свежее SMS гасило бы само себя.
+  static const _sweepGrace = Duration(seconds: 8);
+  static const _liveStreams = {
+    'sms',
+    'email',
+    'sms_offers',
+    'calls',
+    'jobs',
+  };
+
   static bool _started = false;
   static bool _ready = false;
   static final Set<String> _shown = {};
@@ -24,6 +45,11 @@ class InboxPushMirror {
   static final List<StreamSubscription<dynamic>> _subscriptions = [];
   static int _generation = 0;
   static Timer? _retry;
+
+  /// Что действительно ждёт разбора: поток → теги его карточек.
+  static final Map<String, Set<String>> _live = {};
+  static final Map<String, DateTime> _staleSince = {};
+  static Timer? _sweepTimer;
 
   static Future<void> start() async {
     if (_started || !AuthService.signedIn) return;
@@ -42,6 +68,13 @@ class InboxPushMirror {
           (items) => _onCalls(items, 'calls_review'),
           onError: _onError,
         ),
+        // Звонок считается новым, пока его не открыли, — независимо от
+        // того, успел ли ИИ разобрать запись. По «готовым» карточку не
+        // сверить: сразу после звонка её ещё нет в том потоке.
+        TwilioService.streamNewIncomingCalls().listen(
+          (items) => _setLive('calls', items.expand(_callTags)),
+          onError: _onError,
+        ),
         JobService.streamNeedsReview().listen(_onJobs, onError: _onError),
       ]);
     } catch (error) {
@@ -55,6 +88,9 @@ class InboxPushMirror {
     _ready = false;
     _primed.clear();
     _retry?.cancel();
+    _sweepTimer?.cancel();
+    _live.clear();
+    _staleSince.clear();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
@@ -84,6 +120,7 @@ class InboxPushMirror {
   static bool alreadyShown(String key) => _shown.contains(key);
 
   static void _onEmails(List<SmsMessage> items) {
+    _setLive('email', items.expand(_messageTags));
     _emitNew(
       streamId: 'email',
       items: items,
@@ -94,6 +131,12 @@ class InboxPushMirror {
   }
 
   static void _onSms(List<SmsMessage> items) {
+    _setLive(
+      'sms',
+      items
+          .where((item) => !item.isOutbound && !item.read && !item.isDeleted)
+          .expand(_messageTags),
+    );
     _emitNew(
       streamId: 'sms',
       items: items.where((item) {
@@ -112,6 +155,7 @@ class InboxPushMirror {
   }
 
   static void _onSmsOffers(List<SmsMessage> items) {
+    _setLive('sms_offers', items.expand(_messageTags));
     _emitNew(
       streamId: 'sms_offers',
       items: items,
@@ -143,13 +187,121 @@ class InboxPushMirror {
   }
 
   static void _onJobs(List<Job> items) {
+    final live = items.where((item) => !item.isDeleted && item.needsReview);
+    _setLive('jobs', live.expand(_jobTags));
     _emitNew(
       streamId: 'jobs',
-      items: items.where((item) => !item.isDeleted && item.needsReview),
+      items: live,
       keyOf: (item) => 'job:${item.id}',
       createdOf: (item) => item.createdAt,
       notify: _notifyJob,
     );
+  }
+
+  // ─── Сверка шторки с тем, что ещё не разобрано ──────────────────────────
+
+  static void _setLive(String streamId, Iterable<String> tags) {
+    _live[streamId] = {
+      for (final tag in tags)
+        if (tag.trim().isNotEmpty) tag.trim(),
+    };
+    _scheduleSweep(const Duration(seconds: 1));
+  }
+
+  static void _scheduleSweep(Duration delay) {
+    if (!_started) return;
+    _sweepTimer?.cancel();
+    _sweepTimer = Timer(delay, () => unawaited(sweep()));
+  }
+
+  /// Снять из шторки карточки входящих, за которыми уже ничего не стоит:
+  /// сообщение прочитано, звонок открыт, заявка разобрана или удалена.
+  static Future<void> sweep() async {
+    _sweepTimer?.cancel();
+    if (!_started || !AuthService.signedIn) return;
+    // Пока не слышали каждый поток, судить о «лишнем» не по чему.
+    if (!_liveStreams.every(_live.containsKey)) return;
+    // Без сети Firestore отстаёт от push: карточку о только что пришедшем
+    // сообщении подкрепить нечем, а снимать её нельзя.
+    if (NetworkStatusService.offline.value) {
+      _staleSince.clear();
+      return;
+    }
+    final want = <String>{for (final tags in _live.values) ...tags};
+    final active = await LocalNotificationService.activeInboxTags();
+    if (!_started) return;
+    _staleSince.removeWhere(
+      (tag, _) => want.contains(tag) || !active.contains(tag),
+    );
+    final now = DateTime.now();
+    final drop = <String>{};
+    for (final tag in active) {
+      // Трогаем только карточки событий. Образец уведомления из настроек
+      // и всё чужое на этих каналах должно спокойно висеть, пока его не
+      // смахнут рукой.
+      if (!tag.startsWith('crm_')) continue;
+      if (want.contains(tag)) continue;
+      final since = _staleSince[tag];
+      if (since == null) {
+        _staleSince[tag] = now;
+      } else if (now.difference(since) >= _sweepGrace) {
+        drop.add(tag);
+      }
+    }
+    if (drop.isNotEmpty) {
+      _staleSince.removeWhere((tag, _) => drop.contains(tag));
+      await LocalNotificationService.cancelTags(drop);
+    }
+    if (_staleSince.isNotEmpty) _scheduleSweep(_sweepGrace);
+  }
+
+  static Iterable<String> _messageTags(SmsMessage message) {
+    final type = message.isEmail ? 'email' : 'sms';
+    final email = message.counterpartEmail;
+    final phone = message.isOutbound ? message.to : message.from;
+    return {
+      if (email.isNotEmpty)
+        NotificationService.shadeTag(
+          type: 'email',
+          from: email,
+          messageId: message.id,
+        ),
+      if (phone.trim().isNotEmpty)
+        NotificationService.shadeTag(
+          type: type,
+          from: phone,
+          messageId: message.id,
+        ),
+      NotificationService.shadeTag(type: type, messageId: message.id),
+    };
+  }
+
+  static Iterable<String> _callTags(CallRecord call) {
+    final phone = call.isIncoming ? call.fromNumber : call.toNumber;
+    final sid = call.callSid.isNotEmpty ? call.callSid : call.id;
+    return {
+      if (phone.trim().isNotEmpty)
+        NotificationService.shadeTag(type: 'call', from: phone, callSid: sid),
+      NotificationService.shadeTag(type: 'call', callSid: sid),
+      NotificationService.shadeTag(type: 'call', callSid: call.id),
+    };
+  }
+
+  static Iterable<String> _jobTags(Job job) {
+    final from = job.intakeSource == 'email'
+        ? job.sourceEmailFrom
+        : job.clientPhone;
+    final callId = (job.sourceCallId ?? '').trim();
+    final emailId = (job.sourceEmailId ?? '').trim();
+    return {
+      if (from.trim().isNotEmpty)
+        NotificationService.shadeTag(type: 'job', from: from, jobId: job.id),
+      NotificationService.shadeTag(type: 'job', jobId: job.id),
+      if (callId.isNotEmpty)
+        NotificationService.shadeTag(type: 'call', callSid: callId),
+      if (emailId.isNotEmpty)
+        NotificationService.shadeTag(type: 'email', messageId: emailId),
+    };
   }
 
   static void _emitNew<T>({

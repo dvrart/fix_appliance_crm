@@ -415,7 +415,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     final secretaryStats = _secretaryStats;
     final money = NumberFormat.currency(symbol: '\$', decimalDigits: 0);
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F6F8),
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(
           context.tr('Статистика', 'Statistics'),
@@ -428,7 +428,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         children: [
           Container(
             width: double.infinity,
-            color: Colors.white,
+            color: AppColors.card,
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
             child: Row(
               children: [
@@ -439,13 +439,13 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                       label: Text(
                         trAny(filter),
                         style: TextStyle(
-                          color: _filter == filter ? Colors.white : Colors.black87,
+                          color: _filter == filter ? Colors.white : AppColors.ink,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                       selected: _filter == filter,
                       selectedColor: const Color(0xFF14557F),
-                      backgroundColor: Colors.grey.shade200,
+                      backgroundColor: AppColors.cardMuted,
                       onSelected: (selected) {
                         if (!selected) return;
                         setState(() => _filter = filter);
@@ -456,31 +456,31 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
             ),
           ),
           Container(
-            color: Colors.white,
+            color: AppColors.card,
             padding: const EdgeInsets.only(bottom: 8),
             child: Row(
               children: [
                 IconButton(
-                  icon: const Icon(Icons.chevron_left, size: 30, color: Color(0xFF14557F)),
+                  icon: Icon(Icons.chevron_left, size: 30, color: AppColors.primaryOnCard),
                   onPressed: () => _shift(-1),
                 ),
                 Expanded(
                   child: TextButton.icon(
-                    icon: const Icon(Icons.calendar_month, color: Color(0xFF14557F)),
+                    icon: Icon(Icons.calendar_month, color: AppColors.primaryOnCard),
                     label: Text(
                       _periodLabel,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFF14557F),
+                        color: AppColors.primaryOnCard,
                       ),
                     ),
                     onPressed: _pickDate,
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.chevron_right, size: 30, color: Color(0xFF14557F)),
+                  icon: Icon(Icons.chevron_right, size: 30, color: AppColors.primaryOnCard),
                   onPressed: () => _shift(1),
                 ),
               ],
@@ -591,7 +591,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     required List<StatPoint> points,
   }) {
     return Material(
-      color: Colors.white,
+      color: AppColors.card,
       borderRadius: BorderRadius.circular(16),
       elevation: 0,
       child: InkWell(
@@ -604,7 +604,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         ),
         child: Ink(
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: AppColors.card,
             borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
@@ -622,7 +622,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                 children: [
                   Icon(icon, color: color, size: 22),
                   const Spacer(),
-                  Icon(Icons.chevron_right, color: Colors.black26, size: 20),
+                  Icon(Icons.chevron_right, color: AppColors.inkMuted, size: 20),
                 ],
               ),
               const Spacer(),
@@ -638,8 +638,8 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
               const SizedBox(height: 4),
               Text(
                 title,
-                style: const TextStyle(
-                  color: Colors.black54,
+                style: TextStyle(
+                  color: AppColors.inkMuted,
                   fontWeight: FontWeight.w700,
                   fontSize: 13,
                 ),
@@ -666,7 +666,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         ? 0.0
         : sec.callsAnsweredByAi / (stats.calls + sec.callsMissed);
     return Material(
-      color: Colors.white,
+      color: AppColors.card,
       borderRadius: BorderRadius.circular(16),
       elevation: 0,
       child: Padding(
@@ -676,10 +676,10 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
           children: [
             Text(
               'Секретарь'.tr,
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.w700,
                 fontSize: 14,
-                color: Colors.black54,
+                color: AppColors.inkMuted,
               ),
             ),
             const SizedBox(height: 12),

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../shared/app_nav.dart';
 import 'call_screen.dart';
 import '../../core/l10n/app_locale.dart';
 
@@ -12,7 +13,7 @@ class DialPadScreen extends StatefulWidget {
 
   static Future<void> open(BuildContext context) {
     AppFeedback.pleasant();
-    return Navigator.of(context, rootNavigator: true).push(
+    return AppNav.navigatorOf(context).push(
       MaterialPageRoute(builder: (_) => const DialPadScreen()),
     );
   }

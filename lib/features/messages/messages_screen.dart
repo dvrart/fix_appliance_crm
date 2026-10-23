@@ -79,12 +79,33 @@ class _MessagesScreenState extends State<MessagesScreen>
 
   String? _threadTitle(SmsConversation conv, Client? client) {
     if (conv.isWebsite) return kWebsiteInboxTitle.tr;
-    final clientName = (client?.fullName ?? '').trim();
-    if (clientName.isNotEmpty) return clientName;
+    final clientName = Client.stripClientWord(client?.fullName);
+    if (clientName.isNotEmpty && !Client.isPlaceholderName(clientName)) {
+      return clientName;
+    }
+    final last = conv.lastMessage;
+    final fromName = Client.stripClientWord(last.fromName);
+    if (fromName.isNotEmpty && !Client.isPlaceholderName(fromName)) {
+      return fromName;
+    }
+    final ex = last.extractedData;
+    if (ex != null) {
+      for (final key in const [
+        'client_name',
+        'clientName',
+        'name',
+        'caller_name',
+        'contactName',
+      ]) {
+        final val = Client.stripClientWord(ex[key]?.toString());
+        if (val.isNotEmpty && !Client.isPlaceholderName(val)) return val;
+      }
+    }
     final email = SmsService.normalizeEmail(conv.email ?? '');
     final watched = _watchedNames[email];
     if (watched != null && watched.isNotEmpty) return watched;
     if (conv.phoneNumber.isNotEmpty) return conv.phoneNumber;
+    if (clientName.isNotEmpty) return clientName;
     if (email.contains('@')) return email;
     return null;
   }
@@ -279,6 +300,14 @@ class _MessagesScreenState extends State<MessagesScreen>
     bool selecting,
   ) {
     final name = _threadTitle(conv, client) ?? '';
+    final isRegular =
+        !conv.isWebsite &&
+        ((client?.isRegular ?? false) ||
+            ClientService.isRegularClient(
+              clientId: conv.clientId ?? client?.id,
+              phone: conv.phoneNumber,
+              email: conv.email ?? client?.email,
+            ));
     final hasUnread = conv.unreadCount > 0;
     final last = conv.lastMessage;
     final preview = last.isEmail && last.subject.trim().isNotEmpty
@@ -300,7 +329,14 @@ class _MessagesScreenState extends State<MessagesScreen>
     );
 
     return ColoredBox(
-      color: selected ? const Color(0xFFE8EEF4) : Colors.transparent,
+      // Непрочитанное видно самой строкой, а не только цифрой справа: жёлтая
+      // подложка — тот же язык, что у новых звонков в соседней вкладке.
+      // Гаснет, когда переписку открыли и сообщения стали прочитанными.
+      color: selected
+          ? AppColors.selectedCard
+          : hasUnread
+          ? AppColors.accent.withValues(alpha: 0.18)
+          : Colors.transparent,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onLongPress: () => _toggleSelected(conv.selectKey),
@@ -309,9 +345,17 @@ class _MessagesScreenState extends State<MessagesScreen>
             _toggleSelected(conv.selectKey);
             return;
           }
+          final lastCounterpart = !last.isEmail
+              ? (last.isOutbound ? last.to : last.from).trim()
+              : '';
+          final initialPhone = conv.isWebsite
+              ? ''
+              : (SmsService.normalizePhone(lastCounterpart).length >= 10
+                  ? lastCounterpart
+                  : conv.phoneNumber);
           ConversationScreen.open(
             context,
-            phoneNumber: conv.isWebsite ? '' : conv.phoneNumber,
+            phoneNumber: initialPhone,
             email: conv.isWebsite ? null : (conv.email ?? client?.email),
             contactName: conv.isWebsite
                 ? kWebsiteInboxTitle
@@ -320,6 +364,7 @@ class _MessagesScreenState extends State<MessagesScreen>
             websiteInbox: conv.isWebsite,
             initialChannel:
                 last.isEmail ? ConversationChannel.email : ConversationChannel.sms,
+            askRecipient: !conv.isWebsite,
           );
         },
         child: Padding(
@@ -352,13 +397,22 @@ class _MessagesScreenState extends State<MessagesScreen>
                     Row(
                       children: [
                         Expanded(
-                          child: Text(
-                            name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontWeight: hasUnread ? FontWeight.bold : FontWeight.w600,
-                            ),
+                          child: Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontWeight: hasUnread
+                                        ? FontWeight.bold
+                                        : FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              if (isRegular) const RegularClientStar(size: 17),
+                            ],
                           ),
                         ),
                         if (conv.hasSms)
@@ -384,8 +438,10 @@ class _MessagesScreenState extends State<MessagesScreen>
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: last.awaitingApproval
-                            ? Colors.orange.shade900
-                            : (hasUnread ? Colors.black87 : Colors.grey.shade600),
+                            ? (AppColors.isDark
+                                ? const Color(0xFFFFCA28)
+                                : Colors.orange.shade900)
+                            : (hasUnread ? AppColors.ink : AppColors.inkMuted),
                         fontWeight: hasUnread || last.awaitingApproval
                             ? FontWeight.w600
                             : FontWeight.normal,
@@ -446,7 +502,7 @@ class _MessagesScreenState extends State<MessagesScreen>
       context: context,
       useRootNavigator: true,
       isScrollControlled: true,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
@@ -465,17 +521,17 @@ class _MessagesScreenState extends State<MessagesScreen>
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: Colors.black26,
+                  color: AppColors.border,
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),
               const SizedBox(height: 16),
               Text(
                 wantEmail ? 'Email'.tr : 'SMS'.tr,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
-                  color: Color(0xFF14557F),
+                  color: AppColors.primaryOnCard,
                 ),
               ),
               const SizedBox(height: 16),

@@ -284,7 +284,7 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
                 'Секретарь на звонках берёт зону отсюда.',
                 'The phone secretary uses this area.',
               ),
-              style: const TextStyle(color: Colors.black54),
+              style: TextStyle(color: AppColors.inkMuted),
             ),
           ),
           SettingsTileSection(
@@ -357,7 +357,7 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
                 'Tap the map to add a point. Long-press a marker and drag to '
                     'move it. Tap a marker to delete it.',
               ),
-              style: const TextStyle(color: Colors.black54),
+              style: TextStyle(color: AppColors.inkMuted),
             ),
           ),
           Expanded(
@@ -389,7 +389,7 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
                     _points.isEmpty
                         ? context.tr('Район ещё не отмечен', 'No area marked yet')
                         : '${'Точек'.tr}: ${_points.length}',
-                    style: const TextStyle(color: Colors.black54),
+                    style: TextStyle(color: AppColors.inkMuted),
                   ),
                 ),
                 TextButton.icon(

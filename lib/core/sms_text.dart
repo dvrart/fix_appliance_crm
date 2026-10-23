@@ -112,6 +112,20 @@ class SmsText {
     return false;
   }
 
+  /// Убирает служебное слово «Клиент» / «Client» из имени и подставляет
+  /// номер телефона, если настоящее имя неизвестно.
+  static String stripClientWord(String? raw, [String? fallbackPhone]) {
+    final s = (raw ?? '')
+        .trim()
+        .replaceFirst(
+          RegExp(r'^(клиент|client)(?=\s|$|\+)\s*', caseSensitive: false),
+          '',
+        )
+        .trim();
+    if (s.isNotEmpty) return s;
+    return (fallbackPhone ?? '').trim();
+  }
+
   /// Обращение в SMS: имя клиента латиницей или «», если имени нет.
   static String clientName(String? raw) {
     if (isPlaceholderName(raw)) return '';
@@ -120,16 +134,136 @@ class SmsText {
     return first[0].toUpperCase() + first.substring(1).toLowerCase();
   }
 
+  static final _nameToken = RegExp(r'\{name\}', caseSensitive: false);
+  static final _commaNameToken = RegExp(
+    r'[ \t]*,?[ \t]*\{name\}',
+    caseSensitive: false,
+  );
+
   /// Подстановка `{name}`. Имени нет — убираем и обращение, и запятую перед
   /// ним: должно получиться «Hi!», а не «Hi !» и не «Hi Клиент +14165550101!».
   static String fillName(String template, String? rawName) {
     final name = clientName(rawName);
-    if (name.isNotEmpty) return template.replaceAll('{name}', name);
+    if (name.isNotEmpty) return template.replaceAll(_nameToken, name);
     return template
-        .replaceAll(RegExp(r'[ \t]*,?[ \t]*\{name\}'), '')
-        .replaceAll('{name}', '')
+        .replaceAll(_commaNameToken, '')
+        .replaceAll(_nameToken, '')
         .replaceAll(RegExp(r'^[ \t]*,[ \t]*', multiLine: true), '');
   }
+
+  /// Проверяет наличие тега `{token}` без учёта регистра (`{url}`, `{URL}`, `{Url}`).
+  static bool hasPlaceholder(String text, String token) {
+    return RegExp(
+      r'\{' + RegExp.escape(token) + r'\}',
+      caseSensitive: false,
+    ).hasMatch(text);
+  }
+
+  /// Заменяет `{token}` без учёта регистра (`{url}`, `{URL}`, `{Url}`).
+  static String replacePlaceholder(String text, String token, String value) {
+    return text.replaceAll(
+      RegExp(r'\{' + RegExp.escape(token) + r'\}', caseSensitive: false),
+      value,
+    );
+  }
+
+  /// Памятка по всем специальным фразам (подстановкам) для шаблонов SMS.
+  static const List<({String tag, String title, String description})>
+      placeholderGuide = [
+    (
+      tag: '{name}',
+      title: 'Имя клиента',
+      description:
+          'Подставляет первое имя клиента латиницей (например: Hi {name}! → Hi John!). Если имя неизвестно, {name} и запятая перед ним автоматически убираются (получится просто Hi!).',
+    ),
+    (
+      tag: '{url}',
+      title: 'Ссылка на счёт, смету или оплату',
+      description:
+          'Подставляет ссылку на скачивание PDF-счёта, страницу подтверждения сметы или ссылку на оплату Stripe.',
+    ),
+    (
+      tag: '{review}',
+      title: 'Ссылка на Google-отзыв',
+      description:
+          'Подставляет вашу ссылку для отзыва в Google (задаётся ниже в разделе «Ссылка на Google-отзыв»).',
+    ),
+    (
+      tag: '{date}',
+      title: 'Дата визита',
+      description:
+          'Подставляет дату назначенного выезда по заявке (например: October 24).',
+    ),
+    (
+      tag: '{time}',
+      title: 'Время визита',
+      description:
+          'Подставляет время назначенного выезда (например: 14:00).',
+    ),
+    (
+      tag: '{address}',
+      title: 'Адрес визита',
+      description:
+          'Подставляет адрес клиента или адрес объекта (Job Site) из заявки.',
+    ),
+    (
+      tag: '{total}',
+      title: 'Общая сумма счёта / сметы',
+      description:
+          'Подставляет итоговую сумму документа с налогом (например: \$226.00).',
+    ),
+    (
+      tag: '{due}',
+      title: 'Остаток к оплате',
+      description:
+          'Подставляет сумму, которую клиенту осталось доплатить с учётом внесённого депозита (например: \$126.00).',
+    ),
+    (
+      tag: '{paid}',
+      title: 'Оплаченная сумма',
+      description:
+          'Подставляет уже оплаченную клиентом сумму (например: \$100.00).',
+    ),
+    (
+      tag: '{amount}',
+      title: 'Сумма платежа по ссылке Stripe',
+      description:
+          'Подставляет сумму к оплате (депозит или остаток) в SMS со ссылкой на оплату.',
+    ),
+    (
+      tag: '{items}',
+      title: 'Список работ и запчастей',
+      description:
+          'Подставляет строки из счёта или сметы с названиями позиций и ценами.',
+    ),
+    (
+      tag: '{company}',
+      title: 'Название компании',
+      description:
+          'Подставляет название вашей компании из настроек реквизитов.',
+    ),
+    (
+      tag: '{valid_days}',
+      title: 'Срок действия сметы (дней)',
+      description:
+          'Подставляет количество дней, в течение которых действует смета (например: 30).',
+    ),
+    (
+      tag: '{phone}',
+      title: 'Телефон компании',
+      description: 'Подставляет телефон вашей компании из настроек.',
+    ),
+    (
+      tag: '{email}',
+      title: 'Email компании',
+      description: 'Подставляет почту вашей компании из настроек.',
+    ),
+    (
+      tag: '{hst}',
+      title: 'Номер HST / GST',
+      description: 'Подставляет налоговый номер компании из настроек.',
+    ),
+  ];
 
   static String _restore(String text, List<String> tokens) {
     return text.replaceAllMapped(_placeholder, (match) {

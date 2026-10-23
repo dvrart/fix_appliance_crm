@@ -152,7 +152,7 @@ class _WorkDaysSettingsPageState extends State<WorkDaysSettingsPage> {
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AppColors.card,
           borderRadius: BorderRadius.circular(16),
           boxShadow: const [
             BoxShadow(
@@ -183,7 +183,7 @@ class _WorkDaysSettingsPageState extends State<WorkDaysSettingsPage> {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Text(
         text,
-        style: const TextStyle(fontSize: 13, color: Colors.black45),
+        style: TextStyle(fontSize: 13, color: AppColors.inkMuted),
       ),
     );
   }
@@ -196,7 +196,7 @@ class _WorkDaysSettingsPageState extends State<WorkDaysSettingsPage> {
         icon: const Icon(Icons.add_circle_outline),
         label: Text(label),
         style: TextButton.styleFrom(
-          foregroundColor: AppColors.primary,
+          foregroundColor: AppColors.primaryOnCard,
           padding: const EdgeInsets.symmetric(horizontal: 4),
         ),
       ),
@@ -221,9 +221,9 @@ class _WorkDaysSettingsPageState extends State<WorkDaysSettingsPage> {
                       'В нерабочий день секретарь всё равно примет заявку, но визит предложит на другой день.',
                       'On a day off the secretary still takes the order and offers another day for the visit.',
                     ),
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
-                      color: Colors.black54,
+                      color: AppColors.inkMuted,
                       height: 1.3,
                     ),
                   ),
@@ -245,7 +245,9 @@ class _WorkDaysSettingsPageState extends State<WorkDaysSettingsPage> {
                               fontWeight: _days.contains(day)
                                   ? FontWeight.bold
                                   : FontWeight.normal,
-                              color: Colors.black87,
+                              color: _days.contains(day)
+                                  ? Colors.black
+                                  : AppColors.ink,
                             ),
                             onSelected: (selected) {
                               setState(() {

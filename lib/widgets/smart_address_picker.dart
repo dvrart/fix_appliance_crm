@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../services/network_status_service.dart';
 import '../core/api_keys.dart';
+import '../core/constants.dart';
 import '../core/geo/service_area.dart';
 import '../core/l10n/app_locale.dart';
 import '../core/motion.dart';
@@ -216,7 +217,7 @@ void showSmartAddressPicker({
     useRootNavigator: true,
     isDismissible: false,
     enableDrag: false,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
@@ -257,10 +258,10 @@ void showSmartAddressPicker({
                               children: [
                                 Text(
                                   'Поиск адреса'.tr,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 22,
                                     fontWeight: FontWeight.bold,
-                                    color: Color(0xFF14557F),
+                                    color: AppColors.primaryOnCard,
                                   ),
                                 ),
                                 if (area.title.isNotEmpty)

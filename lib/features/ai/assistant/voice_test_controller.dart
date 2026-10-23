@@ -234,20 +234,23 @@ Do not hang up. Always wait for the owner to speak first.
       if (await _recorder.isRecording()) await _recorder.stop();
     } catch (_) {}
     if (!cur()) return;
+    final inputDevice = await AssistantAudioService.preferredInputDevice();
+    if (!cur()) return;
     final stream = await _recorder.startStream(
-      const RecordConfig(
+      RecordConfig(
         encoder: AudioEncoder.pcm16bits,
         sampleRate: 16000,
         numChannels: 1,
+        device: inputDevice,
         echoCancel: true,
         noiseSuppress: true,
         autoGain: true,
         audioInterruption: AudioInterruptionMode.none,
-        androidConfig: AndroidRecordConfig(
-          manageBluetooth: true,
+        androidConfig: const AndroidRecordConfig(
+          manageBluetooth: false,
           audioSource: AndroidAudioSource.voiceCommunication,
-          speakerphone: true,
-          audioManagerMode: AudioManagerMode.modeInCommunication,
+          speakerphone: false,
+          audioManagerMode: AudioManagerMode.modeNormal,
         ),
       ),
     );

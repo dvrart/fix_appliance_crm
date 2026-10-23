@@ -287,7 +287,11 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
   }
 
   Future<bool> _saveJob() async {
-    if (_nameController.text.trim().isEmpty || _phoneController.text.trim().isEmpty) {
+    final phone = _phoneController.text.trim();
+    if (_nameController.text.trim().isEmpty && phone.isNotEmpty) {
+      _nameController.text = phone;
+    }
+    if (_nameController.text.trim().isEmpty || phone.isEmpty) {
       _showError('Добавьте владельца'.tr);
       return false;
     }
@@ -364,9 +368,13 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         _sitePostalCtrl.text,
         _siteUnitCtrl.text,
       );
-      // No separate job-site address → use the client address for the visit.
+      // No separate job-site info → use the client address for the visit.
       final useJobSite =
-          _hasDifferentJobSite && fullJobSiteAddress.trim().isNotEmpty;
+          _hasDifferentJobSite &&
+          (fullJobSiteAddress.trim().isNotEmpty ||
+              _siteNameController.text.trim().isNotEmpty ||
+              _sitePhoneController.text.trim().isNotEmpty ||
+              _siteEmailController.text.trim().isNotEmpty);
       final resolvedClientAddress = fullClientAddress.trim().isNotEmpty
           ? fullClientAddress
           : (useJobSite ? fullJobSiteAddress : '');
@@ -465,7 +473,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Material(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
@@ -494,20 +502,20 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                             : _nameController.text.trim(),
                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                       ),
-                      Text(_phoneController.text.trim(), style: const TextStyle(color: Colors.black54)),
+                      Text(_phoneController.text.trim(), style: TextStyle(color: AppColors.inkMuted)),
                       if (_emailController.text.trim().isNotEmpty)
-                        Text(_emailController.text.trim(), style: const TextStyle(color: Colors.black54)),
+                        Text(_emailController.text.trim(), style: TextStyle(color: AppColors.inkMuted)),
                       if (_companyController.text.trim().isNotEmpty)
-                        Text(_companyController.text.trim(), style: const TextStyle(color: Colors.black54)),
+                        Text(_companyController.text.trim(), style: TextStyle(color: AppColors.inkMuted)),
                       if (address.isNotEmpty)
-                        Text(address, style: TextStyle(color: Colors.grey.shade700, fontSize: 13)),
+                        Text(address, style: TextStyle(color: AppColors.inkMuted, fontSize: 13)),
                     ],
                   ),
                 ),
                 IconButton(
                   tooltip: 'Изменить'.tr,
                   onPressed: _editOwner,
-                  icon: Icon(Icons.edit, color: AppColors.primary),
+                  icon: Icon(Icons.edit, color: AppColors.primaryOnCard),
                 ),
               ],
             ),
@@ -527,7 +535,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
       context: context,
       isScrollControlled: true,
       useRootNavigator: true,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -673,8 +681,8 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                               decoration: BoxDecoration(
-                                color: Colors.grey.shade50,
-                                border: Border.all(color: Colors.grey.shade300),
+                                color: AppColors.cardMuted,
+                                border: Border.all(color: AppColors.border),
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Row(
@@ -688,7 +696,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                                           : '${_clientStreetCtrl.text}, ${_clientCityCtrl.text}',
                                     ),
                                   ),
-                                  Icon(Icons.search, color: AppColors.primary),
+                                  Icon(Icons.search, color: AppColors.primaryOnCard),
                                 ],
                               ),
                             ),
@@ -817,7 +825,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Material(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
@@ -849,22 +857,22 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                       if (_sitePhoneController.text.trim().isNotEmpty)
                         Text(
                           _sitePhoneController.text.trim(),
-                          style: const TextStyle(color: Colors.black54),
+                          style: TextStyle(color: AppColors.inkMuted),
                         ),
                       if (_siteEmailController.text.trim().isNotEmpty)
                         Text(
                           _siteEmailController.text.trim(),
-                          style: const TextStyle(color: Colors.black54),
+                          style: TextStyle(color: AppColors.inkMuted),
                         ),
                       if (address.isNotEmpty)
-                        Text(address, style: TextStyle(color: Colors.grey.shade700, fontSize: 13)),
+                        Text(address, style: TextStyle(color: AppColors.inkMuted, fontSize: 13)),
                     ],
                   ),
                 ),
                 IconButton(
                   tooltip: 'Изменить'.tr,
                   onPressed: _editJobSite,
-                  icon: Icon(Icons.edit, color: AppColors.primary),
+                  icon: Icon(Icons.edit, color: AppColors.primaryOnCard),
                 ),
                 IconButton(
                   tooltip: 'Удалить'.tr,
@@ -914,7 +922,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
       context: context,
       isScrollControlled: true,
       useRootNavigator: true,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -937,7 +945,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                           style: TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
-                            color: AppColors.primary,
+                            color: AppColors.primaryOnCard,
                           ),
                         ),
                       ),
@@ -991,8 +999,8 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                               decoration: BoxDecoration(
-                                color: Colors.grey.shade50,
-                                border: Border.all(color: Colors.grey.shade300),
+                                color: AppColors.cardMuted,
+                                border: Border.all(color: AppColors.border),
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Row(
@@ -1006,7 +1014,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                                           : '${_siteStreetCtrl.text}, ${_siteCityCtrl.text}',
                                     ),
                                   ),
-                                  Icon(Icons.search, color: AppColors.primary),
+                                  Icon(Icons.search, color: AppColors.primaryOnCard),
                                 ],
                               ),
                             ),
@@ -1111,14 +1119,14 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: Colors.grey.shade300),
+            borderSide: BorderSide(color: AppColors.border),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
             borderSide: const BorderSide(color: Color(0xFFFCC520), width: 2),
           ),
           filled: true,
-          fillColor: Colors.grey.shade50,
+          fillColor: AppColors.cardMuted,
         ),
         validator: isRequired
             ? (v) => v == null || v.isEmpty ? 'Обязательное поле'.tr : null
@@ -1164,7 +1172,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
           'Новая заявка'.tr,
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        backgroundColor: const Color(0xFF14557F),
+        backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
       ),
@@ -1204,7 +1212,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 elevation: 0,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
-                  side: BorderSide(color: Colors.grey.shade300),
+                  side: BorderSide(color: AppColors.border),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(12),
@@ -1216,9 +1224,9 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                         children: [
                           Text(
                             '${'Аппарат'.tr} ${idx + 1}',
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontWeight: FontWeight.bold,
-                              color: Color(0xFF14557F),
+                              color: AppColors.primaryOnCard,
                             ),
                           ),
                           if (_appliances.length > 1)
@@ -1287,8 +1295,8 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 icon: const Icon(Icons.add),
                 label: Text('Добавить еще технику'.tr),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFF14557F),
-                  side: const BorderSide(color: Color(0xFF14557F)),
+                  foregroundColor: AppColors.primaryOnCard,
+                  side: BorderSide(color: AppColors.primaryOnCard),
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -1311,24 +1319,24 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
               width: double.infinity,
               child: OutlinedButton.icon(
                 onPressed: _pickDateTime,
-                icon: const Icon(
+                icon: Icon(
                   Icons.calendar_month,
-                  color: Color(0xFF14557F),
+                  color: AppColors.primaryOnCard,
                   size: 28,
                 ),
                 label: Text(
                   _selectedDate == null || _selectedTime == null
                       ? 'Нажмите, чтобы выбрать'.tr
                       : '${DateFormat('dd MMMM yyyy', AppLocale.instance.dateLocale).format(_selectedDate!)}  ${'в'.tr}  ${_selectedTime!.format(context)}',
-                  style: const TextStyle(color: Colors.black87, fontSize: 16),
+                  style: TextStyle(color: AppColors.ink, fontSize: 16),
                 ),
                 style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 20),
-                  backgroundColor: Colors.grey.shade50,
+                  backgroundColor: AppColors.cardMuted,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  side: BorderSide(color: Colors.grey.shade300, width: 1.5),
+                  side: BorderSide(color: AppColors.border, width: 1.5),
                 ),
               ),
             ),
@@ -1342,7 +1350,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 prefixIcon: const Icon(Icons.timer_outlined, color: Colors.grey),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 filled: true,
-                fillColor: Colors.grey.shade50,
+                fillColor: AppColors.cardMuted,
               ),
               items: [
                 DropdownMenuItem(value: 30, child: Text('30 минут'.tr)),
@@ -1369,7 +1377,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 prefixIcon: const Icon(Icons.inventory_2_outlined, color: Colors.grey),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 filled: true,
-                fillColor: Colors.grey.shade50,
+                fillColor: AppColors.cardMuted,
               ),
             ),
             const SizedBox(height: 40),

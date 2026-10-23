@@ -5,8 +5,11 @@ import 'package:twilio_voice/twilio_voice.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/motion.dart';
+import '../../models/client.dart';
+import '../../services/client_service.dart';
 import '../../services/twilio_service.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../shared/app_nav.dart';
 
 /// Экран активного звонка (исходящего или входящего).
 class CallScreen extends StatefulWidget {
@@ -43,7 +46,7 @@ class CallScreen extends StatefulWidget {
     _shown = true;
     if (!isIncoming) AppFeedback.pleasant();
     try {
-      return await Navigator.of(context, rootNavigator: true).push<T>(
+      return await AppNav.navigatorOf(context).push<T>(
         PageRouteBuilder<T>(
           opaque: true,
           transitionDuration: const Duration(milliseconds: 360),
@@ -283,6 +286,7 @@ class _CallScreenState extends State<CallScreen> {
 
   @override
   void dispose() {
+    CallScreen._shown = false;
     _stopDurationTimer();
     _answerWatch?.cancel();
     _statusSubscription?.cancel();
@@ -334,43 +338,73 @@ class _CallScreenState extends State<CallScreen> {
                 child: Column(
             children: [
               if (!_showKeypad) const Spacer(flex: 2),
-              CircleAvatar(
-                radius: _showKeypad ? 28 : 64,
-                backgroundColor: Colors.white.withValues(alpha: 0.16),
-                child: Text(
-                  widget.contactName?.isNotEmpty == true
-                      ? widget.contactName![0].toUpperCase()
-                      : '?',
-                  style: TextStyle(
-                    fontSize: _showKeypad ? 22 : 48,
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+              Builder(
+                builder: (context) {
+                  final cleanName = Client.stripClientWord(widget.contactName);
+                  final hasRealName =
+                      cleanName.isNotEmpty &&
+                      !Client.isPlaceholderName(cleanName);
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircleAvatar(
+                        radius: _showKeypad ? 28 : 64,
+                        backgroundColor: Colors.white.withValues(alpha: 0.16),
+                        child: Text(
+                          hasRealName ? cleanName[0].toUpperCase() : '?',
+                          style: TextStyle(
+                            fontSize: _showKeypad ? 22 : 48,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      SizedBox(height: _showKeypad ? 8 : 24),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                hasRealName ? cleanName : widget.phoneNumber,
+                                textAlign: TextAlign.center,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: _showKeypad ? 20 : 30,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ),
+                            if (ClientService.isRegularClient(
+                              phone: widget.phoneNumber,
+                            ))
+                              RegularClientStar(
+                                size: _showKeypad ? 20 : 26,
+                                onDark: true,
+                                padding: const EdgeInsets.only(left: 6),
+                              ),
+                          ],
+                        ),
+                      ),
+                      if (hasRealName && !_showKeypad) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          widget.phoneNumber,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      ],
+                    ],
+                  );
+                },
               ),
-              SizedBox(height: _showKeypad ? 8 : 24),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Text(
-                  widget.contactName ?? widget.phoneNumber,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: _showKeypad ? 20 : 30,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                    letterSpacing: 0.2,
-                  ),
-                ),
-              ),
-              if (widget.contactName != null && !_showKeypad) ...[
-                const SizedBox(height: 8),
-                Text(
-                  widget.phoneNumber,
-                  style: const TextStyle(fontSize: 16, color: Colors.white70),
-                ),
-              ],
               SizedBox(height: _showKeypad ? 8 : 16),
               Container(
                 padding:

@@ -18,7 +18,9 @@ class MorningBriefingService {
     for (final job in jobs) {
       final visitTime = job.visitOn(target)?.startAt ?? job.scheduledAt;
       final time = visitTime != null ? timeFormat.format(visitTime) : '';
-      final who = job.contactName.trim().isEmpty ? 'Клиент'.tr : job.contactName.trim();
+      final who = job.contactName.trim().isEmpty
+          ? job.contactPhone.trim()
+          : job.contactName.trim();
       buffer.writeln('$time — $who, ${trAny(job.applianceType)}'.trim());
       final packing = job.packingList;
       if (packing.isNotEmpty) {

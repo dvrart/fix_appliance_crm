@@ -1,5 +1,7 @@
+import 'package:fix_appliance_crm/core/geo/service_area.dart';
 import 'package:fix_appliance_crm/services/maps_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 /// Кнопка «Проложить маршрут» открывала пустую форму поиска: без параметра
 /// `destination` Google Maps так и делает (документация Maps URLs). Адрес
@@ -115,6 +117,119 @@ void main() {
       expect(waypoints.length, MapsService.maxMapsWaypoints);
       expect(waypoints.first, 'Stop 0, Toronto');
       expect(uri.queryParameters['destination'], 'Stop 13, Toronto');
+    });
+  });
+
+  group('проверка адреса (дом и зона)', () {
+    const area = ServiceArea(
+      polygon: [
+        LatLng(43.0, -80.5),
+        LatLng(43.0, -80.0),
+        LatLng(43.3, -80.0),
+        LatLng(43.3, -80.5),
+      ],
+      region: 'Ontario',
+    );
+
+    test('номер дома отличается от индекса и квартиры', () {
+      expect(MapsService.hasHouseNumber('Brantford, ON, N3R 1A1'), isFalse);
+      expect(MapsService.hasHouseNumber('Main St, Brantford'), isFalse);
+      expect(
+        MapsService.houseNumbersInAddress(
+          '21 Bloor St W, Unit 5, Toronto, M4W 1A9',
+        ),
+        {'21'},
+      );
+      expect(
+        MapsService.houseNumbersInAddress('1023A Cheesewood Rd, Brantford'),
+        {'1023'},
+      );
+    });
+
+    test('найденный дом внутри зоны помечается isHouse и insideServiceArea', () {
+      final place = MapsService.parseGeocodeResult(
+        {
+          'formatted_address': '265 King George Rd, Brantford, ON N3R 5L6, Canada',
+          'place_id': 'ChIJ_house_265',
+          'types': ['street_address'],
+          'address_components': [
+            {
+              'long_name': '265',
+              'types': ['street_number'],
+            },
+            {
+              'long_name': 'King George Road',
+              'types': ['route'],
+            },
+            {
+              'long_name': 'Brantford',
+              'types': ['locality', 'political'],
+            },
+          ],
+          'geometry': {
+            'location': {'lat': 43.17, 'lng': -80.28},
+            'location_type': 'ROOFTOP',
+          },
+        },
+        queryAddress: '265 King George Rd, Brantford, Ontario, Canada',
+        area: area,
+      );
+      expect(place.isHouse, isTrue);
+      expect(place.insideServiceArea, isTrue);
+      expect(place.location, const LatLng(43.17, -80.28));
+    });
+
+    test('дом вне полигона зоны помечается insideServiceArea = false', () {
+      final place = MapsService.parseGeocodeResult(
+        {
+          'formatted_address': '21 Bloor St W, Toronto, ON M4W 1A9, Canada',
+          'place_id': 'ChIJ_bloor_21',
+          'types': ['street_address'],
+          'address_components': [
+            {
+              'long_name': '21',
+              'types': ['street_number'],
+            },
+            {
+              'long_name': 'Bloor Street West',
+              'types': ['route'],
+            },
+          ],
+          'geometry': {
+            'location': {'lat': 43.67, 'lng': -79.39},
+            'location_type': 'ROOFTOP',
+          },
+        },
+        queryAddress: '21 Bloor St W, Toronto, Ontario, Canada',
+        area: area,
+      );
+      expect(place.isHouse, isTrue);
+      expect(place.insideServiceArea, isFalse);
+    });
+
+    test('только улица или город без найденного номера дома — isHouse = false', () {
+      final streetOnly = MapsService.parseGeocodeResult(
+        {
+          'formatted_address': 'King George Rd, Brantford, ON, Canada',
+          'place_id': 'ChIJ_street',
+          'types': ['route'],
+          'partial_match': true,
+          'address_components': [
+            {
+              'long_name': 'King George Road',
+              'types': ['route'],
+            },
+          ],
+          'geometry': {
+            'location': {'lat': 43.17, 'lng': -80.28},
+            'location_type': 'GEOMETRIC_CENTER',
+          },
+        },
+        queryAddress: '99999 King George Rd, Brantford, Ontario, Canada',
+        area: area,
+      );
+      expect(streetOnly.isHouse, isFalse);
+      expect(streetOnly.insideServiceArea, isTrue);
     });
   });
 }

@@ -97,10 +97,24 @@ function applianceOf(job) {
   return '';
 }
 
+function stripClientWord(raw, fallbackPhone) {
+  const s = String(raw || '')
+    .trim()
+    .replace(/^(клиент|client)(?=\s|$|\+)\s*/i, '')
+    .trim();
+  return s || String(fallbackPhone || '').trim();
+}
+
 function nameOf(job) {
   if (!job) return '';
-  if (job.hasJobSite && job.jobSiteName) return String(job.jobSiteName);
-  return String(job.clientName || job.contactName || '').trim();
+  const phone = String(
+    (job.hasJobSite && job.jobSitePhone) || job.clientPhone || job.jobSitePhone || ''
+  ).trim();
+  if (job.hasJobSite && job.jobSiteName) {
+    const site = stripClientWord(job.jobSiteName, phone);
+    if (site) return site;
+  }
+  return stripClientWord(job.clientName || job.contactName || '', phone);
 }
 
 function cityOf(job) {
@@ -134,7 +148,10 @@ async function attachShadeFields(stringData) {
       if (snap.exists) {
         const client = snap.data() || {};
         if (!stringData.clientName) {
-          stringData.clientName = String(client.fullName || client.name || '').trim();
+          stringData.clientName = stripClientWord(
+            client.fullName || client.name || '',
+            client.phone || stringData.peer || stringData.from || ''
+          );
         }
         if (!stringData.city) {
           const loc =

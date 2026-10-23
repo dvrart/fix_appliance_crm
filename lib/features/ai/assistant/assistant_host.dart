@@ -1,9 +1,12 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/l10n/app_locale.dart';
 import '../../../services/assistant_audio_service.dart';
+import '../../../services/firestore_service.dart';
+import '../../../services/service_guide_service.dart';
 import '../../../services/settings_service.dart';
 import 'assistant_controller.dart';
 import 'assistant_actions.dart';
@@ -88,6 +91,7 @@ class _AssistantHostState extends State<AssistantHost>
     );
     _wake.onWake = () {
       if (!_audioState.blocksWake && !AssistantAudioService.playback.isActive) {
+        _reportWake(_wake.lastHeard, _wake.lastHeardSource);
         unawaited(openAssistant());
       }
     };
@@ -95,6 +99,7 @@ class _AssistantHostState extends State<AssistantHost>
     controller.onToolsFinished = () =>
         AssistantActions.flush(closeOverlay: closeAssistant);
     controller.onCloseRequested = closeAssistant;
+    unawaited(ServiceGuideService.load());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Future<void>.delayed(const Duration(milliseconds: 700), () {
         if (mounted) unawaited(_syncWake());
@@ -161,8 +166,15 @@ class _AssistantHostState extends State<AssistantHost>
     _audioSub = AssistantAudioService.watchState().listen(
       (state) {
         if (!mounted || epoch != _audioWatchEpoch) return;
+        final carChanged =
+            _audioState.available &&
+            state.available &&
+            _audioState.carConnected != state.carConnected;
         _audioState = state;
-        unawaited(_syncWake());
+        unawaited(_syncWake(restartForCarChange: carChanged));
+        if (carChanged && controller.isOpen) {
+          unawaited(controller.refreshAudioRoute());
+        }
       },
       onError: (Object error) {
         if (!mounted || epoch != _audioWatchEpoch) return;
@@ -173,6 +185,33 @@ class _AssistantHostState extends State<AssistantHost>
     );
   }
 
+  /// Ассистент открылся по голосу — показываем и записываем, что именно было
+  /// услышано. Ложные срабатывания (жалобы FIX 13.10 и 18.10.2026) иначе не
+  /// разобрать: в релизе debugPrint не виден. Журнал читается из Firestore
+  /// (`assistant_wake_log`), ошибки записи ассистенту не мешают.
+  void _reportWake(String heard, String source) {
+    if (!mounted) return;
+    final shown = heard.trim().isEmpty ? '…' : heard.trim();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 4),
+        content: Text(
+          context.tr('Открыла по слову: «$shown»', 'Woke on: "$shown"'),
+        ),
+      ),
+    );
+    unawaited(
+      FirestoreService.companyRef
+          .collection('assistant_wake_log')
+          .add({
+            'heard': heard,
+            'source': source,
+            'at': FieldValue.serverTimestamp(),
+          })
+          .then((_) {}, onError: (Object e) => debugPrint('wake log: $e')),
+    );
+  }
+
   void _onWakeBlocked(String reason) {
     if (!mounted || reason.trim().isEmpty) return;
     if (_lastWakeHint == reason) return;
@@ -180,7 +219,7 @@ class _AssistantHostState extends State<AssistantHost>
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(reason)));
   }
 
-  Future<void> _syncWake() {
+  Future<void> _syncWake({bool restartForCarChange = false}) {
     final next = _wakeSync.then((_) async {
       if (!mounted) return;
       final want =
@@ -194,7 +233,11 @@ class _AssistantHostState extends State<AssistantHost>
           !_typing &&
           _appResumed;
       if (want) {
-        if (!_wake.isArmed) await _wake.start();
+        if (restartForCarChange && _wake.isRunning) {
+          await _wake.refreshAudioRoute();
+        } else if (!_wake.isArmed) {
+          await _wake.start();
+        }
       } else if (_wake.isRunning) {
         await _wake.stop();
       }

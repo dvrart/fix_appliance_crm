@@ -46,7 +46,7 @@ class _JobFilterGroupsScreenState extends State<JobFilterGroupsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text('Фильтр'.tr),
         backgroundColor: AppColors.primary,
@@ -88,7 +88,7 @@ class _JobFilterGroupsScreenState extends State<JobFilterGroupsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Material(
-                        color: Colors.white,
+                        color: AppColors.card,
                         child: Padding(
                           padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
                           child: Wrap(
@@ -104,7 +104,7 @@ class _JobFilterGroupsScreenState extends State<JobFilterGroupsScreen> {
                                   labelStyle: TextStyle(
                                     color: _selectedId == filter.id
                                         ? Colors.black
-                                        : Colors.black87,
+                                        : AppColors.ink,
                                     fontWeight: _selectedId == filter.id
                                         ? FontWeight.bold
                                         : FontWeight.normal,

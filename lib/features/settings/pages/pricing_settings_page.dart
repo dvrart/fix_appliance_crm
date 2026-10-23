@@ -171,7 +171,7 @@ class _PricingSettingsPageState extends State<PricingSettingsPage> {
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AppColors.card,
           borderRadius: BorderRadius.circular(16),
           boxShadow: const [
             BoxShadow(
@@ -208,7 +208,7 @@ class _PricingSettingsPageState extends State<PricingSettingsPage> {
                   ),
                   Text(
                     hint,
-                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                    style: TextStyle(fontSize: 12, color: AppColors.inkMuted),
                   ),
                   const SizedBox(height: 6),
                   TextField(
@@ -254,9 +254,9 @@ class _PricingSettingsPageState extends State<PricingSettingsPage> {
                       'Эти цены называет телефонный секретарь и подставляет счёт.',
                       'The phone secretary quotes these and invoices use them.',
                     ),
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
-                      color: Colors.black54,
+                      color: AppColors.inkMuted,
                       height: 1.3,
                     ),
                   ),

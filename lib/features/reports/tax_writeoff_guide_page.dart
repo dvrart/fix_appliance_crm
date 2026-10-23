@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../shared/app_nav.dart';
 import 'reports_screen.dart';
 
 /// Полный экран: что теоретически можно списать в корпорации ремонтного сервиса.
@@ -9,7 +10,7 @@ class TaxWriteoffGuidePage extends StatelessWidget {
   const TaxWriteoffGuidePage({super.key});
 
   static Future<void> open(BuildContext context) {
-    return Navigator.of(context, rootNavigator: true).push(
+    return AppNav.navigatorOf(context).push(
       MaterialPageRoute<void>(
         builder: (_) => const TaxWriteoffGuidePage(),
       ),
@@ -20,7 +21,7 @@ class TaxWriteoffGuidePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final sections = _sections(context);
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F6F8),
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -48,7 +49,7 @@ class TaxWriteoffGuidePage extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF4CC),
+        color: AppColors.tint(const Color(0xFFE0C56A), 0.16),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE0C56A)),
       ),
@@ -100,14 +101,14 @@ class TaxWriteoffGuidePage extends StatelessWidget {
         initiallyExpanded: section.open,
         tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
         childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-        leading: Icon(section.icon, color: AppColors.primary),
+        leading: Icon(section.icon, color: AppColors.primaryOnCard),
         title: Text(
           section.title,
           style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
         ),
         subtitle: Text(
           section.gifi,
-          style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+          style: TextStyle(color: AppColors.inkMuted, fontSize: 12),
         ),
         children: [
           for (final item in section.items)

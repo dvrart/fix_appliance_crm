@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
+import '../../services/message_translate_service.dart';
 import 'linked_text.dart';
 
 class _SpeakerLine {
@@ -97,16 +98,45 @@ List<_SpeakerLine> parseCallTranscript(String text) {
 
 int transcriptSpeakerTurns(String text) => parseCallTranscript(text).length;
 
-String keepFullerTranscript(String current, String candidate) {
+String keepFullerTranscript(
+  String current,
+  String candidate, {
+  bool preferRussian = true,
+}) {
   final next = candidate.trim();
   if (next.isEmpty) return current;
   final now = current.trim();
   if (now.isEmpty) return next;
+  final nextIsRu = MessageTranslateService.isRussianDialog(next);
+  final nowIsRu = MessageTranslateService.isRussianDialog(now);
   final nextTurns = transcriptSpeakerTurns(next);
   final nowTurns = transcriptSpeakerTurns(now);
   if (nextTurns > 0 && nowTurns > 0) {
-    if (nextTurns < (nowTurns * 0.9).floor() && nowTurns >= 2) return current;
-    if (nowTurns < (nextTurns * 0.9).floor() && nextTurns >= 2) return next;
+    if (nextTurns < (nowTurns * 0.9).floor() && nowTurns >= 2) {
+      if (preferRussian &&
+          nextIsRu &&
+          !nowIsRu &&
+          nextTurns >= (nowTurns * 0.7).floor()) {
+        return next;
+      }
+      return current;
+    }
+    if (nowTurns < (nextTurns * 0.9).floor() && nextTurns >= 2) {
+      if (preferRussian &&
+          nowIsRu &&
+          !nextIsRu &&
+          nowTurns >= (nextTurns * 0.7).floor()) {
+        return current;
+      }
+      return next;
+    }
+  }
+  if (preferRussian) {
+    if (nextIsRu && !nowIsRu) return next;
+    if (!nextIsRu && nowIsRu) return current;
+  } else {
+    if (!nextIsRu && nowIsRu) return next;
+    if (nextIsRu && !nowIsRu) return current;
   }
   return next.length >= now.length ? next : current;
 }
@@ -136,10 +166,10 @@ class CallTranscriptChat extends StatelessWidget {
         translating
             ? context.tr('Перевожу разговор...', 'Translating the call...')
             : context.tr('Расшифровки пока нет.', 'No transcript yet.'),
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 14,
           height: 1.4,
-          color: Color(0xFF3D3D3D),
+          color: AppColors.inkMuted,
         ),
       );
     }
@@ -156,15 +186,15 @@ class CallTranscriptChat extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFECEFF1),
+                  color: AppColors.cardMuted,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Text(
                   stamp,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
-                    color: Color(0xFF546E7A),
+                    color: AppColors.inkMuted,
                   ),
                 ),
               ),

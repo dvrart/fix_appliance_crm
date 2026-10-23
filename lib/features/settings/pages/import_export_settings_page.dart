@@ -86,7 +86,7 @@ class _ImportExportSettingsPageState extends State<ImportExportSettingsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(context.tr('Импорт и экспорт', 'Import & export')),
         backgroundColor: AppColors.primary,
@@ -206,7 +206,7 @@ class _ImportExportSettingsPageState extends State<ImportExportSettingsPage> {
                 'Amazon, Reliable Parts, PartSelect, Encompass, Marcone и почтовые службы не пускают приложение в личный кабинет. Добавьте трек или номер заказа в заявку. Когда на Gmail придёт письмо «отправлено / курьер / доставлено», в приложение сразу придёт уведомление.',
                 'Amazon, Reliable Parts, PartSelect, Encompass, Marcone and the carriers do not let apps into a shopping account. Add a tracking or order number on the job. When Gmail gets a shipped / out for delivery / delivered email, the app notifies you right away.',
               ),
-              style: const TextStyle(color: Colors.black54, height: 1.35),
+              style: TextStyle(color: AppColors.inkMuted, height: 1.35),
             ),
           ),
         ],

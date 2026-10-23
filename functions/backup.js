@@ -17,6 +17,7 @@ const COLLECTIONS = [
   'calendar_events',
   'calls',
   'messages',
+  'service_guide',
 ];
 
 /// Сколько копий храним. Раз в неделю — это примерно три месяца истории.

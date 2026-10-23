@@ -22,6 +22,9 @@ DateTime? _asDate(dynamic value) {
   return null;
 }
 
+/// Путь исходящего сообщения до клиента: очередь → отправлено → доставлено.
+enum SmsDelivery { none, queued, sent, delivered, read, failed }
+
 /// Одно SMS-сообщение (входящее или исходящее).
 class SmsMessage {
   final String id;
@@ -123,6 +126,37 @@ class SmsMessage {
       !awaitingApproval &&
       !sendingRejected &&
       (status == 'undelivered' || status == 'failed');
+
+  /// Докуда дошло исходящее сообщение.
+  ///
+  /// Статусы приносит Twilio колбэком `smsStatusCallback`. «Прочитано»
+  /// обычные SMS не отдают вообще — такой статус бывает только у RCS и
+  /// WhatsApp, поэтому у нас потолок почти всегда «Доставлено». Это не
+  /// ошибка и не недоделка: у оператора просто нет такой квитанции.
+  SmsDelivery get delivery {
+    if (!isOutbound || awaitingApproval || sendingRejected) {
+      return SmsDelivery.none;
+    }
+    switch (status.trim().toLowerCase()) {
+      case 'read':
+        return SmsDelivery.read;
+      case 'delivered':
+        return SmsDelivery.delivered;
+      case 'sent':
+        return SmsDelivery.sent;
+      case 'accepted':
+      case 'queued':
+      case 'scheduled':
+      case 'sending':
+        return SmsDelivery.queued;
+      case 'undelivered':
+      case 'failed':
+      case 'canceled':
+        return SmsDelivery.failed;
+      default:
+        return SmsDelivery.none;
+    }
+  }
 
   /// Почему не дошло — человеческим языком, как в шторке.
   String get failureReason => failureReasonFor(errorCode);
@@ -778,13 +812,19 @@ class SmsService {
             Map<String, dynamic>.from(data),
             doc.id,
           );
-          if (message.visibleInCrm && !message.isDeleted) {
+          if (!message.isDeleted &&
+              (message.visibleInCrm ||
+                  (message.emailOfferPending && !message.emailOfferDismissed))) {
             messages.add(message);
           }
         } catch (error) {
           debugPrint('SMS ${doc.id}: $error');
         }
       }
+      messages.sort(
+        (a, b) =>
+            (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)),
+      );
       return messages;
     });
   }
@@ -900,10 +940,24 @@ class SmsService {
     final phoneToClient = <String, Client>{};
     final emailToClient = <String, Client>{};
     for (final c in clients) {
+      final hasRealName =
+          c.fullName.isNotEmpty && !Client.isPlaceholderName(c.fullName);
       final phone = normalizePhone(c.phone);
-      if (phone.length >= 10) phoneToClient[phone] = c;
+      if (phone.length >= 10) {
+        final prev = phoneToClient[phone];
+        if (prev == null ||
+            (hasRealName && Client.isPlaceholderName(prev.fullName))) {
+          phoneToClient[phone] = c;
+        }
+      }
       final email = normalizeEmail(c.email ?? '');
-      if (email.contains('@')) emailToClient[email] = c;
+      if (email.contains('@')) {
+        final prev = emailToClient[email];
+        if (prev == null ||
+            (hasRealName && Client.isPlaceholderName(prev.fullName))) {
+          emailToClient[email] = c;
+        }
+      }
       for (final location in c.locations) {
         for (final contact in location.contacts) {
           final cp = normalizePhone(contact.phone);

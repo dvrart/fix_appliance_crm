@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../core/constants.dart';
+import '../core/sms_text.dart';
 import '../services/app_time_service.dart';
 import '../services/status_service.dart';
 
@@ -69,7 +70,14 @@ class JobVisit {
   final DateTime? smsBookingSentAt;
   final DateTime? smsBookingPendingAt;
   final DateTime? smsReminderSentAt;
+
+  /// Какие напоминания сервер уже отправил (`morning`, `24h`, `2h` → когда).
+  /// Поле серверное; приложение его только проносит, чтобы не стереть при
+  /// сохранении — иначе напоминание уходило повторно.
+  final Map<String, dynamic> smsReminders;
   final String smsConfirmStatus;
+  final String smsConfirmNotifiedStatus;
+  final DateTime? ownerSoonAt;
   final String smsDialog;
   final bool smsBookingPending;
   final bool smsBookingSentSms;
@@ -88,7 +96,10 @@ class JobVisit {
     this.smsBookingSentAt,
     this.smsBookingPendingAt,
     this.smsReminderSentAt,
+    this.smsReminders = const {},
     this.smsConfirmStatus = '',
+    this.smsConfirmNotifiedStatus = '',
+    this.ownerSoonAt,
     this.smsDialog = '',
     this.smsBookingPending = false,
     this.smsBookingSentSms = false,
@@ -194,7 +205,13 @@ class JobVisit {
       smsBookingSentAt: _parseDate(map['smsBookingSentAt']),
       smsBookingPendingAt: _parseDate(map['smsBookingPendingAt']),
       smsReminderSentAt: _parseDate(map['smsReminderSentAt']),
+      smsReminders: map['smsReminders'] is Map
+          ? Map<String, dynamic>.from(map['smsReminders'] as Map)
+          : const {},
       smsConfirmStatus: (map['smsConfirmStatus'] ?? '').toString(),
+      smsConfirmNotifiedStatus:
+          (map['smsConfirmNotifiedStatus'] ?? '').toString(),
+      ownerSoonAt: _parseDate(map['ownerSoonAt']),
       smsDialog: (map['smsDialog'] ?? '').toString(),
       smsBookingPending: map['smsBookingPending'] == true,
       smsBookingSentSms: map['smsBookingSentSms'] == true,
@@ -216,7 +233,11 @@ class JobVisit {
       'smsBookingSentAt': smsBookingSentAt,
       'smsBookingPendingAt': smsBookingPendingAt,
       'smsReminderSentAt': smsReminderSentAt,
+      'smsReminders': smsReminders,
       'smsConfirmStatus': smsConfirmStatus,
+      if (smsConfirmNotifiedStatus.isNotEmpty)
+        'smsConfirmNotifiedStatus': smsConfirmNotifiedStatus,
+      if (ownerSoonAt != null) 'ownerSoonAt': ownerSoonAt,
       'smsDialog': smsDialog,
       'smsBookingPending': smsBookingPending,
       'smsBookingSentSms': smsBookingSentSms,
@@ -236,7 +257,10 @@ class JobVisit {
     DateTime? smsBookingSentAt,
     DateTime? smsBookingPendingAt,
     DateTime? smsReminderSentAt,
+    Map<String, dynamic>? smsReminders,
     String? smsConfirmStatus,
+    String? smsConfirmNotifiedStatus,
+    DateTime? ownerSoonAt,
     String? smsDialog,
     bool? smsBookingPending,
     bool? smsBookingSentSms,
@@ -262,8 +286,13 @@ class JobVisit {
           clearSms ? null : (smsBookingPendingAt ?? this.smsBookingPendingAt),
       smsReminderSentAt:
           clearSms ? null : (smsReminderSentAt ?? this.smsReminderSentAt),
+      smsReminders: clearSms ? const {} : (smsReminders ?? this.smsReminders),
       smsConfirmStatus:
           clearSms ? '' : (smsConfirmStatus ?? this.smsConfirmStatus),
+      smsConfirmNotifiedStatus: clearSms
+          ? ''
+          : (smsConfirmNotifiedStatus ?? this.smsConfirmNotifiedStatus),
+      ownerSoonAt: clearSms ? null : (ownerSoonAt ?? this.ownerSoonAt),
       smsDialog: clearSms || clearSmsDialog
           ? ''
           : (smsDialog ?? this.smsDialog),
@@ -450,6 +479,8 @@ class Job {
   final String clientName;
   final String clientPhone;
   final String clientAddress;
+  final String? clientEmail;
+  final bool clientIsRegular;
 
   // Job Site (место работы, если отличается от адреса владельца)
   final bool hasJobSite;
@@ -486,6 +517,7 @@ class Job {
   final String packingNotes;
   final String trackingNumber;
   final String trackingCarrier;
+  final String trackingPart;
   final String trackingStatus;
   final String amazonOrderId;
   /// Исходная заявка, если это повторный вызов по той же неисправности.
@@ -507,6 +539,8 @@ class Job {
     required this.clientName,
     required this.clientPhone,
     required this.clientAddress,
+    this.clientEmail,
+    this.clientIsRegular = false,
     this.hasJobSite = false,
     this.jobSiteName,
     this.jobSitePhone,
@@ -537,6 +571,7 @@ class Job {
     this.packingNotes = '',
     this.trackingNumber = '',
     this.trackingCarrier = '',
+    this.trackingPart = '',
     this.trackingStatus = '',
     this.amazonOrderId = '',
     this.repeatOfJobId,
@@ -682,10 +717,17 @@ class Job {
   }
 
   /// Контактное имя на месте
-  String get contactName => hasJobSite ? (jobSiteName ?? clientName) : clientName;
+  String get contactName {
+    final site = SmsText.stripClientWord(jobSiteName, jobSitePhone);
+    if (hasJobSite && site.isNotEmpty) return site;
+    return SmsText.stripClientWord(clientName, contactPhone);
+  }
 
   /// Контактный телефон на месте
-  String get contactPhone => hasJobSite ? (jobSitePhone ?? clientPhone) : clientPhone;
+  String get contactPhone =>
+      hasJobSite && (jobSitePhone ?? '').trim().isNotEmpty
+          ? jobSitePhone!
+          : clientPhone;
 
   /// В корзине 30 дней после удаления.
   bool get isDeleted => deletedAt != null;
@@ -1195,15 +1237,29 @@ class Job {
     );
     final synced = JobVisit.syncFields(visits, defaultDuration: durationMinutes);
 
+    final clientPhone = (map['clientPhone'] ?? '').toString();
+    final rawSitePhone = map['jobSitePhone']?.toString();
+    final rawSiteName = map['jobSiteName']?.toString();
+
     return Job(
       id: docId,
       clientId: map['clientId'] ?? '',
-      clientName: (map['clientName'] ?? map['name'] ?? '').toString(),
-      clientPhone: map['clientPhone'] ?? '',
+      clientName: SmsText.stripClientWord(
+        (map['clientName'] ?? map['name'] ?? '').toString(),
+        clientPhone,
+      ),
+      clientPhone: clientPhone,
       clientAddress: map['clientAddress'] ?? '',
+      clientEmail: (map['clientEmail'] ?? '').toString().trim().isEmpty
+          ? null
+          : (map['clientEmail'] ?? '').toString().trim(),
+      clientIsRegular:
+          map['clientIsRegular'] == true || map['isRegular'] == true,
       hasJobSite: map['hasJobSite'] ?? false,
-      jobSiteName: map['jobSiteName'],
-      jobSitePhone: map['jobSitePhone'],
+      jobSiteName: rawSiteName == null
+          ? null
+          : SmsText.stripClientWord(rawSiteName, rawSitePhone ?? clientPhone),
+      jobSitePhone: rawSitePhone,
       jobSiteAddress: map['jobSiteAddress'],
       jobSiteEmail: (map['jobSiteEmail'] ?? '').toString().trim().isEmpty
           ? null
@@ -1233,6 +1289,7 @@ class Job {
       packingNotes: (map['packingNotes'] as String?) ?? '',
       trackingNumber: (map['trackingNumber'] ?? '').toString(),
       trackingCarrier: (map['trackingCarrier'] ?? '').toString(),
+      trackingPart: (map['trackingPart'] ?? '').toString(),
       trackingStatus: (map['trackingStatus'] ?? '').toString(),
       amazonOrderId: (map['amazonOrderId'] ?? '').toString(),
       repeatOfJobId: (map['repeatOfJobId'] ?? '').toString().trim().isEmpty
@@ -1259,6 +1316,8 @@ class Job {
       'clientName': clientName,
       'clientPhone': clientPhone,
       'clientAddress': clientAddress,
+      if (clientEmail != null) 'clientEmail': clientEmail,
+      'clientIsRegular': clientIsRegular,
       'hasJobSite': hasJobSite,
       'jobSiteName': jobSiteName,
       'jobSitePhone': jobSitePhone,
@@ -1290,6 +1349,7 @@ class Job {
       'packingNotes': packingNotes,
       'trackingNumber': trackingNumber,
       'trackingCarrier': trackingCarrier,
+      'trackingPart': trackingPart,
       'trackingStatus': trackingStatus,
       'amazonOrderId': amazonOrderId,
       'repeatOfJobId': repeatOfJobId,
@@ -1311,6 +1371,8 @@ class Job {
     String? clientName,
     String? clientPhone,
     String? clientAddress,
+    String? clientEmail,
+    bool? clientIsRegular,
     bool? hasJobSite,
     String? jobSiteName,
     String? jobSitePhone,
@@ -1341,6 +1403,7 @@ class Job {
     String? packingNotes,
     String? trackingNumber,
     String? trackingCarrier,
+    String? trackingPart,
     String? trackingStatus,
     String? amazonOrderId,
     String? repeatOfJobId,
@@ -1356,6 +1419,8 @@ class Job {
       clientName: clientName ?? this.clientName,
       clientPhone: clientPhone ?? this.clientPhone,
       clientAddress: clientAddress ?? this.clientAddress,
+      clientEmail: clientEmail ?? this.clientEmail,
+      clientIsRegular: clientIsRegular ?? this.clientIsRegular,
       hasJobSite: hasJobSite ?? this.hasJobSite,
       jobSiteName: jobSiteName ?? this.jobSiteName,
       jobSitePhone: jobSitePhone ?? this.jobSitePhone,
@@ -1386,6 +1451,7 @@ class Job {
       packingNotes: packingNotes ?? this.packingNotes,
       trackingNumber: trackingNumber ?? this.trackingNumber,
       trackingCarrier: trackingCarrier ?? this.trackingCarrier,
+      trackingPart: trackingPart ?? this.trackingPart,
       trackingStatus: trackingStatus ?? this.trackingStatus,
       amazonOrderId: amazonOrderId ?? this.amazonOrderId,
       repeatOfJobId: repeatOfJobId ?? this.repeatOfJobId,

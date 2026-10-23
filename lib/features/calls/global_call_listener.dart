@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:twilio_voice/twilio_voice.dart';
+import '../../models/client.dart';
 import '../../services/services.dart';
 import 'call_screen.dart';
 
@@ -57,6 +58,8 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
   Future<void> _onAppResumed() async {
     unawaited(NotificationService.initialize());
     unawaited(TwilioService.refreshRegistration());
+    // Вернулись в приложение — сверяем шторку: разобранному в ней не место.
+    unawaited(InboxPushMirror.sweep());
     final dropped = await TwilioService.dropStaleIncomingIfNeeded();
     if (!mounted || dropped) return;
     await _openActiveCallScreen(resume: true);
@@ -218,7 +221,10 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
         const Duration(seconds: 1),
       );
       for (final c in clients) {
-        if (SmsService.normalizePhone(c.phone) == normalized) return c.fullName;
+        if (SmsService.normalizePhone(c.phone) == normalized) {
+          final clean = Client.stripClientWord(c.fullName);
+          return Client.isPlaceholderName(clean) ? null : clean;
+        }
       }
     } catch (_) {}
     return null;

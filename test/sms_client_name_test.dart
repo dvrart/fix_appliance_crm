@@ -1,6 +1,8 @@
 import 'package:fix_appliance_crm/core/sms_text.dart';
 import 'package:fix_appliance_crm/models/client.dart';
 import 'package:fix_appliance_crm/models/document_settings.dart';
+import 'package:fix_appliance_crm/models/job.dart';
+import 'package:fix_appliance_crm/services/message_translate_service.dart';
 import 'package:fix_appliance_crm/services/settings_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -68,5 +70,77 @@ void main() {
     );
     expect(sms.contains('Клиент'), isFalse);
     expect(sms, startsWith('Hi, your invoice'));
+  });
+
+  test('перевод во вкладке «Информация»: смешанный текст идёт на русский', () {
+    for (final mixed in [
+      "Не запускается (Won't start)\n\nМодель: GTD40EBMK0WW\nIt worked yesterday for 30 minutes. I turned the timer button and hit start and nothing.",
+      'Модель: GFW550SMN4WW\nnot draining, gives error 10, error 2',
+      'will not spin\n\nУдобное время: пн 19.10\n\nМодель: MVWB955FC1',
+      'leaking from bottom of door\n\nМодель: MDBH949PAW4',
+      "burner that's out\n\nУдобное время: вт 20.10 (Tomorrow afternoon)",
+      'Стиральная машина издает громкий стук\n\nwashing and dryer check\n\nfix the dryer',
+      '11 year old Samsung stove. The oven fan has stopped working.\n\nвентилятор не работает\n\nNE59J7651WS\n\nМодель: UNTIL',
+    ]) {
+      expect(
+        MessageTranslateService.prefersRussian(mixed),
+        isTrue,
+        reason: mixed,
+      );
+    }
+
+    for (final alreadyRu in [
+      'Не запускается.\n\nМодель: GTD40EBMK0WW\nВчера работала 30 минут. Повернул ручку таймера и нажал старт, и ничего.',
+      'Ошибка E15, внизу нет воды, проблема с поплавковым выключателем',
+      'Посудомойка Bosch не набирает воду и шумит; модель SHPM65Z55N',
+      'Сушилка Samsung в Brantford не греет',
+      'духовка',
+    ]) {
+      expect(
+        MessageTranslateService.prefersRussian(alreadyRu),
+        isFalse,
+        reason: alreadyRu,
+      );
+    }
+  });
+
+  test('failedRussian отвергает ответ, оставшийся на английском', () {
+    const src =
+        "Не запускается (Won't start)\n\nМодель: GTD40EBMK0WW\nIt worked yesterday for 30 minutes.";
+    expect(
+      MessageTranslateService.failedRussian(
+        src,
+        "Won't start\n\nModel: GTD40EBMK0WW\nIt worked yesterday for 30 minutes.",
+      ),
+      isTrue,
+    );
+    expect(
+      MessageTranslateService.failedRussian(
+        src,
+        'Не запускается.\n\nМодель: GTD40EBMK0WW\nВчера работала 30 минут.',
+      ),
+      isFalse,
+    );
+  });
+
+  test('если не знаем имени — убираем слово «клиент» и оставляем только телефон', () {
+    expect(SmsText.stripClientWord('Клиент +14165550101'), '+14165550101');
+    expect(SmsText.stripClientWord('Клиент 5197323488'), '5197323488');
+    expect(SmsText.stripClientWord('Клиент', '+14165550101'), '+14165550101');
+    expect(SmsText.stripClientWord('', '+14165550101'), '+14165550101');
+    expect(SmsText.stripClientWord('Amelia', '+14165550101'), 'Amelia');
+
+    final client = Client.fromMap({
+      'fullName': 'Клиент +14165550101',
+      'phone': '+14165550101',
+    }, 'c1');
+    expect(client.fullName, '+14165550101');
+
+    final job = Job.fromMap({
+      'clientName': 'Клиент',
+      'clientPhone': '+14165550101',
+    }, 'j1');
+    expect(job.clientName, '+14165550101');
+    expect(job.contactName, '+14165550101');
   });
 }

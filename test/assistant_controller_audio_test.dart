@@ -270,6 +270,23 @@ void main() {
       );
     });
   });
+
+  testWidgets(
+    'car connection selects the car microphone without forcing phone speakerphone',
+    (tester) async {
+      await _withAssistant(tester, (h) async {
+        h.carInputDevice = const {'id': '42', 'label': 'KIA MOTORS'};
+        h.markPaused();
+        await h.controller.togglePause();
+
+        expect(h.recorder.microphoneOpen, isTrue);
+        expect(h.recorder.lastConfig?.device?.id, '42');
+        expect(h.recorder.lastConfig?.device?.label, 'KIA MOTORS');
+        expect(h.recorder.lastConfig?.androidConfig.speakerphone, isFalse);
+        expect(h.recorder.lastConfig?.androidConfig.manageBluetooth, isFalse);
+      });
+    },
+  );
 }
 
 Future<void> _pump(WidgetTester tester) async {
@@ -337,6 +354,7 @@ class _AssistantHarness {
   late final AssistantController controller;
   Completer<void>? focusGate;
   Completer<void>? permissionGate;
+  Map<String, String>? carInputDevice;
   bool focusGranted = true;
   bool permissionGranted = false;
   bool controllerDisposed = false;
@@ -356,6 +374,9 @@ class _AssistantHarness {
       if (call.method == 'releaseAssistantAudioFocus') {
         events.add('focus.release');
         return null;
+      }
+      if (call.method == 'preferredAssistantInputDevice') {
+        return carInputDevice;
       }
       throw MissingPluginException(call.method);
     });
@@ -404,6 +425,7 @@ class _FakeRecorderPlatform extends RecordPlatform {
   Completer<void>? startGate;
   Completer<void>? stateGate;
   Completer<void>? stopGate;
+  RecordConfig? lastConfig;
   bool microphoneOpen = false;
   int startCount = 0;
   int stopCount = 0;
@@ -422,6 +444,7 @@ class _FakeRecorderPlatform extends RecordPlatform {
     RecordConfig config,
   ) async {
     startCount++;
+    lastConfig = config;
     events.add('mic.start');
     await startGate?.future;
     microphoneOpen = true;

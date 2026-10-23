@@ -780,7 +780,10 @@ module.exports = function createEmailModule({
 
     if (notifyMaster) {
       const who = matched
-        ? `${matched.clientName || ''} ${matched.applianceType || ''}`.trim()
+        ? [matched.clientName || '', matched.applianceType || '', matched.trackingPart || '']
+            .map((s) => String(s).trim())
+            .filter(Boolean)
+            .join(' · ')
         : tracking || orderId || subject;
       const title =
         status === 'delivered'

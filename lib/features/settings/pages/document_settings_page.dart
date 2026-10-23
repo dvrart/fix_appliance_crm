@@ -149,7 +149,7 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
       dirty: _dirty,
       onSave: _save,
       child: Scaffold(
-        backgroundColor: Colors.grey.shade100,
+        backgroundColor: AppColors.surface,
         appBar: AppBar(
           title: Text(title),
           backgroundColor: AppColors.primary,
@@ -199,7 +199,7 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text(
               'PDF клиенту всегда на английском. HST — в Финансы.'.tr,
-              style: const TextStyle(color: Colors.black54),
+              style: TextStyle(color: AppColors.inkMuted),
             ),
           ),
           SettingsTileSection(
@@ -372,7 +372,7 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
             padding: const EdgeInsets.only(bottom: 12),
             child: Text(
               'Текст гарантии печатается в счёте и смете под условиями. Всегда на английском.'.tr,
-              style: const TextStyle(color: Colors.black54, fontSize: 13),
+              style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
             ),
           ),
           _field(
@@ -391,9 +391,9 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -437,11 +437,11 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
             ),
           ),
           if (_showPayments)
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
               child: Text(
                 'Payments  ·  Mastercard',
-                style: TextStyle(fontSize: 11, color: Colors.black54),
+                style: TextStyle(fontSize: 11, color: AppColors.inkMuted),
               ),
             ),
           if (_showQr)
@@ -479,7 +479,7 @@ class _DocumentSettingsPageState extends State<DocumentSettingsPage> {
           prefixIcon: Icon(icon),
           border: const OutlineInputBorder(),
           filled: true,
-          fillColor: Colors.white,
+          fillColor: AppColors.card,
           alignLabelWithHint: lines > 1,
         ),
       ),

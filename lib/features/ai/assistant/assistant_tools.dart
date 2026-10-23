@@ -50,6 +50,7 @@ class AssistantTools {
       'tracking': {
         'number': job.trackingNumber,
         'carrier': job.trackingCarrier,
+        'part': job.trackingPart,
         'status': job.trackingStatus,
       },
       'appliances': job.appliances
@@ -156,6 +157,19 @@ class AssistantTools {
           code: (args['code'] as String?) ?? '',
           kind: (args['kind'] as String?) ?? '',
         );
+      case 'open_diagnostics':
+        AssistantActions.enqueue(
+          AssistantUiAction(
+            type: 'open_diagnostics',
+            payload: {
+              'query': (args['query'] as String?) ?? '',
+              'appliance': (args['appliance'] as String?) ?? 'all',
+              'brand': (args['brand'] as String?) ?? 'all',
+              'kind': (args['kind'] as String?) ?? 'all',
+            },
+          ),
+        );
+        return {'ok': true, 'opened': 'diagnostics'};
       case 'open_job':
         return _openJob(args);
       case 'open_client':
@@ -448,6 +462,7 @@ class AssistantTools {
       return {'ok': false, 'error': 'Нужны имя или телефон клиента'};
     }
 
+    final effectiveName = SmsText.stripClientWord(name, phone);
     var clientId = '';
     final email = (args['email'] as String?)?.trim() ??
         (args['client_email'] as String?)?.trim() ??
@@ -456,7 +471,7 @@ class AssistantTools {
     clientId = existing?.id ?? '';
     if (clientId.isEmpty) {
       clientId = await ClientService.createOrUpdate(
-        fullName: name.isEmpty ? 'Клиент' : name,
+        fullName: effectiveName,
         phone: phone,
         address: [address, city].where((s) => s.isNotEmpty).join(', '),
         email: email.contains('@') ? email : existing?.email,
@@ -483,7 +498,7 @@ class AssistantTools {
     final job = Job(
       id: '',
       clientId: clientId,
-      clientName: name.isEmpty ? 'Клиент' : name,
+      clientName: effectiveName,
       clientPhone: phone,
       clientAddress: [address, city].where((s) => s.isNotEmpty).join(', '),
       appliances: [

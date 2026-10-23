@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_feedback.dart';
+import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../features/calls/call_screen.dart';
 import '../../features/messages/conversation_screen.dart';
@@ -262,14 +263,14 @@ Future<LinkAction?> showLinkActionsSheet(
   return showModalBottomSheet<LinkAction>(
     context: context,
     useRootNavigator: true,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
     ),
     builder: (sheetContext) {
       Widget item(IconData icon, String label, LinkAction action) {
         return ListTile(
-          leading: Icon(icon, color: const Color(0xFF14557F)),
+          leading: Icon(icon, color: AppColors.primaryOnCard),
           title: Text(
             label,
             style: const TextStyle(fontWeight: FontWeight.w600),
@@ -287,7 +288,7 @@ Future<LinkAction?> showLinkActionsSheet(
               width: 40,
               height: 4,
               decoration: BoxDecoration(
-                color: Colors.black26,
+                color: AppColors.border,
                 borderRadius: BorderRadius.circular(4),
               ),
             ),
@@ -298,10 +299,10 @@ Future<LinkAction?> showLinkActionsSheet(
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w800,
-                  color: Color(0xFF14557F),
+                  color: AppColors.primaryOnCard,
                 ),
               ),
             ),

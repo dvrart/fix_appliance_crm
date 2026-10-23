@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../../core/constants.dart';
 import '../../models/job.dart';
 import '../../services/services.dart';
+import '../jobs/job_details/editors/job_tile_editors.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import '../../shared/app_nav.dart';
 import '../../core/l10n/app_locale.dart';
@@ -99,11 +100,27 @@ class PartsQueueScreen extends StatelessWidget {
                                 ),
                               ),
                               const SizedBox(height: 4),
-                              Text(
-                                job.clientName.isEmpty
-                                    ? 'Клиент'.tr
-                                    : job.clientName,
-                                style: const TextStyle(fontWeight: FontWeight.w600),
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      job.contactName.isEmpty
+                                          ? job.contactPhone
+                                          : job.contactName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  if (job.clientIsRegular ||
+                                      ClientService.isRegularClient(
+                                        clientId: job.clientId,
+                                        phone: job.clientPhone,
+                                      ))
+                                    const RegularClientStar(size: 16),
+                                ],
                               ),
                               Text(
                                 trAny(job.applianceType),
@@ -125,14 +142,27 @@ class PartsQueueScreen extends StatelessWidget {
                                     fontSize: 13,
                                   ),
                                 ),
-                              if (job.trackingNumber.isNotEmpty ||
+                              if (job.trackingPart.isNotEmpty ||
+                                  job.trackingNumber.isNotEmpty ||
+                                  job.amazonOrderId.isNotEmpty ||
                                   job.trackingStatus.isNotEmpty)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 4),
                                   child: Text(
                                     [
+                                      if (job.trackingCarrier.isNotEmpty ||
+                                          job.amazonOrderId.isNotEmpty)
+                                        trackingPartsFromLabel(
+                                          job.trackingCarrier.isNotEmpty
+                                              ? job.trackingCarrier
+                                              : 'amazon',
+                                        ),
+                                      if (job.trackingPart.isNotEmpty)
+                                        job.trackingPart,
                                       if (job.trackingNumber.isNotEmpty)
-                                        job.trackingNumber,
+                                        job.trackingNumber
+                                      else if (job.amazonOrderId.isNotEmpty)
+                                        job.amazonOrderId,
                                       if (job.trackingStatus == 'delivered')
                                         'Доставлено'.tr
                                       else if (job.trackingStatus ==

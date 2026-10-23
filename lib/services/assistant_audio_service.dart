@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:record/record.dart';
 
 class PlaybackMicrophoneGuard extends ChangeNotifier {
   final Set<Object> _owners = {};
@@ -56,8 +57,7 @@ class AssistantAudioState {
     );
   }
 
-  bool get blocksWake =>
-      !available || mediaPlaying || carConnected || callActive;
+  bool get blocksWake => !available || mediaPlaying || callActive;
 }
 
 /// Нативное управление звуком для голосового ассистента (машина / Bluetooth).
@@ -122,5 +122,31 @@ class AssistantAudioService {
     } catch (_) {
       return false;
     }
+  }
+
+  static Future<InputDevice?> preferredInputDevice({
+    bool forWake = false,
+  }) async {
+    if (playback.isActive || !_android) return null;
+    try {
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'preferredAssistantInputDevice',
+        {'forWake': forWake},
+      );
+      if (raw == null) return null;
+      final id = (raw['id'] ?? '').toString().trim();
+      if (id.isEmpty) return null;
+      final label = (raw['label'] ?? '').toString().trim();
+      return InputDevice(id: id, label: label.isEmpty ? id : label);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> releaseWakeCarAudio() async {
+    if (!_android) return;
+    try {
+      await _channel.invokeMethod('releaseWakeCarAudio');
+    } catch (_) {}
   }
 }

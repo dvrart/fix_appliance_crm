@@ -1229,7 +1229,11 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
     const snap = await tx.get(jobRef);
     if (!snap.exists) return;
     const job = snap.data() || {};
-    clientName = job.clientName || '';
+    clientName =
+      String(job.clientName || '')
+        .trim()
+        .replace(/^(клиент|client)(?=\s|$|\+)\s*/i, '')
+        .trim() || String(job.clientPhone || '').trim();
     const documents = Array.isArray(job.documents) ? [...job.documents] : [];
     if (index < 0 || index >= documents.length) return;
     const doc = { ...documents[index] };
@@ -1296,13 +1300,13 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
       } else if (isDeposit) {
         await notifyMaster(
           `Депозит получен: $${dollars}`,
-          `${clientName || 'Клиент'} внёс депозит через Stripe.`,
+          `${clientName ? `${clientName} — ` : ''}внесён депозит через Stripe.`,
           { type: 'job', jobId }
         );
       } else {
         await notifyMaster(
           `Оплата Stripe: $${dollars}`,
-          `${clientName || 'Клиент'} оплатил(а) через Stripe.`,
+          `${clientName ? `${clientName} — ` : ''}оплата через Stripe.`,
           { type: 'job', jobId }
         );
       }

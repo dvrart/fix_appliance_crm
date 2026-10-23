@@ -19,11 +19,60 @@ const String kGoogleApiKey = kGoogleMapsApiKey;
 
 /// Фирменные цвета. Меняются в Настройки → Экран и шрифт.
 class AppColors {
+  static bool get isDark => AppUiSettings.instance.darkNow;
+  static NightShadePreset get _shade => AppUiSettings.instance.nightShade;
   static Color get primary => AppUiSettings.instance.primaryColor;
+  static Color get footer => AppUiSettings.instance.footerColor;
   static Color get accent => AppUiSettings.instance.accentColor;
   static Color get danger => AppUiSettings.instance.dangerColor;
   static Color get surface => AppUiSettings.instance.surfaceColor;
   static Color get drawerHeader => AppUiSettings.instance.drawerHeaderColor;
+  static Color get card => isDark ? _shade.card : Colors.white;
+  static Color get cardMuted =>
+      isDark ? _shade.cardMuted : const Color(0xFFF3F6F9);
+  static Color get selectedCard =>
+      isDark ? _shade.selectedCard : const Color(0xFFE8EEF4);
+  static Color get ink => isDark ? _shade.ink : const Color(0xFF1A1A1A);
+  static Color get inkMuted =>
+      isDark ? _shade.inkMuted : const Color(0xFF5F6770);
+  static Color get border => isDark ? _shade.border : const Color(0xFFE0E4E8);
+  static Color get nonWorkingHour =>
+      isDark ? _shade.nonWorking : const Color(0xFFF3F4F6);
+  static Color get primaryOnCard =>
+      isDark ? Color.lerp(primary, Colors.white, 0.48)! : primary;
+  static Color tint(Color color, [double alpha = 0.12]) => Color.alphaBlend(
+    color.withValues(alpha: isDark ? (alpha * 1.6).clamp(0.0, 0.45) : alpha),
+    card,
+  );
+}
+
+/// Звёздочка постоянного клиента рядом с именем.
+class RegularClientStar extends StatelessWidget {
+  final double size;
+  final bool onDark;
+  final EdgeInsetsGeometry padding;
+
+  const RegularClientStar({
+    super.key,
+    this.size = 17,
+    this.onDark = false,
+    this.padding = const EdgeInsets.only(left: 4),
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: padding,
+      child: Tooltip(
+        message: 'Постоянный клиент'.tr,
+        child: Icon(
+          Icons.star_rounded,
+          size: size,
+          color: onDark ? AppColors.accent : const Color(0xFFF59E0B),
+        ),
+      ),
+    );
+  }
 }
 
 /// Статусы заявок

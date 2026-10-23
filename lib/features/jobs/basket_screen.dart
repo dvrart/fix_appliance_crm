@@ -132,7 +132,7 @@ class _BasketScreenState extends State<BasketScreen>
         child: Text(
           text,
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.black54, height: 1.35),
+          style: TextStyle(color: AppColors.inkMuted, height: 1.35),
         ),
       ),
     );
@@ -311,7 +311,7 @@ class _BasketScreenState extends State<BasketScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(context.tr('Корзина', 'Trash')),
         backgroundColor: AppColors.primary,
@@ -723,7 +723,7 @@ class UnscheduledJobsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(context.tr('Без даты визита', 'Unscheduled')),
         backgroundColor: AppColors.primary,
@@ -751,7 +751,7 @@ class UnscheduledJobsScreen extends StatelessWidget {
                     'No unscheduled jobs. Set a visit date and the job appears on the calendar.',
                   ),
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.black54, height: 1.35),
+                  style: TextStyle(color: AppColors.inkMuted, height: 1.35),
                 ),
               ),
             );
@@ -765,7 +765,7 @@ class UnscheduledJobsScreen extends StatelessWidget {
                   'Эти заявки ещё без слота. Дата визита отправит их в календарь.',
                   'These jobs have no visit slot yet. A date moves them to the calendar.',
                 ),
-                style: const TextStyle(color: Colors.black54, height: 1.35),
+                style: TextStyle(color: AppColors.inkMuted, height: 1.35),
               ),
               const SizedBox(height: 12),
               for (final job in jobs)

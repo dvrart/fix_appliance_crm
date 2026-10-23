@@ -142,9 +142,8 @@ class PartStickerScan {
 /// Сервис для работы с Gemini AI
 class AiService {
   static const _models = [
-    'gemini-3.6-flash',
-    'gemini-2.5-flash',
     'gemini-flash-lite-latest',
+    'gemini-3.1-flash-lite',
     'gemini-flash-latest',
   ];
 
@@ -152,7 +151,7 @@ class AiService {
 
   static GenerativeModel get model {
     _model ??= GenerativeModel(
-      model: 'gemini-3.6-flash',
+      model: 'gemini-flash-lite-latest',
       apiKey: kGeminiApiKey,
     );
     return _model!;

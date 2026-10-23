@@ -5,6 +5,7 @@ import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
 import '../../models/job.dart';
+import '../../services/client_service.dart';
 import '../../services/job_service.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import '../../shared/app_nav.dart';
@@ -48,7 +49,7 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(_index == 0 ? 'Счета'.tr : 'Сметы'.tr),
         backgroundColor: AppColors.primary,
@@ -221,31 +222,54 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
                                         style: TextStyle(
                                           fontSize: 12,
                                           fontWeight: FontWeight.w600,
-                                          color: Colors.grey.shade600,
+                                          color: AppColors.inkMuted,
                                         ),
                                       ),
                                   ],
                                 ),
                                 const SizedBox(height: 2),
-                                Text(row.job.clientName),
-                                Text(
-                                  Formatters.formatCurrency(total),
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                if (mark.isNotEmpty) ...[
-                                  const SizedBox(height: 6),
-                                  _PayChip(
-                                    mark: mark,
-                                    look: look,
-                                    due: due,
-                                    paid: paid,
-                                  ),
-                                  if (!row.isEstimate) ...[
-                                    const SizedBox(height: 6),
-                                    _PayMethodsLines(doc: row.doc),
+                                Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        row.job.clientName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    if (row.job.clientIsRegular ||
+                                        ClientService.isRegularClient(
+                                          clientId: row.job.clientId,
+                                          phone: row.job.clientPhone,
+                                        ))
+                                      const RegularClientStar(size: 16),
                                   ],
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Text(
+                                      Formatters.formatCurrency(total),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 17,
+                                        color: AppColors.primaryOnCard,
+                                      ),
+                                    ),
+                                    if (mark.isNotEmpty) ...[
+                                      const SizedBox(width: 8),
+                                      _PayChip(
+                                        mark: mark,
+                                        look: look,
+                                        due: due,
+                                        paid: paid,
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                if (mark.isNotEmpty && !row.isEstimate) ...[
+                                  const SizedBox(height: 4),
+                                  _PayMethodsLines(doc: row.doc),
                                 ],
                               ],
                             ),
@@ -294,8 +318,8 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: Colors.grey.shade50,
-          border: Border(top: BorderSide(color: Colors.grey.shade300)),
+          color: AppColors.cardMuted,
+          border: Border(top: BorderSide(color: AppColors.border)),
         ),
         child: Row(
           children: [

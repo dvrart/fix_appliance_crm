@@ -119,6 +119,7 @@ const Map<String, String> kEnglishUi = {
   'Какие плитки показывать в боковом меню. Звонки и переписка — в нижней вкладке «Связь». Настройки всегда остаются.':
       'Which tiles to show in the side menu. Calls and messages are in the Communication tab. Settings always stay.',
   'Склад': 'Warehouse',
+  'Ошибка и диагностика': 'Errors & diagnostics',
   'Запчасти': 'Parts',
   'Отчеты': 'Reports',
   'Статистика': 'Statistics',
@@ -579,6 +580,8 @@ const Map<String, String> kEnglishUi = {
   'Секретарь обрабатывает': 'Secretary is processing',
   'Все звонки обработаны!': 'All calls have been reviewed!',
   'Нет звонков': 'No calls',
+  'звонков': 'calls',
+  'Новый': 'New',
   'После звонка ИИ сам расшифрует разговор\nи заявка появится здесь для проверки':
       'After a call, AI will transcribe it\nand the job will appear here for review',
   'ИИ анализирует разговор...': 'AI is analyzing the call...',
@@ -794,6 +797,16 @@ const Map<String, String> kEnglishUi = {
   'Описание': 'Description',
   'Информация': 'Info',
   'Доставка': 'Delivery',
+  'Запчасти с Amazon': 'Parts from Amazon',
+  'Запчасти с Reliable Parts': 'Parts from Reliable Parts',
+  'Запчасти с PartSelect': 'Parts from PartSelect',
+  'Запчасти с Encompass': 'Parts from Encompass',
+  'Запчасти с Marcone': 'Parts from Marcone',
+  'Запчасти с eBay': 'Parts from eBay',
+  'Запчасти (курьер)': 'Parts (carrier)',
+  'Заказаны запчасти': 'Parts ordered',
+  'Какая запчасть': 'Ordered part',
+  'Помпа, ТЭН, плата…': 'Pump, heating element, board…',
   'К визиту': 'For the visit',
   'Нажмите, чтобы добавить описание...': 'Tap to add a description...',
   'Решение проблемы': 'Solution',
@@ -825,6 +838,9 @@ const Map<String, String> kEnglishUi = {
   'Место работы (Job Site)': 'Job site',
   'Не запланировано': 'Not scheduled',
   'Не запланировано — нажмите, чтобы назначить': 'Not scheduled — tap to set a time',
+  'Нажмите «+», чтобы назначить день и время':
+      'Tap “+” to set the day and time',
+  'Назначить время визита': 'Set the visit time',
   'Назначить дату и время': 'Set date and time',
   'Изменить дату и время': 'Change date and time',
   'Снять дату': 'Clear date',
@@ -1380,6 +1396,8 @@ const Map<String, String> kEnglishUi = {
   'Для приёма карты нужна геолокация (требование Stripe Terminal).':
       'Card payments require location (a Stripe Terminal requirement).',
   'История визитов': 'Visit history',
+  'Все визиты': 'All visits',
+  'Нет назначенных визитов': 'No scheduled visits',
   'Добавить визит': 'Add visit',
   'Удалить визит': 'Delete visit',
   'Визит': 'Visit',
@@ -1461,6 +1479,7 @@ const Map<String, String> kEnglishUi = {
   'Повтор': 'Callback',
   'Повторный вызов': 'Repeat call',
   'Повторный клиент': 'Repeat client',
+  'Постоянный клиент': 'Regular client',
   'Исходная заявка': 'Original job',
   'Похоже на дубляж': 'Looks like a duplicate',
   'Соединено с заявкой': 'Merged into job',
@@ -1479,6 +1498,16 @@ const Map<String, String> kEnglishUi = {
   'Листовка': 'Flyer',
   'Моноширинный': 'Monospace',
   'Изменить адрес': 'Edit address',
+  'Проверка адреса...': 'Checking address...',
+  'Дом найден': 'House found',
+  'Дом не найден': 'House not found',
+  'Точный дом не найден на карте — проверьте номер дома и улицу':
+      'Exact house not found on the map — check the street number and name',
+  'Нажмите, чтобы указать адрес работы': 'Tap to enter the job-site address',
+  'Дом на карте': 'House on map',
+  'Спутник': 'Satellite',
+  'Схема': 'Map',
+  'На месте': 'On site',
   'Ожидаемые запчасти': 'Expected parts',
   'Запчасть не указана': 'Part not specified',
   'Импорт и экспорт': 'Import & export',
@@ -1627,6 +1656,13 @@ const Map<String, String> kEnglishUi = {
   'В SMS ссылку нельзя спрятать за кнопку — она идёт отдельной строкой Pay here.':
       'SMS cannot hide a URL behind a button — it stays on its own Pay here line.',
   'Запись разговора': 'Call recording',
+  'Связь по заявке': 'Contact on this job',
+  'Звонки и переписка': 'Calls and messages',
+  'Разговоров и переписки по заявке нет':
+      'No calls or messages on this job yet',
+  'Звонки по заявке': 'Calls on this job',
+  'Другие звонки клиента': 'Other calls from this client',
+  'Сообщений': 'Messages',
   'Прослушать запись': 'Play recording',
   'Выжимка': 'Summary',
   'Разговор на русском': 'Conversation in Russian',
@@ -1789,4 +1825,84 @@ const Map<String, String> kEnglishUi = {
   'Срочно': 'Urgent',
   'Не сильно срочно': 'Not very urgent',
   'Вообще не срочно': 'Not urgent',
+  'В пути и работа': 'On the way & repair',
+  'Документы и оплата': 'Documents & payment',
+  'Счёт (Invoice)': 'Invoice SMS',
+  'Смета (Estimate)': 'Estimate SMS',
+  'Чек об оплате (Receipt)': 'Receipt SMS',
+  'Ссылка на оплату': 'Payment link SMS',
+  'Сбросить по умолчанию': 'Reset to default',
+  'Сбросить шаблон?': 'Reset template?',
+  'Вернуть стандартное название и текст этого шаблона?':
+      'Restore the default title and text for this template?',
+  'Шаблон восстановлен': 'Template restored',
+  'Название шаблона': 'Template title',
+  'Вернуть стандартный текст': 'Restore default text',
+  'Сохранить шаблон': 'Save template',
+  'Введите текст шаблона': 'Enter template text',
+  'Ссылка для {review}': 'Link for {review}',
+  'Ссылка на Google-отзыв ({review})': 'Google review link ({review})',
+  'Эта ссылка автоматически подставляется вместо фразы {review} в шаблонах сообщений.':
+      'This link automatically replaces {review} in message templates.',
+  'URL отзыва Google': 'Google review URL',
+  'Ссылка сохранена': 'Link saved',
+  'Памятка: как пользоваться {name}, {url} и др.':
+      'Guide: how to use {name}, {url}, etc.',
+  'Автоподстановка имени, ссылок, даты и сумм в SMS':
+      'Auto-fill client name, links, dates, and totals in SMS',
+  'Нажмите на фразу, чтобы вставить её в текст на место курсора:':
+      'Tap a placeholder to insert it at the cursor:',
+  'Памятка: как работают фразы в скобках':
+      'Guide: how curly-brace placeholders work',
+  '• Пишите специальные слова в фигурных скобках: например {name} или {url}.\n'
+          '• Регистр букв не важен: {url}, {URL} и {Name} работают одинаково.\n'
+          '• Вы можете свободно менять любой шаблон, добавлять или убирать любые фразы — ограничений нет.\n'
+          '• При выборе шаблона в чате или отправке документа программа сама подставит нужные данные:':
+      '• Write placeholders in curly braces: for example {name} or {url}.\n'
+          '• Case does not matter: {url}, {URL}, and {Name} all work the same.\n'
+          '• You can freely edit any template, add or remove any placeholders — there are no restrictions.\n'
+          '• When you pick a template in chat or send a document, the app automatically fills in the data:',
+  'Имя клиента': 'Client name',
+  'Подставляет первое имя клиента латиницей (например: Hi {name}! → Hi John!). Если имя неизвестно, {name} и запятая перед ним автоматически убираются (получится просто Hi!).':
+      'Inserts the client’s first name (e.g. Hi {name}! → Hi John!). If unknown, {name} and the comma before it are removed cleanly (becomes Hi!).',
+  'Ссылка на счёт, смету или оплату': 'Invoice, estimate, or payment link',
+  'Подставляет ссылку на скачивание PDF-счёта, страницу подтверждения сметы или ссылку на оплату Stripe.':
+      'Inserts the PDF invoice download link, estimate confirmation page, or Stripe payment link.',
+  'Подставляет вашу ссылку для отзыва в Google (задаётся ниже в разделе «Ссылка на Google-отзыв»).':
+      'Inserts your Google review link (configured below under Google review link).',
+  'Подставляет дату назначенного выезда по заявке (например: October 24).':
+      'Inserts the scheduled visit date for the job (e.g. October 24).',
+  'Время визита': 'Visit time',
+  'Подставляет время назначенного выезда (например: 14:00).':
+      'Inserts the scheduled visit time (e.g. 14:00).',
+  'Адрес визита': 'Visit address',
+  'Подставляет адрес клиента или адрес объекта (Job Site) из заявки.':
+      'Inserts the client address or Job Site address from the job.',
+  'Общая сумма счёта / сметы': 'Invoice / estimate total',
+  'Подставляет итоговую сумму документа с налогом (например: \$226.00).':
+      'Inserts the total document amount including tax (e.g. \$226.00).',
+  'Остаток к оплате': 'Balance due',
+  'Подставляет сумму, которую клиенту осталось доплатить с учётом внесённого депозита (например: \$126.00).':
+      'Inserts the remaining balance due after any deposit (e.g. \$126.00).',
+  'Оплаченная сумма': 'Amount paid',
+  'Подставляет уже оплаченную клиентом сумму (например: \$100.00).':
+      'Inserts the amount already paid by the client (e.g. \$100.00).',
+  'Сумма платежа по ссылке Stripe': 'Stripe payment link amount',
+  'Подставляет сумму к оплате (депозит или остаток) в SMS со ссылкой на оплату.':
+      'Inserts the payment amount (deposit or balance) in payment link SMS.',
+  'Список работ и запчастей': 'Line items list',
+  'Подставляет строки из счёта или сметы с названиями позиций и ценами.':
+      'Inserts line items with names and prices from the invoice or estimate.',
+  'Подставляет название вашей компании из настроек реквизитов.':
+      'Inserts your company name from company settings.',
+  'Срок действия сметы (дней)': 'Estimate validity (days)',
+  'Подставляет количество дней, в течение которых действует смета (например: 30).':
+      'Inserts the number of days the estimate remains valid (e.g. 30).',
+  'Подставляет телефон вашей компании из настроек.':
+      'Inserts your company phone number from settings.',
+  'Подставляет почту вашей компании из настроек.':
+      'Inserts your company email from settings.',
+  'Номер HST / GST': 'HST / GST number',
+  'Подставляет налоговый номер компании из настроек.':
+      'Inserts your company tax number from settings.',
 };

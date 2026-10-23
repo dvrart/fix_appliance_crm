@@ -5,6 +5,7 @@ import '../../../core/l10n/app_locale.dart';
 import '../../../services/ai_service.dart';
 import '../../../services/secretary_learn_service.dart';
 import '../../../services/twilio_service.dart';
+import '../../../shared/app_nav.dart';
 import '../widgets/settings_ui.dart';
 import '../widgets/tappable_sentences.dart';
 
@@ -47,7 +48,7 @@ class SecretaryCallReviewPage extends StatefulWidget {
       }
     }
     if (!context.mounted) return;
-    await Navigator.of(context, rootNavigator: true).push(
+    await AppNav.navigatorOf(context).push(
       MaterialPageRoute(
         builder: (_) => SecretaryCallReviewPage(
           callSid: sid,
@@ -218,7 +219,7 @@ class _SecretaryCallReviewPageState extends State<SecretaryCallReviewPage> {
               '1. Нажмите фразу, где секретарь ошибся — она станет жёлтой.\n2. Внизу напишите, как надо было.\n3. Зелёная галочка кладёт это в «Ошибки секретаря». Оттуда копируете и присылаете в чат. Из приложения она правила не берёт.',
               '1. Tap the sentence where the secretary went wrong — it turns yellow.\n2. Write below how it should have been.\n3. The green check saves it under Secretary errors. Copy and send it in chat. The app does not change her rules.',
             ),
-            style: const TextStyle(color: Colors.black54, height: 1.4),
+            style: TextStyle(color: AppColors.inkMuted, height: 1.4),
           ),
           const SizedBox(height: 14),
           Text(

@@ -341,13 +341,13 @@ class _CatalogListPageState extends State<_CatalogListPage> {
               _selecting
                   ? 'Нажмите «Удалить» внизу или отмените выбор.'.tr
                   : widget.hint,
-              style: const TextStyle(color: Colors.black54),
+              style: TextStyle(color: AppColors.inkMuted),
             ),
             if (!_selecting) ...[
               const SizedBox(height: 4),
               Text(
                 'Зажмите или нажмите плитку, чтобы выделить.'.tr,
-                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                style: TextStyle(color: AppColors.inkMuted, fontSize: 12),
               ),
             ],
             const SizedBox(height: 12),
@@ -362,7 +362,7 @@ class _CatalogListPageState extends State<_CatalogListPage> {
                         hintText: 'Новое значение'.tr,
                         border: const OutlineInputBorder(),
                         filled: true,
-                        fillColor: Colors.white,
+                        fillColor: AppColors.card,
                       ),
                       onSubmitted: (v) => _add(v),
                     ),
@@ -653,13 +653,13 @@ class _StatusListPageState extends State<_StatusListPage> {
               _selecting
                   ? 'Нажмите «Удалить» внизу или отмените выбор.'.tr
                   : 'Нажмите статус, чтобы сменить название и цвет. Плюс в списке добавляет новый.'.tr,
-              style: const TextStyle(color: Colors.black54),
+              style: TextStyle(color: AppColors.inkMuted),
             ),
             if (!_selecting) ...[
               const SizedBox(height: 4),
               Text(
                 'Зажмите свой статус, чтобы выделить и удалить.'.tr,
-                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                style: TextStyle(color: AppColors.inkMuted, fontSize: 12),
               ),
             ],
             const SizedBox(height: 12),

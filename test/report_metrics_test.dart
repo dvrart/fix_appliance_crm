@@ -569,4 +569,485 @@ void main() {
       expect(m.grossProfit, 0);
     });
   });
+
+  group('детализация: заявка, инвойс, деталь', () {
+    test('расклад по каждой детали, каждому инвойсу и каждой заявке сходится', () {
+      final j1 = job(
+        id: 'job_a',
+        client: 'Алексей',
+        documents: [
+          invoice(
+            number: '101',
+            date: DateTime(2026, 10, 5),
+            items: [
+              {'name': 'Diagnostic & Labour', 'qty': 1, 'price': 150.0, 'type': 'Service'},
+              {
+                'name': 'Drain pump',
+                'qty': 1,
+                'price': 140.0,
+                'type': 'Part',
+                'costPrice': 45.0,
+              },
+              {
+                'name': 'Clamp',
+                'qty': 2,
+                'price': 15.0,
+                'type': 'Part',
+                'costPrice': 4.0,
+              },
+            ],
+            payments: [
+              {
+                'amount': 361.60,
+                'method': 'Stripe',
+                'date': DateTime(2026, 10, 5).toIso8601String(),
+              },
+            ],
+          ),
+          invoice(
+            number: '102',
+            date: DateTime(2026, 10, 12),
+            items: [
+              {'name': 'Follow-up install', 'qty': 1, 'price': 80.0, 'type': 'Service'},
+              {
+                'name': 'Control board',
+                'qty': 1,
+                'price': 260.0,
+                'type': 'Part',
+                'costPrice': 110.0,
+              },
+            ],
+          ),
+        ],
+      );
+
+      final m = build([j1]);
+
+      // Итоги периода:
+      // Запчасти для меня: 45 + (2 * 4) + 110 = 163
+      // Запчасти для клиента: 140 + 30 + 260 = 430
+      // Наценка на запчастях: 430 - 163 = 267
+      // Работа: 150 + 80 = 230
+      // Грязными без HST: 430 + 230 = 660
+      // Чистыми (после запчастей): 660 - 163 = 497
+      expect(m.partsCost, closeTo(163, 0.001));
+      expect(m.partsSales, closeTo(430, 0.001));
+      expect(m.partsMargin, closeTo(267, 0.001));
+      expect(m.labourSales, closeTo(230, 0.001));
+      expect(m.salesExHst, closeTo(660, 0.001));
+      expect(m.grossProfit, closeTo(497, 0.001));
+
+      // Проверка уровня заявки (invoiceJobs):
+      expect(m.invoiceJobs.length, 1);
+      final rJob = m.invoiceJobs.single;
+      expect(rJob.salesExHst, closeTo(660, 0.001));
+      expect(rJob.partsCost, closeTo(163, 0.001));
+      expect(rJob.partsSales, closeTo(430, 0.001));
+      expect(rJob.partsMargin, closeTo(267, 0.001));
+      expect(rJob.labourSales, closeTo(230, 0.001));
+      expect(rJob.netProfit, closeTo(497, 0.001));
+      expect(rJob.invoices.length, 2);
+      expect(rJob.parts.length, 3);
+
+      // Проверка уровня инвойса #101:
+      final inv101 = m.invoices.firstWhere((i) => i.number == '101');
+      expect(inv101.docIndex, 0);
+      expect(inv101.grossExHst, closeTo(320, 0.001));
+      expect(inv101.partsCost, closeTo(53, 0.001));
+      expect(inv101.partsSales, closeTo(170, 0.001));
+      expect(inv101.partsMargin, closeTo(117, 0.001));
+      expect(inv101.labourSales, closeTo(150, 0.001));
+      expect(inv101.netProfit, closeTo(267, 0.001));
+      expect(inv101.paidExHst, closeTo(320, 0.001));
+      expect(inv101.paidNetProfit, closeTo(267, 0.001));
+
+      // Проверка уровня отдельной детали (Clamp, 2 шт.):
+      final clamp = inv101.parts.firstWhere((p) => p.name == 'Clamp');
+      expect(clamp.docIndex, 0);
+      expect(clamp.itemIndex, 2);
+      expect(clamp.cost, closeTo(8, 0.001));
+      expect(clamp.sold, closeTo(30, 0.001));
+      expect(clamp.margin, closeTo(22, 0.001));
+    });
+  });
+
+  group('разбивка и фильтр по способу оплаты', () {
+    test('делит заработок на наличные, кредитку и электронный перевод', () {
+      final m = build([
+        job(
+          id: 'j_cash',
+          client: 'Олег',
+          documents: [
+            invoice(
+              number: '201',
+              date: DateTime(2026, 10, 4),
+              items: [
+                {'name': 'Labour', 'qty': 1, 'price': 100.0, 'type': 'Service'},
+                {
+                  'name': 'Belt',
+                  'qty': 1,
+                  'price': 50.0,
+                  'type': 'Part',
+                  'costPrice': 20.0,
+                },
+              ],
+              payments: [
+                {
+                  'amount': 169.50,
+                  'method': 'Cash',
+                  'date': DateTime(2026, 10, 4).toIso8601String(),
+                },
+                {
+                  'amount': 10.0,
+                  'method': 'Tip',
+                  'date': DateTime(2026, 10, 4).toIso8601String(),
+                },
+              ],
+            ),
+          ],
+        ),
+        job(
+          id: 'j_card',
+          client: 'Мария',
+          documents: [
+            invoice(
+              number: '202',
+              date: DateTime(2026, 10, 6),
+              items: [
+                {'name': 'Labour', 'qty': 1, 'price': 120.0, 'type': 'Service'},
+                {
+                  'name': 'Pump',
+                  'qty': 1,
+                  'price': 80.0,
+                  'type': 'Part',
+                  'costPrice': 30.0,
+                },
+              ],
+              payments: [
+                {
+                  'amount': 226.0,
+                  'method': 'Stripe (card present)',
+                  'date': DateTime(2026, 10, 6).toIso8601String(),
+                },
+                {
+                  'amount': 15.0,
+                  'method': 'Чаевые',
+                  'date': DateTime(2026, 10, 6).toIso8601String(),
+                },
+              ],
+            ),
+          ],
+        ),
+        job(
+          id: 'j_et',
+          client: 'Денис',
+          documents: [
+            invoice(
+              number: '203',
+              date: DateTime(2026, 10, 8),
+              items: [
+                {
+                  'name': 'Diagnostic',
+                  'qty': 1,
+                  'price': 100.0,
+                  'type': 'Service',
+                },
+              ],
+              payments: [
+                {
+                  'amount': 113.0,
+                  'method': 'e-Transfer',
+                  'date': DateTime(2026, 10, 8).toIso8601String(),
+                },
+              ],
+            ),
+          ],
+        ),
+      ]);
+
+      final cash = m.forMethod(ReportPayMethod.cash);
+      final card = m.forMethod(ReportPayMethod.card);
+      final etransfer = m.forMethod(ReportPayMethod.etransfer);
+
+      // Наличные: выручка 150, себестоимость 20, чистыми 130, с HST 169.50, чаевые 10
+      expect(cash.salesExHst, closeTo(150, 0.001));
+      expect(cash.invoiced, closeTo(169.50, 0.001));
+      expect(cash.paid, closeTo(169.50, 0.001));
+      expect(cash.partsCost, closeTo(20, 0.001));
+      expect(cash.partsSales, closeTo(50, 0.001));
+      expect(cash.grossProfit, closeTo(130, 0.001));
+      expect(cash.tips, closeTo(10, 0.001));
+      expect(cash.invoiceCount, 1);
+
+      // Кредитка (Stripe): выручка 200, себестоимость 30, чистыми 170, с HST 226, чаевые 15
+      expect(card.salesExHst, closeTo(200, 0.001));
+      expect(card.invoiced, closeTo(226.0, 0.001));
+      expect(card.paid, closeTo(226.0, 0.001));
+      expect(card.partsCost, closeTo(30, 0.001));
+      expect(card.partsSales, closeTo(80, 0.001));
+      expect(card.grossProfit, closeTo(170, 0.001));
+      expect(card.tips, closeTo(15, 0.001));
+      expect(card.invoiceCount, 1);
+
+      // Электронный перевод: выручка 100, себестоимость 0, чистыми 100, с HST 113
+      expect(etransfer.salesExHst, closeTo(100, 0.001));
+      expect(etransfer.invoiced, closeTo(113.0, 0.001));
+      expect(etransfer.paid, closeTo(113.0, 0.001));
+      expect(etransfer.partsCost, closeTo(0, 0.001));
+      expect(etransfer.grossProfit, closeTo(100, 0.001));
+      expect(etransfer.tips, closeTo(0, 0.001));
+      expect(etransfer.invoiceCount, 1);
+
+      // Сумма всех трёх способов сходится с общим итогом периода:
+      expect(
+        cash.grossProfit + card.grossProfit + etransfer.grossProfit,
+        closeTo(m.grossProfit, 0.001),
+      );
+      expect(
+        cash.paid + card.paid + etransfer.paid,
+        closeTo(m.paid, 0.001),
+      );
+    });
+
+    test('счёт, оплаченный пополам двумя способами, делится пропорционально', () {
+      final m = build([
+        job(
+          id: 'j_split',
+          client: 'Анна',
+          documents: [
+            invoice(
+              number: '301',
+              date: DateTime(2026, 10, 10),
+              items: [
+                {'name': 'Labour', 'qty': 1, 'price': 100.0, 'type': 'Service'},
+                {
+                  'name': 'Heater',
+                  'qty': 1,
+                  'price': 100.0,
+                  'type': 'Part',
+                  'costPrice': 40.0,
+                },
+              ],
+              payments: [
+                {
+                  'amount': 113.0,
+                  'method': 'e-Transfer',
+                  'date': DateTime(2026, 10, 10).toIso8601String(),
+                },
+                {
+                  'amount': 113.0,
+                  'method': 'Cash',
+                  'date': DateTime(2026, 10, 11).toIso8601String(),
+                },
+              ],
+            ),
+          ],
+        ),
+      ]);
+
+      final cash = m.forMethod(ReportPayMethod.cash);
+      final etransfer = m.forMethod(ReportPayMethod.etransfer);
+      final card = m.forMethod(ReportPayMethod.card);
+
+      expect(card.paid, 0);
+      expect(card.invoiceCount, 0);
+
+      // Половина счёта — наличными, половина — переводом:
+      expect(cash.paid, closeTo(113, 0.001));
+      expect(cash.salesExHst, closeTo(100, 0.001));
+      expect(cash.partsCost, closeTo(20, 0.001));
+      expect(cash.partsSales, closeTo(50, 0.001));
+      expect(cash.grossProfit, closeTo(80, 0.001));
+
+      expect(etransfer.paid, closeTo(113, 0.001));
+      expect(etransfer.salesExHst, closeTo(100, 0.001));
+      expect(etransfer.partsCost, closeTo(20, 0.001));
+      expect(etransfer.partsSales, closeTo(50, 0.001));
+      expect(etransfer.grossProfit, closeTo(80, 0.001));
+    });
+
+    test(
+      'счёт с депозитом в один день и доплатой в другой день входит в оба дня по своей доле, и «Все» равно сумме способов оплаты',
+      () {
+        final jobs = [
+          job(
+            id: 'j_split_days',
+            client: '000369940 Ontario Inc',
+            documents: [
+              invoice(
+                number: '0086',
+                date: DateTime(2026, 10, 16, 12, 13),
+                taxRate: 0,
+                items: [
+                  {
+                    'name': 'oven repair',
+                    'qty': 1,
+                    'price': 200.0,
+                    'type': 'Service',
+                  },
+                  {
+                    'name': 'GE Range Igniter Glowbar',
+                    'qty': 1,
+                    'price': 118.0,
+                    'costPrice': 30.0,
+                    'type': 'Part',
+                  },
+                ],
+                payments: [
+                  {
+                    'amount': 159.0,
+                    'method': 'Stripe (deposit)',
+                    'date': DateTime(2026, 10, 16, 16, 15).toIso8601String(),
+                  },
+                  {
+                    'amount': 159.0,
+                    'method': 'Stripe',
+                    'date': DateTime(2026, 10, 19, 21, 54).toIso8601String(),
+                  },
+                ],
+              ),
+            ],
+          ),
+          job(
+            id: 'j_cash_1',
+            client: 'Kate Broussard',
+            documents: [
+              invoice(
+                number: '0087',
+                date: DateTime(2026, 10, 19, 14, 59),
+                taxRate: 0,
+                items: [
+                  {
+                    'name': 'Service call',
+                    'qty': 1,
+                    'price': 99.0,
+                    'type': 'Service',
+                  },
+                ],
+                payments: [
+                  {
+                    'amount': 99.0,
+                    'method': 'Cash',
+                    'date': DateTime(2026, 10, 19, 14, 59).toIso8601String(),
+                  },
+                ],
+              ),
+            ],
+          ),
+          job(
+            id: 'j_cash_2',
+            client: 'Mike Feetham',
+            documents: [
+              invoice(
+                number: '0088',
+                date: DateTime(2026, 10, 19, 17, 25),
+                taxRate: 0,
+                items: [
+                  {
+                    'name': 'inverter control board GE',
+                    'qty': 1,
+                    'price': 300.0,
+                    'costPrice': 250.0,
+                    'type': 'Part',
+                  },
+                  {
+                    'name': 'washing machine repair',
+                    'qty': 1,
+                    'price': 150.0,
+                    'type': 'Service',
+                  },
+                ],
+                payments: [
+                  {
+                    'amount': 450.0,
+                    'method': 'Cash',
+                    'date': DateTime(2026, 10, 19, 17, 26).toIso8601String(),
+                  },
+                ],
+              ),
+            ],
+          ),
+          job(
+            id: 'j_cash_3',
+            client: 'Rodolfo Benavides',
+            documents: [
+              invoice(
+                number: '0089',
+                date: DateTime(2026, 10, 19, 18, 42),
+                taxRate: 0,
+                items: [
+                  {
+                    'name': 'Service call',
+                    'qty': 1,
+                    'price': 99.0,
+                    'type': 'Service',
+                  },
+                ],
+                payments: [
+                  {
+                    'amount': 99.0,
+                    'method': 'Cash',
+                    'date': DateTime(2026, 10, 19, 18, 42).toIso8601String(),
+                  },
+                ],
+              ),
+            ],
+          ),
+        ];
+
+        // День 19 октября 2026:
+        final day19 = ReportMetrics.build(
+          jobs: jobs,
+          start: DateTime(2026, 10, 19),
+          endExclusive: DateTime(2026, 10, 20),
+        );
+        final cash19 = day19.forMethod(ReportPayMethod.cash);
+        final card19 = day19.forMethod(ReportPayMethod.card);
+
+        // Наличные за 19 окт: грязными 648, запчасти 250, чистыми 398
+        expect(cash19.salesExHst, closeTo(648, 0.001));
+        expect(cash19.partsCost, closeTo(250, 0.001));
+        expect(cash19.grossProfit, closeTo(398, 0.001));
+
+        // Кредитка за 19 окт (вторая половина счёта #0086):
+        // грязными 159, доля детали 15 (половина от 30), чистыми 144
+        expect(card19.salesExHst, closeTo(159, 0.001));
+        expect(card19.invoiced, closeTo(159, 0.001));
+        expect(card19.paid, closeTo(159, 0.001));
+        expect(card19.partsCost, closeTo(15, 0.001));
+        expect(card19.partsSales, closeTo(59, 0.001));
+        expect(card19.grossProfit, closeTo(144, 0.001));
+        expect(card19.invoiceCount, 1);
+        expect(card19.invoiceJobs.length, 1);
+
+        // Всего за 19 окт = Наличные (398) + Кредитка (144) = 542 чистыми (807 грязными)
+        expect(day19.salesExHst, closeTo(807, 0.001));
+        expect(day19.invoiced, closeTo(807, 0.001));
+        expect(day19.paid, closeTo(807, 0.001));
+        expect(day19.partsCost, closeTo(265, 0.001));
+        expect(day19.grossProfit, closeTo(542, 0.001));
+        expect(
+          cash19.grossProfit + card19.grossProfit,
+          closeTo(day19.grossProfit, 0.001),
+        );
+
+        // День 16 октября 2026 (первая половина счёта #0086):
+        final day16 = ReportMetrics.build(
+          jobs: jobs,
+          start: DateTime(2026, 10, 16),
+          endExclusive: DateTime(2026, 10, 17),
+        );
+        expect(day16.salesExHst, closeTo(159, 0.001));
+        expect(day16.partsCost, closeTo(15, 0.001));
+        expect(day16.grossProfit, closeTo(144, 0.001));
+
+        // За весь октябрь оба дня складываются ровно в 100% без задвоения:
+        final month = build(jobs);
+        expect(
+          day16.grossProfit + day19.grossProfit,
+          closeTo(month.grossProfit, 0.001),
+        );
+      },
+    );
+  });
 }

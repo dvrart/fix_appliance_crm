@@ -14,6 +14,8 @@ let mediaReads;
 let sentSms;
 let beforeTransaction;
 let retryTransaction;
+// Что «Gemini» ответит разбору входящего сообщения.
+let geminiReply = '{"relevant": false}';
 
 function snapshot(path) {
   const stored = structuredClone(store.get(path));
@@ -124,21 +126,32 @@ Module._load = function (name) {
   if (name === './auth_guard') return { requireTwilioSignature: () => true, requireAppUser: async () => ({ uid: 'test-user' }), verifyAppUser: async () => ({ uid: 'test-user' }) };
   if (name === './notify') return { notifyMaster: async (...args) => notifications.push(args), registerDeviceToken: async () => {} };
   if (name === 'twilio') return fakeTwilio;
+  if (name === '@google/generative-ai') return {
+    GoogleGenerativeAI: class {
+      getGenerativeModel() {
+        return { generateContent: async () => ({ response: { text: () => geminiReply } }) };
+      }
+    },
+  };
   return load.apply(this, arguments);
 };
-const originalSid = process.env.TWILIO_ACCOUNT_SID;
-const originalToken = process.env.TWILIO_AUTH_TOKEN;
+const originalEnv = {
+  TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
+  TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+};
 process.env.TWILIO_ACCOUNT_SID = `AC${'0'.repeat(32)}`;
 process.env.TWILIO_AUTH_TOKEN = 'synthetic-test-token';
+process.env.GEMINI_API_KEY = 'synthetic-gemini-key';
 let api;
 try {
   api = require('./index');
 } finally {
   Module._load = load;
-  if (originalSid === undefined) delete process.env.TWILIO_ACCOUNT_SID;
-  else process.env.TWILIO_ACCOUNT_SID = originalSid;
-  if (originalToken === undefined) delete process.env.TWILIO_AUTH_TOKEN;
-  else process.env.TWILIO_AUTH_TOKEN = originalToken;
+  for (const [key, value] of Object.entries(originalEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 }
 
 function response() {
@@ -167,6 +180,33 @@ beforeEach(() => {
   sentSms = [];
   beforeTransaction = null;
   retryTransaction = null;
+  geminiReply = '{"relevant": false}';
+});
+
+test('a repair SMS waits for the owner instead of becoming an email job', async () => {
+  // Вызов шёл без channel, поэтому внутри он был undefined, ветка SMS не
+  // срабатывала, и заявка создавалась как письмо: source 'email' и
+  // sourceEmailFrom с номером телефона (жалоба FIX, 12.10.2026).
+  geminiReply = JSON.stringify({
+    relevant: true,
+    appliance_type: 'Сушилка',
+    brand: 'Samsung',
+    problem_description: 'не греет',
+  });
+  const path = `${COMPANY}/messages/synthetic-sms`;
+  store.set(path, {
+    from: '+15197323488', to: '+14165550102', body: 'My Samsung dryer is not heating',
+    direction: 'inbound', status: 'received', channel: 'sms', processingVersion: 2,
+    smsProcessingRequestId: MESSAGE, twilioMedia: [], read: false,
+  });
+  await api.processIncomingSms({
+    data: { before: { exists: false }, after: snapshot(path) },
+  });
+
+  const jobs = [...store.entries()].filter(([key]) => key.startsWith(`${COMPANY}/jobs/`));
+  assert.deepEqual(jobs.map(([, job]) => job.source), []);
+  assert.equal(store.get(path).smsOfferPending, true);
+  assert.equal(notifications.some(([title]) => title === 'SMS: ждёт заявку'), true);
 });
 
 test('concurrent SMS webhook retries persist one message and queue work before acknowledging', async () => {
@@ -189,6 +229,63 @@ test('a failed SMS save is not acknowledged as delivered', async () => {
   await api.incomingSms(request({ MessageSid: MESSAGE, From: '+14165550101', Body: 'Synthetic message', NumMedia: '0' }), res);
   assert.equal(res.statusCode, 503);
   assert.equal(notifications.length, 0);
+});
+
+test('an SMS fills the client card with the name and address it carries', async () => {
+  // Просьба FIX 13.10.2026: ИИ должен брать из SMS имя, адрес и поломку и
+  // раскладывать их по карточке. Раньше разбор SMS про имя даже не спрашивал,
+  // и карточка оставалась подписанной номером телефона.
+  store.set(`${COMPANY}/clients/known-client`, {
+    fullName: 'Клиент 5197323488',
+    phone: '5197323488',
+  });
+  geminiReply = JSON.stringify({
+    relevant: true,
+    client_name: 'John Smith',
+    appliance_type: 'Сушилка',
+    brand: 'Samsung',
+    problem_description: 'не греет',
+    address: '12 King Street',
+    city: 'Brantford',
+    postal_code: 'N3T 5L4',
+  });
+  const path = `${COMPANY}/messages/synthetic-sms-card`;
+  store.set(path, {
+    from: '+15197323488', to: '+14165550102',
+    body: "It's John Smith, my Samsung dryer at 12 King Street, Brantford is not heating",
+    direction: 'inbound', status: 'received', channel: 'sms', processingVersion: 2,
+    smsProcessingRequestId: MESSAGE, twilioMedia: [], read: false,
+  });
+  await api.processIncomingSms({ data: { before: { exists: false }, after: snapshot(path) } });
+
+  const client = store.get(`${COMPANY}/clients/known-client`);
+  assert.equal(client.fullName, 'John Smith');
+  assert.equal(client.address, '12 King Street, Brantford, N3T 5L4');
+  assert.equal(client.locations[0].street, '12 King Street');
+  assert.equal(client.locations[0].city, 'Brantford');
+  assert.equal(client.locations[0].postalCode, 'N3T 5L4');
+  // Заявку по-прежнему создаёт мастер: сообщение только ждёт его решения.
+  assert.equal(store.get(path).smsOfferPending, true);
+  assert.equal(store.get(path).extractedData.client_name, 'John Smith');
+});
+
+test('an out-of-order Twilio callback cannot downgrade the delivery tick', async () => {
+  // Галочка в переписке читается из status, а колбэки Twilio приходят не по
+  // порядку: «sent» после «delivered» — обычное дело.
+  const path = `${COMPANY}/messages/synthetic-outbound`;
+  store.set(path, { sid: MESSAGE, direction: 'outbound', status: 'queued', to: '+14165550101' });
+  await api.smsStatusCallback(request({ MessageSid: MESSAGE, MessageStatus: 'delivered' }), response());
+  assert.equal(store.get(path).status, 'delivered');
+  assert.ok(store.get(path).deliveredAt);
+  await api.smsStatusCallback(request({ MessageSid: MESSAGE, MessageStatus: 'sent' }), response());
+  assert.equal(store.get(path).status, 'delivered');
+  // Недоставку принимаем всегда: она приходит последней и важнее порядка.
+  await api.smsStatusCallback(
+    request({ MessageSid: MESSAGE, MessageStatus: 'undelivered', ErrorCode: '30007' }),
+    response()
+  );
+  assert.equal(store.get(path).status, 'undelivered');
+  assert.equal(store.get(path).deliveryFailed, true);
 });
 
 test('recording callbacks keep the longest take and do not complete a still-active parent call', async () => {

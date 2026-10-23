@@ -1,144 +1,423 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import '../../../shared/widgets/confirm_action_sheet.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
+import '../../../core/sms_text.dart';
 import '../../../models/job.dart';
 import '../../../services/job_service.dart';
-import '../../../services/local_notification_service.dart';
 import '../../../services/sms_service.dart';
 import '../../../services/twilio_service.dart';
 import '../../../shared/app_nav.dart';
-import '../../../shared/widgets/appliance_picture.dart';
+import '../../../shared/widgets/confirm_action_sheet.dart';
 import '../../calls/call_review_page.dart';
-import '../../jobs/email_offer_page.dart';
 import '../../jobs/job_details/job_details_screen.dart';
-import '../../jobs/sms_offer_page.dart';
 import '../../messages/conversation_screen.dart';
 
-/// Что колокольчик обязан показать — и ничего сверх этого.
-///
-/// Здесь нет ни входящих звонков «к сведению», ни просто непрочитанных
-/// писем: про них говорят счётчики на вкладке «Связь». В колокольчике
-/// остаётся только то, где без мастера дело не двинется, поэтому его
-/// цифра читается однозначно — «столько решений ждут меня» — и доходит
-/// до нуля. Пока сюда валились все события подряд, она не доходила
-/// никогда и на неё перестали смотреть.
-///
-/// Отбор отделён от виджета нарочно: по нему считают бейдж, рисуют панель
-/// и проверяет тест, и разойтись они не могут.
-class InboxSelection {
-  /// Ждут решения мастера.
-  final List<SmsMessage> awaiting;
-  final List<SmsMessage> smsOffers;
-  final List<SmsMessage> emailOffers;
+/// Визит, до начала которого осталось меньше [InboxSelection.soonWindow].
+class SoonVisit {
+  final Job job;
+  final JobVisit visit;
 
-  /// Сломалось и само не починится.
+  const SoonVisit(this.job, this.visit);
+}
+
+/// Отбор для панели уведомлений («Колокольчик»).
+///
+/// Собирает текущие события (новые звонки, непрочитанные сообщения,
+/// недоставленные SMS и неподтверждённые заявки) и привязывает каждое
+/// к рабочей карточке [Job], если она есть у клиента.
+///
+/// Секции «Ждёт решения» здесь больше нет (решение FIX, 21.10.2026):
+/// колокольчик не предлагает завести заявку и не держит подтверждение
+/// визита. SMS, которое сервер придумал, но не отправил, по-прежнему
+/// ждёт кнопку «Отправить / Не отправлять» — но в самой переписке, куда
+/// ведёт push `outbox`.
+///
+/// Сюда же переехало то, что раньше жило в шапке календаря: машинка
+/// доставки и плашка «N без даты визита». Плюс напоминание о визите,
+/// до которого осталось меньше двух часов.
+class InboxSelection {
+  /// Звонки, сообщения и сбои доставки.
+  final List<SmsMessage> messages;
   final List<SmsMessage> failedSms;
   final List<CallRecord> calls;
 
   /// Заявки от ИИ: их надо подтвердить.
   final List<Job> jobs;
 
+  /// Визиты и доставка: скоро выезжать, ждём запчасть, нет даты визита.
+  final List<SoonVisit> soonVisits;
+  final List<Job> delivery;
+  final List<Job> unscheduled;
+
+  /// Все живые заявки — для поиска привязанной рабочей карточки.
+  final List<Job> allJobs;
+
+  /// За сколько до визита напоминать. Серверное напоминание мастеру
+  /// (крон `sendOwnerReminders`) приходит за 1.5 часа — берём чуть шире,
+  /// чтобы строка в колокольчике появлялась не позже push-а.
+  static const Duration soonWindow = Duration(hours: 2);
+
   const InboxSelection({
-    this.awaiting = const [],
-    this.smsOffers = const [],
-    this.emailOffers = const [],
+    this.messages = const [],
     this.failedSms = const [],
     this.calls = const [],
     this.jobs = const [],
+    this.soonVisits = const [],
+    this.delivery = const [],
+    this.unscheduled = const [],
+    this.allJobs = const [],
   });
+
+  static String _emailJobDedupeKey(Job job) {
+    if (job.intakeSource != 'email') return '';
+    final from = job.sourceEmailFrom.trim().toLowerCase();
+    final when = job.createdAt.toUtc();
+    final minute =
+        '${when.year.toString().padLeft(4, '0')}'
+        '${when.month.toString().padLeft(2, '0')}'
+        '${when.day.toString().padLeft(2, '0')}'
+        '${when.hour.toString().padLeft(2, '0')}'
+        '${when.minute.toString().padLeft(2, '0')}';
+    final desc = job.description
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ');
+    final name = job.clientName.trim().toLowerCase();
+    return '${from.isEmpty ? name : from}|$minute|$desc';
+  }
 
   static InboxSelection of({
     List<Job> jobs = const [],
     List<CallRecord> calls = const [],
-    List<SmsMessage> emailOffers = const [],
-    List<SmsMessage> smsOffers = const [],
     List<SmsMessage> failedSms = const [],
-    List<SmsMessage> awaitingSms = const [],
+    List<SmsMessage> unreadMessages = const [],
+    DateTime? callsCutoff,
+    DateTime? now,
   }) {
+    final allLiveJobs = <Job>[];
+    final allSeenIds = <String>{};
+    for (final job in jobs) {
+      if (job.isDeleted) continue;
+      if (!allSeenIds.add(job.id)) continue;
+      allLiveJobs.add(job);
+    }
+
     final liveJobs = <Job>[];
     final seenJobIds = <String>{};
-    for (final job in jobs) {
-      if (!job.needsReview || job.isDeleted) continue;
+    final seenEmailDedupe = <String>{};
+    for (final job in allLiveJobs) {
+      if (!job.needsReview) continue;
       if (JobStatuses.isClosed(job.status)) continue;
+      final emailKey = _emailJobDedupeKey(job);
+      if (emailKey.isNotEmpty &&
+          emailKey != '||' &&
+          !seenEmailDedupe.add(emailKey)) {
+        continue;
+      }
       if (!seenJobIds.add(job.id)) continue;
       liveJobs.add(job);
     }
+    liveJobs.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-    // Звонок, из которого уже родилась заявка, в колокольчике не нужен:
-    // решение принимают по заявке, а сам звонок лежит в «Связи».
+    final activeJobIds = {
+      for (final job in allLiveJobs)
+        if (!JobStatuses.isClosed(job.status)) job.id,
+    };
+    final liveCallIds = {
+      for (final job in liveJobs)
+        if ((job.sourceCallId ?? '').trim().isNotEmpty)
+          job.sourceCallId!.trim(),
+    };
+    final liveEmailIds = {
+      for (final job in liveJobs)
+        if ((job.sourceEmailId ?? '').trim().isNotEmpty)
+          job.sourceEmailId!.trim(),
+    };
+
     final openCalls = <CallRecord>[];
     final seenCalls = <String>{};
     for (final call in calls) {
       if (call.reviewed || call.isDeleted) continue;
+      if (!call.isIncoming) continue;
+      if (const [
+        'ringing',
+        'in-progress',
+        'queued',
+        'initiated',
+      ].contains(call.status)) {
+        continue;
+      }
       if (!seenCalls.add(call.id)) continue;
-      if ((call.createdJobId ?? '').trim().isNotEmpty) continue;
+      final createdJobId = (call.createdJobId ?? '').trim();
+      if (createdJobId.isNotEmpty &&
+          (seenJobIds.contains(createdJobId) ||
+              !activeJobIds.contains(createdJobId))) {
+        continue;
+      }
+      if (liveCallIds.contains(call.id) ||
+          (call.callSid.trim().isNotEmpty &&
+              liveCallIds.contains(call.callSid.trim()))) {
+        continue;
+      }
+      if (callsCutoff != null &&
+          call.aiStatus != 'done' &&
+          call.aiStatus != 'processing' &&
+          !call.answeredByAi) {
+        final start = call.startTime;
+        if (start != null && start.isBefore(callsCutoff)) continue;
+      }
       openCalls.add(call);
     }
 
-    // Из писем остаются только те, где сервер ждёт ответа «заявка или
-    // нет». Просто непрочитанное письмо — это переписка, а не решение.
-    final offers = [
-      for (final message in emailOffers)
-        if (message.emailOfferPending && !message.isDeleted) message,
-    ];
+    // SMS и письма, похожие на заявку, больше не выделяются в отдельное
+    // предложение «В заявку» — они идут обычным непрочитанным сообщением.
+    final unread = <SmsMessage>[];
+    final seenUnreadIds = <String>{};
+    for (final message in unreadMessages) {
+      if (message.isDeleted || message.isOutbound || message.read) continue;
+      final linkedJobId = (message.jobId ?? '').trim();
+      if (message.isEmail &&
+          !message.crmThread &&
+          (liveEmailIds.contains(message.id) ||
+              (linkedJobId.isNotEmpty && seenJobIds.contains(linkedJobId)))) {
+        continue;
+      }
+      if (!seenUnreadIds.add(message.id)) continue;
+      unread.add(message);
+    }
 
     List<SmsMessage> live(List<SmsMessage> items) => [
           for (final message in items)
             if (!message.isDeleted) message,
         ];
 
+    // Машинка доставки, плашка «без даты визита» и напоминание о скором
+    // визите считаются по тем же живым заявкам — отдельный поток не нужен.
+    final nowAt = now ?? DateTime.now();
+    final soonEdge = nowAt.add(soonWindow);
+    final soonVisits = <SoonVisit>[];
+    final deliveryJobs = <Job>[];
+    final unscheduledJobs = <Job>[];
+    for (final job in allLiveJobs) {
+      if (JobStatuses.isClosed(job.status)) continue;
+      if (job.isUnscheduled) unscheduledJobs.add(job);
+      if (job.status == JobStatuses.waitingPart) deliveryJobs.add(job);
+      for (final visit in job.coalescedVisits) {
+        if (!visit.isActiveSlot) continue;
+        if (visit.startAt.isBefore(nowAt)) continue;
+        if (visit.startAt.isAfter(soonEdge)) continue;
+        soonVisits.add(SoonVisit(job, visit));
+      }
+    }
+    soonVisits.sort((a, b) => a.visit.startAt.compareTo(b.visit.startAt));
+    deliveryJobs.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    unscheduledJobs.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
     return InboxSelection(
-      awaiting: live(awaitingSms),
-      smsOffers: live(smsOffers),
-      emailOffers: offers,
+      messages: unread,
       failedSms: live(failedSms),
       calls: openCalls,
       jobs: liveJobs,
+      soonVisits: soonVisits,
+      delivery: deliveryJobs,
+      unscheduled: unscheduledJobs,
+      allJobs: allLiveJobs,
     );
   }
 
-  int get decideCount => awaiting.length + smsOffers.length + emailOffers.length;
+  Job? _resolveById(String rawId) {
+    final id = rawId.trim();
+    if (id.isEmpty) return null;
+    Job? found;
+    for (final job in allJobs) {
+      if (job.id == id) {
+        found = job;
+        break;
+      }
+    }
+    if (found == null) return null;
+    if (found.isMergedDuplicate) {
+      final targetId = found.mergedIntoJobId.trim();
+      for (final job in allJobs) {
+        if (job.id == targetId && !job.isDeleted) return job;
+      }
+    }
+    return found;
+  }
 
-  int get attentionCount => failedSms.length + calls.length;
+  static DateTime _jobSortTime(Job job) {
+    return job.latestVisit?.startAt ?? job.scheduledAt ?? job.createdAt;
+  }
+
+  static Job? _pickBestJob(Iterable<Job> candidates) {
+    Job? best;
+    for (final job in candidates) {
+      if (job.isDeleted || job.isMergedDuplicate) continue;
+      if (best == null) {
+        best = job;
+        continue;
+      }
+      final bestOpen = !JobStatuses.isClosed(best.status);
+      final jobOpen = !JobStatuses.isClosed(job.status);
+      if (jobOpen != bestOpen) {
+        if (jobOpen) best = job;
+        continue;
+      }
+      if (_jobSortTime(job).isAfter(_jobSortTime(best))) {
+        best = job;
+      }
+    }
+    return best;
+  }
+
+  /// Находит рабочую карточку [Job], к которой относится сообщение.
+  Job? jobForMessage(SmsMessage message) {
+    final direct = _resolveById(message.jobId ?? '');
+    if (direct != null) return direct;
+
+    final msgId = message.id.trim();
+    if (msgId.isNotEmpty) {
+      for (final job in allJobs) {
+        if ((job.sourceEmailId ?? '').trim() == msgId) {
+          return _resolveById(job.id) ?? job;
+        }
+      }
+    }
+
+    final clientId = (message.clientId ?? '').trim();
+    final peer = message.isOutbound ? message.to : message.from;
+    final phone = SmsService.normalizePhone(peer);
+    final email = SmsService.normalizeEmail(message.counterpartEmail);
+
+    final matches = <Job>[];
+    for (final job in allJobs) {
+      if (job.isDeleted || job.isMergedDuplicate) continue;
+      if (clientId.isNotEmpty && job.clientId.trim() == clientId) {
+        matches.add(job);
+        continue;
+      }
+      if (phone.length >= 10) {
+        final clientPhone = SmsService.normalizePhone(job.clientPhone);
+        final contactPhone = SmsService.normalizePhone(job.contactPhone);
+        final sitePhone = SmsService.normalizePhone(job.jobSitePhone ?? '');
+        if (clientPhone == phone ||
+            contactPhone == phone ||
+            sitePhone == phone) {
+          matches.add(job);
+          continue;
+        }
+      }
+      if (email.contains('@') && !message.isWebsiteFormMail) {
+        final sourceEmail = SmsService.normalizeEmail(job.sourceEmailFrom);
+        final siteEmail = SmsService.normalizeEmail(job.jobSiteEmail ?? '');
+        if (sourceEmail == email || siteEmail == email) {
+          matches.add(job);
+        }
+      }
+    }
+    return _pickBestJob(matches);
+  }
+
+  /// Находит рабочую карточку [Job], к которой относится звонок.
+  Job? jobForCall(CallRecord call) {
+    final direct = _resolveById(call.createdJobId ?? '');
+    if (direct != null) return direct;
+
+    final callId = call.id.trim();
+    final callSid = call.callSid.trim();
+    for (final job in allJobs) {
+      final src = (job.sourceCallId ?? '').trim();
+      if (src.isEmpty) continue;
+      if (src == callId || (callSid.isNotEmpty && src == callSid)) {
+        return _resolveById(job.id) ?? job;
+      }
+    }
+
+    final clientId = (call.clientId ?? '').trim();
+    final peer = call.isIncoming ? call.fromNumber : call.toNumber;
+    final phone = SmsService.normalizePhone(peer);
+
+    final matches = <Job>[];
+    for (final job in allJobs) {
+      if (job.isDeleted || job.isMergedDuplicate) continue;
+      if (clientId.isNotEmpty && job.clientId.trim() == clientId) {
+        matches.add(job);
+        continue;
+      }
+      if (phone.length >= 10) {
+        final clientPhone = SmsService.normalizePhone(job.clientPhone);
+        final contactPhone = SmsService.normalizePhone(job.contactPhone);
+        final sitePhone = SmsService.normalizePhone(job.jobSitePhone ?? '');
+        if (clientPhone == phone ||
+            contactPhone == phone ||
+            sitePhone == phone) {
+          matches.add(job);
+        }
+      }
+    }
+    return _pickBestJob(matches);
+  }
+
+  int get attentionCount =>
+      failedSms.length + calls.length + messages.length;
 
   int get confirmCount => jobs.length;
 
-  int get total => decideCount + attentionCount + confirmCount;
+  int get visitsCount =>
+      soonVisits.length + delivery.length + unscheduled.length;
+
+  int get total => attentionCount + confirmCount + visitsCount;
 
   bool get isEmpty => total == 0;
 }
 
+/// Колокольчик в правом верхнем углу календаря — на месте, где раньше
+/// ехала машинка доставки. Доставка переехала внутрь панели.
 class ReviewBellButton extends StatelessWidget {
-  const ReviewBellButton({super.key});
+  final Color color;
+  final double iconSize;
+
+  const ReviewBellButton({
+    super.key,
+    this.color = Colors.white,
+    this.iconSize = 28,
+  });
 
   @override
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
-      builder: (jobs, calls, emailOffers, smsOffers, failedSms, awaitingSms) {
+      builder: (jobs, calls, unreadMessages, failedSms, callsCutoff) {
         final count = InboxSelection.of(
           jobs: jobs,
           calls: calls,
-          emailOffers: emailOffers,
-          smsOffers: smsOffers,
+          unreadMessages: unreadMessages,
           failedSms: failedSms,
-          awaitingSms: awaitingSms,
+          callsCutoff: callsCutoff,
         ).total;
         return IconButton(
           tooltip: context.tr('Уведомления', 'Notifications'),
-          onPressed: () => showInbox(context),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 40),
+          onPressed: () {
+            HapticFeedback.selectionClick();
+            showInbox(context);
+          },
           icon: Badge(
             isLabelVisible: count > 0,
-            backgroundColor: Colors.orange,
+            backgroundColor: AppColors.accent,
+            textColor: Colors.black,
             label: Text('$count'),
             child: Icon(
               count == 0
                   ? Icons.notifications_none
                   : Icons.notifications_active,
+              color: color,
+              size: iconSize,
             ),
           ),
         );
@@ -151,7 +430,7 @@ class ReviewBellButton extends StatelessWidget {
       context: hostContext,
       useRootNavigator: true,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFFF4F6F8),
+      backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -174,141 +453,13 @@ class ReviewBellButton extends StatelessWidget {
   }
 }
 
-class ReviewInboxDrawer extends StatelessWidget {
-  final BuildContext hostContext;
-  final GlobalKey<ReviewInboxPanelState> panelKey;
-  final VoidCallback onClose;
-
-  const ReviewInboxDrawer({
-    super.key,
-    required this.hostContext,
-    required this.panelKey,
-    required this.onClose,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final width = MediaQuery.sizeOf(context).width;
-    return Drawer(
-      width: width,
-      backgroundColor: const Color(0xFFF4F6F8),
-      shape: const RoundedRectangleBorder(),
-      clipBehavior: Clip.hardEdge,
-      child: RepaintBoundary(
-        child: ReviewInboxPanel(
-          key: panelKey,
-          hostContext: hostContext,
-          sheetContext: context,
-          showCloseStrip: true,
-          onClose: onClose,
-        ),
-      ),
-    );
-  }
-}
-
-class _InboxCloseBar extends StatefulWidget {
-  final VoidCallback onClose;
-
-  const _InboxCloseBar({required this.onClose});
-
-  @override
-  State<_InboxCloseBar> createState() => _InboxCloseBarState();
-}
-
-class _InboxCloseBarState extends State<_InboxCloseBar> {
-  double _dragDx = 0;
-  bool _closing = false;
-
-  void _close() {
-    if (_closing) return;
-    _closing = true;
-    widget.onClose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bottom = MediaQuery.paddingOf(context).bottom;
-    return Listener(
-      behavior: HitTestBehavior.opaque,
-      onPointerDown: (_) => _dragDx = 0,
-      onPointerMove: (event) => _dragDx += event.delta.dx,
-      onPointerUp: (_) {
-        if (_dragDx > 36) _close();
-      },
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onHorizontalDragStart: (_) => _dragDx = 0,
-        onHorizontalDragUpdate: (details) => _dragDx += details.delta.dx,
-        onHorizontalDragEnd: (details) {
-          final velocity = details.primaryVelocity ?? 0;
-          if (velocity > 180 || _dragDx > 28) {
-            _close();
-          }
-        },
-        onTap: _close,
-        child: ColoredBox(
-          color: const Color(0xFFF4F6F8),
-          child: SizedBox(width: double.infinity, height: 64 + bottom),
-        ),
-      ),
-    );
-  }
-}
-
-class ReviewBellPickleIcon extends StatelessWidget {
-  final Color color;
-  final double size;
-  final AlignmentGeometry badgeAlignment;
-
-  const ReviewBellPickleIcon({
-    super.key,
-    this.color = Colors.white,
-    this.size = 22,
-    this.badgeAlignment = Alignment.topRight,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return _ReviewInboxStreams(
-      builder: (jobs, calls, emailOffers, smsOffers, failedSms, awaitingSms) {
-        final count = InboxSelection.of(
-          jobs: jobs,
-          calls: calls,
-          emailOffers: emailOffers,
-          smsOffers: smsOffers,
-          failedSms: failedSms,
-          awaitingSms: awaitingSms,
-        ).total;
-        return Badge(
-          isLabelVisible: count > 0,
-          alignment: badgeAlignment,
-          backgroundColor: const Color(0xFFE11D48),
-          label: Text(
-            '$count',
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w900,
-              color: Colors.white,
-            ),
-          ),
-          child: Icon(
-            count == 0 ? Icons.notifications_none : Icons.notifications_active,
-            color: count == 0 ? color : const Color(0xFF9A1B1B),
-            size: size,
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// Кнопка под строкой: решение принимается здесь, не открывая экран.
+/// Кнопка в строке: решение принимается здесь, не открывая экран.
 class _InboxAction {
   final String label;
   final IconData icon;
   final Color color;
   final bool filled;
+  final bool iconOnly;
   final Future<void> Function() run;
 
   const _InboxAction({
@@ -317,6 +468,7 @@ class _InboxAction {
     required this.color,
     required this.run,
     this.filled = false,
+    this.iconOnly = false,
   });
 }
 
@@ -328,6 +480,7 @@ class _InboxEntry {
   final String subtitle;
   final String originLabel;
   final String applianceType;
+  final Job? job;
   final DateTime? when;
   final VoidCallback? onTap;
   final List<_InboxAction> actions;
@@ -344,6 +497,7 @@ class _InboxEntry {
     this.subtitle = '',
     this.originLabel = '',
     this.applianceType = '',
+    this.job,
     this.when,
     this.onTap,
     this.actions = const [],
@@ -361,7 +515,8 @@ String _textFrom(Map<String, dynamic>? data, List<String> keys) {
 }
 
 String _ownerName(Map<String, dynamic>? data, String fallback) {
-  final name = _textFrom(data, const ['client_name', 'clientName', 'name']);
+  final raw = _textFrom(data, const ['client_name', 'clientName', 'name']);
+  final name = SmsText.stripClientWord(raw);
   return name.isEmpty ? fallback : name;
 }
 
@@ -373,6 +528,14 @@ String _applianceOf(Map<String, dynamic>? data) {
   ]);
 }
 
+String _oneLine(String raw, {String? clientName}) {
+  var text = raw;
+  if (RegExp(r'\{name\}', caseSensitive: false).hasMatch(text)) {
+    text = SmsText.fillName(text, clientName);
+  }
+  return text.replaceAll(RegExp(r'\s+'), ' ').trim();
+}
+
 Map<String, dynamic>? _callExtracted(CallRecord call) {
   final top = call.extractedData;
   if (top != null && top.isNotEmpty) return top;
@@ -381,20 +544,57 @@ Map<String, dynamic>? _callExtracted(CallRecord call) {
   return null;
 }
 
+String _callSubtitle(BuildContext context, CallRecord call) {
+  if (call.serviceDeclined) {
+    final reason = call.declineReason.trim();
+    if (reason.isNotEmpty) return reason;
+    return context.tr(
+      'секретарь отказала — заявки нет',
+      'secretary declined — no job',
+    );
+  }
+  if (call.aiStatus == 'processing') {
+    return context.tr(
+      'ИИ разбирает запись…',
+      'AI is processing the recording…',
+    );
+  }
+  final extracted = _callExtracted(call);
+  final appliance = _applianceOf(extracted);
+  final issue = _textFrom(
+    extracted,
+    const ['issue', 'problem', 'description'],
+  );
+  if (issue.isNotEmpty) {
+    return appliance.isNotEmpty ? '$appliance · $issue' : issue;
+  }
+  final summary = (call.summary ?? '').trim();
+  if (summary.isNotEmpty) return summary;
+  final transcript = (call.transcriptionRu ?? call.transcription ?? '').trim();
+  if (transcript.isNotEmpty) return transcript;
+  if (call.answeredByAi) {
+    return context.tr(
+      'разобран секретарём, без заявки',
+      'handled by AI secretary, no job',
+    );
+  }
+  if (const ['no-answer', 'busy', 'canceled', 'cancelled']
+      .contains(call.status)) {
+    return context.tr('клиент не дозвонился', 'missed incoming call');
+  }
+  return '';
+}
+
 class ReviewInboxPanel extends StatefulWidget {
   final BuildContext hostContext;
   final BuildContext sheetContext;
   final ScrollController? scrollController;
-  final bool showCloseStrip;
-  final VoidCallback? onClose;
 
   const ReviewInboxPanel({
     super.key,
     required this.hostContext,
     required this.sheetContext,
     this.scrollController,
-    this.showCloseStrip = false,
-    this.onClose,
   });
 
   @override
@@ -404,9 +604,6 @@ class ReviewInboxPanel extends StatefulWidget {
 class ReviewInboxPanelState extends State<ReviewInboxPanel> {
   bool _clearing = false;
   final Set<String> _busy = <String>{};
-
-  void onHostOpened() {}
-  void onHostClosed() {}
 
   Future<void> _closeInboxThen(Future<void> Function() open) async {
     final host = widget.hostContext;
@@ -438,258 +635,144 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
     }
   }
 
-  void _toast(String text) {
-    final messenger = ScaffoldMessenger.maybeOf(widget.hostContext);
-    messenger?.showSnackBar(SnackBar(content: Text(text)));
-  }
-
   void _openCall(CallRecord call) {
     unawaited(
       _closeInboxThen(() async {
         final id = call.id;
-        final phone = call.isIncoming ? call.fromNumber : call.toNumber;
-        unawaited(TwilioService.markReviewed(id));
-        unawaited(
-          LocalNotificationService.dismissInboxPayload({
-            'type': 'call',
-            'callSid': id,
-            'callId': id,
-            'from': phone,
-          }),
-        );
+        unawaited(TwilioService.markReviewed(id, call: call));
         await CallReviewPage.open(widget.hostContext, callId: id, call: call);
       }),
     );
   }
 
-  // ——— Ждёт решения ———
-
-  List<_InboxEntry> _decideEntries(InboxSelection selection) {
-    final host = widget.hostContext;
-    final unknown = context.tr('Клиент', 'Client');
-    final entries = <_InboxEntry>[];
-
-    // Сообщения, которые сервер придумал, но не отправил. Текст виден
-    // целиком: «Отправить или нет» вслепую не решают.
-    for (final message in selection.awaiting) {
-      final phone = message.to.trim();
-      final key = 'outbox:${message.id}';
-      entries.add(
-        _InboxEntry(
-          key: key,
-          icon: Icons.schedule_send_rounded,
-          color: const Color(0xFFF59E0B),
-          title: phone.isEmpty ? unknown : phone,
-          subtitle: message.displayBody.trim(),
-          originLabel: context.tr('Ждёт отправки', 'Waiting to be sent'),
-          when: message.createdAt,
-          onTap: () {
-            unawaited(
-              _closeInboxThen(() async {
-                await ConversationScreen.open(
-                  host,
-                  phoneNumber: phone,
-                  clientId: message.clientId,
-                );
-              }),
-            );
-          },
-          actions: [
-            _InboxAction(
-              label: context.tr('Отправить', 'Send'),
-              icon: Icons.send_rounded,
-              color: const Color(0xFF2E7D32),
-              filled: true,
-              run: () async {
-                // Текст берём до ожидания: решение может прилететь уже
-                // после того, как панель закрыли.
-                final failed = context.tr(
-                  'Не удалось отправить — откройте переписку',
-                  'Could not send — open the conversation',
-                );
-                final sent = await SmsService.decideOutbox(
-                  message.id,
-                  send: true,
-                );
-                if (!sent && mounted) _toast(failed);
-              },
+  void _openMessageConversation(SmsMessage message, {Job? job}) {
+    unawaited(
+      _closeInboxThen(() async {
+        final host = widget.hostContext;
+        final website = message.isWebsiteFormMail;
+        final email = message.counterpartEmail;
+        final phone = message.isEmail
+            ? (job?.contactPhone ?? '')
+            : (message.isOutbound ? message.to.trim() : message.from.trim());
+        final clientId = message.clientId ?? job?.clientId;
+        final contactName = job?.contactName.trim().isNotEmpty == true
+            ? job!.contactName.trim()
+            : (website ? kWebsiteInboxTitle : null);
+        if (!message.isOutbound && !message.read) {
+          unawaited(
+            SmsService.markConversationRead(
+              message.isEmail ? '' : phone,
+              email: message.isEmail ? email : null,
+              clientId: clientId,
+              websiteInbox: website,
             ),
-            _InboxAction(
-              label: context.tr('Не отправлять', 'Do not send'),
-              icon: Icons.block,
-              color: const Color(0xFFC62828),
-              run: () => SmsService.decideOutbox(message.id, send: false),
-            ),
-          ],
-        ),
-      );
-    }
-
-    for (final offer in selection.smsOffers) {
-      final extracted = offer.extractedData;
-      final phone = offer.from;
-      entries.add(
-        _InboxEntry(
-          key: 'sms:${offer.id}',
-          icon: Icons.sms,
-          color: const Color(0xFF0277BD),
-          title: _ownerName(extracted, phone.isEmpty ? unknown : phone),
-          subtitle: offer.displayBody.trim(),
-          originLabel: context.tr('SMS о ремонте', 'Repair SMS'),
-          applianceType: _applianceOf(extracted),
-          when: offer.createdAt,
-          onTap: () {
-            unawaited(
-              _closeInboxThen(() async {
-                await SmsOfferPage.open(
-                  host,
-                  messageId: offer.id,
-                  message: offer,
-                );
-              }),
-            );
-          },
-          actions: [
-            _InboxAction(
-              label: context.tr('Создать заявку', 'Create a job'),
-              icon: Icons.add_task,
-              color: const Color(0xFF0277BD),
-              filled: true,
-              run: () async {
-                await _closeInboxThen(() async {
-                  await SmsOfferPage.open(
-                    host,
-                    messageId: offer.id,
-                    message: offer,
-                  );
-                });
-              },
-            ),
-            _InboxAction(
-              label: context.tr('Не заявка', 'Not a job'),
-              icon: Icons.close,
-              color: const Color(0xFF616161),
-              run: () => SmsService.dismissSmsOffer(offer.id),
-            ),
-          ],
-        ),
-      );
-    }
-
-    for (final offer in selection.emailOffers) {
-      final extracted = offer.extractedData;
-      final from = offer.counterpartEmail.isNotEmpty
-          ? offer.counterpartEmail
-          : offer.from;
-      final website = offer.isWebsiteFormMail;
-      final subject = offer.subject.trim();
-      entries.add(
-        _InboxEntry(
-          key: 'email:${offer.id}',
-          icon: website ? Icons.language : Icons.mark_email_unread_outlined,
-          color: const Color(0xFF2E7D32),
-          title: website
-              ? kWebsiteInboxTitle
-              : _ownerName(extracted, from.isEmpty ? unknown : from),
-          subtitle: subject.isNotEmpty ? subject : offer.displayBody.trim(),
-          originLabel: website
-              ? context.tr('Заявка с сайта', 'Website request')
-              : context.tr('Письмо о ремонте', 'Repair email'),
-          applianceType: _applianceOf(extracted),
-          when: offer.createdAt,
-          onTap: () {
-            unawaited(
-              _closeInboxThen(() async {
-                await EmailOfferPage.open(
-                  host,
-                  messageId: offer.id,
-                  message: offer,
-                );
-              }),
-            );
-          },
-          actions: [
-            _InboxAction(
-              label: context.tr('Создать заявку', 'Create a job'),
-              icon: Icons.add_task,
-              color: const Color(0xFF2E7D32),
-              filled: true,
-              run: () async {
-                await _closeInboxThen(() async {
-                  await EmailOfferPage.open(
-                    host,
-                    messageId: offer.id,
-                    message: offer,
-                  );
-                });
-              },
-            ),
-            _InboxAction(
-              label: context.tr('Не заявка', 'Not a job'),
-              icon: Icons.close,
-              color: const Color(0xFF616161),
-              run: () => SmsService.dismissEmailOffer(offer.id),
-            ),
-          ],
-        ),
-      );
-    }
-
-    entries.sort(_byTimeDesc);
-    return entries;
+          );
+        }
+        await ConversationScreen.open(
+          host,
+          phoneNumber: website ? '' : phone,
+          email: website ? null : (email.contains('@') ? email : null),
+          clientId: website ? null : clientId,
+          contactName: contactName,
+          websiteInbox: website,
+          initialChannel: message.isEmail
+              ? ConversationChannel.email
+              : ConversationChannel.sms,
+        );
+      }),
+    );
   }
 
-  // ——— Надо разобраться ———
+  // ——— Звонки и сообщения ———
 
   List<_InboxEntry> _attentionEntries(InboxSelection selection) {
-    final host = widget.hostContext;
     final unknown = context.tr('Клиент', 'Client');
     final entries = <_InboxEntry>[];
+
+    for (final message in selection.messages) {
+      final job = selection.jobForMessage(message);
+      final extracted = message.extractedData;
+      final isEmail = message.isEmail;
+      final website = message.isWebsiteFormMail;
+      final peer = isEmail
+          ? (message.counterpartEmail.isNotEmpty
+              ? message.counterpartEmail
+              : message.from.trim())
+          : message.from.trim();
+      final fallbackTitle = website
+          ? kWebsiteInboxTitle
+          : (job?.contactName.trim().isNotEmpty == true
+              ? job!.contactName.trim()
+              : (peer.isEmpty ? unknown : peer));
+      final title = _ownerName(extracted, fallbackTitle);
+      final bodyText = _oneLine(message.displayBody, clientName: title);
+      final subject = _oneLine(message.subject, clientName: title);
+      final subtitle = isEmail && subject.isNotEmpty
+          ? (bodyText.isNotEmpty && bodyText != subject
+              ? '$subject — $bodyText'
+              : subject)
+          : (bodyText.isNotEmpty
+              ? bodyText
+              : context.tr('Фото или вложение', 'Photo or attachment'));
+      entries.add(
+        _InboxEntry(
+          key: 'msg:${message.id}',
+          icon: website
+              ? Icons.language
+              : (isEmail ? Icons.email_outlined : Icons.sms_outlined),
+          color: isEmail ? const Color(0xFF2E7D32) : const Color(0xFF0277BD),
+          title: title,
+          subtitle: subtitle,
+          originLabel: website
+              ? context.tr('Письмо с сайта', 'Website email')
+              : (isEmail
+                  ? context.tr('Новое письмо', 'New email')
+                  : context.tr('Новое SMS', 'New SMS')),
+          applianceType: job?.applianceType ?? _applianceOf(extracted),
+          job: job,
+          when: message.createdAt,
+          onTap: () => _openMessageConversation(message, job: job),
+          actions: [
+            _InboxAction(
+              label: context.tr('Прочитано', 'Mark read'),
+              icon: Icons.check,
+              color: const Color(0xFF64748B),
+              iconOnly: true,
+              run: () => SmsService.markEmailSeen(message.id),
+            ),
+          ],
+          onClear: () => SmsService.markEmailSeen(message.id),
+        ),
+      );
+    }
 
     for (final message in selection.failedSms) {
       final phone = message.to.trim();
+      final job = selection.jobForMessage(message);
+      final title = job?.contactName.trim().isNotEmpty == true
+          ? job!.contactName.trim()
+          : (phone.isEmpty ? unknown : phone);
       entries.add(
         _InboxEntry(
           key: 'failed:${message.id}',
           icon: Icons.sms_failed,
           color: const Color(0xFFC62828),
-          title: phone.isEmpty ? unknown : phone,
-          subtitle: message.failureReason,
+          title: title,
+          subtitle: _oneLine(message.failureReason, clientName: title),
           originLabel: context.tr('SMS не дошло', 'SMS not delivered'),
+          applianceType: job?.applianceType ?? '',
+          job: job,
           when: message.createdAt,
           onTap: () {
-            unawaited(
-              _closeInboxThen(() async {
-                unawaited(SmsService.dismissFailure(message.id));
-                await ConversationScreen.open(
-                  host,
-                  phoneNumber: phone,
-                  clientId: message.clientId,
-                );
-              }),
-            );
+            unawaited(SmsService.dismissFailure(message.id));
+            _openMessageConversation(message, job: job);
           },
           actions: [
             _InboxAction(
-              label: context.tr('Открыть переписку', 'Open the chat'),
-              icon: Icons.chat_bubble_outline,
-              color: const Color(0xFFC62828),
-              filled: true,
-              run: () async {
-                await _closeInboxThen(() async {
-                  unawaited(SmsService.dismissFailure(message.id));
-                  await ConversationScreen.open(
-                    host,
-                    phoneNumber: phone,
-                    clientId: message.clientId,
-                  );
-                });
-              },
-            ),
-            _InboxAction(
               label: context.tr('Убрать', 'Dismiss'),
-              icon: Icons.done,
-              color: const Color(0xFF616161),
+              icon: Icons.check,
+              color: const Color(0xFF64748B),
+              iconOnly: true,
               run: () => SmsService.dismissFailure(message.id),
             ),
           ],
@@ -701,45 +784,49 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
     for (final call in selection.calls) {
       final extracted = _callExtracted(call);
       final phone = call.isIncoming ? call.fromNumber : call.toNumber;
+      final job = selection.jobForCall(call);
       final declined = call.serviceDeclined;
-      final reason = call.declineReason.trim();
+      final missed = const ['no-answer', 'busy', 'canceled', 'cancelled']
+          .contains(call.status);
+      final fallbackName = job?.contactName.trim().isNotEmpty == true
+          ? job!.contactName.trim()
+          : (phone.isEmpty ? unknown : phone);
+      final title = _ownerName(extracted, fallbackName);
+      final originLabel = declined
+          ? context.tr('Звонок · отказ', 'Call · declined')
+          : (call.aiStatus == 'processing'
+              ? context.tr('Звонок', 'Call')
+              : (call.answeredByAi
+                  ? context.tr('Звонок · ИИ', 'Call · AI')
+                  : (missed
+                      ? context.tr('Пропущенный звонок', 'Missed call')
+                      : context.tr('Входящий звонок', 'Incoming call'))));
       entries.add(
         _InboxEntry(
           key: 'call:${call.id}',
-          icon: declined ? Icons.phone_disabled : Icons.phone_in_talk,
+          icon: declined
+              ? Icons.phone_disabled
+              : (missed ? Icons.phone_missed : Icons.phone_in_talk),
           color: declined
               ? const Color(0xFF616161)
-              : const Color(0xFFEF6C00),
-          title: _ownerName(extracted, phone.isEmpty ? unknown : phone),
-          subtitle: declined
-              ? (reason.isNotEmpty
-                  ? reason
-                  : context.tr(
-                      'Секретарь отказала — заявки нет',
-                      'Secretary declined — no job',
-                    ))
-              : context.tr(
-                  'Звонок разобран, заявка не создана',
-                  'Call handled, no job created',
-                ),
-          originLabel: context.tr('Звонок без заявки', 'Call without a job'),
-          applianceType: declined ? '' : _applianceOf(extracted),
+              : (missed ? const Color(0xFFC62828) : const Color(0xFFEF6C00)),
+          title: title,
+          subtitle: _oneLine(_callSubtitle(context, call), clientName: title),
+          originLabel: originLabel,
+          applianceType: declined
+              ? ''
+              : (_applianceOf(extracted).isNotEmpty
+                  ? _applianceOf(extracted)
+                  : (job?.applianceType ?? '')),
+          job: job,
           when: call.startTime,
           onTap: () => _openCall(call),
           actions: [
             _InboxAction(
-              label: context.tr('Послушать', 'Listen'),
-              icon: Icons.play_arrow_rounded,
-              color: const Color(0xFFEF6C00),
-              filled: true,
-              run: () async {
-                _openCall(call);
-              },
-            ),
-            _InboxAction(
               label: context.tr('Убрать', 'Dismiss'),
-              icon: Icons.done,
-              color: const Color(0xFF616161),
+              icon: Icons.check,
+              color: const Color(0xFF64748B),
+              iconOnly: true,
               run: () => TwilioService.markReviewed(call.id),
             ),
           ],
@@ -759,12 +846,44 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
     final unknown = context.tr('Клиент', 'Client');
     final entries = <_InboxEntry>[];
     for (final job in selection.jobs) {
-      final name = job.contactName.trim().isEmpty
-          ? (job.clientName.trim().isEmpty ? unknown : job.clientName.trim())
-          : job.contactName.trim();
+      final name = job.contactName.trim().isNotEmpty
+          ? job.contactName.trim()
+          : (job.clientName.trim().isNotEmpty
+                ? job.clientName.trim()
+                : (job.contactPhone.trim().isNotEmpty
+                      ? job.contactPhone.trim()
+                      : unknown));
       final fromWebsite = job.intakeSource == 'website';
       final fromEmail = job.intakeSource == 'email' || fromWebsite;
       final fromPhone = job.intakeSource == 'phone';
+      final appliance =
+          (job.primaryAppliance?.displayName ?? job.applianceType).trim();
+      final detail = job.description.trim().isNotEmpty
+          ? job.description.trim()
+          : job.workAddress.trim();
+      final jobSummary = _oneLine(
+        [
+          if (appliance.isNotEmpty) appliance,
+          if (detail.isNotEmpty) detail,
+        ].join(' · '),
+        clientName: name,
+      );
+      void openJob() {
+        unawaited(
+          _closeInboxThen(() async {
+            await AppNav.openCard(
+              host,
+              rootNavigator: true,
+              key: AppNav.jobKey(job.id),
+              builder: (_) => JobDetailsScreen(
+                jobId: job.id,
+                clientId: job.clientId,
+                jobData: job.toMap(),
+              ),
+            );
+          }),
+        );
+      }
       entries.add(
         _InboxEntry(
           key: 'job:${job.id}',
@@ -777,36 +896,156 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
                       : Icons.assignment_late,
           color: fromEmail ? const Color(0xFF2E7D32) : const Color(0xFF1565C0),
           title: name,
+          subtitle: jobSummary,
           applianceType: job.applianceType,
+          job: job,
           when: job.createdAt,
           originLabel: fromWebsite
-              ? context.tr('Сайт', 'Website')
+              ? context.tr('Заявка · Сайт', 'Job · Website')
               : fromEmail
-                  ? context.tr('Почта', 'Email')
+                  ? context.tr('Заявка · Почта', 'Job · Email')
                   : fromPhone
-                      ? context.tr('Телефон', 'Phone')
-                      : context.tr('SMS', 'SMS'),
-          onTap: () {
-            unawaited(
-              _closeInboxThen(() async {
-                await AppNav.openCard(
-                  host,
-                  rootNavigator: true,
-                  key: AppNav.jobKey(job.id),
-                  builder: (_) => JobDetailsScreen(
-                    jobId: job.id,
-                    clientId: job.clientId,
-                    jobData: job.toMap(),
-                  ),
-                );
-              }),
-            );
-          },
+                      ? context.tr('Заявка · Звонок', 'Job · Call')
+                      : context.tr('Заявка · SMS', 'Job · SMS'),
+          onTap: openJob,
+          actions: [
+            _InboxAction(
+              label: context.tr('Подтвердить', 'Confirm'),
+              icon: Icons.check,
+              color: const Color(0xFF2E7D32),
+              iconOnly: true,
+              run: () => JobService.markReviewed(job.id),
+            ),
+          ],
           onClear: () => JobService.markReviewed(job.id),
         ),
       );
     }
     entries.sort(_byTimeDesc);
+    return entries;
+  }
+
+  // ——— Визиты и доставка ———
+
+  void _openJob(Job job) {
+    unawaited(
+      _closeInboxThen(() async {
+        await AppNav.openCard(
+          widget.hostContext,
+          rootNavigator: true,
+          key: AppNav.jobKey(job.id),
+          builder: (_) => JobDetailsScreen(
+            jobId: job.id,
+            clientId: job.clientId,
+            jobData: job.toMap(),
+          ),
+        );
+      }),
+    );
+  }
+
+  String _jobName(Job job, String unknown) {
+    if (job.contactName.trim().isNotEmpty) return job.contactName.trim();
+    if (job.clientName.trim().isNotEmpty) return job.clientName.trim();
+    if (job.contactPhone.trim().isNotEmpty) return job.contactPhone.trim();
+    return unknown;
+  }
+
+  /// Строки, которые раньше жили в шапке календаря: скоро выезжать,
+  /// ждём запчасть (машинка) и заявки без даты визита.
+  ///
+  /// Решения тут не принимаются, поэтому у строк нет ни кнопок, ни
+  /// [_InboxEntry.onClear]: «Убрать разобранное» их не трогает, они
+  /// уходят сами, когда визит поставлен, запчасть приехала или время
+  /// визита прошло.
+  List<_InboxEntry> _visitEntries(InboxSelection selection) {
+    final unknown = context.tr('Клиент', 'Client');
+    final entries = <_InboxEntry>[];
+
+    for (final soon in selection.soonVisits) {
+      final job = soon.job;
+      final name = _jobName(job, unknown);
+      final appliance =
+          (job.primaryAppliance?.displayName ?? job.applianceType).trim();
+      final address = job.workAddress.trim();
+      entries.add(
+        _InboxEntry(
+          key: 'soon:${job.id}:${soon.visit.id}',
+          icon: Icons.alarm_on,
+          color: const Color(0xFFD84315),
+          title: name,
+          subtitle: _oneLine(
+            [
+              if (appliance.isNotEmpty) appliance,
+              if (address.isNotEmpty) address,
+            ].join(' · '),
+            clientName: name,
+          ),
+          originLabel: context.tr('Скоро визит', 'Visit soon'),
+          applianceType: job.applianceType,
+          job: job,
+          when: soon.visit.startAt,
+          onTap: () => _openJob(job),
+        ),
+      );
+    }
+
+    for (final job in selection.delivery) {
+      final name = _jobName(job, unknown);
+      final appliance =
+          (job.primaryAppliance?.displayName ?? job.applianceType).trim();
+      final detail = job.description.trim();
+      entries.add(
+        _InboxEntry(
+          key: 'part:${job.id}',
+          icon: Icons.local_shipping,
+          color: const Color(0xFF00695C),
+          title: name,
+          subtitle: _oneLine(
+            [
+              if (appliance.isNotEmpty) appliance,
+              if (detail.isNotEmpty) detail,
+            ].join(' · '),
+            clientName: name,
+          ),
+          originLabel: context.tr('Ждём запчасть', 'Waiting for a part'),
+          applianceType: job.applianceType,
+          job: job,
+          when: job.createdAt,
+          onTap: () => _openJob(job),
+        ),
+      );
+    }
+
+    for (final job in selection.unscheduled) {
+      final name = _jobName(job, unknown);
+      final appliance =
+          (job.primaryAppliance?.displayName ?? job.applianceType).trim();
+      final detail = job.description.trim().isNotEmpty
+          ? job.description.trim()
+          : job.workAddress.trim();
+      entries.add(
+        _InboxEntry(
+          key: 'noDate:${job.id}',
+          icon: Icons.event_busy,
+          color: const Color(0xFF1565C0),
+          title: name,
+          subtitle: _oneLine(
+            [
+              if (appliance.isNotEmpty) appliance,
+              if (detail.isNotEmpty) detail,
+            ].join(' · '),
+            clientName: name,
+          ),
+          originLabel: context.tr('Без даты визита', 'No visit date'),
+          applianceType: job.applianceType,
+          job: job,
+          when: job.createdAt,
+          onTap: () => _openJob(job),
+        ),
+      );
+    }
+
     return entries;
   }
 
@@ -820,10 +1059,10 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
       context,
       title: context.tr('Убрать разобранное', 'Clear handled'),
       message: context.tr(
-        'Звонки и сбои уйдут из списка, заявки станут подтверждёнными. '
-        'То, что ждёт решения, останется.',
-        'Calls and failures leave the list, jobs become confirmed. '
-        'Anything waiting for your decision stays.',
+        'Звонки, сообщения и сбои уйдут из списка, заявки станут подтверждёнными. '
+        'Визиты и доставка останутся — они уходят сами.',
+        'Calls, messages and failures leave the list, jobs become confirmed. '
+        'Visits and delivery stay — they clear themselves.',
       ),
       confirmLabel: context.tr('Убрать', 'Clear'),
       cancelLabel: context.tr('Отмена', 'Cancel'),
@@ -851,10 +1090,10 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
           Text(
             context.tr('Решений не ждут', 'Nothing waiting for you'),
             textAlign: TextAlign.center,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 17,
               fontWeight: FontWeight.w800,
-              color: Color(0xFF334155),
+              color: AppColors.ink,
             ),
           ),
           const SizedBox(height: 8),
@@ -864,7 +1103,7 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
               'Calls and messages live on the Связь tab — new items are counted there.',
             ),
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.black54, fontSize: 14),
+            style: TextStyle(color: AppColors.inkMuted, fontSize: 14),
           ),
         ],
       ),
@@ -885,11 +1124,11 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
           Expanded(
             child: Text(
               title,
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.w900,
                 fontSize: 14,
                 letterSpacing: 0.2,
-                color: Color(0xFF334155),
+                color: AppColors.ink,
               ),
             ),
           ),
@@ -916,24 +1155,21 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
   @override
   Widget build(BuildContext context) {
     return _ReviewInboxStreams(
-      builder: (jobs, calls, emailOffers, smsOffers, failedSms, awaitingSms) {
+      builder: (jobs, calls, unreadMessages, failedSms, callsCutoff) {
         final selection = InboxSelection.of(
           jobs: jobs,
           calls: calls,
-          emailOffers: emailOffers,
-          smsOffers: smsOffers,
+          unreadMessages: unreadMessages,
           failedSms: failedSms,
-          awaitingSms: awaitingSms,
+          callsCutoff: callsCutoff,
         );
-        final decide = _decideEntries(selection);
         final attention = _attentionEntries(selection);
         final confirm = _confirmEntries(selection);
+        final visits = _visitEntries(selection);
         final clearable = [
           for (final entry in [...attention, ...confirm])
             if (entry.onClear != null) entry,
         ];
-        final width = MediaQuery.sizeOf(context).width;
-        final columns = width >= 520 ? 4 : 3;
 
         return SafeArea(
           bottom: false,
@@ -979,20 +1215,26 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
                   slivers: [
                     if (selection.isEmpty)
                       SliverToBoxAdapter(child: _empty()),
-                    if (decide.isNotEmpty) ...[
+                    if (visits.isNotEmpty) ...[
                       SliverToBoxAdapter(
                         child: _sectionHeader(
-                          context.tr('Ждёт решения', 'Waiting for you'),
-                          const Color(0xFFF59E0B),
-                          decide.length,
+                          context.tr(
+                            'Визиты и доставка',
+                            'Visits and delivery',
+                          ),
+                          const Color(0xFF00695C),
+                          visits.length,
                         ),
                       ),
-                      _rows(decide),
+                      _rows(visits),
                     ],
                     if (attention.isNotEmpty) ...[
                       SliverToBoxAdapter(
                         child: _sectionHeader(
-                          context.tr('Надо разобраться', 'Needs a look'),
+                          context.tr(
+                            'Звонки и сообщения',
+                            'Calls and messages',
+                          ),
                           const Color(0xFFC62828),
                           attention.length,
                         ),
@@ -1010,30 +1252,12 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
                           confirm.length,
                         ),
                       ),
-                      SliverPadding(
-                        padding: const EdgeInsets.fromLTRB(10, 2, 10, 0),
-                        sliver: SliverGrid(
-                          gridDelegate:
-                              SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: columns,
-                            mainAxisSpacing: 8,
-                            crossAxisSpacing: 8,
-                            childAspectRatio: 0.70,
-                          ),
-                          delegate: SliverChildBuilderDelegate(
-                            (context, index) =>
-                                _BellCard(entry: confirm[index]),
-                            childCount: confirm.length,
-                          ),
-                        ),
-                      ),
+                      _rows(confirm),
                     ],
                     const SliverToBoxAdapter(child: SizedBox(height: 24)),
                   ],
                 ),
               ),
-              if (widget.showCloseStrip && widget.onClose != null)
-                _InboxCloseBar(onClose: widget.onClose!),
             ],
           ),
         );
@@ -1061,9 +1285,8 @@ class ReviewInboxPanelState extends State<ReviewInboxPanel> {
   }
 }
 
-/// Строка решения: кто, что сказал и две кнопки. Карточка-плитка этого не
-/// умела — текст в неё не влезал, и «Отправить или нет» приходилось решать,
-/// открыв переписку.
+/// Лаконичная строка уведомления: слева значок события, в центре имя
+/// клиента и в одну строчку суть уведомления, справа — быстрая кнопка.
 class _InboxRow extends StatelessWidget {
   final _InboxEntry entry;
   final bool busy;
@@ -1079,97 +1302,107 @@ class _InboxRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final when = entry.when;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: 6),
       child: Material(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(10),
         child: InkWell(
           onTap: busy ? null : entry.onTap,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
           child: Ink(
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: entry.color.withValues(alpha: 0.55)),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: entry.color.withValues(alpha: 0.4),
+                width: 1,
+              ),
             ),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
                 children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _leading(),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: entry.color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(entry.icon, size: 17, color: entry.color),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
                           children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    entry.originLabel,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w900,
-                                      letterSpacing: 0.3,
-                                      color: entry.color,
-                                    ),
-                                  ),
+                            Expanded(
+                              child: Text(
+                                entry.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 13.5,
+                                  height: 1.15,
+                                  color: AppColors.ink,
                                 ),
-                                if (when != null)
-                                  Text(
-                                    DateFormat(
-                                      'd MMM, HH:mm',
-                                      AppLocale.instance.dateLocale,
-                                    ).format(when.toLocal()),
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: Color(0xFF64748B),
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              entry.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w800,
-                                fontSize: 15,
-                                color: Color(0xFF111111),
                               ),
                             ),
-                            if (entry.subtitle.isNotEmpty) ...[
-                              const SizedBox(height: 3),
+                            if (when != null) ...[
+                              const SizedBox(width: 6),
                               Text(
-                                entry.subtitle,
-                                maxLines: 3,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  height: 1.25,
-                                  color: Color(0xFF334155),
+                                DateFormat(
+                                  'd MMM, HH:mm',
+                                  AppLocale.instance.dateLocale,
+                                ).format(when.toLocal()),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: AppColors.inkMuted,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ],
                           ],
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 2),
+                        Text.rich(
+                          TextSpan(
+                            children: [
+                              TextSpan(
+                                text: entry.originLabel,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  color: entry.color,
+                                ),
+                              ),
+                              if (entry.subtitle.isNotEmpty)
+                                TextSpan(
+                                  text: ' · ${entry.subtitle}',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w500,
+                                    color: AppColors.inkMuted,
+                                  ),
+                                ),
+                            ],
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12.5, height: 1.2),
+                        ),
+                      ],
+                    ),
                   ),
                   if (entry.actions.isNotEmpty) ...[
-                    const SizedBox(height: 8),
+                    const SizedBox(width: 6),
                     Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        for (final action in entry.actions) ...[
-                          _button(action),
-                          const SizedBox(width: 8),
+                        for (var i = 0; i < entry.actions.length; i++) ...[
+                          if (i > 0) const SizedBox(width: 4),
+                          _button(entry.actions[i]),
                         ],
                       ],
                     ),
@@ -1183,31 +1416,40 @@ class _InboxRow extends StatelessWidget {
     );
   }
 
-  Widget _leading() {
-    final appliance = entry.applianceType.trim();
-    if (appliance.isNotEmpty) {
+  Widget _button(_InboxAction action) {
+    final onPressed = busy ? null : () => onAction(action);
+    if (action.iconOnly) {
       return SizedBox(
-        width: 48,
-        height: 48,
-        child: AppliancePicture(type: appliance, fillSlot: true),
+        width: 30,
+        height: 30,
+        child: IconButton(
+          onPressed: onPressed,
+          tooltip: action.label,
+          padding: EdgeInsets.zero,
+          style: IconButton.styleFrom(
+            foregroundColor: action.color,
+            backgroundColor: action.color.withValues(alpha: 0.1),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+          icon: busy
+              ? SizedBox(
+                  width: 13,
+                  height: 13,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: action.color,
+                  ),
+                )
+              : Icon(action.icon, size: 17),
+        ),
       );
     }
-    return Container(
-      width: 44,
-      height: 44,
-      decoration: BoxDecoration(
-        color: entry.color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Icon(entry.icon, size: 24, color: entry.color),
-    );
-  }
-
-  Widget _button(_InboxAction action) {
     final child = busy
         ? SizedBox(
-            width: 14,
-            height: 14,
+            width: 13,
+            height: 13,
             child: CircularProgressIndicator(
               strokeWidth: 2,
               color: action.filled ? Colors.white : action.color,
@@ -1216,23 +1458,20 @@ class _InboxRow extends StatelessWidget {
         : Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(action.icon, size: 16),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  action.label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 13,
-                  ),
+              Icon(action.icon, size: 14),
+              const SizedBox(width: 4),
+              Text(
+                action.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
                 ),
               ),
             ],
           );
-    final onPressed = busy ? null : () => onAction(action);
-    const padding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
+    const padding = EdgeInsets.symmetric(horizontal: 9, vertical: 6);
     if (action.filled) {
       return FilledButton(
         onPressed: onPressed,
@@ -1240,7 +1479,7 @@ class _InboxRow extends StatelessWidget {
           backgroundColor: action.color,
           foregroundColor: Colors.white,
           padding: padding,
-          minimumSize: const Size(0, 36),
+          minimumSize: const Size(0, 30),
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
         child: child,
@@ -1252,7 +1491,7 @@ class _InboxRow extends StatelessWidget {
         foregroundColor: action.color,
         side: BorderSide(color: action.color.withValues(alpha: 0.5)),
         padding: padding,
-        minimumSize: const Size(0, 36),
+        minimumSize: const Size(0, 30),
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
       child: child,
@@ -1260,161 +1499,16 @@ class _InboxRow extends StatelessWidget {
   }
 }
 
-/// Плитка с картинкой техники: ею остались только заявки на подтверждение.
-/// Их бывает много, и по картинке они узнаются быстрее, чем по строке.
-class _BellCard extends StatelessWidget {
-  final _InboxEntry entry;
-
-  const _BellCard({required this.entry});
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: const Color(0xFFFFF4D6),
-      elevation: 0,
-      borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        onTap: entry.onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Ink(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: entry.color, width: 2.2),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(6, 6, 6, 6),
-            child: Column(
-              children: [
-                Text(
-                  context.tr('НОВОЕ', 'NEW'),
-                  style: TextStyle(
-                    fontSize: 9,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 0.6,
-                    color: entry.color,
-                  ),
-                ),
-                Text(
-                  entry.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 12,
-                    height: 1.1,
-                    color: Color(0xFF111111),
-                  ),
-                ),
-                if (entry.when != null) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    DateFormat(
-                      'd MMM, HH:mm',
-                      AppLocale.instance.dateLocale,
-                    ).format(entry.when!.toLocal()),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 10,
-                      height: 1.1,
-                      color: Color(0xFF616161),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-                if (entry.originLabel.isNotEmpty) ...[
-                  const SizedBox(height: 3),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(entry.icon, size: 12, color: entry.color),
-                      const SizedBox(width: 3),
-                      Flexible(
-                        child: Text(
-                          entry.originLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 10,
-                            height: 1.1,
-                            fontWeight: FontWeight.w800,
-                            color: entry.color,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-                const SizedBox(height: 4),
-                Expanded(
-                  child: entry.applianceType.trim().isNotEmpty
-                      ? Stack(
-                          children: [
-                            Positioned.fill(
-                              child: AppliancePicture(
-                                type: entry.applianceType,
-                                fillSlot: true,
-                              ),
-                            ),
-                            Positioned(
-                              right: 2,
-                              bottom: 2,
-                              child: Container(
-                                padding: const EdgeInsets.all(3),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(color: entry.color),
-                                ),
-                                child: Icon(
-                                  entry.icon,
-                                  size: 14,
-                                  color: entry.color,
-                                ),
-                              ),
-                            ),
-                          ],
-                        )
-                      : Container(
-                          width: double.infinity,
-                          decoration: BoxDecoration(
-                            color: entry.color.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          alignment: Alignment.center,
-                          child: Icon(
-                            entry.icon,
-                            size: 32,
-                            color: entry.color,
-                          ),
-                        ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 /// Потоки колокольчика. Создаются один раз на `State`: при каждом
 /// перестроении подписываться заново нельзя — это замеряет
 /// `runtime_performance_test`.
-///
-/// Звонки «в обработке» отсюда убраны вместе с остальным «к сведению»:
-/// пока секретарь разбирает запись, это видно на вкладке «Звонки»
-/// («ИИ обрабатывает»), а решение появится, когда разбор закончится.
 class _ReviewInboxStreams extends StatefulWidget {
   final Widget Function(
     List<Job> jobs,
     List<CallRecord> calls,
-    List<SmsMessage> emailOffers,
-    List<SmsMessage> smsOffers,
+    List<SmsMessage> unreadMessages,
     List<SmsMessage> failedSms,
-    List<SmsMessage> awaitingSms,
+    DateTime callsCutoff,
   ) builder;
 
   const _ReviewInboxStreams({required this.builder});
@@ -1424,12 +1518,13 @@ class _ReviewInboxStreams extends StatefulWidget {
 }
 
 class _ReviewInboxStreamsState extends State<_ReviewInboxStreams> {
-  late final _jobs = JobService.streamNeedsReview();
-  late final _calls = TwilioService.getPendingReviewCalls();
-  late final _emailOffers = SmsService.streamEmailOffers();
-  late final _smsOffers = SmsService.streamSmsOffers();
+  late final _jobs = JobService.streamAll();
+  late final _calls = TwilioService.streamNewIncomingCalls();
+  late final _unreadMessages = SmsService.streamUnreadInbound();
   late final _failedSms = SmsService.streamFailedOutbound();
-  late final _awaitingSms = SmsService.streamAwaitingApproval();
+  late final DateTime _callsCutoff = DateTime.now().subtract(
+    const Duration(hours: 24),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -1440,28 +1535,17 @@ class _ReviewInboxStreamsState extends State<_ReviewInboxStreams> {
           stream: _calls,
           builder: (context, callsSnap) {
             return StreamBuilder<List<SmsMessage>>(
-              stream: _emailOffers,
-              builder: (context, offersSnap) {
+              stream: _unreadMessages,
+              builder: (context, unreadSnap) {
                 return StreamBuilder<List<SmsMessage>>(
-                  stream: _smsOffers,
-                  builder: (context, smsOffersSnap) {
-                    return StreamBuilder<List<SmsMessage>>(
-                      stream: _failedSms,
-                      builder: (context, failedSnap) {
-                        return StreamBuilder<List<SmsMessage>>(
-                          stream: _awaitingSms,
-                          builder: (context, awaitingSnap) {
-                            return widget.builder(
-                              jobsSnap.data ?? const <Job>[],
-                              callsSnap.data ?? const <CallRecord>[],
-                              offersSnap.data ?? const <SmsMessage>[],
-                              smsOffersSnap.data ?? const <SmsMessage>[],
-                              failedSnap.data ?? const <SmsMessage>[],
-                              awaitingSnap.data ?? const <SmsMessage>[],
-                            );
-                          },
-                        );
-                      },
+                  stream: _failedSms,
+                  builder: (context, failedSnap) {
+                    return widget.builder(
+                      jobsSnap.data ?? const <Job>[],
+                      callsSnap.data ?? const <CallRecord>[],
+                      unreadSnap.data ?? const <SmsMessage>[],
+                      failedSnap.data ?? const <SmsMessage>[],
+                      _callsCutoff,
                     );
                   },
                 );

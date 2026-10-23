@@ -308,11 +308,22 @@ async function upsertClientJobSite(clientId, existingClient, extracted, ownerNam
     const contacts = Array.isArray(loc.contacts) ? [...loc.contacts] : [];
     const tenantIdx = contacts.findIndex((c) => String(c.role || '') === 'tenant');
     if (site.explicit) {
-      // Назван другой человек — записываем/обновляем его данные.
+      // Назван другой человек — записываем/обновляем его данные, но не
+      // затираем ранее записанный отдельный номер арендатора фолбэком хозяина.
       if (tenantIdx >= 0) {
+        const existingPhone = normalizePhone(contacts[tenantIdx].phone);
+        const ownerNorm = normalizePhone(ownerPhone);
+        const explicitSitePhone = normalizePhone(
+          extracted && extracted.contact_on_site_phone
+        );
         contacts[tenantIdx] = {
           ...contacts[tenantIdx],
           ...tenant,
+          phone:
+            explicitSitePhone ||
+            (existingPhone && existingPhone !== ownerNorm
+              ? contacts[tenantIdx].phone
+              : tenant.phone),
           id: contacts[tenantIdx].id || 'tenant',
         };
       } else {
@@ -648,6 +659,13 @@ async function collapseAllCloneJobs() {
   return closed;
 }
 
+/**
+ * ОТКЛЮЧЕНО (решение FIX, 21.10.2026): заявку со звонка никто не создаёт
+ * автоматически — мастер слушает запись и жмёт «Создать заявку на ремонт»
+ * в карточке звонка. Функция оставлена как справка по разбору звонка в
+ * заявку; вызовов у неё нет и быть не должно. Если понадобится вернуть
+ * автоматику — сначала спросите владельца.
+ */
 async function createDraftJobFromCall(callId, extracted, knownClient) {
   const callSnap = await callsRef.doc(callId).get();
   const callData = callSnap.exists ? callSnap.data() || {} : {};
@@ -721,7 +739,8 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
   let clientName =
     extractedName ||
     existingRealName ||
-    (phone ? `Клиент ${phone}` : 'Клиент');
+    phone ||
+    '';
   const address = buildFullAddress(extracted, existingClient);
   const city = extracted.address_uncertain
     ? ''
@@ -734,33 +753,31 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
     : ((extracted.postal_code && String(extracted.postal_code).trim()) || '');
 
   if (!clientId) {
-    const locationContacts = isJobSiteExtract(extracted)
+    const initialLocation = isJobSiteExtract(extracted)
       ? jobSiteLocationFromExtracted(extracted, clientName, phone)
-      : [
-          {
-            id: 'owner',
-            name: clientName,
-            phone: phone || '',
-            role: 'owner',
-            isPrimary: true,
-          },
-        ];
+      : {
+          id: 'primary',
+          street,
+          city,
+          postalCode: postal,
+          notes: '',
+          contacts: [
+            {
+              id: 'owner',
+              name: clientName,
+              phone: phone || '',
+              role: 'owner',
+              isPrimary: true,
+            },
+          ],
+        };
     const clientDoc = await clientsRef.add({
       fullName: clientName,
       phone: phone || '',
       address: isJobSiteExtract(extracted)
         ? String(extracted.owner_address || '').trim() || ''
         : address,
-      locations: [
-        {
-          id: isJobSiteExtract(extracted) ? `site_${Date.now()}` : 'primary',
-          street,
-          city,
-          postalCode: postal,
-      notes: isJobSiteExtract(extracted) ? 'Job site' : '',
-          contacts: locationContacts,
-        },
-      ],
+      locations: [initialLocation],
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
       createdByAi: true,
@@ -773,11 +790,16 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
     if (extractedName) {
       await applyPersonNameToClient(clientId, extractedName);
     }
-    if (address && !existingClient.address && !isJobSiteExtract(extracted)) {
-      updates.address = address;
-    }
     await clientsRef.doc(clientId).set(updates, { merge: true });
     await upsertClientJobSite(clientId, existingClient, extracted, clientName, phone);
+    if (!isJobSiteExtract(extracted)) {
+      // Адрес из разговора кладём в карточку тем же путём, что и из SMS:
+      // пустую карточку он заполняет (и улицу/город/индекс в локации тоже,
+      // а не только строку целиком), а названный другой адрес становится
+      // местом работы. Раньше звонок дописывал только поле `address`, и то
+      // лишь когда оно было пустым (просьба FIX, 13.10.2026).
+      await applyInboundAddressToClient({ clientId, extracted, job: null });
+    }
   }
 
   const applianceType = (extracted.appliance_type && String(extracted.appliance_type).trim()) || 'Техника';
@@ -1010,6 +1032,10 @@ async function patchDraftJobFromCall(jobId, extracted, { noBooking = false } = {
         job.clientPhone
       );
     }
+  } else if (job.clientId && address) {
+    // Адрес, названный в разговоре, доезжает и до карточки клиента, а не
+    // только до заявки (просьба FIX, 13.10.2026).
+    await applyInboundAddressToClient({ clientId: job.clientId, extracted, job: null });
   }
   // Не сбрасывать подтверждение уже проверенной заявки.
   // Если мастер подтвердил заявку (needsReview=false), звонок клиента по
@@ -1062,8 +1088,8 @@ async function attachCallRecordingToJob({
       ...prev,
       ...next,
       url: next.url || prev.url || '',
-      transcription: pickLongestTranscript(next.transcription, prev.transcription),
-      transcriptionRu: pickLongestTranscript(next.transcriptionRu, prev.transcriptionRu),
+      transcription: pickLongestRussianTranscript(next.transcription, prev.transcription),
+      transcriptionRu: pickLongestRussianTranscript(next.transcriptionRu, prev.transcriptionRu),
       transcriptionEn: pickLongestTranscript(next.transcriptionEn, prev.transcriptionEn),
       summary: next.summary || prev.summary || '',
     };
@@ -1090,7 +1116,7 @@ async function attachLiveCallNotesToJob({
   if (!jobId) return;
   const labeled = labeledTranscriptFromHistory(history, transcription, answeredBy);
   const raw = pickLongestTranscript(labeled, transcription);
-  let russian = hasCyrillic(raw) ? relabelTranscript(raw, answeredBy) : '';
+  let russian = isRussianTranscript(raw) ? relabelTranscript(raw, answeredBy) : '';
   let english = raw;
   let summary = '';
   if (raw.length > 20) {
@@ -1117,7 +1143,7 @@ ${raw}`,
     jobId,
     callId,
     recordingUrl: playableUrl || recordingUrl,
-    transcription: pickLongestTranscript(raw, russian, english),
+    transcription: pickLongestRussianTranscript(russian, raw, english),
     transcriptionRu: russian,
     transcriptionEn: english || raw,
     answeredBy: answeredBy || '',
@@ -1127,7 +1153,7 @@ ${raw}`,
   await callsRef.doc(callId).set(
     {
       playableUrl,
-      transcription: pickLongestTranscript(raw, russian),
+      transcription: pickLongestRussianTranscript(russian, raw),
       transcriptionRu: russian || raw,
       transcriptionEn: english || raw,
       ...(summary ? { summary } : {}),
@@ -1436,6 +1462,19 @@ function extractJsonObject(text) {
 }
 
 const recordingRuntime = { timeoutSeconds: 540, memory: '1GiB', invoker: 'public' };
+
+// Вход в звонок держим тёплым. Холодный старт здесь — это тишина в трубке:
+// Twilio ждёт TwiML, а звонящий ждёт гудка. Замеры за 14 дней (12.10.2026):
+// incomingCall отвечал в среднем 3,8 с (до 8,3), dialAction — 4,2 с (до 8,7),
+// а тот же контейнер в тёплом состоянии — 0,2–0,4 с. Из-за этих секунд звонки
+// CA1362a7f9… (+1 437 247 0655) и CAc3ab4e79… (+1 514 591 8822) оборвались
+// раньше, чем секретарь вышла на линию: трубку клали на 16-й и 24-й секунде.
+const voiceEntryRuntime = {
+  timeoutSeconds: 60,
+  memory: '256MiB',
+  invoker: 'public',
+  minInstances: 1,
+};
 
 function sendTwiml(res, twiml) {
   res.type('text/xml');
@@ -2066,7 +2105,7 @@ async function handleInboundToMaster(req, res, source) {
 // VOICE: Webhook входящего звонка на Twilio-номер (Voice URL номера в консоли)
 // ============================================================================
 
-exports.incomingCall = functions.https.onRequest(async (req, res) => {
+exports.incomingCall = functions.https.onRequest(voiceEntryRuntime, async (req, res) => {
   if (!requireTwilioSignature(req, res)) return;
   // Если TwiML App тоже смотрит сюда, исходящий из приложения приходит
   // как From=client:master. Его нельзя снова звонить на master — иначе
@@ -2138,6 +2177,11 @@ exports.callStatusCallback = functions.https.onRequest(async (req, res) => {
 
 const AI_VOICE_MAX_TURNS = 80;
 const voiceAiRuntime = { timeoutSeconds: 180, memory: '512MiB', invoker: 'public' };
+// dialAction отвечает в самой дорогой точке разговора — между последним гудком
+// и первым словом секретаря, когда в трубке уже тишина. Поэтому тёплый
+// экземпляр только у него, а aiVoiceTurn и aiRelayComplete остаются на общем
+// runtime: первый — запасной Gather, второй работает уже после звонка.
+const voiceDialRuntime = { ...voiceAiRuntime, minInstances: 1 };
 
 function sayLang(_language) {
   return 'en-US';
@@ -2354,6 +2398,22 @@ function speakerTurnCount(text) {
     ).length;
 }
 
+function stripSpeakerLabels(text) {
+  return String(text || '').replace(
+    /^\s*(ИИ|AI|Assistant|Secretary|Секретарь|Me|Master|Мастер|Моё|Мое|Technician|FixApplianceCA|Клиент|Client|User|Caller|Customer)\s*:\s*/gim,
+    ''
+  );
+}
+
+function isRussianTranscript(text) {
+  const body = stripSpeakerLabels(text).trim();
+  if (!body) return false;
+  const cyr = (body.match(/[А-Яа-яЁё]/g) || []).length;
+  if (!cyr) return false;
+  const lat = (body.match(/[A-Za-z]/g) || []).length;
+  return cyr >= lat;
+}
+
 function pickLongestTranscript(...parts) {
   return parts
     .map((part) => String(part || '').trim())
@@ -2365,6 +2425,13 @@ function pickLongestTranscript(...parts) {
       if (speakers) return speakers;
       return b.length - a.length;
     })[0] || '';
+}
+
+function pickLongestRussianTranscript(...parts) {
+  const list = parts.map((part) => String(part || '').trim()).filter(Boolean);
+  const russianOnly = list.filter(isRussianTranscript);
+  if (russianOnly.length) return pickLongestTranscript(...russianOnly);
+  return pickLongestTranscript(...list);
 }
 
 function mergeCallHistory(a, b) {
@@ -2776,8 +2843,10 @@ async function notifyCallOutcome({ callSid, callData, extracted, kind, jobId, re
     const appliance = String(data.appliance_type || '').trim();
     const spam = kind === 'missed' && looksLikeSpamCall(data, callData);
 
+    // Заявку мастер заводит сам из экрана звонка, поэтому уведомление о
+    // звонке больше ничего не предлагает — оно просто сообщает о звонке.
     const title = kind === 'call_offer'
-      ? 'Звонок: ждёт заявку'
+      ? 'Входящий звонок'
       : kind === 'job' ? 'Заявка с телефона' : 'Пропущенный звонок';
     const line = kind === 'call_offer' || kind === 'job'
       ? [name || phone, appliance].filter(Boolean).join(' · ')
@@ -3061,7 +3130,7 @@ Return STRICT JSON, no markdown:
 }
 
 // Dial finished: master answered, or timeout → AI receptionist.
-exports.dialAction = functions.https.onRequest(voiceAiRuntime, async (req, res) => {
+exports.dialAction = functions.https.onRequest(voiceDialRuntime, async (req, res) => {
   if (!requireTwilioSignature(req, res)) return;
   const callSid = req.body.CallSid;
   const dialStatus = req.body.DialCallStatus || req.body.CallStatus || '';
@@ -3512,7 +3581,7 @@ const dubsInFlight = new Map();
 async function russianTranscriptFor(callId, data) {
   for (const field of ['transcriptionRu', 'transcription']) {
     const stored = String(data[field] || '').trim();
-    if (hasCyrillic(stored)) return stored;
+    if (isRussianTranscript(stored)) return stored;
   }
   const english = String(data.transcriptionEn || data.transcription || '').trim();
   if (!english) return '';
@@ -3752,6 +3821,48 @@ async function polishChat(text, options = {}) {
   return out || t;
 }
 
+const JOB_TRANSLATE_RULES = `Ты переводишь и приводишь в порядок описание поломки в карточке заявки для мастера по ремонту бытовой техники в Онтарио.
+Переводи грамотным, естественным русским языком мастера, без машинного подстрочника. Английских слов в описании поломки остаться не должно.
+Латиницей оставляй ТОЛЬКО имена людей, названия городов и улиц, марки техники, номера моделей/серийников и коды ошибок (E15, F21).
+Правильные термины: timer knob / timer button — ручка таймера, door seal / gasket — уплотнитель дверцы, smooth top / glass cooktop / clear top — стеклокерамическая варочная панель, burner — конфорка, heating element / bake element — ТЭН (нагревательный элемент), igniter — свеча розжига, drain pump — сливной насос, float switch — поплавковый датчик, control board — плата управления, spray arm — коромысло (разбрызгиватель), drum — барабан, service call — выезд мастера.
+Учитывай род техники по-русски (сушилка, стиральная машина, посудомойка, плита, духовка — женский род; холодильник — мужской род).
+Если в тексте есть английские дубли в скобках вроде «Не запускается (Won't start)» — оставь только русский текст без скобок.
+Если одна и та же поломка повторена несколько раз разными словами в отдельных строках — объедини эти повторы в одну чёткую фразу, сохранив все детали, номер модели и строку «Удобное время: ...» (переведя английские пометки времени внутри неё на русский).`;
+
+async function translateJobDescription(text, to, { appliance = '' } = {}) {
+  const t = String(text || '').trim();
+  if (!t || skipTranslate(t)) return t;
+  if (to === 'en') return translateChat(t, 'en');
+  if (!hasLatin(t)) return t;
+  const app = String(appliance || '').trim();
+  const applianceLine = app ? `\nТехника в заявке: ${app}.` : '';
+  if (OPENAI_API_KEY) {
+    try {
+      const parsed = await openaiJsonResponse(
+        `${JOB_TRANSLATE_RULES}${applianceLine}
+Верни строго JSON {"text":"перевод"}.
+
+${t}`,
+        { maxOutputTokens: 6000 }
+      );
+      const out = String((parsed && parsed.text) || '').trim();
+      if (out && hasCyrillic(out)) return out;
+    } catch (error) {
+      console.warn('translateJobDescription OpenAI:', error.message);
+    }
+  }
+  const result = await generateContentWithModelFallback([
+    {
+      text: `${JOB_TRANSLATE_RULES}${applianceLine}
+Верни ТОЛЬКО готовый текст без кавычек и пояснений.
+
+${t}`,
+    },
+  ]);
+  const out = stripModelFences(String((result.response && result.response.text()) || '')).trim();
+  return out && hasCyrillic(out) ? out : t;
+}
+
 async function translateChat(text, to) {
   const t = String(text || '').trim();
   if (!t || skipTranslate(t)) return t;
@@ -3765,10 +3876,11 @@ async function translateChat(text, to) {
       : isDialogue
         ? 'Переведи этот диалог на естественный русский. Сохрани метки говорящих ИИ: и Клиент: на каждой строке. Нельзя выкидывать реплики ИИ. Верни ТОЛЬКО диалог, без кавычек и пояснений.'
         : 'Переведи сообщение клиента мастеру на естественный русский. Имена, адреса, модели и ссылки не меняй. Верни ТОЛЬКО перевод, без кавычек и пояснений.';
+  const rules = to === 'en' ? 'You translate for an appliance repair shop in Ontario.' : TRANSLATE_RULES;
   if (OPENAI_API_KEY) {
     try {
       const parsed = await openaiJsonResponse(
-        `${to === 'en' ? 'You translate for an appliance repair shop in Ontario.' : TRANSLATE_RULES}
+        `${rules}
 
 ${instruction}
 Верни строго JSON {"text":"перевод"}.
@@ -3783,7 +3895,7 @@ ${t}`,
     }
   }
   const result = await generateContentWithModelFallback([
-    { text: `${instruction}\n\n${t}` },
+    { text: `${rules}\n\n${instruction}\n\n${t}` },
   ]);
   const out = String((result.response && result.response.text()) || '').trim();
   return out || t;
@@ -4250,10 +4362,10 @@ ${extractSource}`;
 
     const transcriptionRu = pickLongestTranscript(
       fromAudioRu,
-      hasCyrillic(liveLabeled) ? liveLabeled : '',
-      hasCyrillic(liveTranscription) ? liveTranscription : ''
+      isRussianTranscript(liveLabeled) ? liveLabeled : '',
+      isRussianTranscript(liveTranscription) ? liveTranscription : ''
     );
-    const transcription = pickLongestTranscript(
+    const transcription = pickLongestRussianTranscript(
       transcriptionRu,
       transcriptionEn,
       liveLabeled,
@@ -4379,29 +4491,11 @@ ${extractSource}`;
       return;
     }
 
-    let created = { jobId: jobId || null, clientId: matchedClient ? matchedClient.id : null, created: false };
-    if (
-      !jobId &&
-      hasSubstance &&
-      !callData.jobCreateBlocked &&
-      callAgeHours(callData) <= 48
-    ) {
-      try {
-        created = await createDraftJobFromCall(callId, extracted, matchedClient);
-        jobId = created.jobId || jobId;
-        if (created.created && created.jobId && callAgeHours(callData) <= 4) {
-          await notifyCallOutcome({
-            callSid: callId,
-            callData,
-            extracted,
-            kind: 'job',
-            jobId: created.jobId,
-          });
-        }
-      } catch (jobError) {
-        console.error(`createDraftJobFromCall(${callId}) failed:`, jobError);
-      }
-    } else if (jobId && hasSubstance && !callData.jobCreateBlocked) {
+    // Заявка со звонка автоматически больше не создаётся (решение FIX,
+    // 21.10.2026): мастер слушает запись и жмёт «Создать заявку на ремонт»
+    // в карточке звонка. Разбор, расшифровка и `extractedData` остаются —
+    // из них заполняется форма при ручном создании.
+    if (jobId && hasSubstance && !callData.jobCreateBlocked) {
       try {
         await patchDraftJobFromCall(jobId, extracted, { noBooking: callData.answeredBy === 'ai' });
       } catch (_) {}
@@ -4436,16 +4530,13 @@ ${extractSource}`;
       summary,
       extractedData: extracted,
       aiStatus: 'done',
-      clientId: created.clientId || (matchedClient ? matchedClient.id : null),
+      clientId: matchedClient ? matchedClient.id : null,
       serviceDeclined: declined,
       declineReason: String(extracted.decline_reason || '').trim() || null,
     };
-    if (created.jobId || jobId) {
-      callUpdates.createdJobId = created.jobId || jobId;
-      callUpdates.jobId = jobId || created.jobId;
-    }
-    if (created.created && callAgeHours(callData) <= 4) {
-      callUpdates.reviewed = false;
+    if (jobId) {
+      callUpdates.createdJobId = jobId;
+      callUpdates.jobId = jobId;
     }
     await callsRef.doc(callId).set(callUpdates, { merge: true });
 
@@ -4760,46 +4851,13 @@ async function recoverAiCallsMissingJobs(limit = 12) {
       { merge: true }
     );
 
+    // Заявку из звонка этот крон больше не создаёт: мастер заводит её сам
+    // в карточке звонка. Остаётся только добор неразобранной записи, чтобы
+    // в карточке звонка были текст, краткое содержание и данные для формы.
     if (!data.createdJobId && !data.jobId && data.recordingUrl && data.aiStatus !== 'done') {
       console.log(`recoverAiCallsMissingJobs: запись ${doc.id}`);
       await processRecordingWithAi(doc.id, data.recordingUrl);
       recovered.push(doc.id);
-      continue;
-    }
-
-    try {
-      const matchedClient = await findExistingClient({
-        phone: extracted.client_phone || data.fromNumber,
-        email: extracted.client_email,
-      });
-      if (!extracted.client_phone && data.fromNumber) {
-        extracted.client_phone = normalizePhone(data.fromNumber);
-      }
-      const created = await createDraftJobFromCall(
-        doc.id,
-        voiceFacts.enrichExtracted(
-          extracted,
-          (data.aiReception && data.aiReception.history) || [],
-          data.transcription
-        ),
-        matchedClient
-      );
-      if (created.created && created.jobId) {
-        await callsRef.doc(doc.id).set(
-          {
-            createdJobId: created.jobId,
-            jobId: created.jobId,
-            clientId: created.clientId || (matchedClient && matchedClient.id) || null,
-            aiStatus: 'done',
-            extractedData: extracted,
-          },
-          { merge: true }
-        );
-        recovered.push(created.jobId);
-        console.log(`recoverAiCallsMissingJobs: заявка ${created.jobId} из ${doc.id}`);
-      }
-    } catch (error) {
-      console.warn(`recoverAiCallsMissingJobs ${doc.id}:`, error.message);
     }
   }
   await collapseAllCloneJobs();
@@ -5179,6 +5237,13 @@ exports.translateMessage = functions.https.onRequest(
         res.json({ success: true, translated: dialog || text, to: 'ru' });
         return;
       }
+      if (mode === 'job') {
+        const translated = await translateJobDescription(text, to, {
+          appliance: payload.appliance,
+        });
+        res.json({ success: true, translated, to });
+        return;
+      }
       const translated = await translateChat(text, to);
       res.json({ success: true, translated, to });
     } catch (error) {
@@ -5265,7 +5330,9 @@ exports.incomingSms = functions.https.onRequest(
           sid: sid || '', from: from || '', to: to || '', body,
           direction: 'inbound', status: 'received',
           clientId: matchedClient ? matchedClient.id : null,
-          clientName: matchedClient ? matchedClient.fullName || matchedClient.name || '' : '',
+          clientName: matchedClient
+            ? voiceFacts.stripClientPrefix(matchedClient.fullName || matchedClient.name || '', from)
+            : '',
           mediaUrls: [], twilioMedia, channel: 'sms',
           aiStatus: twilioMedia.length || body.trim() ? 'processing' : 'none',
           createdAt: admin.firestore.FieldValue.serverTimestamp(), read: false,
@@ -5311,7 +5378,8 @@ async function processIncomingSmsData(docRef, data) {
   const matchedClient = data.clientId ? { id: data.clientId, fullName: data.clientName || '' } : null;
   const alreadyProcessed = false;
   const preview = body.trim() ? body.trim().slice(0, 80) : twilioMedia.length ? 'Фото' : 'Новое сообщение';
-  const title = `SMS от ${matchedClient?.fullName || from || 'клиента'}`;
+  const senderLabel = voiceFacts.stripClientPrefix(matchedClient?.fullName || '', from);
+  const title = senderLabel ? `SMS от ${senderLabel}` : 'Новое SMS';
   let confirmHandled = false;
   if (!alreadyProcessed) {
     try {
@@ -5327,7 +5395,14 @@ async function processIncomingSmsData(docRef, data) {
 
   if (docRef && confirmHandled) {
     try {
-      await docRef.set({ aiStatus: 'skipped_confirm', read: true }, { merge: true });
+      // `read: true` здесь больше не ставим (решение FIX, 21.10.2026).
+      // Ответ клиента разбирает автоответчик, и push о нём не идёт —
+      // `aiStatus: 'skipped_confirm'` этого и добивается. Но раньше он же
+      // гасил сообщение совсем: «1» в ответ на подтверждение визита нигде
+      // не появлялась, а отдельная карточка «Заявка подтверждена» убрана.
+      // Теперь сообщение остаётся непрочитанным и видно там, где его
+      // разбирают, — на вкладке «Связь» и в самой переписке.
+      await docRef.set({ aiStatus: 'skipped_confirm' }, { merge: true });
     } catch (error) {
       console.error('incomingSms confirm mark error:', error);
     }
@@ -5365,13 +5440,17 @@ async function processIncomingSmsData(docRef, data) {
         return;
       }
       await processSmsWithAi({
+        // Без канала заявка из SMS уезжала в ветку писем: в карточке стояло
+        // source: 'email' и sourceEmailFrom с номером телефона, а разбор
+        // «SMS ждёт заявку» не срабатывал вовсе (FIX, 12.10.2026).
+        channel: 'sms',
         messageId: docRef.id,
         from,
         body,
         twilioMedia,
         clientId: matchedClient ? matchedClient.id : null,
         clientName: matchedClient
-          ? matchedClient.fullName || matchedClient.name || ''
+          ? voiceFacts.stripClientPrefix(matchedClient.fullName || matchedClient.name || '', from)
           : '',
       });
     } catch (error) {
@@ -5430,7 +5509,22 @@ exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
       const snapshot = await messagesRef.where('sid', '==', sid).limit(1).get();
       if (!snapshot.empty) {
         const doc = snapshot.docs[0];
-        await doc.ref.update({ status });
+        // Колбэки Twilio приходят не по порядку: «sent» после «delivered» —
+        // обычное дело. Без этой лестницы галочка в переписке откатывалась с
+        // «Доставлено» на «Отправлено».
+        const rank = { accepted: 1, queued: 1, scheduled: 1, sending: 2, sent: 3, delivered: 4, read: 5 };
+        const current = String((doc.data() || {}).status || '');
+        const settled = ['failed', 'undelivered', 'canceled'].includes(status);
+        if (settled || (rank[status] || 0) >= (rank[current] || 0)) {
+          const statusUpdate = { status };
+          if (status === 'delivered' && current !== 'read') {
+            statusUpdate.deliveredAt = admin.firestore.FieldValue.serverTimestamp();
+          }
+          if (status === 'read') {
+            statusUpdate.readAt = admin.firestore.FieldValue.serverTimestamp();
+          }
+          await doc.ref.update(statusUpdate);
+        }
         let retried = false;
         if (
           (status === 'undelivered' || status === 'failed') &&
@@ -5750,6 +5844,26 @@ function guessAddressFromText(body) {
   };
 }
 
+/**
+ * Почта из входящего сообщения — в карточку клиента.
+ *
+ * Только в пустое поле: адрес, который мастер вписал руками, важнее того,
+ * с которого сегодня написали. Имя кладёт `applyPersonNameToClient` — оно
+ * тоже перетирает лишь заглушку вида «Клиент +1…».
+ */
+async function applyInboundEmailToClient(clientId, rawEmail) {
+  const email = String(rawEmail || '').trim().toLowerCase();
+  if (!clientId || !email.includes('@')) return;
+  if (/^(wordpress|wpadmin|wpforms|wp|webmaster|no-?reply)@/.test(email)) return;
+  const snap = await clientsRef.doc(clientId).get();
+  if (!snap.exists) return;
+  if (String((snap.data() || {}).email || '').trim()) return;
+  await clientsRef.doc(clientId).set(
+    { email, lastActiveAt: admin.firestore.FieldValue.serverTimestamp() },
+    { merge: true }
+  );
+}
+
 async function applyInboundAddressToClient({ clientId, extracted, job }) {
   if (!clientId || !extractedHasAddress(extracted)) {
     return { mode: null, full: '' };
@@ -5784,7 +5898,10 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
         contacts: [
           {
             id: 'owner',
-            name: client.fullName || client.name || '',
+            name: voiceFacts.stripClientPrefix(
+              client.fullName || client.name || '',
+              client.phone || ''
+            ),
             phone: client.phone || '',
             role: 'owner',
             isPrimary: true,
@@ -5823,11 +5940,15 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
 
   if (!different) return { mode: null, full: nextFull };
 
+  const ownerLabel = voiceFacts.stripClientPrefix(
+    client.fullName || client.name || '',
+    client.phone || ''
+  );
   await upsertClientJobSite(
     clientId,
     client,
     { ...extracted, has_job_site: true },
-    client.fullName || client.name || '',
+    ownerLabel,
     client.phone || ''
   );
   if (job && job.id) {
@@ -5835,9 +5956,14 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
     // не назвали — берём клиента (или уже записанного человека).
     const site = voiceFacts.onSiteContactFrom(
       extracted,
-      client.fullName || client.name || '',
+      ownerLabel,
       client.phone || ''
     );
+    const explicitSitePhone = normalizePhone(
+      extracted && extracted.contact_on_site_phone
+    );
+    const existingSitePhone = normalizePhone(job.jobSitePhone);
+    const ownerNorm = normalizePhone(client.phone);
     await jobsRef.doc(job.id).set(
       {
         hasJobSite: true,
@@ -5845,9 +5971,13 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
         jobSiteName: site.explicit
           ? site.name
           : job.jobSiteName || site.name || '',
-        jobSitePhone: site.explicit
-          ? site.phone
-          : job.jobSitePhone || site.phone || '',
+        jobSitePhone: explicitSitePhone
+          ? explicitSitePhone
+          : existingSitePhone && existingSitePhone !== ownerNorm
+            ? job.jobSitePhone
+            : site.explicit
+              ? site.phone
+              : job.jobSitePhone || site.phone || '',
         clientId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
@@ -5916,7 +6046,8 @@ async function ensureClientFromEmailIntake({ extracted, fromEmail, existingClien
     .toLowerCase();
   const name =
     voiceFacts.usableClientName((extracted && extracted.client_name) || '') ||
-    (phone ? `Клиент ${phone}` : 'Клиент');
+    phone ||
+    '';
   let client = null;
   if (existingClientId) {
     const snap = await clientsRef.doc(existingClientId).get();
@@ -6103,6 +6234,7 @@ async function processSmsWithAi({
 
 Правила:
 - ${voiceFacts.EXTRACT_CARD_RULES}
+- client_name — имя самого отправителя, если он его назвал или подписался; иначе null
 - Адрес, модель, бренд, серийник, описание поломки — заполни, если есть
 - Если адрес ремонта НЕ дом клиента — has_job_site=true, address = куда ехать, contact_on_site_name / contact_on_site_phone = кто на месте. Если на месте будет сам клиент — contact_on_site_name / contact_on_site_phone = null
 - Если на фото шильдик — прочитай model, brand, serial_number
@@ -6113,6 +6245,7 @@ async function processSmsWithAi({
 Верни СТРОГО один JSON без markdown:
 {
   "relevant": true,
+  "client_name": null,
   "appliance_type": null,
   "brand": null,
   "model": null,
@@ -6131,10 +6264,11 @@ async function processSmsWithAi({
 Отправитель: ${from || ''}`
     : `Ты — ассистент сервиса по ремонту бытовой техники в Канаде.
 Клиент прислал SMS или письмо${images.length ? ' и фото (шильдик, модель, техника)' : ''}.
-Извлеки данные для заявки на ремонт и адрес, если он есть.
+Извлеки всё, что он о себе сообщил: имя, адрес, что именно сломалось.
 
 Правила:
 - ${voiceFacts.EXTRACT_CARD_RULES}
+- client_name — имя самого отправителя, если он представился («it's John», «This is Mary Smith», «меня зовут…», подпись в конце). Чужое имя, имя мастера и обычное слово — не имя, тогда null
 - Если на фото шильдик/бирка — обязательно прочитай model, brand, serial_number
 - Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
 - Если клиент прислал улицу, дом, город или индекс — заполни address / city / postal_code
@@ -6145,6 +6279,8 @@ async function processSmsWithAi({
 Верни СТРОГО один JSON без markdown:
 {
   "relevant": true,
+  "client_name": null,
+  "client_email": null,
   "appliance_type": null,
   "brand": null,
   "model": null,
@@ -6258,6 +6394,23 @@ async function processSmsWithAi({
       console.warn('SMS address apply:', error.message);
     }
   }
+  // Имя и почта из сообщения тоже идут в карточку клиента — так же, как их
+  // кладёт разбор звонка. Раньше из SMS приезжал только адрес, и карточка
+  // оставалась подписанной номером телефона (просьба FIX, 13.10.2026).
+  const inboundName = voiceFacts.usableClientName(
+    (extracted && extracted.client_name) || ''
+  );
+  if (resolvedClientId) {
+    try {
+      if (inboundName) await applyPersonNameToClient(resolvedClientId, inboundName);
+      await applyInboundEmailToClient(
+        resolvedClientId,
+        (extracted && extracted.client_email) || (fromIsEmail ? from : '')
+      );
+    } catch (error) {
+      console.warn('SMS client card:', error.message);
+    }
+  }
 
   const updates = {
     extractedData: extracted,
@@ -6322,6 +6475,7 @@ async function processSmsWithAi({
     extractedHasAddress(extracted) ||
     Boolean(siteName) ||
     Boolean(sitePhone) ||
+    Boolean(inboundName) ||
     storedUrls.length > 0;
 
   if (job && hasCardBits) {
@@ -6337,6 +6491,16 @@ async function processSmsWithAi({
       description: mergeJobDescription(job.description, smsNote),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
+    // Клиент представился в переписке, а заявка подписана номером телефона —
+    // ставим настоящее имя. Живое имя на заявке не трогаем.
+    if (
+      inboundName &&
+      (!String(job.clientName || '').trim() ||
+        voiceFacts.isPlaceholderClientName(job.clientName) ||
+        voiceFacts.looksLikeGarbageName(job.clientName))
+    ) {
+      jobUpdates.clientName = inboundName;
+    }
     if (siteName) {
       jobUpdates.hasJobSite = true;
       jobUpdates.jobSiteName = siteName;
@@ -6382,7 +6546,10 @@ async function processSmsWithAi({
       try {
         await notifyMaster(
           'SMS: ждёт заявку',
-          [clientName || from, appliance.type, smsNote].filter(Boolean).join('\n').slice(0, 180),
+          [clientName || inboundName || from, appliance.type, smsNote]
+            .filter(Boolean)
+            .join('\n')
+            .slice(0, 180),
           {
             type: 'sms',
             source: 'sms',
@@ -6396,13 +6563,12 @@ async function processSmsWithAi({
     } else {
       // Email / website: создаём заявку как раньше (мастер всё равно подтверждает через emailOfferPending)
       // Контакт на адресе: если другого человека не назвали — это сам клиент.
-      const effectiveClientName =
-        clientName ||
-        String((extracted && extracted.client_name) || '').trim() ||
-        (isIntake ? 'Клиент' : from) ||
-        '';
       const effectiveClientPhone =
         fromPhone || (extracted && extracted.client_phone) || '';
+      const effectiveClientName = voiceFacts.stripClientPrefix(
+        clientName || String((extracted && extracted.client_name) || '').trim(),
+        effectiveClientPhone || (isIntake ? '' : from)
+      );
       const siteFallback = voiceFacts.onSiteContactFrom(
         extracted,
         effectiveClientName,

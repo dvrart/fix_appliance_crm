@@ -207,6 +207,7 @@ class NotificationService {
       _initialized = true;
       unawaited(refreshRegistration());
       await _askUnrestrictedBatteryOnce();
+      await _askCallOverlayOnce();
     } catch (e) {
       debugPrint('NotificationService: ошибка инициализации: $e');
     }
@@ -247,6 +248,35 @@ class NotificationService {
       );
     } catch (e) {
       debugPrint('NotificationService: openBatterySettings: $e');
+      return null;
+    }
+  }
+
+  /// Разрешено ли открывать экран звонка поверх других приложений.
+  static Future<bool> canOverlayCalls() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return true;
+    try {
+      final allowed = await _deviceChannel.invokeMethod<bool>(
+        'canOverlayCalls',
+      );
+      return allowed ?? true;
+    } catch (e) {
+      debugPrint('NotificationService: canOverlayCalls: $e');
+      return true;
+    }
+  }
+
+  /// Открыть системный экран разрешения «Поверх других окон» (а на Xiaomi /
+  /// HyperOS — экран «Другие разрешения», где живёт «Открывать новые окна
+  /// во время работы в фоновом режиме»).
+  static Future<bool?> openCallOverlaySettings() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return true;
+    try {
+      return await _deviceChannel.invokeMethod<bool>(
+        'requestCallOverlayPermission',
+      );
+    } catch (e) {
+      debugPrint('NotificationService: openCallOverlaySettings: $e');
       return null;
     }
   }
@@ -370,39 +400,89 @@ class NotificationService {
     );
   }
 
+  /// Все теги, под которыми могла выйти карточка об этом событии: по
+  /// номеру и почте собеседника, по id звонка, письма и заявки.
+  ///
+  /// Карточка одна на собеседника, но нарисовать её мог и сервер (FCM),
+  /// и приложение, и прошлая версия с другим ключом — поэтому гасим сразу
+  /// все варианты, а не только тот, который помним.
+  static Set<String> inboxTagsFor(Map<String, dynamic> data) {
+    String at(String key) => (data[key] ?? '').toString().trim();
+    final type = at('type').isEmpty ? 'sms' : at('type');
+    final tags = <String>{};
+    void add(String value) {
+      final raw = value.trim();
+      if (raw.isNotEmpty) tags.add(_boundedTag(raw));
+    }
+
+    add(at('tag'));
+    for (final peer in [at('peer'), at('from'), at('to')]) {
+      if (peer.isEmpty) continue;
+      final digits = last10(peer);
+      if (digits.isNotEmpty) add('crm_inbox_$digits');
+      if (peer.contains('@')) add('crm_inbox_${peer.toLowerCase()}');
+      add('crm_${type}_$peer');
+    }
+    for (final id in [at('callSid'), at('callId')]) {
+      if (id.isNotEmpty) add('crm_call_$id');
+    }
+    final messageId = at('messageId');
+    if (messageId.isNotEmpty) {
+      add('crm_sms_$messageId');
+      add('crm_email_$messageId');
+    }
+    final jobId = at('jobId');
+    if (jobId.isNotEmpty) add('crm_job_$jobId');
+    return tags;
+  }
+
+  /// Событие разобрано — карточки о нём в шторке телефона быть не должно.
+  static Future<void> dismissInbox(Map<String, dynamic> data) =>
+      LocalNotificationService.cancelTags(inboxTagsFor(data));
+
+  /// Звонок открыли — значит, увидели. Карточку рисовали по номеру
+  /// звонящего, поэтому снимаем и по номеру, и по id звонка.
+  static Future<void> dismissCall({
+    String callId = '',
+    String callSid = '',
+    String phone = '',
+    String jobId = '',
+  }) => dismissInbox({
+    'type': 'call',
+    'callId': callId,
+    'callSid': callSid,
+    'from': phone,
+    'jobId': jobId,
+  });
+
+  /// Заявку разобрали — убираем и её карточку, и карточку звонка или
+  /// письма, из которых она выросла: событие было одно.
+  static Future<void> dismissJob({
+    String jobId = '',
+    String from = '',
+    String callId = '',
+    String messageId = '',
+  }) => dismissInbox({
+    'type': 'job',
+    'jobId': jobId,
+    'from': from,
+    'callSid': callId,
+    'messageId': messageId,
+  });
+
   static Future<void> dismissConversation({
     String? phone,
     String? email,
   }) async {
-    final tags = <String>{};
-    void add(String type, String from) {
-      final value = from.trim();
-      if (value.isEmpty) return;
-      tags.add(inboxTag(type: type, from: value));
-    }
-
     final rawPhone = (phone ?? '').trim();
-    if (rawPhone.isNotEmpty) {
-      add('sms', rawPhone);
-      add('call', rawPhone);
-      add('job', rawPhone);
-      final digits = last10(rawPhone);
-      if (digits.isNotEmpty) {
-        tags.add(shadeTag(from: rawPhone));
-        add('sms', digits);
-        add('sms', '+1$digits');
-        add('call', '+1$digits');
-        add('job', '+1$digits');
-        add('sms', '+$digits');
-      }
-    }
-    final rawEmail = (email ?? '').trim().toLowerCase();
-    if (rawEmail.contains('@')) {
-      add('email', rawEmail);
-      add('email', (email ?? '').trim());
-    }
-
-    await LocalNotificationService.cancelTags(tags);
+    final rawEmail = (email ?? '').trim();
+    await LocalNotificationService.cancelTags({
+      for (final type in const ['sms', 'call', 'job'])
+        if (rawPhone.isNotEmpty)
+          ...inboxTagsFor({'type': type, 'from': rawPhone}),
+      if (rawEmail.contains('@'))
+        ...inboxTagsFor({'type': 'email', 'from': rawEmail}),
+    });
   }
 
   static Future<void> _onForegroundMessage(RemoteMessage message) async {
@@ -507,12 +587,22 @@ class NotificationService {
       return;
     }
 
+    // Клиент сказал «да» — в шторку это не выносим (решение FIX,
+    // 21.10.2026): делать по такой карточке нечего, а смахивать приходится.
+    // Согласие видно в карточке заявки, а ответ клиента остаётся
+    // непрочитанным сообщением на вкладке «Связь». Сервер такие push больше
+    // не шлёт; проверка нужна, пока на телефон долетают старые.
+    const confirmedTitles = {
+      'Заявка подтверждена',
+      'Клиент оставил заявку',
+      'Клиент подтвердил ремонт',
+    };
+    if (type == 'estimate_confirm' || confirmedTitles.contains(title.trim())) {
+      return;
+    }
+
     final isConfirm =
-        type == 'visit_confirm' ||
-        type == 'estimate_confirm' ||
-        title == 'Заявка подтверждена' ||
-        title == 'Заявка не подтверждена' ||
-        title == 'Клиент подтвердил ремонт';
+        type == 'visit_confirm' || title == 'Заявка не подтверждена';
     if (isConfirm) {
       await LocalNotificationService.showVisitConfirm(
         title: title.isEmpty ? 'Заявка подтверждена' : title,
@@ -591,6 +681,21 @@ class NotificationService {
     } catch (e) {
       debugPrint('NotificationService: battery: $e');
     }
+  }
+
+  /// Один раз попросить «Поверх других окон», если его ещё не выдали:
+  /// без него Android не даёт развернуть входящий звонок на весь экран,
+  /// когда приложение не в «недавних».
+  static Future<void> _askCallOverlayOnce() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('asked_call_overlay_v1') == true) return;
+    if (await canOverlayCalls()) {
+      await prefs.setBool('asked_call_overlay_v1', true);
+      return;
+    }
+    await prefs.setBool('asked_call_overlay_v1', true);
+    await openCallOverlaySettings();
   }
 
   static Future<void> refreshRegistration({String? token}) {

@@ -1,16 +1,23 @@
 package com.twilio.twilio_voice.service
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.Ringtone
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
@@ -40,13 +47,22 @@ object IncomingCallNotifier {
     // than this would hang up while Twilio is still ringing the master.
     private const val RING_TIMEOUT_MS = 75_000L
 
+    // Дольше звонить незачем: секретарь забирает звонок через несколько
+    // секунд, и если отмена почему-то не дошла, рингтон обязан замолчать сам.
+    private const val RINGER_GUARD_MS = 90_000L
+    private const val RINGER_WATCHDOG_MS = 3_000L
+
     private val handler = Handler(Looper.getMainLooper())
+    private val ringHandler = Handler(Looper.getMainLooper())
     private var timeoutGeneration = 0
     private var activeCallSid: String? = null
+    private var ringtone: Ringtone? = null
+    private var ringingSid: String? = null
     var currentNotification: Notification? = null
         private set
 
     fun show(context: Context, callerName: String, callSid: String) {
+        startRinging(context, callSid)
         if (activeCallSid == callSid && currentNotification != null) return
         val appContext = context.applicationContext
         ensureChannel(appContext)
@@ -152,6 +168,8 @@ object IncomingCallNotifier {
             Log.w(TAG, "Cannot show incoming call notification: ${error.message}")
         }
 
+        openCallScreenIfUnlocked(appContext, launchIntent)
+
         val generation = ++timeoutGeneration
         handler.removeCallbacksAndMessages(null)
         handler.postDelayed({
@@ -174,8 +192,40 @@ object IncomingCallNotifier {
         }, RING_TIMEOUT_MS)
     }
 
+    /**
+     * Телефон в руках и разблокирован — открываем экран звонка сразу.
+     *
+     * Full-screen intent система разворачивает **только на заблокированном
+     * экране**; на разблокированном она показывает плашку сверху, и до
+     * экрана звонка надо ещё дотянуться пальцем. Поэтому активность
+     * запускаем сами.
+     *
+     * На заблокированном экране не трогаем: там свою работу делает
+     * `setFullScreenIntent`, а `MainActivity.maybeShowOverLockscreen`
+     * поднимает окно поверх замка.
+     *
+     * Фоновый старт активности Android разрешает не всегда: приложение
+     * должно, например, остаться в «недавних». Если старт запрещён,
+     * `startActivity` молча ничего не сделает — останется та же плашка с
+     * кнопками «Ответить» / «Отклонить», то есть хуже, чем было, не станет.
+     */
+    private fun openCallScreenIfUnlocked(context: Context, launch: Intent) {
+        try {
+            val power = context.getSystemService(PowerManager::class.java)
+            if (power?.isInteractive == false) return
+            val keyguard = context.getSystemService(KeyguardManager::class.java)
+            if (keyguard?.isKeyguardLocked != false) return
+            context.startActivity(Intent(launch))
+        } catch (error: Exception) {
+            Log.w(TAG, "openCallScreenIfUnlocked: ${error.message}")
+        }
+    }
+
     fun cancel(context: Context, callSid: String? = null) {
-        if (callSid != null && callSid != activeCallSid) return
+        // Рингтон глушим раньше всех проверок: он мог начаться и без
+        // уведомления (см. startRinging), и тогда activeCallSid пуст.
+        stopRinging(context, callSid)
+        if (callSid != null && activeCallSid != null && callSid != activeCallSid) return
         NotificationManagerCompat.from(context.applicationContext).cancel(1001)
         if (currentNotification == null) return
         activeCallSid = null
@@ -183,6 +233,117 @@ object IncomingCallNotifier {
         timeoutGeneration++
         handler.removeCallbacksAndMessages(null)
         NotificationManagerCompat.from(context.applicationContext).cancel(NOTIFICATION_ID)
+    }
+
+    /**
+     * Звонок вслух.
+     *
+     * Для self-managed [android.telecom.PhoneAccount] система рингтон **не
+     * играет**: телефонного UI у таких звонков нет, и звук — обязанность
+     * приложения. Раньше вся надежда была на звук канала уведомления, а он у
+     * foreground-уведомления службы не срабатывает: экран входящего
+     * появлялся, а телефон молчал (проверено на HyperOS 12.10.2026).
+     *
+     * Запускается из двух мест, потому что ни на одно нельзя положиться
+     * в одиночку: [show] вызывается из `onShowIncomingCallUi`, который
+     * Telecom зовёт не на всех прошивках, а [TVConnectionService] зовёт это
+     * сразу после `setRinging()`. Второй вызов для того же звонка —
+     * пустышка.
+     *
+     * Режим звонка уважаем: беззвучный — молчим, вибро — только вибрируем.
+     */
+    fun startRinging(context: Context, callSid: String) {
+        if (callSid.isNotBlank() && ringingSid == callSid) return
+        val appContext = context.applicationContext
+        stopRinging(appContext)
+        val audio = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val mode = audio?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL
+        if (mode == AudioManager.RINGER_MODE_SILENT) {
+            Log.i(TAG, "startRinging: телефон беззвучный, звонок только на экране")
+            return
+        }
+        ringingSid = callSid
+
+        if (mode == AudioManager.RINGER_MODE_NORMAL) {
+            try {
+                val uri = RingtoneManager.getActualDefaultRingtoneUri(
+                    appContext,
+                    RingtoneManager.TYPE_RINGTONE,
+                ) ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                val tone = RingtoneManager.getRingtone(appContext, uri)
+                tone.audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) tone.isLooping = true
+                tone.play()
+                ringtone = tone
+            } catch (error: Exception) {
+                Log.w(TAG, "startRinging: рингтон не запустился: ${error.message}")
+            }
+        }
+
+        vibrator(appContext)?.let { device ->
+            try {
+                device.vibrate(
+                    VibrationEffect.createWaveform(longArrayOf(0, 700, 900), 0),
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+            } catch (error: Exception) {
+                Log.w(TAG, "startRinging: вибрация не запустилась: ${error.message}")
+            }
+        }
+
+        // Сторож: на части прошивок Ringtone замолкает после одного проигрыша,
+        // а до Android 9 зацикливать его вообще нечем.
+        ringHandler.removeCallbacksAndMessages(null)
+        val sid = callSid
+        val watchdog = object : Runnable {
+            override fun run() {
+                if (ringingSid != sid) return
+                val tone = ringtone
+                if (tone != null && !tone.isPlaying) {
+                    try {
+                        tone.play()
+                    } catch (_: Exception) {
+                    }
+                }
+                ringHandler.postDelayed(this, RINGER_WATCHDOG_MS)
+            }
+        }
+        ringHandler.postDelayed(watchdog, RINGER_WATCHDOG_MS)
+        ringHandler.postDelayed({
+            if (ringingSid != sid) return@postDelayed
+            Log.w(TAG, "startRinging: отмена так и не пришла, глушим рингтон сами")
+            stopRinging(appContext)
+        }, RINGER_GUARD_MS)
+    }
+
+    fun stopRinging(context: Context, callSid: String? = null) {
+        if (callSid != null && ringingSid != null && callSid != ringingSid) return
+        ringingSid = null
+        ringHandler.removeCallbacksAndMessages(null)
+        try {
+            ringtone?.stop()
+        } catch (_: Exception) {
+        }
+        ringtone = null
+        try {
+            vibrator(context.applicationContext)?.cancel()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun vibrator(context: Context): Vibrator? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            context.getSystemService(VibratorManager::class.java)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Vibrator::class.java)
+        }
     }
 
     /**

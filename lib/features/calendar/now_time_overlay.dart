@@ -3,13 +3,24 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' show DateFormat;
 
-/// Следит за вертикальной прокруткой сетки часов внутри SfCalendar, чтобы
+import 'calendar_card_shape.dart';
+
+/// Следит за вертикальной прокруткой сетки часов календаря, чтобы
 /// линия «сейчас» и метка на шкале ехали вместе с ней.
 class NowLineController extends ChangeNotifier {
   ScrollableState? _scrollable;
+  CalendarHourLayout? _hourLayout;
 
   final ValueNotifier<List<DateTime>> visibleDates =
       ValueNotifier<List<DateTime>>(const []);
+
+  CalendarHourLayout? get hourLayout => _hourLayout;
+
+  set hourLayout(CalendarHourLayout? value) {
+    if (identical(_hourLayout, value)) return;
+    _hourLayout = value;
+    notifyListeners();
+  }
 
   void onScroll(ScrollNotification notification) {
     if (notification.metrics.axis == Axis.vertical) {
@@ -70,12 +81,14 @@ class NowTimeOverlay extends StatefulWidget {
     required this.controller,
     required this.overlayKey,
     required this.slotHeight,
+    this.hourLayout,
     this.rulerWidth = 52,
   });
 
   final NowLineController controller;
   final GlobalKey overlayKey;
   final double slotHeight;
+  final CalendarHourLayout? hourLayout;
   final double rulerWidth;
 
   static const Color color = Color(0xFFE53935);
@@ -112,6 +125,7 @@ class _NowTimeOverlayState extends State<NowTimeOverlay> {
           controller: widget.controller,
           overlayKey: widget.overlayKey,
           slotHeight: widget.slotHeight,
+          hourLayout: widget.hourLayout,
           rulerWidth: widget.rulerWidth,
           repaint: Listenable.merge([
             widget.controller,
@@ -129,6 +143,7 @@ class _NowTimePainter extends CustomPainter {
     required this.controller,
     required this.overlayKey,
     required this.slotHeight,
+    required this.hourLayout,
     required this.rulerWidth,
     required Listenable repaint,
   }) : super(repaint: repaint);
@@ -136,6 +151,7 @@ class _NowTimePainter extends CustomPainter {
   final NowLineController controller;
   final GlobalKey overlayKey;
   final double slotHeight;
+  final CalendarHourLayout? hourLayout;
   final double rulerWidth;
 
   @override
@@ -156,11 +172,11 @@ class _NowTimePainter extends CustomPainter {
 
     final viewport =
         overlay.globalToLocal(box.localToGlobal(Offset.zero)) & box.size;
-    final minutes = now.hour * 60 + now.minute + now.second / 60;
-    final y =
-        viewport.top -
-        scrollable.position.pixels +
-        minutes / 60 * slotHeight;
+    final layout = controller.hourLayout ?? hourLayout;
+    final contentY = layout != null
+        ? layout.yForTime(now)
+        : (now.hour * 60 + now.minute + now.second / 60) / 60 * slotHeight;
+    final y = viewport.top - scrollable.position.pixels + contentY;
     if (y < viewport.top - 10 || y > viewport.bottom + 10) return;
 
     canvas.save();
@@ -220,6 +236,7 @@ class _NowTimePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _NowTimePainter oldDelegate) =>
       oldDelegate.slotHeight != slotHeight ||
+      oldDelegate.hourLayout != hourLayout ||
       oldDelegate.rulerWidth != rulerWidth ||
       oldDelegate.controller != controller;
 }

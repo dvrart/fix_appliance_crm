@@ -1,5 +1,8 @@
 import 'package:fix_appliance_crm/features/calls/call_review_page.dart';
+import 'package:fix_appliance_crm/features/jobs/job_details/editors/call_recording_page.dart';
+import 'package:fix_appliance_crm/services/message_translate_service.dart';
 import 'package:fix_appliance_crm/services/twilio_service.dart';
+import 'package:fix_appliance_crm/shared/widgets/call_transcript_chat.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -74,5 +77,41 @@ void main() {
     await tester.tap(find.text('+14165551234'));
     await tester.pump(const Duration(seconds: 3));
     expect(copiedText, equals('+14165551234'));
+  });
+
+  test('English dialog with Russian speaker labels needs Russian and shorter Russian translation wins', () {
+    const englishWithRuLabels =
+        'ИИ: FixApplianceCA, this is Sarah. How can I help you?\n'
+        'Клиент: Are they repaired?\n'
+        'ИИ: Oh, are you calling about your oven repair scheduled for today at 452 Norwich Road?\n'
+        'Клиент: Yeah, I might be home by five.';
+    const russianTranslated =
+        'ИИ: Это FixApplianceCA, Сара. Чем могу помочь?\n'
+        'Клиент: Они уже починили?\n'
+        'ИИ: Вы звоните по поводу ремонта духовки сегодня на 452 Norwich Road?\n'
+        'Клиент: Да, я буду дома к пяти.';
+
+    expect(russianTranslated.length, lessThan(englishWithRuLabels.length));
+    expect(MessageTranslateService.isRussianDialog(englishWithRuLabels), isFalse);
+    expect(MessageTranslateService.needsRussianDialog(englishWithRuLabels), isTrue);
+    expect(MessageTranslateService.isRussianDialog(russianTranslated), isTrue);
+    expect(MessageTranslateService.needsRussianDialog(russianTranslated), isFalse);
+
+    expect(
+      keepFullerTranscript(englishWithRuLabels, russianTranslated),
+      equals(russianTranslated),
+    );
+    expect(
+      keepFullerTranscript(russianTranslated, englishWithRuLabels),
+      equals(russianTranslated),
+    );
+    expect(
+      callTranscriptText({
+        'transcription': englishWithRuLabels,
+        'transcriptionRu': russianTranslated,
+        'transcriptionEn': englishWithRuLabels,
+      }),
+      equals(russianTranslated),
+    );
   });
 }

@@ -12,6 +12,7 @@ class Client {
   final String? companyName;
   final String? notes;
   final String? source;
+  final bool isRegular;
   final bool createdByAi;
   final List<Location> locations;
   final DateTime? createdAt;
@@ -26,6 +27,7 @@ class Client {
     this.companyName,
     this.notes,
     this.source,
+    this.isRegular = false,
     this.createdByAi = false,
     this.locations = const [],
     this.createdAt,
@@ -58,9 +60,65 @@ class Client {
   /// Одно определение на всё приложение — им же проверяется обращение в SMS.
   static bool isPlaceholderName(String? name) => SmsText.isPlaceholderName(name);
 
+  static String stripClientWord(String? name, [String? fallbackPhone]) =>
+      SmsText.stripClientWord(name, fallbackPhone);
+
+  /// Извлекает настоящее имя клиента из любых полей карточки (fullName, name,
+  /// clientName, contactName, firstName/lastName, locations.contacts), не
+  /// подставляя раньше времени номер телефона вместо имени.
+  static String extractName(
+    Map<String, dynamic> map, {
+    String fallback = 'Без имени',
+  }) {
+    final phone = (map['phone'] ?? '').toString().trim();
+    final firstLast = [
+      (map['firstName'] ?? '').toString().trim(),
+      (map['lastName'] ?? '').toString().trim(),
+    ].where((s) => s.isNotEmpty).join(' ');
+
+    final candidates = <String?>[
+      map['fullName']?.toString(),
+      map['name']?.toString(),
+      map['clientName']?.toString(),
+      map['contactName']?.toString(),
+      if (firstLast.isNotEmpty) firstLast,
+    ];
+
+    final rawLocations = map['locations'];
+    if (rawLocations is List) {
+      for (final loc in rawLocations) {
+        if (loc is! Map) continue;
+        final contacts = loc['contacts'];
+        if (contacts is! List) continue;
+        for (final contact in contacts) {
+          if (contact is Map) {
+            candidates.add(contact['name']?.toString());
+          }
+        }
+      }
+    }
+
+    // 1. Сначала ищем настоящее человеческое имя (не телефон и не «Клиент ...»).
+    for (final raw in candidates) {
+      final cleaned = SmsText.stripClientWord(raw);
+      if (cleaned.isNotEmpty && !isPlaceholderName(cleaned)) {
+        return cleaned;
+      }
+    }
+
+    // 2. Если настоящего имени нет — берём любое непустое значение без слова «Клиент».
+    for (final raw in candidates) {
+      final cleaned = SmsText.stripClientWord(raw);
+      if (cleaned.isNotEmpty) return cleaned;
+    }
+
+    if (phone.isNotEmpty) return phone;
+    return fallback;
+  }
+
   /// Инициалы для аватара
   String get initials {
-    if (fullName.isEmpty) return '?';
+    if (fullName.isEmpty || isPlaceholderName(fullName)) return '?';
     final parts = fullName.trim().split(' ');
     if (parts.length >= 2) {
       return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
@@ -69,6 +127,8 @@ class Client {
   }
 
   factory Client.fromMap(Map<String, dynamic> map, String docId) {
+    final phone = (map['phone'] ?? '').toString();
+    final fullName = extractName(map, fallback: '');
     List<Location> locationsList = [];
     final rawLocations = map['locations'];
     if (rawLocations is List) {
@@ -90,8 +150,8 @@ class Client {
         contacts: [
           Contact(
             id: 'owner',
-            name: map['fullName'] ?? map['name'] ?? '',
-            phone: map['phone'] ?? '',
+            name: fullName,
+            phone: phone,
             role: 'owner',
             isPrimary: true,
           ),
@@ -101,12 +161,13 @@ class Client {
 
     return Client(
       id: docId,
-      fullName: map['fullName'] ?? map['name'] ?? map['clientName'] ?? '',
-      phone: map['phone'] ?? '',
+      fullName: fullName,
+      phone: phone,
       email: map['email'],
       companyName: map['companyName'] ?? map['company'],
       notes: map['notes'] ?? map['description'],
       source: map['source'] ?? map['referralSource'],
+      isRegular: map['isRegular'] == true,
       createdByAi: map['createdByAi'] == true,
       locations: locationsList,
       createdAt: map['createdAt'] is Timestamp
@@ -132,6 +193,7 @@ class Client {
       'company': companyName,
       'notes': notes,
       'source': source,
+      'isRegular': isRegular,
       'address': address,
       'locations': locations.map((l) => l.toMap()).toList(),
     };
@@ -145,6 +207,7 @@ class Client {
       'companyName': companyName,
       'notes': notes,
       'source': source,
+      'isRegular': isRegular,
       'createdByAi': createdByAi,
       'locations': locations.map((l) => l.toMap()).toList(),
       // Для обратной совместимости
@@ -161,6 +224,7 @@ class Client {
     String? companyName,
     String? notes,
     String? source,
+    bool? isRegular,
     bool? createdByAi,
     List<Location>? locations,
     DateTime? createdAt,
@@ -175,6 +239,7 @@ class Client {
       companyName: companyName ?? this.companyName,
       notes: notes ?? this.notes,
       source: source ?? this.source,
+      isRegular: isRegular ?? this.isRegular,
       createdByAi: createdByAi ?? this.createdByAi,
       locations: locations ?? this.locations,
       createdAt: createdAt ?? this.createdAt,

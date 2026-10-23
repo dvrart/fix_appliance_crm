@@ -70,4 +70,12 @@ class FirestoreService {
   /// Отложенные SMS / письма (ожидают отправки)
   static CollectionReference get scheduledMessagesRef =>
       companyRef.collection('scheduled_messages');
+
+  /// Справочник ошибок, тестовых режимов и диагностики бытовой техники (на сервере)
+  static CollectionReference get serviceGuideRef =>
+      companyRef.collection('service_guide');
+
+  /// Метаданные версии серверного справочника диагностики
+  static DocumentReference get serviceGuideMetaRef =>
+      settingsRef.doc('service_guide_meta');
 }

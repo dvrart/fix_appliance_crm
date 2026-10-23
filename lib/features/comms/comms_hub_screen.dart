@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../core/l10n/app_locale.dart';
 import '../../core/ui_scale.dart';
 import '../../services/comms_badge_service.dart';
 import '../../shared/widgets/count_badge.dart';
@@ -82,6 +83,45 @@ class _CommsHubScreenState extends State<CommsHubScreen> with UiSettingsAware {
     );
   }
 
+  /// Полоска под иконками: от кого именно пришло новое. Цифра говорит
+  /// «что-то есть», имя — стоит ли открывать прямо сейчас.
+  Widget _whoIsNew() {
+    return ValueListenableBuilder<String>(
+      valueListenable: CommsBadgeService.newCallFrom,
+      builder: (context, callFrom, _) {
+        return ValueListenableBuilder<String>(
+          valueListenable: CommsBadgeService.unreadFrom,
+          builder: (context, messageFrom, _) {
+            final parts = <String>[
+              if (callFrom.isNotEmpty)
+                '${context.tr('звонил', 'called')} $callFrom',
+              if (messageFrom.isNotEmpty)
+                '${context.tr('написал', 'wrote')} $messageFrom',
+            ];
+            if (parts.isEmpty) return const SizedBox.shrink();
+            return ColoredBox(
+              color: AppColors.primary,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+                child: Text(
+                  parts.join(' · '),
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: AppColors.accent,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -113,9 +153,10 @@ class _CommsHubScreenState extends State<CommsHubScreen> with UiSettingsAware {
               ),
             ),
           ),
+          _whoIsNew(),
           Expanded(
             child: ColoredBox(
-              color: const Color(0xFFF5F5F5),
+              color: AppColors.surface,
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   if (constraints.maxWidth < 1 || constraints.maxHeight < 1) {

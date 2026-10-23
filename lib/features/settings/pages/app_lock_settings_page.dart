@@ -138,9 +138,9 @@ class _AppLockSettingsPageState extends State<AppLockSettingsPage>
                 'PIN хранится только на этом телефоне. Если забудете — переустановите приложение.',
                 'The PIN stays on this phone only. If you forget it, reinstall the app.',
               ),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 13,
-                color: Colors.black54,
+                color: AppColors.inkMuted,
                 height: 1.3,
               ),
             ),

@@ -6,9 +6,11 @@ import 'package:firebase_storage/firebase_storage.dart';
 import '../../../core/constants.dart';
 import '../../../models/client.dart';
 import '../../../models/job.dart';
+import '../../../models/location.dart';
 import '../../../services/services.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../shared/stale_routes.dart';
+import '../../../shared/widgets/call_transcript_chat.dart';
 
 /// Контроллер состояния для JobDetailsScreen
 /// Вынесен отдельно, чтобы вкладки могли обращаться к общему состоянию
@@ -110,6 +112,9 @@ class JobDetailsController extends ChangeNotifier {
   final Map<String, Map<String, dynamic>> _relatedCalls = {};
   final Map<String, Map<String, dynamic>> _clientCalls = {};
   String _clientCallsKey = '';
+  List<Location> _clientLocations = const [];
+  List<Job> _clientJobs = const [];
+  Future<void>? _loadingClientContacts;
   bool _disposed = false;
   bool _financeTabRequested = false;
 
@@ -133,6 +138,8 @@ class JobDetailsController extends ChangeNotifier {
   String packingNotes = '';
   String trackingNumber = '';
   String amazonOrderId = '';
+  String trackingCarrier = '';
+  String trackingPart = '';
   String trackingStatus = '';
   List<JobVisit> visits = [];
 
@@ -186,18 +193,30 @@ class JobDetailsController extends ChangeNotifier {
     packingNotes = jobData['packingNotes'] ?? '';
     trackingNumber = (jobData['trackingNumber'] ?? '').toString();
     amazonOrderId = (jobData['amazonOrderId'] ?? '').toString();
+    trackingCarrier = (jobData['trackingCarrier'] ?? '').toString();
+    trackingPart = (jobData['trackingPart'] ?? '').toString();
     trackingStatus = (jobData['trackingStatus'] ?? '').toString();
     visits = _parseVisits(jobData);
     _applyVisitFields(visits);
 
+    final phone = (jobData['clientPhone'] ?? '').toString().trim();
+    jobData['clientName'] = Client.stripClientWord(
+      (jobData['clientName'] ?? jobData['name'] ?? '').toString(),
+      phone,
+    );
     hasJobSite = jobData['hasJobSite'] == true;
-    jobSiteName = jobData['jobSiteName'] ?? '';
-    jobSitePhone = jobData['jobSitePhone'] ?? '';
+    jobSitePhone = (jobData['jobSitePhone'] ?? '').toString();
+    jobSiteName = Client.stripClientWord(
+      (jobData['jobSiteName'] ?? '').toString(),
+      jobSitePhone.trim().isNotEmpty ? jobSitePhone : phone,
+    );
     jobSiteAddress = jobData['jobSiteAddress'] ?? '';
     jobSiteEmail = (jobData['jobSiteEmail'] ?? '').toString();
+    clientEmail = (jobData['clientEmail'] ?? '').toString().trim();
 
     if (jobData['documents'] != null) {
       documents = List<Map<String, dynamic>>.from(jobData['documents']);
+      unawaited(_autoConvertApprovedEstimates());
     }
 
     if (jobData['attachments'] != null) {
@@ -242,12 +261,19 @@ class JobDetailsController extends ChangeNotifier {
         _lastRemote = merged;
       }
 
-      if (data.containsKey('clientName') || data.containsKey('name')) {
-        jobData['clientName'] =
-            (data['clientName'] ?? data['name'] ?? jobData['clientName']);
-      }
       if (data.containsKey('clientPhone')) {
         jobData['clientPhone'] = data['clientPhone'];
+      }
+      if (data.containsKey('clientName') || data.containsKey('name')) {
+        jobData['clientName'] = Client.stripClientWord(
+          (data['clientName'] ?? data['name'] ?? jobData['clientName'])
+              ?.toString(),
+          (jobData['clientPhone'] ?? '').toString(),
+        );
+      }
+      if (data.containsKey('clientIsRegular') || data.containsKey('isRegular')) {
+        jobData['clientIsRegular'] =
+            data['clientIsRegular'] == true || data['isRegular'] == true;
       }
       // Метки дубляжа ставит сервер — показываем их даже поверх черновика.
       for (final key in [
@@ -283,14 +309,23 @@ class JobDetailsController extends ChangeNotifier {
         packingNotes = data['packingNotes'] ?? packingNotes;
         trackingNumber = (data['trackingNumber'] ?? trackingNumber).toString();
         amazonOrderId = (data['amazonOrderId'] ?? amazonOrderId).toString();
+        trackingCarrier =
+            (data['trackingCarrier'] ?? trackingCarrier).toString();
+        trackingPart = (data['trackingPart'] ?? trackingPart).toString();
         visits = _parseVisits(data);
         _applyVisitFields(visits);
         hasJobSite = data['hasJobSite'] == true;
-        if (data.containsKey('jobSiteName')) {
-          jobSiteName = (data['jobSiteName'] ?? '').toString();
-        }
         if (data.containsKey('jobSitePhone')) {
           jobSitePhone = (data['jobSitePhone'] ?? '').toString();
+        }
+        if (data.containsKey('jobSiteName')) {
+          final fallbackPhone = jobSitePhone.trim().isNotEmpty
+              ? jobSitePhone
+              : (jobData['clientPhone'] ?? '').toString();
+          jobSiteName = Client.stripClientWord(
+            (data['jobSiteName'] ?? '').toString(),
+            fallbackPhone,
+          );
         }
         if (data.containsKey('jobSiteAddress')) {
           jobSiteAddress = (data['jobSiteAddress'] ?? '').toString();
@@ -298,16 +333,23 @@ class JobDetailsController extends ChangeNotifier {
         if (data.containsKey('jobSiteEmail')) {
           jobSiteEmail = (data['jobSiteEmail'] ?? '').toString();
         }
+        if (data.containsKey('clientEmail') &&
+            (data['clientEmail'] ?? '').toString().trim().isNotEmpty) {
+          clientEmail = (data['clientEmail'] ?? '').toString().trim();
+        }
         if (data.containsKey('clientAddress')) {
           jobData['clientAddress'] = data['clientAddress'];
-        }
-        if (data.containsKey('clientName') || data.containsKey('name')) {
-          jobData['clientName'] =
-              (data['clientName'] ?? data['name'] ?? jobData['clientName']);
         }
         if (data.containsKey('clientPhone')) {
           jobData['clientPhone'] = data['clientPhone'];
           _listenClientCalls();
+        }
+        if (data.containsKey('clientName') || data.containsKey('name')) {
+          jobData['clientName'] = Client.stripClientWord(
+            (data['clientName'] ?? data['name'] ?? jobData['clientName'])
+                ?.toString(),
+            (jobData['clientPhone'] ?? '').toString(),
+          );
         }
         if (data.containsKey('description')) {
           currentDescription = (data['description'] ?? currentDescription)
@@ -382,6 +424,15 @@ class JobDetailsController extends ChangeNotifier {
           existing['transcription']?.toString() ?? '',
           entry.value['transcription']?.toString() ?? '',
         ),
+        'transcriptionRu': _preferCallTranscript(
+          existing['transcriptionRu']?.toString() ?? '',
+          entry.value['transcriptionRu']?.toString() ?? '',
+        ),
+        'transcriptionEn': keepFullerTranscript(
+          existing['transcriptionEn']?.toString() ?? '',
+          entry.value['transcriptionEn']?.toString() ?? '',
+          preferRussian: false,
+        ),
         if ((existing['summary'] ?? '').toString().trim().isEmpty)
           'summary': entry.value['summary'],
         if (CallRecord.parseStamp(existing['startTime']) == null)
@@ -440,7 +491,7 @@ class JobDetailsController extends ChangeNotifier {
 
   static bool _hasCallSpeakers(String text) {
     final hasShop = RegExp(
-      r'(^|\n)\s*(ИИ|AI|Assistant|Master|Мастер|Секретарь)\s*:',
+      r'(^|\n)\s*(ИИ|AI|Assistant|Me|Master|Мастер|Моё|Мое|Technician|Секретарь)\s*:',
       caseSensitive: false,
     ).hasMatch(text);
     final hasClient = RegExp(
@@ -453,7 +504,7 @@ class JobDetailsController extends ChangeNotifier {
   static String _preferCallTranscript(String a, String b) {
     if (_hasCallSpeakers(b) && !_hasCallSpeakers(a)) return b;
     if (_hasCallSpeakers(a) && !_hasCallSpeakers(b)) return a;
-    return a.trim().length >= b.trim().length ? a : b;
+    return keepFullerTranscript(a, b);
   }
 
   static Map<String, dynamic> _callAttachment(DocumentSnapshot doc) {
@@ -468,6 +519,14 @@ class JobDetailsController extends ChangeNotifier {
     final history = (data['aiReception'] is Map)
         ? (data['aiReception'] as Map)['history']
         : null;
+    final extracted = (data['extractedData'] is Map)
+        ? Map<String, dynamic>.from(data['extractedData'] as Map)
+        : (data['aiReception'] is Map &&
+                  (data['aiReception'] as Map)['extracted'] is Map)
+              ? Map<String, dynamic>.from(
+                  (data['aiReception'] as Map)['extracted'] as Map,
+                )
+              : const <String, dynamic>{};
     final fromHistory = _transcriptFromCallHistory(history);
     final stored = (data['transcription'] ?? '').toString();
     final ru = (data['transcriptionRu'] ?? '').toString();
@@ -492,6 +551,10 @@ class JobDetailsController extends ChangeNotifier {
       'direction': (data['direction'] ?? '').toString(),
       'fromNumber': (data['fromNumber'] ?? '').toString(),
       'toNumber': (data['toNumber'] ?? '').toString(),
+      'contactOnSiteName':
+          (extracted['contact_on_site_name'] ?? '').toString().trim(),
+      'contactOnSitePhone':
+          (extracted['contact_on_site_phone'] ?? '').toString().trim(),
     };
   }
 
@@ -500,6 +563,7 @@ class JobDetailsController extends ChangeNotifier {
       for (final doc in snap.docs) {
         _relatedCalls[doc.id] = _callAttachment(doc);
       }
+      _listenClientCalls();
       if (!_disposed) notifyListeners();
     }
 
@@ -518,10 +582,12 @@ class JobDetailsController extends ChangeNotifier {
   /// Телефон приходит позже самой заявки, поэтому метод можно звать повторно:
   /// пока ключ не изменился, он ничего не делает.
   void _listenClientCalls() {
-    final phone = SmsService.toE164(
-      (jobData['clientPhone'] ?? '').toString().trim(),
-    );
-    final key = '$clientId|$phone';
+    final phones = <String>{
+      for (final c in chatContacts)
+        if (c.normalizedPhone.length >= 10) SmsService.toE164(c.phone),
+    }..removeWhere((p) => p.length < 11);
+    final sortedPhones = phones.toList()..sort();
+    final key = '$clientId|${sortedPhones.join(',')}';
     if (key == _clientCallsKey) return;
     _clientCallsKey = key;
     for (final sub in _clientCallSubs) {
@@ -532,7 +598,7 @@ class JobDetailsController extends ChangeNotifier {
     final queries = <Query>[
       if (clientId.trim().isNotEmpty)
         FirestoreService.callsRef.where('clientId', isEqualTo: clientId),
-      if (phone.length >= 11) ...[
+      for (final phone in sortedPhones) ...[
         FirestoreService.callsRef.where('fromNumber', isEqualTo: phone),
         FirestoreService.callsRef.where('toNumber', isEqualTo: phone),
       ],
@@ -587,44 +653,279 @@ class JobDetailsController extends ChangeNotifier {
     return (jobData['clientAddress'] ?? '').toString();
   }
 
-  /// Контактное имя на месте
-  String get contactName => hasJobSite
-      ? (jobSiteName.trim().isEmpty
-            ? (jobData['clientName'] ?? 'Неизвестно'.tr)
-            : jobSiteName)
-      : (jobData['clientName'] ?? 'Неизвестно'.tr);
-
-  /// Контактный телефон
-  String get contactPhone => hasJobSite
-      ? (jobSitePhone.trim().isEmpty
-            ? (jobData['clientPhone'] ?? '')
-            : jobSitePhone)
-      : (jobData['clientPhone'] ?? '');
-
-  List<JobChatContact> get chatContacts {
-    final client = JobChatContact(
-      id: 'client',
-      label: 'Хозяин'.tr,
-      name: (jobData['clientName'] ?? 'Клиент'.tr).toString().trim(),
-      phone: (jobData['clientPhone'] ?? '').toString().trim(),
-      email: clientEmail,
+  /// Телефон человека на месте (из заявки, локаций карточки клиента, других
+  /// заявок клиента или разбора звонка).
+  String get effectiveJobSitePhone {
+    final own = jobSitePhone.trim();
+    final clientNorm = SmsService.normalizePhone(
+      (jobData['clientPhone'] ?? '').toString(),
     );
-    final site = JobChatContact(
-      id: 'site',
-      label: 'Арендатор'.tr,
-      name: jobSiteName.trim().isEmpty ? 'Арендатор'.tr : jobSiteName.trim(),
-      phone: jobSitePhone.trim(),
-      email: jobSiteEmail.trim(),
-    );
-
-    final result = <JobChatContact>[];
-    if (client.hasChannel) result.add(client);
-    if (hasJobSite && site.hasChannel) {
-      if (result.isEmpty || site.normalizedPhone != client.normalizedPhone) {
-        result.add(site);
+    if (own.isNotEmpty && SmsService.normalizePhone(own) != clientNorm) {
+      return own;
+    }
+    for (final loc in _clientLocations) {
+      for (final contact in loc.contacts) {
+        final norm = SmsService.normalizePhone(contact.phone);
+        if (norm.length >= 10 && norm != clientNorm) {
+          return contact.phone.trim();
+        }
       }
     }
+    for (final call in _relatedCalls.values) {
+      final cp = (call['contactOnSitePhone'] ?? '').toString().trim();
+      final norm = SmsService.normalizePhone(cp);
+      if (norm.length >= 10 && norm != clientNorm) {
+        return cp;
+      }
+    }
+    for (final j in _clientJobs) {
+      final jp = (j.jobSitePhone ?? '').trim();
+      final norm = SmsService.normalizePhone(jp);
+      if (norm.length >= 10 && norm != clientNorm) {
+        return jp;
+      }
+    }
+    return own;
+  }
+
+  /// Имя человека на месте (из заявки, локаций клиента, других заявок или звонка).
+  String get effectiveJobSiteName {
+    final own = Client.stripClientWord(jobSiteName, effectiveJobSitePhone);
+    final clientNameNorm = Client.stripClientWord(
+      jobData['clientName']?.toString(),
+      (jobData['clientPhone'] ?? '').toString(),
+    ).toLowerCase();
+    if (own.isNotEmpty && own.toLowerCase() != clientNameNorm) {
+      return own;
+    }
+    final clientPhoneNorm = SmsService.normalizePhone(
+      (jobData['clientPhone'] ?? '').toString(),
+    );
+    for (final loc in _clientLocations) {
+      for (final contact in loc.contacts) {
+        final norm = SmsService.normalizePhone(contact.phone);
+        final cName = Client.stripClientWord(contact.name, contact.phone);
+        if (cName.isNotEmpty &&
+            (norm != clientPhoneNorm || contact.role == 'tenant') &&
+            cName.toLowerCase() != clientNameNorm) {
+          return cName;
+        }
+      }
+    }
+    for (final call in _relatedCalls.values) {
+      final cn = Client.stripClientWord(
+        (call['contactOnSiteName'] ?? '').toString(),
+        (call['contactOnSitePhone'] ?? '').toString(),
+      );
+      if (cn.isNotEmpty && cn.toLowerCase() != clientNameNorm) {
+        return cn;
+      }
+    }
+    for (final j in _clientJobs) {
+      final jn = Client.stripClientWord(j.jobSiteName, j.jobSitePhone ?? '');
+      if (jn.isNotEmpty && jn.toLowerCase() != clientNameNorm) {
+        return jn;
+      }
+    }
+    return own;
+  }
+
+  /// Контактное имя на месте
+  String get contactName {
+    final site = effectiveJobSiteName;
+    if (hasJobSite && site.isNotEmpty) return site;
+    final owner = Client.stripClientWord(
+      jobData['clientName']?.toString(),
+      contactPhone,
+    );
+    return owner.isNotEmpty ? owner : 'Неизвестно'.tr;
+  }
+
+  /// Контактный телефон
+  String get contactPhone {
+    final site = effectiveJobSitePhone;
+    return hasJobSite
+        ? (site.isEmpty ? (jobData['clientPhone'] ?? '').toString() : site)
+        : (jobData['clientPhone'] ?? '').toString();
+  }
+
+  List<JobChatContact> get chatContacts {
+    final result = <JobChatContact>[];
+    final seenPhones = <String>{};
+    final seenEmails = <String>{};
+
+    void add(JobChatContact contact) {
+      if (!contact.hasChannel) return;
+      final normPhone = contact.normalizedPhone;
+      final normEmail = contact.normalizedEmail;
+      final newPhone =
+          normPhone.length >= 10 && !seenPhones.contains(normPhone);
+      final newEmail =
+          normEmail.contains('@') && !seenEmails.contains(normEmail);
+      if (!newPhone && !newEmail) return;
+      if (newPhone) seenPhones.add(normPhone);
+      if (newEmail) seenEmails.add(normEmail);
+      result.add(
+        JobChatContact(
+          id: contact.id,
+          label: contact.label,
+          name: contact.name,
+          phone: newPhone ? contact.phone.trim() : '',
+          email: newEmail ? contact.email.trim() : '',
+        ),
+      );
+    }
+
+    final clientPhone = (jobData['clientPhone'] ?? '').toString().trim();
+    add(
+      JobChatContact(
+        id: 'client',
+        label: 'Хозяин'.tr,
+        name: Client.stripClientWord(
+          jobData['clientName']?.toString(),
+          clientPhone,
+        ),
+        phone: clientPhone,
+        email: clientEmail.trim(),
+      ),
+    );
+
+    final sitePhone = effectiveJobSitePhone;
+    final siteName = effectiveJobSiteName;
+    if (hasJobSite ||
+        sitePhone.isNotEmpty ||
+        jobSiteEmail.trim().isNotEmpty) {
+      add(
+        JobChatContact(
+          id: 'site',
+          label: 'Арендатор'.tr,
+          name: siteName.isEmpty ? 'Арендатор'.tr : siteName,
+          phone: sitePhone,
+          email: jobSiteEmail.trim(),
+        ),
+      );
+    }
+
+    for (final location in _clientLocations) {
+      for (final contact in location.contacts) {
+        final isFirstOwner = result.isEmpty && contact.role == 'owner';
+        final label = isFirstOwner
+            ? 'Хозяин'.tr
+            : (contact.role == 'manager'
+                ? contact.roleLabel
+                : 'Арендатор'.tr);
+        final cName = Client.stripClientWord(contact.name, contact.phone);
+        add(
+          JobChatContact(
+            id: result.any((c) => c.id == 'site')
+                ? 'loc-${contact.id.isEmpty ? contact.phone : contact.id}'
+                : 'site',
+            label: label,
+            name: cName.isNotEmpty
+                ? cName
+                : (siteName.isNotEmpty ? siteName : label),
+            phone: contact.phone,
+          ),
+        );
+      }
+    }
+
+    for (final call in _relatedCalls.values) {
+      final cp = (call['contactOnSitePhone'] ?? '').toString().trim();
+      if (cp.isEmpty) continue;
+      final cn = Client.stripClientWord(
+        (call['contactOnSiteName'] ?? '').toString(),
+        cp,
+      );
+      add(
+        JobChatContact(
+          id: result.any((c) => c.id == 'site')
+              ? 'call-${call['callId'] ?? cp}'
+              : 'site',
+          label: 'Арендатор'.tr,
+          name: cn.isNotEmpty
+              ? cn
+              : (siteName.isNotEmpty ? siteName : 'Арендатор'.tr),
+          phone: cp,
+        ),
+      );
+    }
+
+    for (final j in _clientJobs) {
+      if (j.id == jobId) continue;
+      final jp = (j.jobSitePhone ?? '').trim();
+      final je = (j.jobSiteEmail ?? '').trim();
+      if (!j.hasJobSite && jp.isEmpty && je.isEmpty) continue;
+      final jn = Client.stripClientWord(j.jobSiteName, jp);
+      add(
+        JobChatContact(
+          id: result.any((c) => c.id == 'site') ? 'job-${j.id}' : 'site',
+          label: 'Арендатор'.tr,
+          name: jn.isEmpty ? 'Арендатор'.tr : jn,
+          phone: jp,
+          email: je,
+        ),
+      );
+    }
+
     return result;
+  }
+
+  /// Догружает карточку клиента и все его заявки, если мастер нажал кнопку
+  /// звонка/SMS быстрее, чем пришёл первый снимок.
+  Future<void> ensureChatContactsLoaded() async {
+    final pending = _loadingClientContacts;
+    if (pending != null) {
+      await pending;
+      return;
+    }
+    if (clientId.trim().isEmpty) return;
+    final future = () async {
+      try {
+        if (_clientLocations.isEmpty) {
+          final client = await ClientService.getById(clientId);
+          if (client != null && !_disposed) {
+            _clientLocations = client.locations;
+            if (client.email != null &&
+                client.email!.trim().isNotEmpty &&
+                clientEmail.isEmpty) {
+              clientEmail = client.email!.trim();
+            }
+          }
+        }
+        if (_clientJobs.isEmpty) {
+          await _loadClientJobs();
+        }
+      } catch (_) {}
+    }();
+    _loadingClientContacts = future;
+    try {
+      await future;
+    } finally {
+      _loadingClientContacts = null;
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _loadClientJobs() async {
+    if (clientId.trim().isEmpty) return;
+    try {
+      final snap = await FirestoreService.jobsRef
+          .where('clientId', isEqualTo: clientId)
+          .get();
+      if (_disposed) return;
+      final loaded = <Job>[];
+      for (final doc in snap.docs) {
+        final parsed = Job.fromMap(
+          doc.data() as Map<String, dynamic>,
+          doc.id,
+        );
+        if (!parsed.isDeleted) loaded.add(parsed);
+      }
+      _clientJobs = loaded;
+      _listenClientCalls();
+      if (!_disposed) notifyListeners();
+    } catch (_) {}
   }
 
   JobChatContact? get selectedChatContact {
@@ -646,17 +947,30 @@ class JobDetailsController extends ChangeNotifier {
 
   void _listenClient() {
     if (clientId.isEmpty) return;
+    unawaited(_loadClientJobs());
     _clientSub = FirestoreService.clientsRef.doc(clientId).snapshots().listen((
       snap,
     ) {
       if (_disposed || !snap.exists) return;
       final data = snap.data() as Map<String, dynamic>?;
       if (data == null) return;
-      final name = (data['fullName'] ?? data['name'] ?? '').toString().trim();
+      final parsedClient = Client.fromMap(data, clientId);
+      final prevContactsCount = chatContacts.length;
+      _clientLocations = parsedClient.locations;
       final phone = (data['phone'] ?? '').toString().trim();
+      final name = Client.stripClientWord(
+        (data['fullName'] ?? data['name'] ?? '').toString(),
+        phone,
+      );
       final address = (data['address'] ?? '').toString().trim();
       final email = (data['email'] ?? '').toString().trim();
-      var changed = false;
+      final isRegular = data['isRegular'] == true;
+      ClientService.noteClientMap(clientId, data);
+      var changed = chatContacts.length != prevContactsCount;
+      if ((jobData['clientIsRegular'] == true) != isRegular) {
+        jobData['clientIsRegular'] = isRegular;
+        changed = true;
+      }
       if (name.isNotEmpty && !_draft.containsKey('clientName')) {
         if (jobData['clientName'] != name) {
           jobData['clientName'] = name;
@@ -1050,15 +1364,30 @@ class JobDetailsController extends ChangeNotifier {
     required String number,
     required String amazonId,
     String carrier = '',
+    String part = '',
   }) async {
     trackingNumber = number.trim();
     amazonOrderId = amazonId.trim();
+    trackingPart = part.trim();
+    final hasAny =
+        trackingNumber.isNotEmpty ||
+        amazonOrderId.isNotEmpty ||
+        trackingPart.isNotEmpty;
+    final resolvedCarrier = !hasAny
+        ? ''
+        : (carrier.trim().isNotEmpty
+              ? carrier.trim()
+              : (amazonOrderId.isNotEmpty ? 'amazon' : 'other'));
+    trackingCarrier = resolvedCarrier;
+    jobData['trackingNumber'] = trackingNumber;
+    jobData['amazonOrderId'] = amazonOrderId;
+    jobData['trackingCarrier'] = resolvedCarrier;
+    jobData['trackingPart'] = trackingPart;
     _queue({
       'trackingNumber': trackingNumber,
       'amazonOrderId': amazonOrderId,
-      'trackingCarrier': carrier.trim().isNotEmpty
-          ? carrier.trim()
-          : (amazonOrderId.isNotEmpty ? 'amazon' : 'other'),
+      'trackingCarrier': resolvedCarrier,
+      'trackingPart': trackingPart,
     });
   }
 
@@ -1244,10 +1573,64 @@ class JobDetailsController extends ChangeNotifier {
       }
     }
     documents = nextDocs;
+    unawaited(_autoConvertApprovedEstimates());
     if (justDeposited) unawaited(markDepositTaken(remoteStatus: remoteStatus));
     if (justPaid) {
       onInvoiceFullyPaid?.call();
       unawaited(completeAfterInvoicePaid());
+    }
+  }
+
+  bool _convertingApprovedEstimate = false;
+
+  /// Когда клиент подтверждает Estimate, он автоматически превращается в Invoice.
+  Future<void> _autoConvertApprovedEstimates() async {
+    if (_convertingApprovedEstimate || _disposed) return;
+    _convertingApprovedEstimate = true;
+    try {
+      var changed = false;
+      for (var i = 0; i < documents.length; i++) {
+        final doc = documents[i];
+        if (Job.isDocumentTrashed(doc)) continue;
+        if ((doc['type'] ?? '') != 'Estimate') continue;
+        if (doc['status'] == 'cancelled') continue;
+        if ((doc['estimateStatus'] ?? '') != 'approved') continue;
+        if (doc['convertedToInvoice'] == true) continue;
+        final items = [
+          for (final item in doc['items'] as List? ?? [])
+            if (item is Map) Map<String, dynamic>.from(item),
+        ];
+        if (items.isEmpty) continue;
+        final number = await SettingsService.takeNextDocumentNumber('Invoice');
+        if (_disposed) return;
+        final invoice = <String, dynamic>{
+          'type': 'Invoice',
+          'number': number,
+          'items': items,
+          'taxRate': doc['taxRate'] ?? 0.0,
+          'payments': <Map<String, dynamic>>[],
+          'createdAt': DateTime.now().toIso8601String(),
+          'fromEstimateNumber': doc['number'],
+        };
+        await WarehouseService.applyDocumentStock(invoice, reverse: false);
+        documents[i] = {
+          ...doc,
+          'convertedToInvoice': true,
+          'convertedInvoiceNumber': number,
+        };
+        documents.add(invoice);
+        if (viewingDocumentIndex == i) {
+          viewingDocumentIndex = documents.length - 1;
+        }
+        changed = true;
+      }
+      if (changed && !_disposed) {
+        await saveDocuments();
+        notifyListeners();
+      }
+    } catch (_) {
+    } finally {
+      _convertingApprovedEstimate = false;
     }
   }
 
@@ -1430,8 +1813,22 @@ class JobChatContact {
 
   String get normalizedPhone => SmsService.normalizePhone(phone);
 
+  String get normalizedEmail => email.trim().toLowerCase();
+
+  bool get hasPhone => normalizedPhone.length >= 10;
+
+  bool get hasEmail => normalizedEmail.contains('@');
+
+  bool get isOwner =>
+      id == 'client' || id == 'owner' || label == 'Хозяин'.tr;
+
   String get displayName => name.isEmpty ? label : name;
 
-  bool get hasChannel =>
-      normalizedPhone.length >= 10 || email.trim().contains('@');
+  String get subtitleLine => [
+    label,
+    if (hasPhone) phone.trim(),
+    if (hasEmail) email.trim(),
+  ].join(' · ');
+
+  bool get hasChannel => hasPhone || hasEmail;
 }

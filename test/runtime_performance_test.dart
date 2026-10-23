@@ -7,9 +7,7 @@ import 'package:fix_appliance_crm/features/finance/documents_list_screen.dart';
 import 'package:fix_appliance_crm/features/warehouse/warehouse_screen.dart';
 import 'package:fix_appliance_crm/features/messages/conversation_screen.dart';
 import 'package:fix_appliance_crm/models/calendar_event.dart';
-import 'package:fix_appliance_crm/models/job.dart';
 import 'package:fix_appliance_crm/services/calendar_event_service.dart';
-import 'package:fix_appliance_crm/services/on_the_way_service.dart';
 import 'package:fix_appliance_crm/services/scheduled_message_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -195,10 +193,6 @@ void main() {
     backend.notificationInit = null;
     backend.install();
   });
-  tearDown(() {
-    OnTheWayService.instance.pendingStatus = null;
-    OnTheWayService.instance.pending = null;
-  });
 
   testWidgets(
     'disposing during notification setup cannot create a late job listener',
@@ -229,12 +223,13 @@ void main() {
           ),
         ),
       );
-      // 6 подписок: заявки на проверку, звонки на разбор, письма-заявки,
-      // SMS-заявки, недоставленные SMS и сообщения, ждущие отправки.
-      // Звонков в обработке здесь больше нет: «ИИ разбирает запись» — это
-      // новость, а не решение, и её показывает вкладка «Звонки».
+      // 4 подписки: заявки на проверку, звонки на разбор, непрочитанные
+      // сообщения и недоставленные SMS. Секции «Ждёт решения» больше нет
+      // (решение FIX, 21.10.2026): колокольчик не предлагает завести
+      // заявку и не держит подтверждение визита, поэтому потоки
+      // SMS-заявок и сообщений «ждёт отправки» отсюда ушли вместе с ней.
       await tester.pump();
-      expect(backend.paths.length, 6);
+      expect(backend.paths.length, 4);
       final ids = backend.paths.keys.toList();
       for (final id in ids) {
         backend.emit(id);
@@ -242,7 +237,7 @@ void main() {
       }
       rebuild(() {});
       await tester.pump();
-      expect(backend.paths.length, 6);
+      expect(backend.paths.length, 4);
       await tester.pumpWidget(const SizedBox());
       await tester.pump();
       expect(backend.active, isEmpty);
@@ -341,7 +336,7 @@ void main() {
   });
 
   testWidgets(
-    'field banners preserve the open screen and late bootstrap stays disposed',
+    'field host preserves the open screen and late bootstrap stays disposed',
     (tester) async {
       final init = backend.notificationInit = Completer<void>();
       var created = 0;
@@ -359,15 +354,8 @@ void main() {
         await tester.pump();
       });
       await render();
-      OnTheWayService.instance.pendingStatus = Job.fromMap({
-        'clientName': 'Synthetic client',
-        'status': 'Вызов',
-      }, 'test-job');
-      await render();
-      expect(find.text('Нужно изменить статус заявки?'), findsOneWidget);
       expect(created, 1);
       expect(disposed, 0);
-      OnTheWayService.instance.pendingStatus = null;
       await render();
       expect(created, 1);
       await tester.pumpWidget(const SizedBox());

@@ -199,9 +199,9 @@ class _JobsScreenState extends State<JobsScreen> {
         margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
         padding: const EdgeInsets.symmetric(horizontal: 4),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AppColors.card,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: Colors.grey.shade300),
+          border: Border.all(color: AppColors.border),
         ),
         child: Row(
           children: [
@@ -218,14 +218,14 @@ class _JobsScreenState extends State<JobsScreen> {
                     Icon(
                       Icons.calendar_today,
                       size: 14,
-                      color: AppColors.primary,
+                      color: AppColors.primaryOnCard,
                     ),
                     const SizedBox(width: 8),
                     Text(
                       _formatRouteDate(_routeDate),
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: AppColors.primary,
+                        color: AppColors.primaryOnCard,
                       ),
                     ),
                   ],
@@ -353,13 +353,13 @@ class _JobsScreenState extends State<JobsScreen> {
   Widget _routeNeighborPage(List<Job> allJobs, DateTime day) {
     final count = _activeJobsForDate(allJobs, day).length;
     return ColoredBox(
-      color: const Color(0xFFF4F6F8),
+      color: AppColors.surface,
       child: Center(
         child: Text(
           '${_formatRouteDate(day)}\n$count',
           textAlign: TextAlign.center,
           style: TextStyle(
-            color: AppColors.primary,
+            color: AppColors.primaryOnCard,
             fontWeight: FontWeight.w800,
             fontSize: 18,
             height: 1.4,
@@ -400,7 +400,7 @@ class _JobsScreenState extends State<JobsScreen> {
       onTap: onPressed,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-        child: Icon(icon, color: AppColors.primary, size: 28),
+        child: Icon(icon, color: AppColors.primaryOnCard, size: 28),
       ),
     );
     if (tooltip == null || tooltip.isEmpty) return arrow;
@@ -421,9 +421,9 @@ class _JobsScreenState extends State<JobsScreen> {
       margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
       padding: const EdgeInsets.symmetric(horizontal: 4),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.grey.shade300),
+        border: Border.all(color: AppColors.border),
       ),
       child: Row(
         children: [
@@ -444,7 +444,7 @@ class _JobsScreenState extends State<JobsScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
-                      color: AppColors.primary,
+                      color: AppColors.primaryOnCard,
                     ),
                   ),
                   if (isToday)
@@ -452,7 +452,7 @@ class _JobsScreenState extends State<JobsScreen> {
                       'Сегодня'.tr,
                       style: TextStyle(
                         fontSize: 11,
-                        color: Colors.grey.shade600,
+                        color: AppColors.inkMuted,
                       ),
                     ),
                 ],
@@ -618,7 +618,7 @@ class _JobsScreenState extends State<JobsScreen> {
                           Formatters.formatTime(entry.visit.startAt),
                           maxLines: 1,
                           style: TextStyle(
-                            color: AppColors.primary,
+                            color: AppColors.primaryOnCard,
                             fontWeight: FontWeight.w900,
                             fontSize: 14,
                             height: 1.1,
@@ -628,7 +628,7 @@ class _JobsScreenState extends State<JobsScreen> {
                           Formatters.formatTime(_entryEnd(entry)),
                           maxLines: 1,
                           style: TextStyle(
-                            color: Colors.grey.shade600,
+                            color: AppColors.inkMuted,
                             fontWeight: FontWeight.w600,
                             fontSize: 11,
                           ),

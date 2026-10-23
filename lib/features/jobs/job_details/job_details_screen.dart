@@ -189,10 +189,10 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
                     Text(
                       'В этой заявке несколько выездов. Нажмите на тот, который убрать — остальные останутся.'
                           .tr,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w600,
                         fontSize: 13,
-                        color: Color(0xFF3D3D3D),
+                        color: AppColors.inkMuted,
                       ),
                     ),
                   ],
@@ -203,7 +203,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
                 ListTile(
                   leading: Icon(
                     Icons.event_rounded,
-                    color: Colors.grey.shade600,
+                    color: AppColors.inkMuted,
                   ),
                   title: Text(
                     appDateTimeLabel(visit.startAt),
@@ -328,8 +328,11 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
   Future<void> _openClientCard() async {
     final ctrl = _controller;
     var clientId = ctrl.clientId.trim();
-    final name = (ctrl.jobData['clientName'] ?? '').toString().trim();
     final phone = (ctrl.jobData['clientPhone'] ?? '').toString().trim();
+    final name = Client.stripClientWord(
+      (ctrl.jobData['clientName'] ?? '').toString(),
+      phone,
+    );
     final address = (ctrl.jobData['clientAddress'] ?? '').toString().trim();
     final email = ctrl.clientEmail.trim();
 
@@ -373,6 +376,13 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
           'phone': phone,
           'address': address,
           'email': email,
+          'isRegular':
+              ctrl.jobData['clientIsRegular'] == true ||
+              ClientService.isRegularClient(
+                clientId: clientId,
+                phone: phone,
+                email: email,
+              ),
         },
       ),
     );
@@ -380,64 +390,95 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
 
   /// Шапка: имя клиента вместо названия техники — тап открывает карточку.
   Widget _clientTitle() {
-    final name = (_controller.jobData['clientName'] ?? '').toString().trim();
-    return Tooltip(
-      message: 'Карточка клиента'.tr,
-      child: InkWell(
-        onTap: _openClientCard,
-        onLongPress: name.isNotEmpty
-            ? () => AppFeedback.copy(context, name)
-            : null,
-        borderRadius: BorderRadius.circular(10),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(6, 4, 8, 4),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 16,
-                backgroundColor: Colors.white.withValues(alpha: 0.18),
-                child: const Icon(Icons.person, color: Colors.white, size: 20),
-              ),
-              const SizedBox(width: 10),
-              Flexible(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name.isEmpty ? 'Клиент'.tr : name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 17,
-                        height: 1.1,
-                      ),
+    final phone = (_controller.jobData['clientPhone'] ?? '').toString().trim();
+    final name = Client.stripClientWord(
+      (_controller.jobData['clientName'] ?? '').toString(),
+      phone,
+    );
+    return ValueListenableBuilder<int>(
+      valueListenable: ClientService.regularRevision,
+      builder: (context, _, _) {
+        final isRegular =
+            _controller.jobData['clientIsRegular'] == true ||
+            ClientService.isRegularClient(
+              clientId: _controller.clientId,
+              phone: (_controller.jobData['clientPhone'] ?? '').toString(),
+              email: _controller.clientEmail,
+            );
+        return Tooltip(
+          message: 'Карточка клиента'.tr,
+          child: InkWell(
+            onTap: _openClientCard,
+            onLongPress: name.isNotEmpty
+                ? () => AppFeedback.copy(context, name)
+                : null,
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(6, 4, 8, 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircleAvatar(
+                    radius: 16,
+                    backgroundColor: Colors.white.withValues(alpha: 0.18),
+                    child: const Icon(
+                      Icons.person,
+                      color: Colors.white,
+                      size: 20,
                     ),
-                    Text(
-                      'Карточка клиента'.tr,
-                      maxLines: 1,
-                      style: TextStyle(
-                        fontSize: 11,
-                        height: 1.2,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white.withValues(alpha: 0.7),
-                      ),
+                  ),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                name.isEmpty
+                                    ? (phone.isEmpty ? 'Клиент'.tr : phone)
+                                    : name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 17,
+                                  height: 1.1,
+                                ),
+                              ),
+                            ),
+                            if (isRegular)
+                              const RegularClientStar(size: 18, onDark: true),
+                          ],
+                        ),
+                        Text(
+                          'Карточка клиента'.tr,
+                          maxLines: 1,
+                          style: TextStyle(
+                            fontSize: 11,
+                            height: 1.2,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white.withValues(alpha: 0.7),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 2),
+                  Icon(
+                    Icons.chevron_right,
+                    size: 20,
+                    color: Colors.white.withValues(alpha: 0.7),
+                  ),
+                ],
               ),
-              const SizedBox(width: 2),
-              Icon(
-                Icons.chevron_right,
-                size: 20,
-                color: Colors.white.withValues(alpha: 0.7),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -562,7 +603,7 @@ class _FolderTabs extends StatelessWidget implements PreferredSizeWidget {
     )!;
     final fg = Color.lerp(
       Colors.white.withValues(alpha: 0.85),
-      AppColors.primary,
+      AppColors.primaryOnCard,
       openness,
     )!;
     const radius = BorderRadius.vertical(top: Radius.circular(12));

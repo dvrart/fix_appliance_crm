@@ -12,21 +12,47 @@ import '../../../core/api_keys.dart';
 import '../../../services/assistant_audio_service.dart';
 
 /// Ловит wake-слово (FIX-Appliance / фикс).
-/// Основной путь — Android STT (быстро и надёжно для короткого имени).
-/// PCM+Gemini — запасной, если STT недоступен.
+///
+/// Основной путь — **непрерывный PCM + Gemini**. Android STT остаётся
+/// запасным: он сам закрывает сессию после `pauseFor` тишины, и каждый
+/// перезапуск — это щелчок включения/выключения микрофона и мигающая
+/// зелёная точка в шторке (жалоба FIX, 12.10.2026). PCM-поток открывает
+/// микрофон один раз и держит его, пока ассистент включён.
 class WakeWordService extends ChangeNotifier {
   static const _probeModels = [
-    'gemini-2.5-flash',
-    'gemini-3.6-flash',
-    'gemini-2.0-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-flash-lite-latest',
+    'gemini-flash-latest',
   ];
 
-  WakeWordService({AudioRecorder? recorder, stt.SpeechToText? speech})
-      : _recorder = recorder ?? AudioRecorder(),
-        _stt = speech ?? stt.SpeechToText();
+  @visibleForTesting
+  static const blindTranscribePrompt =
+      'Transcribe the spoken words in this audio clip verbatim in Russian '
+      '(Cyrillic) or English.\n'
+      'If there is no clear human speech (only silence, background noise, '
+      'hum, clicks, rustling, breathing, coughs, or unintelligible mumbles), '
+      'reply ONLY: EMPTY\n'
+      'Do not guess, invent, or autocomplete words. Do not add pronouns or '
+      'words that were not spoken. Reply with the transcript only.';
+
+  /// [preferStt] — начать сразу с запасного Android STT. В бою этого делать
+  /// не надо (он и щёлкает микрофоном); параметр нужен тестам, чтобы
+  /// проверять запасной путь, не завися от ключа Gemini.
+  /// [analyzer] — подмена разбора PCM для тестов без сети.
+  WakeWordService({
+    AudioRecorder? recorder,
+    stt.SpeechToText? speech,
+    bool preferStt = false,
+    Future<({String text, bool wake})> Function(Uint8List pcm)? analyzer,
+  })  : _recorder = recorder ?? AudioRecorder(),
+        _stt = speech ?? stt.SpeechToText(),
+        _useStt = preferStt,
+        _analyzer = analyzer;
 
   final AudioRecorder _recorder;
   final stt.SpeechToText _stt;
+  final Future<({String text, bool wake})> Function(Uint8List pcm)? _analyzer;
 
   bool _enabled = false;
   bool _starting = false;
@@ -34,7 +60,11 @@ class WakeWordService extends ChangeNotifier {
   bool _waking = false;
   bool _sttReady = false;
   bool _sttListening = false;
-  bool _useStt = true;
+  bool _carConnected = false;
+  bool _usingCarMic = false;
+
+  /// Микрофон не должен щёлкать: PCM держит его открытым, STT — нет.
+  bool _useStt;
   bool isArmed = false;
   bool _disposed = false;
   int _epoch = 0;
@@ -42,25 +72,38 @@ class WakeWordService extends ChangeNotifier {
   StreamSubscription<Uint8List>? _micSub;
   Timer? _reconnectTimer;
   Timer? _wakeTimer;
-  DateTime _nextProbeAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   final List<int> _preRoll = [];
   final BytesBuilder _utterance = BytesBuilder();
-  int _loudChunks = 0;
-  int _quietChunks = 0;
+  int _loudBytes = 0;
+  int _quietBytes = 0;
+  int _speechBytes = 0;
+  double _noiseFloor = 0.005;
+  double _peakRms = 0;
   bool _capturing = false;
+  bool _awaitingSilence = false;
+  Uint8List? _pendingPcm;
+  final Map<String, DateTime> _modelCooldownUntil = {};
 
-  static const _preRollBytes = 9600;
-  static const _speechRms = 0.0028;
-  static const _silenceRms = 0.0018;
-  static const _loudChunksNeeded = 1;
-  static const _quietChunksNeeded = 3;
-  static const _minUtteranceBytes = 6400;
-  static const _readyToProbeBytes = 9600;
-  static const _maxUtteranceBytes = 48000;
+  static const _preRollBytes = 12800; // 400 мс пре-ролла (16 кГц PCM16)
+  static const _minSpeechRms = 0.015;
+  static const _minSilenceRms = 0.006;
+  static const _minPeakRms = 0.026;
+  static const _triggerLoudBytes = 1920; // ~60 мс голоса для начала захвата
+  static const _endSilenceBytes = 14400; // 450 мс паузы = конец фразы
+  static const _minSpeechBytes = 12800; // минимум 400 мс живой речи («Фикс-аплаянс» ~0,8–1,3 с)
+  static const _minUtteranceBytes = 25600;
+  static const _maxUtteranceBytes = 86400; // 2,7 с с начала обращения
 
   void Function()? onWake;
   void Function(String reason)? onBlocked;
+
+  /// Что именно услышано перед последним пробуждением и каким путём
+  /// (`pcm` — Gemini по потоку, `stt` — Android). Ассистент открывался сам
+  /// (жалобы FIX 13.10 и 18.10.2026), а по чему — было не видно: в релизе
+  /// debugPrint не читается. Хост показывает это в снэкбаре и пишет в журнал.
+  String lastHeard = '';
+  String lastHeardSource = '';
 
   String _wakeWord = 'FIX-Appliance';
   List<String> _aliases = const [];
@@ -145,15 +188,40 @@ class WakeWordService extends ChangeNotifier {
     add('fix appliance');
     add('fix-appliance');
     add('fixappliance');
+    add('fx appliance');
+    add('fx alliance');
+    add('fix alliance');
+    add('fx up lines');
+    add('fx supplies');
+    add('fx plajens');
+    add('effix a players');
+    add('efix appliance');
+    add('фикс-аплаянс');
+    add('фикс аплаянс');
+    add('фиксаплаянс');
+    add('фикс аплайанс');
+    add('эфикс аплаянс');
+    add('эфикс аплайанс');
+    add('фикс альянс');
+    add('фикс-апплаянс');
+    add('фикс апплаянс');
     add('фикс апплаенс');
-    add('фикс');
-    add('fix');
-    add('fiks');
-    add('feeks');
-    add('фик');
-    add('fixes');
+    add('фиксапплаенс');
+    add('фикс аплаенс');
+    add('фикс эплаянс');
+    add('фикс эплаенс');
+    add('фикс аплайнс');
     phrases.removeWhere((item) => item.isEmpty);
     return phrases;
+  }
+
+  /// Слишком короткий вариант имени, чтобы включать по нему ассистента.
+  ///
+  /// Одно «fix» мастер произносит по двадцать раз на дню («fixed it», «fix
+  /// the dryer», «фиксирую»), и ассистент открывался сам (жалоба FIX,
+  /// 13.10.2026). Включаем только по полному имени: «FIX-Appliance».
+  static bool _tooShortToWake(String phrase) {
+    return phrase.replaceAll(' ', '').length < 8;
   }
 
   static int _distance(String a, String b) {
@@ -175,18 +243,185 @@ class WakeWordService extends ChangeNotifier {
     return prev[b.length];
   }
 
-  bool _tokenMatches(String word, Set<String> phrases) {
-    if (word.length < 3) return false;
-    if (phrases.contains(word)) return true;
-    final latin = _toLatin(word);
-    if (phrases.contains(latin)) return true;
-    for (final phrase in phrases) {
-      if (phrase.length < 3) continue;
-      final maxDist = phrase.length <= 4 ? 1 : 2;
-      if (_distance(word, phrase) <= maxDist) return true;
-      if (_distance(latin, _toLatin(phrase)) <= maxDist) return true;
+  static const _nonNameStartWords = {
+    'это',
+    'эта',
+    'эти',
+    'этого',
+    'этой',
+    'этом',
+    'из',
+    'от',
+    'да',
+    'нет',
+    'алло',
+    'але',
+    'ало',
+    'здравствуйте',
+    'здрасьте',
+    'компания',
+    'фирма',
+    'мастер',
+    'я',
+    'мы',
+    'вы',
+    'он',
+    'она',
+    'они',
+    'eto',
+    'eta',
+    'eti',
+    'iz',
+    'ot',
+    'da',
+    'net',
+    'allo',
+    'ale',
+    'alo',
+    'this',
+    'that',
+    'it',
+    'is',
+    'from',
+    'at',
+    'in',
+    'we',
+    'i',
+    'you',
+    'the',
+  };
+
+  /// Имя прозвучало целиком и почти без опечаток.
+  ///
+  /// Сравниваем подряд идущие слова, склеенные в одно, с самим именем:
+  /// «fiks appliance» из расшифровки дотягивает, «fixed the dryer» — нет.
+  /// Склейка всегда начинается с начала слова и с той же буквы, что и имя,
+  /// иначе «six appliance stores» отличалось бы от «fix appliance» на одну
+  /// букву и будило ассистента.
+  /// Возвращает границы совпавших слов (start..end включительно).
+  static ({int start, int end})? _matchSpan(List<String> words, String needle) {
+    if (needle.isEmpty) return null;
+    final maxDist = needle.length >= 10 ? 2 : 1;
+    for (var i = 0; i < words.length; i++) {
+      if (_nonNameStartWords.contains(words[i])) continue;
+      var joined = '';
+      for (var j = i; j < words.length; j++) {
+        joined += words[j];
+        if (joined.length > needle.length + 2) break;
+        if (joined == needle) return (start: i, end: j);
+        if (joined.isEmpty || joined[0] != needle[0]) break;
+        if (joined.length + 2 < needle.length) continue;
+        if (_distance(joined, needle) <= maxDist) return (start: i, end: j);
+      }
+    }
+    return null;
+  }
+
+  /// Имя — это обращение к ассистенту, а не упоминание фирмы в разговоре с
+  /// клиентом. Допускаем перед именем не более одного слова-оклика
+  /// («эй», «слушай», «окей», «hey», «ok»), но НЕ предлоги и не представление
+  /// компании («это фикс-аплаянс», «из фикс-аплаянс», «алло, фикс-аплаянс»,
+  /// «компания фикс-аплаянс», «I fix appliances»).
+  static const _maxWordsBeforeName = 1;
+
+  static const _vocativePrefixes = {
+    'hey',
+    'hi',
+    'ok',
+    'okay',
+    'yo',
+    'ay',
+    'eh',
+    'эй',
+    'хей',
+    'окей',
+    'ок',
+    'слушай',
+    'привет',
+    'ey',
+    'okey',
+    'slushay',
+    'privet',
+  };
+
+  static bool _isVocativePrefix(String word) {
+    return _vocativePrefixes.contains(word) ||
+        _vocativePrefixes.contains(_toLatin(word));
+  }
+
+  static const _companyTailFirstWords = {
+    'здравствуйте',
+    'здрасьте',
+    'алло',
+    'але',
+    'слушаю',
+    'говорите',
+    'это',
+    'работает',
+    'ремонтирует',
+    'чинит',
+    'занимается',
+    'дает',
+    'находится',
+    'speaking',
+    'hello',
+    'here',
+    'repairs',
+    'fixes',
+    'works',
+    'is',
+  };
+
+  static bool _isCompanyMentionTail(List<String> tail) {
+    if (tail.isEmpty) return false;
+    final first = tail[0];
+    final firstLat = _toLatin(first);
+    if (_companyTailFirstWords.contains(first) ||
+        _companyTailFirstWords.contains(firstLat)) {
+      return true;
+    }
+    if (tail.length >= 2) {
+      final pair = '${tail[0]} ${tail[1]}';
+      final pairLat = _toLatin(pair);
+      const companyPairs = {
+        'добрый день',
+        'доброе утро',
+        'добрый вечер',
+        'чем могу',
+        'меня зовут',
+        'мы находимся',
+        'мы работаем',
+        'мы ремонтируем',
+        'мы чиним',
+        'у нас',
+        'good morning',
+        'good afternoon',
+        'good evening',
+        'this is',
+        'my name',
+        'how can',
+        'how may',
+        'we are',
+        'we repair',
+        'we fix',
+      };
+      if (companyPairs.contains(pair) || companyPairs.contains(pairLat)) {
+        return true;
+      }
     }
     return false;
+  }
+
+  static bool _spanIsDirectCall(
+    List<String> words,
+    ({int start, int end}) span,
+  ) {
+    if (span.start > _maxWordsBeforeName) return false;
+    if (span.start == 1 && !_isVocativePrefix(words[0])) return false;
+    final tail = words.sublist(span.end + 1);
+    if (tail.length > 5) return false;
+    if (_isCompanyMentionTail(tail)) return false;
+    return true;
   }
 
   bool _probeSaysYes(String raw) {
@@ -209,34 +444,39 @@ class WakeWordService extends ChangeNotifier {
     return first == 'yes' || first == 'да';
   }
 
+  /// Прозвучало ли слово-будильник как прямое обращение к ассистенту.
+  ///
+  /// Только полное имя («Фикс-аплаянс», «FIX-Appliance») и те варианты из
+  /// настроек, что не короче восьми букв. Одиночное «fix» / «фикс» не будит,
+  /// как и упоминание фирмы в разговоре с клиентом.
   bool matchesWake(String raw) {
     final cleaned = normalizePhrase(raw);
     if (cleaned.isEmpty || cleaned == 'empty' || cleaned == 'noise') {
       return false;
     }
-    final phrases = _phrases;
-    final compact = cleaned.replaceAll(' ', '');
-    final latinCompact = _toLatin(compact);
-    const needles = [
-      'fixappliance',
-      'fix appliance',
-      'fix',
-      'fiks',
-      'feeks',
-      'fixes',
-      'фикс',
-      'фик',
-    ];
-    for (final needle in needles) {
-      if (compact.contains(needle) || latinCompact.contains(_toLatin(needle))) {
+    final words =
+        cleaned.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    if (words.isEmpty || words.length > 40) return false;
+    final latinWords = words.map(_toLatin).toList();
+    for (final phrase in _phrases) {
+      final needle = phrase.replaceAll(' ', '');
+      if (_tooShortToWake(phrase)) {
+        final idx = words.indexOf(phrase);
+        final latIdx = latinWords.indexOf(_toLatin(phrase));
+        final at = idx >= 0 ? idx : latIdx;
+        if (at >= 0 &&
+            _spanIsDirectCall(words, (start: at, end: at))) {
+          return true;
+        }
+        continue;
+      }
+      final span =
+          _matchSpan(words, needle) ?? _matchSpan(latinWords, _toLatin(needle));
+      if (span != null && _spanIsDirectCall(words, span)) {
         return true;
       }
     }
-    if (_tokenMatches(compact, phrases)) return true;
-    final words =
-        cleaned.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
-    if (words.isEmpty || words.length > 16) return false;
-    return words.any((word) => _tokenMatches(word, phrases));
+    return false;
   }
 
   static double pcmRms(Uint8List bytes) {
@@ -287,11 +527,26 @@ class WakeWordService extends ChangeNotifier {
     _wakeTimer?.cancel();
     _wakeTimer = null;
     _capturing = false;
-    _loudChunks = 0;
-    _quietChunks = 0;
+    _awaitingSilence = false;
+    _loudBytes = 0;
+    _quietBytes = 0;
+    _speechBytes = 0;
+    _peakRms = 0;
+    _pendingPcm = null;
     _preRoll.clear();
     _utterance.clear();
     return _disposed ? _transition : _serialize(_stopNative);
+  }
+
+  Future<void> refreshAudioRoute() async {
+    if (_disposed || !_enabled || _waking) return;
+    final epoch = ++_epoch;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    await _serialize(_stopNative);
+    if (_isCurrent(epoch)) {
+      await _listen(epoch);
+    }
   }
 
   Future<void> _stopNative() async {
@@ -306,6 +561,10 @@ class WakeWordService extends ChangeNotifier {
       await _stt.cancel();
     } catch (_) {}
     await AssistantAudioService.muteRecognitionBeeps(false);
+    if (_usingCarMic) {
+      _usingCarMic = false;
+      await AssistantAudioService.releaseWakeCarAudio();
+    }
   }
 
   Future<void> _tearDown() async {
@@ -317,6 +576,10 @@ class WakeWordService extends ChangeNotifier {
     try {
       await _recorder.stop();
     } catch (_) {}
+    if (_usingCarMic) {
+      _usingCarMic = false;
+      await AssistantAudioService.releaseWakeCarAudio();
+    }
   }
 
   void _setArmed(bool value) {
@@ -327,9 +590,17 @@ class WakeWordService extends ChangeNotifier {
 
   Future<bool> _allowListening(int epoch) async {
     if (!_isCurrent(epoch)) return false;
-    final allowed = await AssistantAudioService.canListenForWake();
+    if (AssistantAudioService.playback.isActive) {
+      await _stopNative();
+      if (_isCurrent(epoch)) _scheduleReconnect(epoch);
+      return false;
+    }
+    final state = await AssistantAudioService.readState();
     if (!_isCurrent(epoch)) return false;
-    if (allowed && !AssistantAudioService.playback.isActive) return true;
+    _carConnected = state.carConnected;
+    if (!state.blocksWake && !AssistantAudioService.playback.isActive) {
+      return true;
+    }
     await _stopNative();
     if (_isCurrent(epoch)) _scheduleReconnect(epoch);
     return false;
@@ -383,22 +654,20 @@ class WakeWordService extends ChangeNotifier {
         if (!_canStart(epoch)) return;
       }
       if (!_sttReady) {
-        debugPrint('WakeWord: STT недоступен, PCM fallback');
-        _useStt = false;
+        // PCM сюда уже не возвращаемся: в него и упирается запасной путь.
+        debugPrint('WakeWord: STT недоступен');
         await _stopStt();
-        if (!_canStart(epoch)) return;
-        await _listenPcm(epoch);
+        _setArmed(false);
+        if (_isCurrent(epoch)) _scheduleReconnect(epoch);
         return;
       }
 
       await _startSttSession(epoch);
     } catch (e) {
       debugPrint('WakeWord STT start failed: $e');
-      if (!_canStart(epoch)) return;
-      _useStt = false;
       await _stopStt();
-      if (!_canStart(epoch)) return;
-      await _listenPcm(epoch);
+      _setArmed(false);
+      if (_isCurrent(epoch)) _scheduleReconnect(epoch);
     }
   }
 
@@ -420,6 +689,14 @@ class WakeWordService extends ChangeNotifier {
     await AssistantAudioService.muteRecognitionBeeps(true);
     if (!_canStart(epoch)) return;
     if (!await _allowListening(epoch) || !_canStart(epoch)) return;
+    if (_carConnected) {
+      await AssistantAudioService.preferredInputDevice(forWake: true);
+      if (!_canStart(epoch)) {
+        await AssistantAudioService.releaseWakeCarAudio();
+        return;
+      }
+      _usingCarMic = true;
+    }
     _sttListening = true;
     debugPrint('WakeWord: STT слушаю «$_wakeWord»');
     try {
@@ -432,6 +709,8 @@ class WakeWordService extends ChangeNotifier {
             'WakeWord STT: "$words" final=${result.finalResult}',
           );
           if (matchesWake(words)) {
+            lastHeard = words;
+            lastHeardSource = 'stt';
             unawaited(_fireWake());
           }
         },
@@ -492,25 +771,41 @@ class WakeWordService extends ChangeNotifier {
         );
         return;
       }
-      if (kGeminiApiKey.isEmpty || kGeminiApiKey == 'YOUR_GEMINI_API_KEY') {
-        debugPrint('WakeWord: нет ключа Gemini');
-        onBlocked?.call('Не настроен ключ Gemini — wake-слово не работает.');
+      if (_analyzer == null &&
+          (kGeminiApiKey.isEmpty || kGeminiApiKey == 'YOUR_GEMINI_API_KEY')) {
+        // Без ключа разбирать поток нечем — остаётся STT, пусть и со щелчком.
+        debugPrint('WakeWord: нет ключа Gemini, STT fallback');
+        await _fallbackToStt(epoch);
         return;
       }
       if (!await _allowListening(epoch) || !_canStart(epoch)) return;
+      InputDevice? carInput;
+      if (_carConnected) {
+        carInput = await AssistantAudioService.preferredInputDevice(
+          forWake: true,
+        );
+        if (!_canStart(epoch)) {
+          await AssistantAudioService.releaseWakeCarAudio();
+          return;
+        }
+      }
+      _usingCarMic = carInput != null || _carConnected;
 
       final stream = await _recorder.startStream(
-        const RecordConfig(
+        RecordConfig(
           encoder: AudioEncoder.pcm16bits,
           sampleRate: 16000,
           numChannels: 1,
-          echoCancel: false,
-          noiseSuppress: false,
+          device: carInput,
+          echoCancel: carInput != null,
+          noiseSuppress: true,
           autoGain: true,
           audioInterruption: AudioInterruptionMode.none,
           androidConfig: AndroidRecordConfig(
             manageBluetooth: false,
-            audioSource: AndroidAudioSource.mic,
+            audioSource: carInput != null
+                ? AndroidAudioSource.voiceCommunication
+                : AndroidAudioSource.mic,
             speakerphone: false,
             audioManagerMode: AudioManagerMode.modeNormal,
           ),
@@ -518,9 +813,14 @@ class WakeWordService extends ChangeNotifier {
       );
       if (!_canStart(epoch)) return;
       if (!await _allowListening(epoch) || !_canStart(epoch)) return;
-      _loudChunks = 0;
-      _quietChunks = 0;
+      _loudBytes = 0;
+      _quietBytes = 0;
+      _speechBytes = 0;
+      _peakRms = 0;
+      _noiseFloor = 0.005;
       _capturing = false;
+      _awaitingSilence = false;
+      _pendingPcm = null;
       _preRoll.clear();
       _utterance.clear();
       late final StreamSubscription<Uint8List> sub;
@@ -537,13 +837,24 @@ class WakeWordService extends ChangeNotifier {
       );
       _micSub = sub;
       _setArmed(true);
-      debugPrint('WakeWord: PCM слушаю «$_wakeWord» (fallback)');
+      debugPrint('WakeWord: PCM слушаю «$_wakeWord»');
     } catch (e) {
       debugPrint('WakeWord: start failed $e');
       await _tearDown();
       _setArmed(false);
-      if (_isCurrent(epoch)) _scheduleReconnect(epoch);
+      await _fallbackToStt(epoch);
     }
+  }
+
+  /// Микрофон потоком не открылся. Лучше щёлкающий STT, чем глухой ассистент.
+  Future<void> _fallbackToStt(int epoch) async {
+    if (_useStt) {
+      if (_isCurrent(epoch)) _scheduleReconnect(epoch);
+      return;
+    }
+    _useStt = true;
+    if (!_canStart(epoch)) return;
+    await _listenStt(epoch);
   }
 
   Future<void> _onStreamDead(
@@ -557,76 +868,124 @@ class WakeWordService extends ChangeNotifier {
       });
 
   void _onPcm(Uint8List chunk) {
-    if (_waking) return;
+    if (_waking || chunk.isEmpty) return;
     _preRoll.addAll(chunk);
     if (_preRoll.length > _preRollBytes) {
       _preRoll.removeRange(0, _preRoll.length - _preRollBytes);
     }
 
     final rms = pcmRms(chunk);
+    final speechRms = math.max(_minSpeechRms, _noiseFloor * 3.0);
+    final silenceRms = math.max(_minSilenceRms, _noiseFloor * 1.6);
+
+    if (_awaitingSilence) {
+      if (rms < silenceRms) {
+        _quietBytes += chunk.length;
+        _noiseFloor = (_noiseFloor * 0.94 + rms * 0.06).clamp(0.002, 0.040);
+        if (_quietBytes >= _endSilenceBytes) {
+          _awaitingSilence = false;
+          _quietBytes = 0;
+          _loudBytes = 0;
+        }
+      } else {
+        _quietBytes = 0;
+        _noiseFloor = (_noiseFloor * 0.985 + rms * 0.015).clamp(0.002, 0.040);
+      }
+      return;
+    }
+
     if (!_capturing) {
-      if (rms >= _speechRms) {
-        _loudChunks++;
-        if (_loudChunks >= _loudChunksNeeded) {
+      if (rms >= speechRms) {
+        _loudBytes += chunk.length;
+        if (_loudBytes >= _triggerLoudBytes) {
           _capturing = true;
-          _quietChunks = 0;
+          _quietBytes = 0;
+          _speechBytes = _loudBytes;
+          _peakRms = rms;
           _utterance.clear();
           _utterance.add(Uint8List.fromList(_preRoll));
         }
       } else {
-        _loudChunks = 0;
+        _loudBytes = 0;
+        _noiseFloor = (_noiseFloor * 0.92 + rms * 0.08).clamp(0.002, 0.040);
       }
       return;
     }
 
     _utterance.add(chunk);
-    if (rms < _silenceRms) {
-      _quietChunks++;
+    if (rms > _peakRms) _peakRms = rms;
+    if (rms >= speechRms) {
+      _quietBytes = 0;
+      _speechBytes += chunk.length;
+    } else if (rms < silenceRms) {
+      _quietBytes += chunk.length;
     } else {
-      _quietChunks = 0;
+      _quietBytes += chunk.length ~/ 2;
     }
 
-    final size = _utterance.length;
-    if (!_probing &&
-        size >= _readyToProbeBytes &&
-        DateTime.now().isAfter(_nextProbeAt)) {
-      var snap = Uint8List.fromList(_utterance.toBytes());
-      if (snap.length > 32000) {
-        snap = Uint8List.fromList(snap.sublist(snap.length - 32000));
-      }
-      unawaited(_probeWakeWord(snap));
-    }
-
-    final ended = _quietChunks >= _quietChunksNeeded;
-    final tooLong = size >= _maxUtteranceBytes;
+    final ended = _quietBytes >= _endSilenceBytes;
+    final tooLong = _utterance.length >= _maxUtteranceBytes;
     if (!ended && !tooLong) return;
 
-    var pcm = _utterance.takeBytes();
+    final pcm = _utterance.takeBytes();
+    final spoken = _speechBytes;
+    final peak = _peakRms;
     _capturing = false;
-    _loudChunks = 0;
-    _quietChunks = 0;
-    if (_probing || pcm.length < _minUtteranceBytes) return;
-    if (pcm.length > 32000) {
-      pcm = Uint8List.fromList(pcm.sublist(pcm.length - 32000));
+    _loudBytes = 0;
+    _quietBytes = 0;
+    _speechBytes = 0;
+    _peakRms = 0;
+    if (tooLong && !ended) {
+      // Длинная непрерывная речь (>2,7 с без паузы): проверяем её начало, а
+      // остаток того же предложения не режем на новые куски до паузы.
+      _awaitingSilence = true;
+    }
+    final minPeak = math.max(_minPeakRms, _noiseFloor * 3.5);
+    if (spoken < _minSpeechBytes ||
+        pcm.length < _minUtteranceBytes ||
+        peak < minPeak) {
+      return;
+    }
+    debugPrint(
+      'WakeWord capture: ${(pcm.length / 32000).toStringAsFixed(2)}s '
+      'speech=${(spoken / 32000).toStringAsFixed(2)}s '
+      'peak=${peak.toStringAsFixed(4)} floor=${_noiseFloor.toStringAsFixed(4)}',
+    );
+    if (_probing) {
+      _pendingPcm = pcm;
+      return;
     }
     unawaited(_probeWakeWord(pcm));
   }
 
   Future<void> _probeWakeWord(Uint8List pcm) async {
     if (!_enabled || _probing || _waking) return;
-    if (DateTime.now().isBefore(_nextProbeAt)) return;
     _probing = true;
-    _nextProbeAt = DateTime.now().add(const Duration(milliseconds: 420));
-    final epoch = _epoch;
+    var currentPcm = pcm;
     try {
-      final result = await _analyzeUtterance(pcm);
-      if (epoch != _epoch || !_enabled || _waking) return;
-      debugPrint('WakeWord probe: ${result.text} wake=${result.wake}');
-      if (result.wake || matchesWake(result.text)) {
-        await _fireWake();
+      while (_enabled && !_waking) {
+        final epoch = _epoch;
+        try {
+          final analyze = _analyzer ?? _analyzeUtterance;
+          final result = await analyze(currentPcm);
+          if (epoch != _epoch || !_enabled || _waking) return;
+          debugPrint('WakeWord probe: ${result.text} wake=${result.wake}');
+          // Нужны оба голоса: и «да» модели, и само имя в расшифровке.
+          if (result.wake && matchesWake(result.text)) {
+            _pendingPcm = null;
+            lastHeard = result.text;
+            lastHeardSource = 'pcm';
+            await _fireWake();
+            return;
+          }
+        } catch (e) {
+          debugPrint('WakeWord probe failed: $e');
+        }
+        final next = _pendingPcm;
+        _pendingPcm = null;
+        if (next == null) break;
+        currentPcm = next;
       }
-    } catch (e) {
-      debugPrint('WakeWord probe failed: $e');
     } finally {
       _probing = false;
     }
@@ -634,22 +993,25 @@ class WakeWordService extends ChangeNotifier {
 
   Future<({String text, bool wake})> _analyzeUtterance(Uint8List pcm) async {
     final wav = _pcm16ToWav(pcm, 16000);
+    final now = DateTime.now();
+    final activeModels = _probeModels
+        .where((m) => (_modelCooldownUntil[m] ?? now).isBefore(now))
+        .toList();
+    final candidates = activeModels.isNotEmpty ? activeModels : _probeModels;
     Object? last;
-    for (final name in _probeModels) {
+    for (final name in candidates) {
       try {
         final model = GenerativeModel(
           model: name,
           apiKey: kGeminiApiKey,
+          generationConfig: GenerationConfig(
+            temperature: 0,
+            maxOutputTokens: 64,
+          ),
         );
         final response = await model.generateContent([
           Content.multi([
-            TextPart(
-              'The wake name is FIX-Appliance (sounds like fix appliance, фикс апплаенс). '
-              'Transcribe the clip, then say if that name was spoken. '
-              'Reply exactly:\n'
-              'T: <spoken words or EMPTY>\n'
-              'W: YES or NO',
-            ),
+            TextPart(blindTranscribePrompt),
             DataPart('audio/wav', wav),
           ]),
         ]).timeout(const Duration(milliseconds: 4500));
@@ -658,6 +1020,13 @@ class WakeWordService extends ChangeNotifier {
         return _parseWakeReply(raw);
       } catch (e) {
         last = e;
+        final msg = e.toString().toLowerCase();
+        if (msg.contains('429') ||
+            msg.contains('quota') ||
+            msg.contains('resource_exhausted')) {
+          _modelCooldownUntil[name] =
+              DateTime.now().add(const Duration(minutes: 15));
+        }
         debugPrint('WakeWord $name failed: $e');
       }
     }
@@ -667,14 +1036,14 @@ class WakeWordService extends ChangeNotifier {
 
   ({String text, bool wake}) _parseWakeReply(String raw) {
     var text = '';
-    var wake = false;
+    bool? explicitWake;
     for (final line in raw.split(RegExp(r'[\r\n]+'))) {
       final trimmed = line.trim();
       final lower = trimmed.toLowerCase();
       if (lower.startsWith('t:')) {
         text = trimmed.substring(2).trim();
       } else if (lower.startsWith('w:')) {
-        wake = _probeSaysYes(trimmed.substring(2));
+        explicitWake = _probeSaysYes(trimmed.substring(2));
       }
     }
     if (text.isEmpty) {
@@ -683,10 +1052,12 @@ class WakeWordService extends ChangeNotifier {
           .replaceAll(RegExp(r't:', caseSensitive: false), '')
           .trim();
     }
-    if (!wake) {
-      wake = matchesWake(text);
+    final upper = text.toUpperCase();
+    if (upper == 'EMPTY' || upper == 'NOISE' || upper == 'NONE') {
+      return (text: 'EMPTY', wake: false);
     }
-    return (text: text, wake: wake);
+    final matched = matchesWake(text);
+    return (text: text, wake: (explicitWake ?? true) && matched);
   }
 
   Future<void> _fireWake() async {
@@ -706,6 +1077,7 @@ class WakeWordService extends ChangeNotifier {
         _waking = false;
         return;
       }
+      _waking = false;
       onWake?.call();
     });
   }

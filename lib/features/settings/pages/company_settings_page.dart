@@ -205,7 +205,7 @@ class _CompanySettingsPageState extends State<CompanySettingsPage> {
                       const SizedBox(height: 10),
                       Text(
                         'Нажмите на логотип, чтобы заменить'.tr,
-                        style: TextStyle(color: Colors.black54),
+                        style: TextStyle(color: AppColors.inkMuted),
                       ),
                     ],
                   ),

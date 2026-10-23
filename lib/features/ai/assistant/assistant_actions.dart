@@ -12,6 +12,7 @@ import '../../../services/maps_service.dart';
 import '../../../shared/app_nav.dart';
 import '../../calls/call_screen.dart';
 import '../../clients/client_details_screen.dart';
+import '../../diagnostics/diagnostics_screen.dart';
 import '../../jobs/job_details/job_details_screen.dart';
 import '../../messages/conversation_screen.dart';
 import '../../settings/pages/appearance_settings_page.dart';
@@ -58,8 +59,8 @@ class AssistantActions {
 
   static Future<void> _run(AssistantUiAction action) async {
     await Future<void>.delayed(Duration.zero);
-    final nav = rootNavigatorKey.currentState;
-    final context = rootNavigatorKey.currentContext;
+    final nav = AppNav.activeTabNavigator ?? rootNavigatorKey.currentState;
+    final context = nav?.context ?? rootNavigatorKey.currentContext;
     if (nav == null || context == null || !context.mounted) return;
     final args = action.payload;
 
@@ -127,6 +128,18 @@ class AssistantActions {
       case 'open_settings':
         nav.push(
           MaterialPageRoute(builder: (_) => const AppearanceSettingsPage()),
+        );
+        return;
+      case 'open_diagnostics':
+        nav.push(
+          MaterialPageRoute(
+            builder: (_) => DiagnosticsScreen(
+              initialQuery: (args['query'] as String?) ?? '',
+              initialAppliance: (args['appliance'] as String?) ?? 'all',
+              initialBrand: (args['brand'] as String?) ?? 'all',
+              initialKind: (args['kind'] as String?) ?? 'all',
+            ),
+          ),
         );
         return;
       default:

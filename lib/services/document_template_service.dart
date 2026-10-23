@@ -273,8 +273,8 @@ class DocumentTemplateService {
 
   static String _bodyWithUrl(String body, String url) {
     var text = body.trim();
-    if (text.contains('{url}')) {
-      text = text.replaceAll('{url}', url);
+    if (SmsText.hasPlaceholder(text, 'url')) {
+      text = SmsText.replacePlaceholder(text, 'url', url);
     } else if (url.isNotEmpty && !text.contains(url)) {
       text = '$text\n\nDownload:\n$url';
     }
@@ -282,8 +282,7 @@ class DocumentTemplateService {
   }
 
   static String _bodyWithoutUrl(String body) {
-    return body
-        .replaceAll('{url}', '')
+    return SmsText.replacePlaceholder(body, 'url', '')
         .replaceAll(RegExp(r'\n*Download:\s*', caseSensitive: false), '\n')
         .replaceAll(RegExp(r'\n{3,}'), '\n\n')
         .trim();

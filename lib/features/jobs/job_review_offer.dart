@@ -71,13 +71,14 @@ class JobReviewOffer {
     final reviewUrl = SettingsService.readGoogleReviewUrl(config);
     final template =
         templates['job_done'] ?? SettingsService.defaultJobDoneSms;
-    var body = SmsText.fillName(template, name)
-        .replaceAll('{date}', '')
-        .replaceAll('{time}', '')
-        .replaceAll('{address}', address.trim())
-        .replaceAll('{review}', reviewUrl)
-        .replaceAll('{appliance}', '')
-        .trim();
+    var body = SmsText.fillName(template, name);
+    body = SmsText.replacePlaceholder(body, 'date', '');
+    body = SmsText.replacePlaceholder(body, 'time', '');
+    body = SmsText.replacePlaceholder(body, 'address', address.trim());
+    body = SmsText.replacePlaceholder(body, 'review', reviewUrl);
+    body = SmsText.replacePlaceholder(body, 'url', reviewUrl);
+    body = SmsText.replacePlaceholder(body, 'appliance', '');
+    body = body.trim();
     // Дописываем ссылку, только если в тексте её вообще нет. Раньше сравнивали
     // с адресом из настроек, и шаблон с вписанной руками ссылкой получал вторую.
     if (reviewUrl.isNotEmpty && !_hasLink(body)) {

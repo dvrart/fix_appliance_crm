@@ -8,12 +8,15 @@ import 'firestore_service.dart';
 import '../core/api_keys.dart';
 import '../core/app_commands.dart';
 import '../core/constants.dart';
+import '../models/client.dart';
 import '../models/job.dart';
 import 'auth_service.dart';
 import 'client_service.dart';
 import 'network_status_service.dart';
+import 'notification_service.dart';
 import 'offline_queue_service.dart';
 import 'twilio_service.dart';
+import '../shared/widgets/call_transcript_chat.dart';
 
 /// Сервис для работы с заявками
 class JobService {
@@ -144,6 +147,19 @@ class JobService {
     try {
       await TwilioService.markJobCallsReviewed(id);
     } catch (_) {}
+    try {
+      final job = await getById(id);
+      await NotificationService.dismissJob(
+        jobId: id,
+        from: job == null
+            ? ''
+            : (job.intakeSource == 'email'
+                  ? job.sourceEmailFrom
+                  : job.clientPhone),
+        callId: job?.sourceCallId ?? '',
+        messageId: job?.sourceEmailId ?? '',
+      );
+    } catch (_) {}
   }
 
   static Future<List<Job>> loadAllOnce() async {
@@ -248,7 +264,7 @@ class JobService {
   static int _fillScore(Job job) {
     var n = 0;
     if (job.clientName.trim().isNotEmpty &&
-        !job.clientName.startsWith('Клиент')) {
+        !Client.isPlaceholderName(job.clientName)) {
       n += 4;
     }
     if (job.clientAddress.trim().isNotEmpty) n += 3;
@@ -349,9 +365,16 @@ class JobService {
   /// ответа сервера, а нам нужно сразу открыть карточку.
   static Future<String> create(Job job) async {
     final docRef = _ref.doc();
+    final isRegular =
+        job.clientIsRegular ||
+        ClientService.isRegularClient(
+          clientId: job.clientId,
+          phone: job.clientPhone,
+        );
     await settleWrite(
       docRef.set({
         ...job.toMap(),
+        if (isRegular) 'clientIsRegular': true,
         'createdAt': FieldValue.serverTimestamp(),
       }),
     );
@@ -380,6 +403,7 @@ class JobService {
       clientName: original.clientName,
       clientPhone: original.clientPhone,
       clientAddress: original.clientAddress,
+      clientIsRegular: original.clientIsRegular,
       hasJobSite: original.hasJobSite,
       jobSiteName: original.jobSiteName,
       jobSitePhone: original.jobSitePhone,
@@ -558,19 +582,21 @@ class JobService {
         changed = true;
         final nextT = transcription.trim();
         final prevT = (map['transcription'] ?? '').toString();
-        map['transcription'] = nextT.length >= prevT.length ? nextT : prevT;
+        map['transcription'] = keepFullerTranscript(prevT, nextT);
         if (summary.trim().isNotEmpty) map['summary'] = summary;
         if (transcriptionRu != null) {
           final nextRu = transcriptionRu.trim();
           final prevRu = (map['transcriptionRu'] ?? '').toString();
-          map['transcriptionRu'] =
-              nextRu.length >= prevRu.length ? nextRu : prevRu;
+          map['transcriptionRu'] = keepFullerTranscript(prevRu, nextRu);
         }
         if (transcriptionEn != null) {
           final nextEn = transcriptionEn.trim();
           final prevEn = (map['transcriptionEn'] ?? '').toString();
-          map['transcriptionEn'] =
-              nextEn.length >= prevEn.length ? nextEn : prevEn;
+          map['transcriptionEn'] = keepFullerTranscript(
+            prevEn,
+            nextEn,
+            preferRussian: false,
+          );
         }
         return map;
       }).toList();

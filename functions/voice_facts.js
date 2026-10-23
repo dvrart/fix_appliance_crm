@@ -30,7 +30,7 @@ Visit days, hours, and prices are in the owner rules.
 You do NOT book visits and cannot see the calendar. Ask what day and time would suit them, note it, and say the technician will contact them to set the exact time. Never confirm, promise, or propose a slot, and never say a time is free or taken.
 When you have enough, or they want a callback: pass it to the tech, photo of the model sticker, anything else. If they say no: Have a good day. Do not hang up.`;
 
-const EXTRACT_CARD_RULES = `Keep street, city, unit, and postal code in the original English/Canadian spelling. Never translate or transliterate into Russian (write "King Street", not "Кинг-стрит"; "Toronto", not "Торонто"). Person names stay in English as spoken. If the customer spelled a name, street or city letter by letter ("S-Z-U-B-A"), or corrected a mishearing, use the spelled / corrected version — the latest correction wins over the first guess. client_name is ONLY the customer's own name — the person who calls or writes in. Never the shop side: not the technician (Artem), not the receptionist or AI (Sarah), not a name the shop used to introduce itself ("my name is…", "this is…", "…speaking"), not the person the customer asks for. Never an ordinary word or pronoun (she, ready, here, at). If the customer never said their own name, client_name=null. problem_description is ONLY the appliance fault and model number — never the SMS, email, or call transcript. client_email is the customer's email from the letter body, not a booking-agency From: address.`;
+const EXTRACT_CARD_RULES = `Keep street, city, unit, and postal code in the original English/Canadian spelling. Never translate or transliterate into Russian (write "King Street", not "Кинг-стрит"; "Toronto", not "Торонто"). Person names stay in English as spoken. If the customer spelled a name, street or city letter by letter ("S-Z-U-B-A"), or corrected a mishearing, use the spelled / corrected version — the latest correction wins over the first guess. client_name is ONLY the customer's own name — the person who calls or writes in. Never the shop side: not the technician (Artem), not the receptionist or AI (Sarah), not a name the shop used to introduce itself ("my name is…", "this is…", "…speaking"), not the person the customer asks for. Never an ordinary word or pronoun (she, ready, here, at). If the customer never said their own name, client_name=null. problem_description is ONLY the appliance fault in natural Russian for the technician (keep brand, model/serial number, and error codes in Latin; no English duplicate in parentheses) — never the SMS, email, or call transcript. client_email is the customer's email from the letter body, not a booking-agency From: address.`;
 
 const VOICE_LIVE_FLOW = `Talk like a person. First reply is a real reaction, then one easy follow-up. Listen. Do not run a checklist. Do not re-ask.
 ${VOICE_CLARIFY_RULES}
@@ -670,6 +670,15 @@ function isPlaceholderClientName(name) {
   if (/^\+?\d[\d\s\-().]{6,}$/.test(s)) return true;
   if (s.split(/\s+/).every((part) => isNameStop(part))) return true;
   return false;
+}
+
+function stripClientPrefix(name, fallbackPhone) {
+  const s = String(name || '')
+    .trim()
+    .replace(/^(клиент|client)(?=\s|$|\+)\s*/i, '')
+    .trim();
+  if (s) return s;
+  return String(fallbackPhone || '').trim();
 }
 
 function usableClientName(raw) {
@@ -1398,6 +1407,7 @@ module.exports = {
   looksLikeGarbageName,
   looksLikePersonName,
   isPlaceholderClientName,
+  stripClientPrefix,
   usableClientName,
   toLatin,
   editDistance,

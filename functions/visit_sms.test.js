@@ -418,7 +418,7 @@ test('a reschedule waits for the owner instead of texting the client', async () 
   assert.equal(pushes.length, 1);
 });
 
-test('an automatic reply is parked in the outbox, not sent to the client', async () => {
+test('manual visit confirmation on the job card does not queue a duplicate SMS', async () => {
   const before = job({ smsConfirmStatus: 'pending' });
   const after = structuredClone(before);
   after.visits[0].smsConfirmStatus = 'confirmed';
@@ -427,13 +427,8 @@ test('an automatic reply is parked in the outbox, not sent to the client', async
   const queued = [...store.entries()]
     .filter(([path]) => path.startsWith(`${COMPANY}/messages/`))
     .map(([, data]) => data);
-  assert.equal(queued.length, 1);
-  assert.equal(queued[0].status, 'awaiting_approval');
-  assert.equal(queued[0].approval, 'pending');
-  assert.equal(queued[0].direction, 'outbound');
-  assert.match(queued[0].body, /See you/);
-  assert.equal(pushes[0][0], 'Сообщение ждёт отправки');
-  assert.equal(pushes[0][2].type, 'outbox');
+  assert.equal(queued.length, 0);
+  assert.equal(pushes.length, 0);
 });
 
 test('a transaction failure after provider acceptance does not resend', async () => {
@@ -510,11 +505,23 @@ test('legacy SMS rescheduling acknowledgement is not replaced with pending', asy
   const result = await trigger(before, after);
   assert.equal(result.visits[0].smsBooking.state, 'sent');
   assert.equal(result.visits[0].smsConfirmStatus, 'confirmed');
-  // Единственный push — про ответ клиенту, который лёг в очередь на одобрение;
-  // само подтверждение визита мастера не дёргает.
-  assert.equal(pushes.length, 1);
-  assert.equal(pushes[0][2].type, 'outbox');
+  assert.equal(pushes.length, 0);
   assert.equal(providerCalls, 0);
+});
+
+test('a second confirmation reply from an already confirmed client does not duplicate SMS or alert unmatched', async () => {
+  store.set(JOB, job());
+  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
+  assert.equal(providerCalls, 1);
+  const firstPushCount = pushes.length;
+  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
+  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: 'yes' });
+  assert.equal(providerCalls, 1);
+  assert.equal(pushes.length, firstPushCount);
+  const messages = [...store.entries()]
+    .filter(([path]) => path.startsWith(`${COMPANY}/messages/`))
+    .map(([, data]) => data);
+  assert.equal(messages.length, 1);
 });
 
 test('a "1" visit confirmation is sent to the client automatically, bypassing owner approval', async () => {
@@ -532,6 +539,22 @@ test('a "1" visit confirmation is sent to the client automatically, bypassing ow
   assert.notEqual(messages[0].status, 'awaiting_approval');
   assert.equal(messages[0].direction, 'outbound');
   assert.match(messages[0].body, /See you/);
+});
+
+// Решение FIX, 21.10.2026: в шторку идут звонки, SMS и то, что требует
+// решения. «Клиент подтвердил» не требует ничего — карточку приходилось
+// только смахивать. Подтверждение видно в самой заявке, а ответ клиента
+// остаётся непрочитанным сообщением на вкладке «Связь».
+test('a confirmed visit does not wake the owner, a cancellation still does', async () => {
+  store.set(JOB, job());
+  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
+  assert.equal(store.get(JOB).visits[0].smsConfirmStatus, 'confirmed');
+  assert.deepEqual(pushes, []);
+
+  store.set(JOB, { ...job({ smsDialog: 'save_offer' }), scheduledAt: START });
+  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '0' });
+  assert.equal(store.get(JOB).visits[0].outcome, 'cancelled');
+  assert.ok(pushes.length > 0, 'об отмене мастер узнаёт сразу');
 });
 
 test('if the automatic confirmation send fails, it falls back to the approval queue', async () => {
@@ -581,6 +604,117 @@ test('SMS cancellation does not overwrite a concurrent app move', async () => {
   assert.equal(providerCalls, 0);
   assert.equal(pushes.length, 1);
   assert.equal(pushes[0][2].type, 'outbox');
+});
+
+test('the cancel digit the template advertises cancels instead of moving the visit', async () => {
+  // Боевой шаблон просит «❌ CANCEL - 2️⃣», а разбор знал только «0». Ответ «2»
+  // уходил в поиск времени (inferTimeFromText('2') = 14:00) и переносил визит
+  // на два часа дня вместо отмены (найдено проверкой 12.10.2026).
+  store.set(`${COMPANY}/settings/sms_templates`, {
+    booking_confirm: 'Your visit {date} {time}\n✅ CONFIRM - 1️⃣\n❌ CANCEL - 2️⃣\n🔁 ANOTHER DAY - 5️⃣',
+  });
+  store.set(JOB, { ...job(), scheduledAt: START, scheduledDate: START });
+  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '2' });
+  const saved = store.get(JOB);
+  // Визит не уехал на другое время, а встал в разговор об отмене.
+  assert.deepEqual(saved.visits[0].startAt, START);
+  assert.equal(saved.visits[0].smsDialog, 'save_offer');
+  assert.equal(pushes.some(([title]) => title === 'Клиент просит отмену'), true);
+});
+
+test('without a cancel digit in the template a bare 2 is still not a cancel', async () => {
+  store.set(`${COMPANY}/settings/sms_templates`, {
+    booking_confirm: 'Your visit {date} {time}\nReply 1 to confirm, 0 to cancel, 5 for another day',
+  });
+  store.set(JOB, { ...job(), scheduledAt: START, scheduledDate: START });
+  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '2' });
+  assert.equal(store.get(JOB).visits[0].smsDialog, undefined);
+});
+
+test('a visit reminder never asks the client to confirm again, and skips already confirmed visits', async () => {
+  // Решение FIX 13.10.2026: подтверждение просим один раз, при записи. Шаблон
+  // напоминания правит сам FIX, поэтому просьбу снимаем на отправке.
+  store.set(`${COMPANY}/settings/config`, { reminderSmsEnabled: true });
+  store.set(`${COMPANY}/settings/sms_templates`, {
+    day_before:
+      'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}\n\nReply:\n✅ CONFIRM - 1️⃣\n❌ CANCEL - 2️⃣\n🔁 ANOTHER DAY - 5️⃣',
+  });
+  store.set(JOB, {
+    status: 'Вызов',
+    needsReview: false,
+    clientName: 'Reminder Client',
+    clientPhone: '+14165550101',
+    clientAddress: '7 Trinity Lane, Waterford',
+    visits: [{
+      id: 'reminder-visit',
+      startAt: new Date(Date.now() + 24 * 3600 * 1000),
+      durationMinutes: 120,
+      outcome: 'scheduled',
+    }],
+  });
+  await visitSms.sendDayBeforeReminders();
+  const queued = [...store.values()].filter((item) => item && item.kind === 'day_before');
+  assert.equal(queued.length, 1);
+  const body = queued[0].body;
+  assert.match(body, /Trinity Lane/);
+  assert.doesNotMatch(body, /reply/i);
+  assert.doesNotMatch(body, /confirm/i);
+  assert.doesNotMatch(body, /cancel/i);
+  assert.doesNotMatch(body, /another day/i);
+
+  // Если клиент уже подтвердил визит — напоминание ему больше не генерируется.
+  store.set(`${COMPANY}/jobs/confirmed-job`, {
+    status: 'Вызов',
+    needsReview: false,
+    clientName: 'Confirmed Client',
+    clientPhone: '+14165550199',
+    clientAddress: '10 Main St, Brantford',
+    visits: [{
+      id: 'confirmed-visit',
+      startAt: new Date(Date.now() + 24 * 3600 * 1000),
+      durationMinutes: 120,
+      outcome: 'scheduled',
+      smsConfirmStatus: 'confirmed',
+    }],
+  });
+  await visitSms.sendDayBeforeReminders();
+  const forConfirmed = [...store.values()].filter(
+    (item) => item && item.kind === 'day_before' && item.jobId === 'confirmed-job'
+  );
+  assert.equal(forConfirmed.length, 0);
+});
+
+test('stripConfirmAsk keeps the visit facts and drops only the reply menu', () => {
+  const cleaned = visitSms.stripConfirmAsk(
+    'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}\n\nReply 1 ✅ to confirm, 0 ❌ to cancel, 5 🔁 another day.'
+  );
+  assert.equal(cleaned, 'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}');
+});
+
+test('stripConfirmAsk drops the lead-in of the reply menu too', () => {
+  // Боевой шаблон FIX (проверка 18.10.2026): меню снималось, а строка «Please
+  // let us know:» оставалась висеть в конце — клиент читал её как просьбу.
+  const cleaned = visitSms.stripConfirmAsk(
+    '🔔 Reminder for tomorrow!\n📅 Date - {date}\n🕘 Time - {time}\n📍 Address - {address}\n\nPlease let us know:\n✅ CONFIRM - 1️⃣\n❌ CANCEL - 2️⃣\n🔁 ANOTHER DAY - 5️⃣'
+  );
+  assert.equal(
+    cleaned,
+    '🔔 Reminder for tomorrow!\n📅 Date - {date}\n🕘 Time - {time}\n📍 Address - {address}'
+  );
+  assert.equal(
+    visitSms.stripConfirmAsk('Визит {date} в {time}\nДайте знать, пожалуйста:\n1 — подтверждаю\n0 — отмена'),
+    'Визит {date} в {time}'
+  );
+});
+
+test('a same-day reminder says today, not tomorrow', () => {
+  // Утреннее напоминание и «за 2 часа» идут тем же шаблоном, что и за сутки,
+  // а в нём «Reminder for tomorrow!» — утром в день визита это вводит в
+  // заблуждение (в бою 16.10.2026 так и ушло).
+  const text = '🔔 Reminder for tomorrow!\n📅 Date - {date}';
+  assert.equal(visitSms.sameDayWording(text), '🔔 Reminder for today!\n📅 Date - {date}');
+  assert.equal(visitSms.sameDayWording('Напоминаем: завтра визит'), 'Напоминаем: сегодня визит');
+  assert.equal(visitSms.sameDayWording('Reminder: your visit'), 'Reminder: your visit');
 });
 
 test('a stale SMS dialog cannot reopen a cancelled job', async () => {

@@ -677,6 +677,10 @@ class TVConnectionService : ConnectionService() {
         attachCallEventListeners(connection, ci.callSid)
         applyParameters(connection, callParams)
         connection.setRinging()
+        // Звук входящего: у self-managed звонка система рингтон не играет, а
+        // onShowIncomingCallUi приходит не на всех прошивках. Здесь он точно
+        // прозвучит, как только Telecom создал входящий.
+        IncomingCallNotifier.startRinging(applicationContext, callSid)
 
         tryStartForegroundService()
         return connection

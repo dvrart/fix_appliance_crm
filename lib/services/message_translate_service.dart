@@ -21,6 +21,44 @@ class MessageTranslateService {
 
   static final _cyrillic = RegExp(r'[А-Яа-яЁё]');
   static final _latin = RegExp(r'[A-Za-z]');
+  static final _urlOrEmail = RegExp(
+    r'https?://\S+|www\.\S+|\b\S+@\S+\.\S+\b',
+    caseSensitive: false,
+  );
+  static final _ruFieldLabelWithCode = RegExp(
+    r'(?:Модель|Серийный номер|Серийник|Бренд)\s*:\s*[A-Za-z0-9_./-]+',
+    caseSensitive: false,
+  );
+  static final _ruBoilerplate = RegExp(
+    r'(?:Модель|Серийный номер|Серийник|Бренд|Удобное время)\s*:?|\b(?:пн|вт|ср|чт|пт|сб|вс)\b',
+    caseSensitive: false,
+  );
+  static final _codeToken = RegExp(r'\b[A-Za-z0-9_./-]*\d[A-Za-z0-9_./-]*\b');
+  static final _brandToken = RegExp(
+    r'\b(?:fixapplianceca|fixappliance|samsung|lg|ge|bosch|whirlpool|maytag|frigidaire|kitchenaid|electrolux|'
+    r'kenmore|miele|amana|inglis|danby|haier|wolf|sub-zero|subzero|viking|'
+    r'thermador|blomberg|fisher|paykel|panasonic|sharp|xiaomi|hisense|midea|'
+    r'gaggenau|jenn-air|jennair|hotpoint|admiral|roper|crosley|avanti|koolmore|'
+    r'bertazzoni|smeg|jbl|speed\s+queen|magic\s+chef|monogram|profile|bespoke)\b',
+    caseSensitive: false,
+  );
+  static final _speakerPrefix = RegExp(
+    r'^\s*(?:ИИ|AI|Assistant|Secretary|Секретарь|Me|Master|Мастер|Моё|Мое|Technician|FixApplianceCA|Клиент|Client|User|Caller|Customer)\s*:\s*',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  static final _latinWord = RegExp(r"[A-Za-z][A-Za-z'’-]*");
+  static final _lowerLatinWord = RegExp(r"\b[a-z][a-z'’-]+\b");
+
+  static const _jobRuInstruction =
+      'Ты переводишь и приводишь в порядок описание поломки в карточке заявки для мастера по ремонту бытовой техники в Онтарио.\n'
+      'Переводи грамотным, естественным русским языком мастера, без машинного подстрочника. Английских слов в описании поломки остаться не должно.\n'
+      'Латиницей оставляй ТОЛЬКО имена людей, названия городов и улиц, марки техники, номера моделей/серийников и коды ошибок (E15, F21).\n'
+      'Правильные термины: timer knob / timer button — ручка таймера, door seal / gasket — уплотнитель дверцы, smooth top / glass cooktop / clear top — стеклокерамическая варочная панель, burner — конфорка, heating element / bake element — ТЭН (нагревательный элемент), igniter — свеча розжига, drain pump — сливной насос, float switch — поплавковый датчик, control board — плата управления, spray arm — коромысло (разбрызгиватель), drum — барабан, service call — выезд мастера.\n'
+      'Учитывай род техники по-русски (сушилка, стиральная машина, посудомойка, плита, духовка — женский род; холодильник — мужской род).\n'
+      'Если в тексте есть английские дубли в скобках вроде «Не запускается (Won\'t start)» — оставь только русский текст без скобок.\n'
+      'Если одна и та же поломка повторена несколько раз разными словами в отдельных строках — объедини эти повторы в одну чёткую фразу, сохранив все детали, номер модели и строку «Удобное время: ...» (переведя английские пометки времени внутри неё на русский).\n'
+      'Верни ТОЛЬКО готовый текст без кавычек и пояснений.';
 
   static bool hasCyrillic(String text) => _cyrillic.hasMatch(text);
   static bool hasLatin(String text) => _latin.hasMatch(text);
@@ -33,6 +71,65 @@ class MessageTranslateService {
   }
 
   static bool looksRussian(String text) => hasCyrillic(text.trim());
+
+  static String stripSpeakerLabels(String text) =>
+      text.replaceAll(_speakerPrefix, '');
+
+  static String _stripNonProseTokens(String text) {
+    return text
+        .replaceAll(_speakerPrefix, ' ')
+        .replaceAll(_urlOrEmail, ' ')
+        .replaceAll(_ruFieldLabelWithCode, ' ')
+        .replaceAll(_ruBoilerplate, ' ')
+        .replaceAll(_codeToken, ' ')
+        .replaceAll(_brandToken, ' ');
+  }
+
+  /// Переведён ли уже разговор (или выжимка) на русский — без учёта
+  /// русских меток «ИИ:» / «Клиент:», которые ставятся и поверх английской
+  /// расшифровки, и без ложного срабатывания на английские имена и улицы.
+  static bool isRussianDialog(String text) {
+    final stripped = stripSpeakerLabels(text).trim();
+    if (stripped.isEmpty) return false;
+    final cleaned = _stripNonProseTokens(stripped).trim();
+    final cyr = _cyrillic.allMatches(cleaned).length;
+    if (cyr == 0) return false;
+    final lat = _latin.allMatches(cleaned).length;
+    if (cyr <= lat) return false;
+    for (final rawLine in stripped.split('\n')) {
+      final line = _stripNonProseTokens(rawLine).trim();
+      if (line.isEmpty) continue;
+      final lineCyr = _cyrillic.allMatches(line).length;
+      if (lineCyr == 0 && _latinWord.allMatches(line).length >= 5) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static bool needsRussianDialog(String text) {
+    final stripped = stripSpeakerLabels(text).trim();
+    if (skip(stripped)) return false;
+    if (!hasLatin(stripped)) return false;
+    return !isRussianDialog(text);
+  }
+
+  /// Есть ли в тексте непереведённый английский текст (даже если рядом уже есть
+  /// русские подписи «Модель:», «Удобное время:» или отдельные русские строки).
+  static bool prefersRussian(String text) {
+    final t = text.trim();
+    if (skip(t) || !hasLatin(t)) return false;
+    if (!hasCyrillic(t)) return true;
+    final cleaned = _stripNonProseTokens(t);
+    if (!hasLatin(cleaned)) return false;
+    if (!hasCyrillic(cleaned)) return true;
+    if (_lowerLatinWord.hasMatch(cleaned)) return true;
+    final words = _latinWord.allMatches(cleaned).length;
+    if (words >= 2) return true;
+    final cyr = _cyrillic.allMatches(cleaned).length;
+    final lat = _latin.allMatches(cleaned).length;
+    return lat > cyr;
+  }
 
   static bool needsRussian(String text) {
     if (skip(text)) return false;
@@ -58,6 +155,19 @@ class MessageTranslateService {
     final lat = _latin.allMatches(out).length;
     if (lat == 0) return true;
     return cyr > lat;
+  }
+
+  static bool failedRussian(String original, String translated) {
+    final src = original.trim();
+    final out = translated.trim();
+    if (src.isEmpty || out.isEmpty) return true;
+    if (!needsRussian(src)) return false;
+    if (out == src && prefersRussian(src)) return true;
+    if (!hasCyrillic(out)) return true;
+    final cleaned = _stripNonProseTokens(out);
+    final cyr = _cyrillic.allMatches(cleaned).length;
+    final lat = _latin.allMatches(cleaned).length;
+    return cyr == 0 && lat > 0 || lat > cyr;
   }
 
   static Future<String> toEnglish(String text) async {
@@ -90,22 +200,61 @@ class MessageTranslateService {
           'Имена, адреса, модели и ссылки не меняй. '
           'Верни ТОЛЬКО перевод, без кавычек и пояснений.',
     );
-    if (translated.trim().isEmpty) return t;
+    if (failedRussian(t, translated)) return t;
     _ruCache[t] = translated;
+    return translated;
+  }
+
+  /// Перевод описания неисправности во вкладке «Информация» с учётом техники.
+  static Future<String> toRussianJob(
+    String text, {
+    String appliance = '',
+  }) async {
+    final t = text.trim();
+    if (!needsRussian(t)) return t;
+    final app = appliance.trim();
+    final key = 'job:$app:$t';
+    final cached = _ruCache[key];
+    if (cached != null) return cached;
+    final instruction = app.isEmpty
+        ? _jobRuInstruction
+        : '$_jobRuInstruction\nТехника в заявке: $app.';
+    final translated = await _translate(
+      t,
+      'ru',
+      instruction,
+      mode: 'job',
+      appliance: app.isEmpty ? null : app,
+    );
+    if (failedRussian(t, translated)) return t;
+    _ruCache[key] = translated;
     return translated;
   }
 
   /// Перевод записи разговора. Идёт на сервер: там диалог переводится
   /// построчно и со сверкой количества реплик, поэтому реплики не пропадают.
   /// Локальная модель остаётся только на случай, когда сервер не ответил.
-  static Future<String> toRussianDialog(String text) async {
+  static Future<String> toRussianDialog(
+    String text, {
+    String answeredBy = '',
+  }) async {
     final t = text.trim();
-    if (!needsRussian(t)) return t;
-    final cached = _ruCache['dialog:$t'];
+    if (!needsRussianDialog(t)) return t;
+    final speaker = answeredBy.trim();
+    final cacheKey = 'dialog:$speaker:$t';
+    final cached = _ruCache[cacheKey];
     if (cached != null) return cached;
-    final cloud = await _fromCloud(t, 'ru', mode: 'dialog', timeoutSeconds: 110);
-    if (cloud != null && cloud.trim().isNotEmpty) {
-      _ruCache['dialog:$t'] = cloud.trim();
+    final cloud = await _fromCloud(
+      t,
+      'ru',
+      mode: 'dialog',
+      answeredBy: speaker.isEmpty ? null : speaker,
+      timeoutSeconds: 110,
+    );
+    if (cloud != null &&
+        cloud.trim().isNotEmpty &&
+        isRussianDialog(cloud)) {
+      _ruCache[cacheKey] = cloud.trim();
       return cloud.trim();
     }
     final translated = await _translate(
@@ -118,8 +267,8 @@ class MessageTranslateService {
       timeoutSeconds: 45,
       skipCloud: true,
     );
-    if (translated.trim().isEmpty) return t;
-    _ruCache['dialog:$t'] = translated;
+    if (translated.trim().isEmpty || !isRussianDialog(translated)) return t;
+    _ruCache[cacheKey] = translated;
     return translated;
   }
 
@@ -198,12 +347,23 @@ class MessageTranslateService {
     String text,
     String to,
     String instruction, {
+    String? mode,
+    String? appliance,
     int timeoutSeconds = 18,
     bool skipCloud = false,
   }) async {
     if (!skipCloud) {
-      final cloud = await _fromCloud(text, to);
-      if (cloud != null && cloud.trim().isNotEmpty) return cloud.trim();
+      final cloud = await _fromCloud(
+        text,
+        to,
+        mode: mode,
+        appliance: appliance,
+      );
+      if (cloud != null && cloud.trim().isNotEmpty) {
+        final out = cloud.trim();
+        if (to == 'en' && !failedEnglish(text, out)) return out;
+        if (to == 'ru' && !failedRussian(text, out)) return out;
+      }
     }
     if (kGeminiApiKey.isEmpty || kGeminiApiKey == 'YOUR_GEMINI_API_KEY') {
       return text;
@@ -217,7 +377,7 @@ class MessageTranslateService {
         final out = (response.text ?? '').trim();
         if (out.isEmpty) continue;
         if (to == 'en' && failedEnglish(text, out)) continue;
-        if (to == 'ru' && looksEnglish(out) && looksEnglish(text)) continue;
+        if (to == 'ru' && failedRussian(text, out)) continue;
         return out;
       } catch (error) {
         debugPrint('MessageTranslate $name: $error');
@@ -230,6 +390,8 @@ class MessageTranslateService {
     String text,
     String to, {
     String? mode,
+    String? appliance,
+    String? answeredBy,
     int? variant,
     String? emoji,
     String? previous,
@@ -244,6 +406,8 @@ class MessageTranslateService {
               'text': text,
               'to': to,
               'mode': ?mode,
+              'appliance': ?appliance,
+              'answeredBy': ?answeredBy,
               'variant': ?variant,
               'emoji': ?emoji,
               'previous': ?previous,

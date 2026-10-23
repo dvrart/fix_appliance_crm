@@ -5,6 +5,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
+import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../models/expense.dart';
 import 'tax_writeoff_guide_page.dart';
@@ -23,6 +24,8 @@ class TaxWorkbookFigures {
   final double cashExHst;
   final double hstReceived;
   final double partsCost;
+  final double partsSales;
+  final double labourSales;
 
   /// Чаевые периода. В продажи и в HST не входят: клиент платит их сверх
   /// счёта, налога в них нет. Показываем отдельной строкой, чтобы цифра не
@@ -52,6 +55,8 @@ class TaxWorkbookFigures {
     required this.cashExHst,
     required this.hstReceived,
     required this.partsCost,
+    this.partsSales = 0,
+    this.labourSales = 0,
     this.tips = 0,
     required this.inventoryAtCost,
     this.stripeAvailable,
@@ -188,7 +193,7 @@ class TaxWorkbookView extends StatelessWidget {
 
     final choice = await showModalBottomSheet<bool>(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
@@ -200,10 +205,10 @@ class TaxWorkbookView extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(20, 18, 20, 6),
               child: Text(
                 sheet.tr('Что выгрузить', 'What to export'),
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 17,
                   fontWeight: FontWeight.w800,
-                  color: Color(0xFF14557F),
+                  color: AppColors.primaryOnCard,
                 ),
               ),
             ),
@@ -219,7 +224,7 @@ class TaxWorkbookView extends StatelessWidget {
             ),
             _exportOption(
               icon: Icons.account_balance,
-              color: const Color(0xFF14557F),
+              color: AppColors.primaryOnCard,
               title: sheet.tr('Без наличных', 'Without cash'),
               subtitle: sheet.tr(
                 'Только банк и Stripe. Продажи ${money(withoutCash.salesExHst)}, HST ${money(withoutCash.hstCollectible)}. Наличных на ${money(withCash.cashSalesExHst)} здесь не будет.',
@@ -234,8 +239,8 @@ class TaxWorkbookView extends StatelessWidget {
                   'Вариант без наличных — сверка с банком. В T2 и GST34 доход показывают полностью, вместе с наличными.',
                   'The bank-only version is for reconciliation. T2 and GST34 must report all income, cash included.',
                 ),
-                style: const TextStyle(
-                  color: Colors.black45,
+                style: TextStyle(
+                  color: AppColors.inkMuted,
                   fontSize: 12,
                   height: 1.35,
                 ),
@@ -298,7 +303,7 @@ class TaxWorkbookView extends StatelessWidget {
             'HST в доход не входит. Это то, что корпорация заработала на ремонте, минус запчасти.',
             'HST is not income. This is repair revenue minus parts.',
           ),
-          style: const TextStyle(color: Colors.black54, height: 1.35),
+          style: TextStyle(color: AppColors.inkMuted, height: 1.35),
         ),
         const SizedBox(height: 10),
         _plCard(context, f),
@@ -312,7 +317,7 @@ class TaxWorkbookView extends StatelessWidget {
             'Откройте Financial statements → Income statement (GIFI). В обеих программах одни и те же коды CRA.',
             'Open Financial statements → Income statement (GIFI). Both programs use the same CRA codes.',
           ),
-          style: const TextStyle(color: Colors.black54, height: 1.35),
+          style: TextStyle(color: AppColors.inkMuted, height: 1.35),
         ),
         const SizedBox(height: 10),
         _mappingCard(context, f),
@@ -324,7 +329,7 @@ class TaxWorkbookView extends StatelessWidget {
             'T2 — налог на прибыль корпорации. GST/HST (GST34) сдаёте отдельно, обычно раз в квартал. Не кладите HST в строку продаж T2.',
             'T2 is corporate income tax. GST/HST (GST34) is filed separately, usually quarterly. Do not put HST into T2 sales.',
           ),
-          style: const TextStyle(color: Colors.black54, height: 1.35),
+          style: TextStyle(color: AppColors.inkMuted, height: 1.35),
         ),
         const SizedBox(height: 10),
         _gstCard(context, f),
@@ -442,7 +447,7 @@ class TaxWorkbookView extends StatelessWidget {
 
   Widget _yearBanner(BuildContext context) {
     return Material(
-      color: const Color(0xFFFFF3CD),
+      color: AppColors.tint(const Color(0xFFFFB300), 0.16),
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -451,7 +456,12 @@ class TaxWorkbookView extends StatelessWidget {
           padding: const EdgeInsets.all(12),
           child: Row(
             children: [
-              const Icon(Icons.info_outline, color: Color(0xFF7A5C00)),
+              Icon(
+                Icons.info_outline,
+                color: AppColors.isDark
+                    ? const Color(0xFFFFCA28)
+                    : const Color(0xFF7A5C00),
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -459,8 +469,10 @@ class TaxWorkbookView extends StatelessWidget {
                     'Сейчас выбран не год. Для T2 нажмите сюда и поставьте Год.',
                     'This is not a full year. Tap here and switch to Year for T2.',
                   ),
-                  style: const TextStyle(
-                    color: Color(0xFF7A5C00),
+                  style: TextStyle(
+                    color: AppColors.isDark
+                        ? const Color(0xFFFFCA28)
+                        : const Color(0xFF7A5C00),
                     fontWeight: FontWeight.w600,
                     height: 1.3,
                   ),
@@ -488,14 +500,59 @@ class TaxWorkbookView extends StatelessWidget {
     return _card(
       child: Column(
         children: [
-          _moneyRow(context.tr('Выручка от ремонта (без HST)', 'Repair sales (no HST)'), f.salesExHst),
+          _moneyRow(
+            context.tr(
+              'Грязными: счета с HST',
+              'Gross: invoices incl. HST',
+            ),
+            f.salesExHst + f.hstCollectible,
+            muted: true,
+          ),
+          _moneyRow(
+            context.tr(
+              'Грязными: выручка без HST',
+              'Gross: repair sales (no HST)',
+            ),
+            f.salesExHst,
+            bold: true,
+          ),
+          if (f.labourSales > 0.009 || f.partsSales > 0.009) ...[
+            _moneyRow(
+              context.tr('из них работа и выезд', 'of that, labour and call-out'),
+              f.labourSales,
+              muted: true,
+            ),
+            _moneyRow(
+              context.tr(
+                'из них запчасти (цена для клиента)',
+                'of that, parts (billed to client)',
+              ),
+              f.partsSales,
+              muted: true,
+            ),
+          ],
           if (f.hasCash)
             _moneyRow(
               context.tr('из них наличными', 'of that, paid in cash'),
               f.cashSalesExHst,
               muted: true,
             ),
-          _moneyRow(context.tr('− Запчасти (себестоимость)', '− Parts (cost)'), f.partsCost),
+          _moneyRow(
+            context.tr(
+              '− Запчасти (стоило для меня / закупка)',
+              '− Parts (what it cost me)',
+            ),
+            f.partsCost,
+          ),
+          if (f.partsSales > 0.009 || f.partsCost > 0.009)
+            _moneyRow(
+              context.tr(
+                'Заработок на запчастях (клиенту − мне)',
+                'Parts margin (client − cost)',
+              ),
+              f.partsSales - f.partsCost,
+              muted: true,
+            ),
           if (f.tips > 0.009)
             _moneyRow(
               context.tr(
@@ -507,7 +564,10 @@ class TaxWorkbookView extends StatelessWidget {
             ),
           const Divider(),
           _moneyRow(
-            context.tr('Валовая прибыль', 'Gross profit'),
+            context.tr(
+              'Чистыми после запчастей (валовая прибыль)',
+              'Net after parts (gross profit)',
+            ),
             f.grossProfit,
             bold: true,
           ),
@@ -519,7 +579,7 @@ class TaxWorkbookView extends StatelessWidget {
                 line.amount,
               ),
             _moneyRow(
-              context.tr('Прибыль после чеков', 'Profit after receipts'),
+              context.tr('Чистыми после всех чеков', 'Net profit after receipts'),
               f.profitAfterReceipts,
               bold: true,
             ),
@@ -607,7 +667,7 @@ class TaxWorkbookView extends StatelessWidget {
                 'Простой способ для T2: вписать 8000 и 8320, склад (8300 и 8500) не трогать. Иначе себестоимость посчитается неправильно.',
                 'Simple T2 method: type 8000 and 8320, leave inventory (8300 and 8500) blank. Filling stock as well would distort cost of sales.',
               ),
-              style: const TextStyle(color: Colors.black54, height: 1.35, fontSize: 13),
+              style: TextStyle(color: AppColors.inkMuted, height: 1.35, fontSize: 13),
             ),
           ),
           for (var i = 0; i < rows.length; i++) ...[
@@ -666,15 +726,15 @@ class TaxWorkbookView extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           'GIFI ${row.gifi}',
-          style: const TextStyle(
-            color: Color(0xFF14557F),
+          style: TextStyle(
+            color: AppColors.primaryOnCard,
             fontWeight: FontWeight.w800,
             fontSize: 13,
           ),
         ),
         Text(
           row.where,
-          style: const TextStyle(color: Colors.black54, fontSize: 12, height: 1.3),
+          style: TextStyle(color: AppColors.inkMuted, fontSize: 12, height: 1.3),
         ),
       ],
     );
@@ -843,9 +903,9 @@ class TaxWorkbookView extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300),
+        border: Border.all(color: AppColors.border),
       ),
       child: child,
     );

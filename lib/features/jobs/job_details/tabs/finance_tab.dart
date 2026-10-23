@@ -22,6 +22,9 @@ import '../../../../shared/widgets/unsaved_changes_dialog.dart';
 import '../job_details_controller.dart';
 import '../widgets/client_tip_sheet.dart';
 import '../../job_review_offer.dart';
+import '../../../reports/classify_items_page.dart';
+import '../../../reports/report_breakdown_page.dart';
+import '../../../reports/report_metrics.dart';
 
 class FinanceTab extends StatefulWidget {
   final JobDetailsController controller;
@@ -181,6 +184,13 @@ class _FinanceTabState extends State<FinanceTab> {
 
   Future<void> _loadMinimumCharge() async {
     try {
+      if (WarehouseService.latestCosts.isEmpty) {
+        unawaited(
+          WarehouseService.streamAll().first.then((_) {
+            if (mounted) setState(() {});
+          }).catchError((_) {}),
+        );
+      }
       final config = await SettingsService.loadConfig();
       if (!mounted) return;
       setState(() {
@@ -281,21 +291,12 @@ class _FinanceTabState extends State<FinanceTab> {
     return doc['convertedToInvoice'] == true;
   }
 
-  /// Открыть документ (смету или счёт) по типу и номеру — тап по связке
-  /// «смета ↔ счёт» в объединённой карточке.
-  void _openDocByTypeNumber(String type, dynamic number) {
-    if (number == null) return;
-    for (var i = 0; i < ctrl.documents.length; i++) {
-      final d = ctrl.documents[i];
-      if (Job.isDocumentTrashed(d)) continue;
-      final t = (d['type'] ?? 'Invoice').toString();
-      if (type == 'Estimate' ? t != 'Estimate' : t == 'Estimate') continue;
-      if (d['number'] == number) {
-        ctrl.setViewingDocumentIndex(i);
-        ctrl.setFinanceMode('view_document');
-        return;
-      }
-    }
+  /// В карточке заявки подтверждённая/превращённая в счёт смета скрывается
+  /// (видна только в боковом меню «Счета → Сметы»).
+  bool _isEstimateHiddenInJobTab(Map<String, dynamic> doc) {
+    if ((doc['type'] ?? '') != 'Estimate') return false;
+    return _estimateConverted(doc) ||
+        (doc['estimateStatus'] ?? '') == 'approved';
   }
 
   Future<void> _convertEstimateToInvoice(int index) async {
@@ -303,7 +304,6 @@ class _FinanceTabState extends State<FinanceTab> {
     if (index < 0 || index >= ctrl.documents.length) return;
     final estimate = Map<String, dynamic>.from(ctrl.documents[index]);
     if ((estimate['type'] ?? '') != 'Estimate') return;
-    if ((estimate['estimateStatus'] ?? '') != 'approved') return;
     if (_estimateConverted(estimate) || estimate['status'] == 'cancelled') {
       return;
     }
@@ -334,6 +334,7 @@ class _FinanceTabState extends State<FinanceTab> {
       await ctrl.addDocument(invoice);
       await ctrl.updateDocument(index, {
         ...estimate,
+        'estimateStatus': 'approved',
         'convertedToInvoice': true,
         'convertedInvoiceNumber': number,
       });
@@ -357,6 +358,12 @@ class _FinanceTabState extends State<FinanceTab> {
   }
 
   Widget _buildMainView() {
+    final visibleIndices = <int>[
+      for (var index = 0; index < ctrl.documents.length; index++)
+        if (!Job.isDocumentTrashed(ctrl.documents[index]) &&
+            !_isEstimateHiddenInJobTab(ctrl.documents[index]))
+          index,
+    ];
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Column(
@@ -367,8 +374,8 @@ class _FinanceTabState extends State<FinanceTab> {
             _buildSuggestCancelBanner(),
           Expanded(
             child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: ctrl.documents.where((doc) => !Job.isDocumentTrashed(doc)).isEmpty
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+              child: visibleIndices.isEmpty
                   ? Center(
                       child: Text(
                         'Нет счетов.\nНажмите (+) и создайте Invoice или Estimate.'.tr,
@@ -380,15 +387,13 @@ class _FinanceTabState extends State<FinanceTab> {
                         ),
                       ),
                     )
-                  : ListView.builder(
-                      itemCount: ctrl.documents.length,
-                      itemBuilder: (context, index) {
-                        final d = ctrl.documents[index];
-                        if (Job.isDocumentTrashed(d)) {
-                          return const SizedBox.shrink();
-                        }
-                        return _buildDocumentCard(index);
-                      },
+                  : ListView(
+                      padding: const EdgeInsets.only(bottom: 76),
+                      children: [
+                        for (final index in visibleIndices)
+                          _buildDocumentCard(index),
+                        _buildJobFinanceSummaryCard(),
+                      ],
                     ),
             ),
           ),
@@ -524,8 +529,13 @@ class _FinanceTabState extends State<FinanceTab> {
     final isCancelled = doc['status'] == 'cancelled';
     final stamp = Formatters.messageStamp(Job.documentCreatedAt(doc));
 
-    final subtotal = ctrl.calcSubtotal(doc['items'] ?? []);
-    final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
+    final items = [
+      for (final item in doc['items'] as List? ?? [])
+        if (item is Map) Map<String, dynamic>.from(item),
+    ];
+    final subtotal = ctrl.calcSubtotal(items);
+    final taxRate = _money(doc['taxRate'], 0.0);
+    final tax = ctrl.calcTax(subtotal, taxRate);
     final total = ctrl.calcTotal(subtotal, tax);
     final paid = ctrl.calcPaid(doc['payments'] ?? []);
     final due = ctrl.calcDue(total, paid);
@@ -536,327 +546,466 @@ class _FinanceTabState extends State<FinanceTab> {
     final estimateApproved = isEstimate && estimateStatus == 'approved';
     final estimateSent = isEstimate && estimateStatus == 'sent';
 
-    Color cardColor;
-    Color borderColor;
-    IconData icon;
+    Color accentColor;
+    Color badgeBg;
+    Color badgeFg;
+    IconData statusIcon;
     String statusText;
 
     if (isCancelled) {
-      cardColor = Colors.red.shade50;
-      borderColor = Colors.red.shade300;
-      icon = Icons.cancel;
+      accentColor = Colors.red.shade600;
+      badgeBg = Colors.red.shade50;
+      badgeFg = Colors.red.shade700;
+      statusIcon = Icons.cancel_outlined;
       statusText = 'Отменён'.tr;
     } else if (estimateApproved) {
-      cardColor = Colors.green.shade50;
-      borderColor = Colors.green.shade400;
-      icon = Icons.verified;
-      statusText = '${'Клиент подтвердил ремонт'.tr} · \$${total.toStringAsFixed(2)}';
+      accentColor = const Color(0xFF16A34A);
+      badgeBg = const Color(0xFFDCFCE7);
+      badgeFg = const Color(0xFF15803D);
+      statusIcon = Icons.verified_rounded;
+      statusText = 'Клиент подтвердил ремонт'.tr;
     } else if (estimateSent) {
-      cardColor = const Color(0xFFFFF8E1);
-      borderColor = const Color(0xFFF59E0B);
-      icon = Icons.hourglass_top;
-      statusText = '${'Ждём согласие клиента'.tr} · \$${total.toStringAsFixed(2)}';
+      accentColor = const Color(0xFFF59E0B);
+      badgeBg = const Color(0xFFFEF3C7);
+      badgeFg = const Color(0xFFB45309);
+      statusIcon = Icons.hourglass_top_rounded;
+      statusText = 'Ждём согласие клиента'.tr;
     } else if (isEstimate) {
-      cardColor = Colors.white;
-      borderColor = Colors.blue.shade200;
-      icon = Icons.description;
-      statusText = '\$${total.toStringAsFixed(2)}';
+      accentColor = Colors.orange.shade700;
+      badgeBg = Colors.orange.shade50;
+      badgeFg = Colors.orange.shade800;
+      statusIcon = Icons.description_outlined;
+      statusText = 'Смета'.tr;
     } else if (isPaid) {
-      cardColor = Colors.green.shade50;
-      borderColor = Colors.green.shade300;
-      icon = Icons.check_circle;
+      accentColor = const Color(0xFF16A34A);
+      badgeBg = const Color(0xFFDCFCE7);
+      badgeFg = const Color(0xFF15803D);
+      statusIcon = Icons.check_circle_rounded;
       statusText = 'Оплачен'.tr;
     } else if (_isRefundedDoc(doc)) {
-      cardColor = Colors.red.shade50;
-      borderColor = Colors.red.shade300;
-      icon = Icons.undo;
+      accentColor = Colors.red.shade600;
+      badgeBg = Colors.red.shade50;
+      badgeFg = Colors.red.shade700;
+      statusIcon = Icons.undo_rounded;
       statusText = paid > 0.009
           ? '${'Частичный возврат'.tr}: \$${paid.toStringAsFixed(2)}'
           : 'Возврат'.tr;
     } else if (Job.documentPayMark(doc) == 'deposit') {
-      cardColor = Colors.amber.shade50;
-      borderColor = Colors.amber.shade300;
-      icon = Icons.savings_outlined;
+      accentColor = const Color(0xFFF59E0B);
+      badgeBg = const Color(0xFFFEF3C7);
+      badgeFg = const Color(0xFFB45309);
+      statusIcon = Icons.savings_outlined;
       statusText = paid > 0
           ? '${'Депозит'.tr}: \$${paid.toStringAsFixed(2)}'
           : 'Депозит'.tr;
     } else if (isPartiallyPaid) {
-      cardColor = Colors.amber.shade50;
-      borderColor = Colors.amber.shade300;
-      icon = Icons.timelapse;
+      accentColor = const Color(0xFFF59E0B);
+      badgeBg = const Color(0xFFFEF3C7);
+      badgeFg = const Color(0xFFB45309);
+      statusIcon = Icons.timelapse_rounded;
       statusText = '${'Остаток'.tr}: \$${due.toStringAsFixed(2)}';
     } else {
-      cardColor = Colors.white;
-      borderColor = Colors.blue.shade200;
-      icon = Icons.circle_outlined;
-      statusText = '${'Неоплачен'.tr}: \$${total.toStringAsFixed(2)}';
+      accentColor = AppColors.primary;
+      badgeBg = const Color(0xFFFEE2E2);
+      badgeFg = const Color(0xFFB91C1C);
+      statusIcon = Icons.circle_outlined;
+      statusText = 'Неоплачен'.tr;
     }
 
-    return Card(
-      color: cardColor,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: borderColor),
+    final methods = (!isCancelled && !isEstimate)
+        ? Job.documentPayMethods(doc)
+        : null;
+    final docTitle =
+        '${isEstimate ? 'ESTIMATE' : 'INVOICE'} #${doc['number'] ?? (index + 1)}';
+
+    // Открытый документ в мини-формате А4: белый лист с шапкой, сразу
+    // крупной суммой справа, строками позиций и кратким итогом.
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-        children: [
-          Expanded(
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
-              onTap: () {
-                ctrl.setViewingDocumentIndex(index);
-                ctrl.setFinanceMode('view_document');
-              },
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () {
+            ctrl.setViewingDocumentIndex(index);
+            ctrl.setFinanceMode('view_document');
+          },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(height: 4, color: accentColor),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 9, 8, 9),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: borderColor.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(icon, color: borderColor),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '${doc['type'] ?? 'Invoice'} #${doc['number'] ?? (index + 1)}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    isEstimate
+                                        ? Icons.description_outlined
+                                        : Icons.receipt_long_rounded,
+                                    size: 16,
+                                    color: accentColor,
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Flexible(
+                                    child: Text(
+                                      docTitle,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 14.5,
+                                        letterSpacing: 0.4,
+                                        color: AppColors.ink,
+                                      ),
+                                    ),
+                                  ),
+                                  if (stamp.isNotEmpty) ...[
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      stamp,
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: AppColors.inkMuted,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 7,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: badgeBg,
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          statusIcon,
+                                          size: 12,
+                                          color: badgeFg,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          statusText,
+                                          style: TextStyle(
+                                            color: badgeFg,
+                                            fontWeight: FontWeight.w800,
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (methods != null && methods.hasAny)
+                                    Text(
+                                      [
+                                        if (methods.deposit.isNotEmpty)
+                                          '${'Депозит'.tr}: ${methods.deposit}',
+                                        if (methods.balance.isNotEmpty)
+                                          '${'Баланс'.tr}: ${methods.balance}',
+                                      ].join(' · '),
+                                      style: TextStyle(
+                                        color: AppColors.inkMuted,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
                           ),
-                          // Когда выставлен: в заявке счетов бывает
-                          // несколько, и по номеру не видно, какой свежий.
-                          if (stamp.isNotEmpty)
+                        ),
+                        const SizedBox(width: 6),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
                             Text(
-                              stamp,
+                              Formatters.formatCurrency(total),
                               style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade600,
+                                fontWeight: FontWeight.w900,
+                                fontSize: 19,
+                                height: 1.05,
+                                color: isCancelled
+                                    ? Colors.red.shade700
+                                    : isPaid
+                                        ? const Color(0xFF15803D)
+                                        : AppColors.primaryOnCard,
                               ),
                             ),
-                          const SizedBox(height: 4),
-                          Text(
-                            statusText,
-                            style: TextStyle(
-                              color: isCancelled
-                                  ? Colors.red
-                                  : Colors.grey.shade700,
-                            ),
-                          ),
-                          if (!isCancelled && !isEstimate) ...[
-                            Builder(
-                              builder: (context) {
-                                final methods = Job.documentPayMethods(doc);
-                                if (!methods.hasAny) {
-                                  return const SizedBox.shrink();
-                                }
-                                return Padding(
-                                  padding: const EdgeInsets.only(top: 4),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      if (methods.deposit.isNotEmpty)
-                                        Text(
-                                          '${'Депозит'.tr}: ${methods.deposit}',
-                                          style: TextStyle(
-                                            color: Colors.grey.shade700,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      if (methods.balance.isNotEmpty)
-                                        Text(
-                                          '${'Баланс'.tr}: ${methods.balance}',
-                                          style: TextStyle(
-                                            color: Colors.grey.shade700,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                    ],
+                            const SizedBox(height: 2),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (!isCancelled &&
+                                    isEstimate &&
+                                    !_estimateConverted(doc))
+                                  _docHeaderIconButton(
+                                    tooltip: 'Подтвердить → Сделать счёт'.tr,
+                                    icon: Icons.check_circle_outline_rounded,
+                                    color: const Color(0xFF2E7D32),
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _convertEstimateToInvoice(index),
                                   ),
-                                );
-                              },
+                                if (!isCancelled && (isEstimate || due <= 0))
+                                  _docHeaderIconButton(
+                                    tooltip: 'Отправить'.tr,
+                                    icon: Icons.send_rounded,
+                                    color: AppColors.primaryOnCard,
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _sendAppDocument(index),
+                                  ),
+                                _docHeaderIconButton(
+                                  tooltip: 'В корзину'.tr,
+                                  icon: Icons.delete_outline_rounded,
+                                  color: Colors.red.shade600,
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _confirmDeleteDocument(index),
+                                ),
+                              ],
                             ),
                           ],
-                          if (!isCancelled &&
-                              doc['stripe'] is Map &&
-                              ((doc['stripe']['url'] ?? '').toString().isNotEmpty ||
-                                  _isStripeRefunded(doc)))
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(
-                                () {
-                                  final stripeMap =
-                                      Map<String, dynamic>.from(doc['stripe'] as Map);
-                                  final status =
-                                      (stripeMap['status'] ?? '').toString();
-                                  if (status == 'refunded') {
-                                    final rd = _extractStripeRefundDate(doc, stripeMap);
-                                    final rDate = rd != null
-                                        ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(rd)}'
-                                        : '';
-                                    return '${'Stripe: возврат'.tr}$rDate';
-                                  }
-                                  if (status == 'partially_refunded') {
-                                    final rd = _extractStripeRefundDate(doc, stripeMap);
-                                    final rDate = rd != null
-                                        ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(rd)}'
-                                        : '';
-                                    return '${'Stripe: частичный возврат'.tr}$rDate';
-                                  }
-                                  if (status == 'paid') {
-                                    final pd = _extractStripePaidDate(doc, stripeMap);
-                                    final pDate = pd != null
-                                        ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(pd)}'
-                                        : '';
-                                    return '${'Stripe: оплачен'.tr}$pDate';
-                                  }
-                                  if (status == 'expired') {
-                                    return 'Stripe: ссылка истекла'.tr;
-                                  }
-                                  final cd = _extractStripeCreatedDate(stripeMap);
-                                  final cDate = cd != null
-                                      ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(cd)}'
-                                      : '';
-                                  return '${'Stripe: ожидает оплаты'.tr}$cDate';
-                                }(),
-                                style: TextStyle(
-                                  color: (doc['stripe']['status'] == 'paid')
-                                      ? Colors.green.shade700
-                                      : (doc['stripe']['status'] == 'refunded' ||
-                                              doc['stripe']['status'] ==
-                                                  'partially_refunded')
-                                          ? Colors.red.shade700
-                                          : (doc['stripe']['status'] == 'expired')
-                                              ? Colors.orange.shade800
-                                              : const Color(0xFF635BFF),
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
+                        ),
+                      ],
+                    ),
+                    if (items.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: AppColors.border,
+                        ),
+                      ),
+                      for (final item in items)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  (item['name'] ?? 'Item').toString(),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.ink,
+                                  ),
                                 ),
                               ),
-                            ),
-                        ],
+                              const SizedBox(width: 8),
+                              if (_money(item['qty'], 1) != 1)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 6),
+                                  child: Text(
+                                    '${_formatQty(_money(item['qty'], 1))} × \$${_money(item['price']).toStringAsFixed(2)}',
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      color: AppColors.inkMuted,
+                                    ),
+                                  ),
+                                ),
+                              Text(
+                                '\$${(_money(item['qty'], 1) * _money(item['price'])).toStringAsFixed(2)}',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: AppColors.ink,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6, bottom: 4),
+                      child: Divider(
+                        height: 1,
+                        thickness: 1,
+                        color: AppColors.border,
                       ),
                     ),
-                    const Icon(Icons.chevron_right, color: Colors.grey),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            [
+                              'Subtotal \$${subtotal.toStringAsFixed(2)}',
+                              if (tax > 0.009)
+                                'Tax ${(taxRate * 100).round()}% \$${tax.toStringAsFixed(2)}',
+                              if (!isEstimate && paid > 0.009)
+                                '${'Оплачено'.tr} \$${paid.toStringAsFixed(2)}',
+                              if (!isEstimate && due > 0.009 && paid > 0.009)
+                                '${'Остаток'.tr} \$${due.toStringAsFixed(2)}',
+                            ].join('  ·  '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.inkMuted,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'TOTAL \$${total.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (!isCancelled &&
+                        doc['stripe'] is Map &&
+                        ((doc['stripe']['url'] ?? '').toString().isNotEmpty ||
+                            _isStripeRefunded(doc)))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: Text(
+                          _stripeLineSummary(doc),
+                          style: TextStyle(
+                            color: (doc['stripe']['status'] == 'paid')
+                                ? Colors.green.shade700
+                                : (doc['stripe']['status'] == 'refunded' ||
+                                        doc['stripe']['status'] ==
+                                            'partially_refunded')
+                                    ? Colors.red.shade700
+                                    : (doc['stripe']['status'] == 'expired')
+                                        ? Colors.orange.shade800
+                                        : const Color(0xFF635BFF),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
-            ),
-          ),
-          if (!isCancelled &&
-              estimateApproved &&
-              !_estimateConverted(doc))
-            IconButton(
-              tooltip: 'Сделать счёт'.tr,
-              icon: const Icon(Icons.receipt_long, color: Color(0xFF2E7D32)),
-              onPressed: _busy ? null : () => _convertEstimateToInvoice(index),
-            ),
-          if (!isCancelled && (isEstimate || due <= 0))
-            IconButton(
-              tooltip: 'Отправить'.tr,
-              icon: const Icon(Icons.send, color: Color(0xFF14557F)),
-              onPressed: _busy ? null : () => _sendAppDocument(index),
-            ),
-          IconButton(
-            tooltip: 'В корзину'.tr,
-            icon: const Icon(Icons.delete_outline, color: Colors.red),
-            onPressed: _busy ? null : () => _confirmDeleteDocument(index),
-          ),
             ],
           ),
-          if (!isCancelled &&
-              !isEstimate &&
-              doc['fromEstimateNumber'] != null)
-            _buildDocLinkStrip(
-              icon: Icons.description_outlined,
-              color: Colors.orange.shade700,
-              label: '${'Смета'.tr} #${doc['fromEstimateNumber']}',
-              onTap: () =>
-                  _openDocByTypeNumber('Estimate', doc['fromEstimateNumber']),
-            ),
-          if (!isCancelled &&
-              isEstimate &&
-              doc['convertedInvoiceNumber'] != null)
-            _buildDocLinkStrip(
-              icon: Icons.receipt_long,
-              color: Colors.green.shade700,
-              label: '${'Счёт'.tr} #${doc['convertedInvoiceNumber']}',
-              onTap: () =>
-                  _openDocByTypeNumber('Invoice', doc['convertedInvoiceNumber']),
-            ),
-        ],
+        ),
       ),
     );
   }
 
-  /// Нижняя строка-связка в объединённой карточке: ведёт к парному документу
-  /// (из счёта — к смете, из сметы — к созданному счёту).
-  Widget _buildDocLinkStrip({
+  Widget _docHeaderIconButton({
+    required String tooltip,
     required IconData icon,
     required Color color,
-    required String label,
-    required VoidCallback onTap,
+    required VoidCallback? onPressed,
   }) {
-    return InkWell(
-      borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          border: Border(top: BorderSide(color: Colors.grey.shade300)),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 16, color: color),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                label,
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13,
-                ),
-              ),
-            ),
-            Icon(Icons.chevron_right, size: 18, color: Colors.grey.shade500),
-          ],
-        ),
+    return SizedBox(
+      width: 28,
+      height: 26,
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        tooltip: tooltip,
+        icon: Icon(icon, size: 17, color: color),
+        onPressed: onPressed,
       ),
     );
+  }
+
+  String _formatQty(double qty) {
+    return qty == qty.roundToDouble()
+        ? qty.toStringAsFixed(0)
+        : qty.toStringAsFixed(2);
+  }
+
+  String _stripeLineSummary(Map<String, dynamic> doc) {
+    final stripeMap = Map<String, dynamic>.from(doc['stripe'] as Map);
+    final status = (stripeMap['status'] ?? '').toString();
+    if (status == 'refunded') {
+      final rd = _extractStripeRefundDate(doc, stripeMap);
+      final rDate = rd != null
+          ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(rd)}'
+          : '';
+      return '${'Stripe: возврат'.tr}$rDate';
+    }
+    if (status == 'partially_refunded') {
+      final rd = _extractStripeRefundDate(doc, stripeMap);
+      final rDate = rd != null
+          ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(rd)}'
+          : '';
+      return '${'Stripe: частичный возврат'.tr}$rDate';
+    }
+    if (status == 'paid') {
+      final pd = _extractStripePaidDate(doc, stripeMap);
+      final pDate = pd != null
+          ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(pd)}'
+          : '';
+      return '${'Stripe: оплачен'.tr}$pDate';
+    }
+    if (status == 'expired') {
+      return 'Stripe: ссылка истекла'.tr;
+    }
+    final cd = _extractStripeCreatedDate(stripeMap);
+    final cDate = cd != null
+        ? ' • ${DateFormat('d MMM, HH:mm', AppLocale.instance.dateLocale).format(cd)}'
+        : '';
+    return '${'Stripe: ожидает оплаты'.tr}$cDate';
   }
 
   Widget _buildDocumentBuilder() {
     final subtotal = ctrl.calcSubtotal(ctrl.builderItems);
     final tax = ctrl.calcTax(subtotal, ctrl.builderTaxRate);
     final total = ctrl.calcTotal(subtotal, tax);
+    final canSave = ctrl.builderItems.isNotEmpty;
 
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
+        toolbarHeight: 40,
+        titleSpacing: 4,
         title: Text(
           ctrl.builderDocType == 'Estimate' ? 'Estimate' : 'Invoice',
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
         ),
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
         leading: IconButton(
-          icon: const Icon(Icons.close),
+          icon: const Icon(Icons.close, size: 20),
           onPressed: _onCloseBuilder,
         ),
       ),
@@ -864,82 +1013,127 @@ class _FinanceTabState extends State<FinanceTab> {
         children: [
           Expanded(
             child: ctrl.builderItems.isEmpty
-                ? const Center(
-                    child: Text(
-                      'Add items',
-                      style: TextStyle(
-                        color: Color(0xFF3D3D3D),
-                        fontWeight: FontWeight.w600,
-                        fontSize: 16,
+                ? Center(
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: _showAddItemDialog,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 12,
+                        ),
+                        child: Text(
+                          context.tr('+ Добавить позицию', '+ Add item'),
+                          style: TextStyle(
+                            color: AppColors.primaryOnCard,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14,
+                          ),
+                        ),
                       ),
                     ),
                   )
                 : Column(
                     children: [
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                        padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
                         child: Align(
                           alignment: Alignment.centerLeft,
                           child: Text(
                             context.tr(
-                              'Нажмите на позицию, чтобы поправить имя, цену или количество',
-                              'Tap a line to change its name, price or qty',
+                              'Нажмите на строку для правки',
+                              'Tap a line to edit',
                             ),
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.black54,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: AppColors.inkMuted,
                             ),
                           ),
                         ),
                       ),
                       Expanded(
                         child: ListView.builder(
-                          padding: const EdgeInsets.all(16),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
                           itemCount: ctrl.builderItems.length,
                           itemBuilder: (context, index) {
                             final item = ctrl.builderItems[index];
-                            return Card(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              child: ListTile(
-                                onTap: () => _editBuilderItem(index),
-                                title: Text(item['name'] ?? 'Item'),
-                                isThreeLine: true,
-                                subtitle: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      '${item['qty']} × \$${_money(item['price']).toStringAsFixed(2)}',
-                                    ),
-                                    const SizedBox(height: 4),
-                                    _itemKindChip(
-                                      isPart: Job.isPartItem(item),
-                                      classified: Job.isItemClassified(item),
-                                    ),
-                                  ],
+                            final qty = _money(item['qty'], 1);
+                            final price = _money(item['price']);
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 5),
+                              decoration: BoxDecoration(
+                                color: AppColors.card,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: AppColors.border,
                                 ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      '\$${(_money(item['qty'], 1) * _money(item['price'])).toStringAsFixed(2)}',
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
+                              ),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(8),
+                                onTap: () => _editBuilderItem(index),
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    10,
+                                    6,
+                                    4,
+                                    6,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              (item['name'] ?? 'Item')
+                                                  .toString(),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                fontSize: 13.5,
+                                                fontWeight: FontWeight.w700,
+                                                color: AppColors.ink,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 1),
+                                            _buildItemSubtitle(item),
+                                          ],
+                                        ),
                                       ),
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.delete,
-                                        color: Colors.red,
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        '\$${(qty * price).toStringAsFixed(2)}',
+                                        style: TextStyle(
+                                          fontSize: 13.5,
+                                          fontWeight: FontWeight.w800,
+                                          color: AppColors.ink,
+                                        ),
                                       ),
-                                      onPressed: () {
-                                        setState(() {
-                                          ctrl.builderItems.removeAt(index);
-                                        });
-                                        ctrl.notifyBuilderChanged();
-                                      },
-                                    ),
-                                  ],
+                                      SizedBox(
+                                        width: 30,
+                                        height: 28,
+                                        child: IconButton(
+                                          padding: EdgeInsets.zero,
+                                          visualDensity: VisualDensity.compact,
+                                          icon: const Icon(
+                                            Icons.close_rounded,
+                                            size: 18,
+                                            color: Colors.red,
+                                          ),
+                                          onPressed: () {
+                                            setState(() {
+                                              ctrl.builderItems.removeAt(index);
+                                            });
+                                            ctrl.notifyBuilderChanged();
+                                          },
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             );
@@ -949,123 +1143,202 @@ class _FinanceTabState extends State<FinanceTab> {
                     ],
                   ),
           ),
-          // Итоги
+          // Компактные итоги и кнопки
           Container(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            color: Colors.white,
-            child: Column(
-              children: [
-                FloatingActionButton(
-                  heroTag: 'invoice-add-item',
-                  backgroundColor: AppColors.accent,
-                  foregroundColor: AppColors.primary,
-                  elevation: 4,
-                  onPressed: _showAddItemDialog,
-                  child: const Icon(Icons.add, size: 34),
-                ),
-                const SizedBox(height: 16),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Total',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: 16,
-                      color: Color(0xFF14557F),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('Subtotal:'),
-                    Text('\$${subtotal.toStringAsFixed(2)}'),
-                  ],
-                ),
-                if (_minimumCharge > 0 && subtotal > 0 && subtotal < _minimumCharge)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.info_outline,
-                          size: 16,
-                          color: Colors.orange,
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+            decoration: BoxDecoration(
+              color: AppColors.card,
+              border: Border(top: BorderSide(color: AppColors.border)),
+            ),
+            child: SafeArea(
+              top: false,
+              minimum: const EdgeInsets.only(bottom: 4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Subtotal',
+                        style: TextStyle(fontSize: 12.5, color: AppColors.ink),
+                      ),
+                      Text(
+                        '\$${subtotal.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
                         ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            '${'Минимальный чек'.tr} '
-                            '${SettingsService.formatMoney(_minimumCharge)}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.orange,
+                      ),
+                    ],
+                  ),
+                  if (_minimumCharge > 0 &&
+                      subtotal > 0 &&
+                      subtotal < _minimumCharge)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.info_outline,
+                            size: 14,
+                            color: Colors.orange,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              '${'Минимальный чек'.tr} '
+                              '${SettingsService.formatMoney(_minimumCharge)}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.orange,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Text(
+                        'Tax',
+                        style: TextStyle(fontSize: 12.5, color: AppColors.ink),
+                      ),
+                      const SizedBox(width: 8),
+                      DropdownButton<double>(
+                        value: ctrl.builderTaxRate,
+                        isDense: true,
+                        underline: const SizedBox.shrink(),
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.primaryOnCard,
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: TaxRates.hst,
+                            child: Text('HST 13%'),
+                          ),
+                          DropdownMenuItem(
+                            value: TaxRates.gst,
+                            child: Text('GST 5%'),
+                          ),
+                          DropdownMenuItem(
+                            value: TaxRates.none,
+                            child: Text('No tax 0%'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setState(() => ctrl.builderTaxRate = value);
+                        },
+                      ),
+                      const Spacer(),
+                      Text(
+                        '\$${tax.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Divider(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Total',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 15,
+                        ),
+                      ),
+                      Text(
+                        '\$${total.toStringAsFixed(2)}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 38,
+                          child: ElevatedButton.icon(
+                            onPressed: _showAddItemDialog,
+                            icon: const Icon(Icons.add_rounded, size: 19),
+                            label: Text(
+                              context.tr('Позиция', 'Add item'),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13.5,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.accent,
+                              foregroundColor: AppColors.primary,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
                             ),
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                const SizedBox(height: 4),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('Tax:'),
-                    DropdownButton<double>(
-                      value: ctrl.builderTaxRate,
-                      underline: const SizedBox.shrink(),
-                      items: const [
-                        DropdownMenuItem(value: TaxRates.hst, child: Text('HST 13%')),
-                        DropdownMenuItem(value: TaxRates.gst, child: Text('GST 5%')),
-                        DropdownMenuItem(value: TaxRates.none, child: Text('No tax 0%')),
-                      ],
-                      onChanged: (value) {
-                        if (value == null) return;
-                        setState(() => ctrl.builderTaxRate = value);
-                      },
-                    ),
-                  ],
-                ),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Tax (${(ctrl.builderTaxRate * 100).toInt()}%):'),
-                    Text('\$${tax.toStringAsFixed(2)}'),
-                  ],
-                ),
-                const Divider(),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'TOTAL:',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                    ),
-                    Text(
-                      '\$${total.toStringAsFixed(2)}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
-                        color: AppColors.primary,
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                BottomConfirmButton(
-                  dirty: ctrl.builderItems.isNotEmpty,
-                  onPressed: () {
-                    if (ctrl.builderItems.isEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Добавьте позиции'.tr)),
-                      );
-                      return;
-                    }
-                    _commitBuilder();
-                  },
-                ),
-              ],
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SizedBox(
+                          height: 38,
+                          child: ElevatedButton.icon(
+                            onPressed: () {
+                              if (!canSave) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Добавьте позиции'.tr),
+                                  ),
+                                );
+                                return;
+                              }
+                              _commitBuilder();
+                            },
+                            icon: const Icon(Icons.check_rounded, size: 20),
+                            label: Text(
+                              context.tr('Готово', 'Done'),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13.5,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: canSave
+                                  ? kConfirmGreen
+                                  : Colors.grey.shade400,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -1188,6 +1461,7 @@ class _FinanceTabState extends State<FinanceTab> {
     // Работа или запчасть — это выбирает мастер, а не угадывают отчёты.
     // По умолчанию работа: выезд и диагностика добавляются чаще всего.
     var isPart = false;
+    var kindTouched = false;
     final costCtrl = TextEditingController();
 
     // Замены: сначала то, что уже записано в карточке детали, потом — что
@@ -1331,6 +1605,7 @@ class _FinanceTabState extends State<FinanceTab> {
               priceFresh = true;
               // Со склада — всегда запчасть, себестоимость уже известна.
               isPart = true;
+              kindTouched = true;
               if (cost != null) costCtrl.text = cost.toStringAsFixed(2);
               // Взяли замену — запоминаем её в карточке, чтобы в следующий раз
               // она нашлась сразу и без интернета.
@@ -1350,6 +1625,7 @@ class _FinanceTabState extends State<FinanceTab> {
               priceCtrl.text = price.toStringAsFixed(2);
               priceFresh = true;
               isPart = false;
+              kindTouched = true;
               costCtrl.clear();
               setDialog(() {});
             }
@@ -1406,6 +1682,9 @@ class _FinanceTabState extends State<FinanceTab> {
                         if (picked != null &&
                             nameCtrl.text.trim() != picked!.name) {
                           picked = null;
+                        }
+                        if (!kindTouched && picked == null) {
+                          isPart = guessIsPart({'name': nameCtrl.text});
                         }
                         setDialog(() {});
                       },
@@ -1502,11 +1781,17 @@ class _FinanceTabState extends State<FinanceTab> {
                               priceFresh = false;
                               clearAutoNumber(priceCtrl);
                             },
-                            onChanged: (_) => priceFresh = false,
-                            decoration: const InputDecoration(
-                              labelText: 'Price',
+                            onChanged: (_) {
+                              priceFresh = false;
+                              setDialog(() {});
+                            },
+                            decoration: InputDecoration(
+                              labelText: context.tr(
+                                'Цена для клиента',
+                                'Price for client',
+                              ),
                               prefixText: '\$ ',
-                              border: OutlineInputBorder(),
+                              border: const OutlineInputBorder(),
                             ),
                           ),
                         ),
@@ -1520,7 +1805,10 @@ class _FinanceTabState extends State<FinanceTab> {
                               qtyFresh = false;
                               clearAutoNumber(qtyCtrl);
                             },
-                            onChanged: (_) => qtyFresh = false,
+                            onChanged: (_) {
+                              qtyFresh = false;
+                              setDialog(() {});
+                            },
                             decoration: const InputDecoration(
                               labelText: 'Qty',
                               border: OutlineInputBorder(),
@@ -1533,8 +1821,14 @@ class _FinanceTabState extends State<FinanceTab> {
                     _itemKindField(
                       isPart: isPart,
                       costCtrl: costCtrl,
+                      clientUnitPrice: double.tryParse(priceCtrl.text) ?? 0,
+                      qty: (int.tryParse(qtyCtrl.text) ?? 1).toDouble(),
                       fromWarehouse: picked != null,
-                      onChanged: (next) => setDialog(() => isPart = next),
+                      onChanged: (next) {
+                        kindTouched = true;
+                        setDialog(() => isPart = next);
+                      },
+                      onCostChanged: () => setDialog(() {}),
                     ),
                   ],
                 ),
@@ -1593,8 +1887,22 @@ class _FinanceTabState extends State<FinanceTab> {
     required bool isPart,
     required TextEditingController costCtrl,
     required ValueChanged<bool> onChanged,
+    VoidCallback? onCostChanged,
+    double clientUnitPrice = 0,
+    double qty = 1,
     bool fromWarehouse = false,
   }) {
+    final typedCost = double.tryParse(
+      costCtrl.text.trim().replaceAll(',', '.'),
+    );
+    final effectiveUnitCost = !isPart
+        ? 0.0
+        : (typedCost ?? (clientUnitPrice * 0.4));
+    final totalClient = qty * clientUnitPrice;
+    final totalMyCost = qty * effectiveUnitCost;
+    final margin = totalClient - totalMyCost;
+    final isGuess = isPart && typedCost == null && clientUnitPrice > 0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1624,24 +1932,65 @@ class _FinanceTabState extends State<FinanceTab> {
           const SizedBox(height: 10),
           TextField(
             controller: costCtrl,
-            enabled: !fromWarehouse,
+            onChanged: (_) => onCostChanged?.call(),
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(
-              labelText: context.tr('Закупка (себестоимость)', 'Cost'),
+              labelText: context.tr(
+                'Закупка за 1 шт. (сколько стоило мне)',
+                'My purchase cost per unit',
+              ),
               prefixText: '\$ ',
               helperMaxLines: 3,
               helperText: fromWarehouse
                   ? context.tr(
-                      'Со склада — себестоимость уже известна.',
-                      'From the warehouse — cost is already known.',
+                      'Подставлено со склада — при необходимости можно поправить.',
+                      'Filled from the warehouse — you can adjust it if needed.',
                     )
                   : context.tr(
-                      'Можно не заполнять: в отчёте возьмётся 40% цены и будет помечено как прикидка.',
-                      'Optional: reports fall back to 40% of price and flag it as a guess.',
+                      'Впишите вашу закупочную цену. Если оставить пустым — отчёт возьмёт 40% цены как прикидку.',
+                      'Enter your purchase cost. If left empty, reports use 40% of price as a guess.',
                     ),
               border: const OutlineInputBorder(),
             ),
           ),
+          if (clientUnitPrice > 0 || typedCost != null) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.cardMuted,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${context.tr('Для клиента', 'For client')}: \$${totalClient.toStringAsFixed(2)} · '
+                    '${context.tr('Для меня', 'My cost')}: \$${totalMyCost.toStringAsFixed(2)}'
+                    '${isGuess ? context.tr(' (прикидка 40%)', ' (40% guess)') : ''}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.ink,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${context.tr('Чистыми с детали (наценка)', 'Net on part (margin)')}: '
+                    '${margin >= 0 ? '+' : '−'}\$${margin.abs().toStringAsFixed(2)}',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w800,
+                      color: margin >= 0
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFFC62828),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ],
     );
@@ -1666,12 +2015,13 @@ class _FinanceTabState extends State<FinanceTab> {
     final qtyCtrl = TextEditingController(
       text: '${_money(item['qty'], 1).toInt()}',
     );
-    final fromWarehouse =
-        (item['warehouseItemId'] ?? '').toString().isNotEmpty;
+    final warehouseId = (item['warehouseItemId'] ?? '').toString();
+    final fromWarehouse = warehouseId.isNotEmpty;
+    final initialCost = item['costPrice'] != null
+        ? _money(item['costPrice'])
+        : (fromWarehouse ? WarehouseService.latestCosts[warehouseId] : null);
     final costCtrl = TextEditingController(
-      text: item['costPrice'] == null
-          ? ''
-          : _money(item['costPrice']).toStringAsFixed(2),
+      text: initialCost == null ? '' : initialCost.toStringAsFixed(2),
     );
     var isPart = Job.isPartItem(item);
     var priceFresh = true;
@@ -1702,12 +2052,12 @@ class _FinanceTabState extends State<FinanceTab> {
                     const SizedBox(height: 4),
                     Text(
                       context.tr(
-                        'Счёт оплачен, поэтому имя, цену и количество менять нельзя. Метка на сумму не влияет — она нужна только отчётам.',
-                        'The invoice is paid, so name, price and qty are locked. This label does not change any amount — reports use it.',
+                        'Счёт оплачен, поэтому имя, цену и количество менять нельзя. Метка и закупочная цена на сумму для клиента не влияют — они нужны отчётам.',
+                        'The invoice is paid, so name, price and qty are locked. Label and purchase cost do not change the client total — reports use them.',
                       ),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
-                        color: Colors.black54,
+                        color: AppColors.inkMuted,
                         height: 1.35,
                       ),
                     ),
@@ -1733,10 +2083,14 @@ class _FinanceTabState extends State<FinanceTab> {
                               priceFresh = false;
                               clearAutoNumber(priceCtrl);
                             },
-                            decoration: const InputDecoration(
-                              labelText: 'Price',
+                            onChanged: (_) => setDialog(() {}),
+                            decoration: InputDecoration(
+                              labelText: context.tr(
+                                'Цена для клиента',
+                                'Price for client',
+                              ),
                               prefixText: '\$ ',
-                              border: OutlineInputBorder(),
+                              border: const OutlineInputBorder(),
                             ),
                           ),
                         ),
@@ -1750,6 +2104,7 @@ class _FinanceTabState extends State<FinanceTab> {
                               qtyFresh = false;
                               clearAutoNumber(qtyCtrl);
                             },
+                            onChanged: (_) => setDialog(() {}),
                             decoration: const InputDecoration(
                               labelText: 'Qty',
                               border: OutlineInputBorder(),
@@ -1763,8 +2118,11 @@ class _FinanceTabState extends State<FinanceTab> {
                   _itemKindField(
                     isPart: isPart,
                     costCtrl: costCtrl,
+                    clientUnitPrice: double.tryParse(priceCtrl.text) ?? 0,
+                    qty: (int.tryParse(qtyCtrl.text) ?? 1).toDouble(),
                     fromWarehouse: fromWarehouse,
                     onChanged: (next) => setDialog(() => isPart = next),
+                    onCostChanged: () => setDialog(() {}),
                   ),
                 ],
               ),
@@ -1872,10 +2230,11 @@ class _FinanceTabState extends State<FinanceTab> {
       return _buildMainView();
     }
 
-    final doc = ctrl.documents[ctrl.viewingDocumentIndex!];
+    final docIndex = ctrl.viewingDocumentIndex!;
+    final doc = ctrl.documents[docIndex];
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _maybeAutoCheckStripe(ctrl.viewingDocumentIndex!);
+      _maybeAutoCheckStripe(docIndex);
     });
     final items = [
       for (final item in doc['items'] as List? ?? [])
@@ -1887,9 +2246,11 @@ class _FinanceTabState extends State<FinanceTab> {
     ];
     final isEstimate = doc['type'] == 'Estimate';
     final isCancelled = doc['status'] == 'cancelled';
+    final stamp = Formatters.messageStamp(Job.documentCreatedAt(doc));
 
     final subtotal = ctrl.calcSubtotal(items);
-    final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
+    final taxRate = _money(doc['taxRate'], 0.0);
+    final tax = ctrl.calcTax(subtotal, taxRate);
     final total = ctrl.calcTotal(subtotal, tax);
     final paid = ctrl.calcPaid(payments);
     final due = ctrl.calcDue(total, paid);
@@ -1900,300 +2261,682 @@ class _FinanceTabState extends State<FinanceTab> {
     final itemsEditable =
         !isCancelled && payments.isEmpty && !_estimateConverted(doc);
 
+    final docTitle =
+        '${isEstimate ? 'ESTIMATE' : 'INVOICE'} #${doc['number'] ?? (docIndex + 1)}';
+
     return ColoredBox(
-      color: Colors.white,
+      color: AppColors.surface,
       child: Column(
         children: [
           Material(
             color: AppColors.primary,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              child: Text(
-                    '${doc['type']} #${ctrl.viewingDocumentIndex! + 1}',
-                    style: const TextStyle(
+              padding: const EdgeInsets.fromLTRB(8, 6, 12, 6),
+              child: Row(
+                children: [
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(
+                      Icons.arrow_back_rounded,
                       color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
+                      size: 20,
+                    ),
+                    onPressed: () => ctrl.setFinanceMode('main'),
+                  ),
+                  Expanded(
+                    child: Text(
+                      docTitle,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15.5,
+                      ),
                     ),
                   ),
+                  Text(
+                    Formatters.formatCurrency(total),
+                    style: const TextStyle(
+                      color: Color(0xFFFCC520),
+                      fontWeight: FontWeight.w900,
+                      fontSize: 17,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           if (_busy) const LinearProgressIndicator(minHeight: 3),
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-            if (isEstimate) ...[
-              _EstimateStatusBanner(
-                doc: doc,
-                busy: _busy,
-                onConvertToInvoice: !isCancelled &&
-                        (doc['estimateStatus'] ?? '') == 'approved' &&
-                        !_estimateConverted(doc)
-                    ? () => _convertEstimateToInvoice(
-                          ctrl.viewingDocumentIndex!,
-                        )
-                    : null,
-              ),
-              const SizedBox(height: 12),
-            ],
-            // Line items
-            const Text(
-              'Items',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(top: 2, bottom: 6),
-              child: Text(
-                itemsEditable
-                    ? context.tr(
-                        'Нажмите на позицию, чтобы поправить имя, цену или количество',
-                        'Tap a line to change its name, price or qty',
-                      )
-                    : isCancelled
-                        ? _itemsLockedReason(
-                            context,
-                            cancelled: true,
-                            paid: false,
-                          )
-                        : context.tr(
-                            'Суммы уже не меняются, но пометить позицию работой или запчастью можно — нажмите на неё.',
-                            'Amounts are locked, but you can still mark a line as service or part — tap it.',
-                          ),
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
-              ),
-            ),
-            ...items.asMap().entries.map((entry) {
-              final item = entry.value;
-              final name = (item['name'] ?? 'Item').toString();
-              final qty = _money(item['qty'], 1);
-              final price = _money(item['price']);
-              final isPart = Job.isPartItem(item);
-              final classified = Job.isItemClassified(item);
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  onTap: _busy || isCancelled
-                      ? null
-                      : () => _editDocumentItem(
-                            ctrl.viewingDocumentIndex!,
-                            entry.key,
-                            kindOnly: !itemsEditable,
-                          ),
-                  title: Text(name),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('$qty × \$${price.toStringAsFixed(2)}'),
-                      const SizedBox(height: 4),
-                      _itemKindChip(isPart: isPart, classified: classified),
-                    ],
-                  ),
-                  isThreeLine: true,
-                  trailing: Text(
-                    '\$${(qty * price).toStringAsFixed(2)}',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ),
-              );
-            }),
-
-            const SizedBox(height: 16),
-
-            // Totals
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                children: [
-                  _buildTotalRow('Subtotal', subtotal),
-                  _buildTotalRow('Tax', tax),
-                  const Divider(),
-                  _buildTotalRow('Total', total, isBold: true),
-                  if (paid > 0) _buildTotalRow('Paid', paid, color: Colors.green),
-                  if (due > 0) _buildTotalRow('Amount due', due, color: Colors.red),
-                ],
-              ),
-            ),
-
-            if (payments.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              const Text(
-                'Payments',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
-              const SizedBox(height: 8),
-              ...payments.map((p) {
-                final amount = (p['amount'] ?? 0).toDouble();
-                final method = (p['method'] ?? 'Payment').toString();
-                final isRefund = amount < -0.009 ||
-                    method.toLowerCase().contains('refund') ||
-                    method.toLowerCase().contains('возврат');
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: ListTile(
-                    leading: Icon(
-                      isRefund
-                          ? Icons.undo
-                          : method.toString().contains('Stripe')
-                              ? Icons.credit_card
-                              : Icons.payments,
-                      color: isRefund ? Colors.red : Colors.green,
+                  if (isEstimate) ...[
+                    _EstimateStatusBanner(
+                      doc: doc,
+                      busy: _busy,
+                      onConvertToInvoice: !isCancelled &&
+                              !_estimateConverted(doc)
+                          ? () => _convertEstimateToInvoice(docIndex)
+                          : null,
                     ),
-                    title: Text(
-                      Formatters.formatCurrency(amount.abs()),
-                      style: TextStyle(
-                        color: isRefund ? Colors.red.shade700 : null,
-                        fontWeight: isRefund ? FontWeight.w700 : null,
-                      ),
+                    const SizedBox(height: 10),
+                  ],
+                  // Мини-А4 лист открытого документа
+                  Container(
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: AppColors.card,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.border),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.06),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
                     ),
-                    subtitle: Builder(
-                      builder: (context) {
-                        final dateRaw = p['date']?.toString();
-                        String dateStr = '';
-                        if (dateRaw != null && dateRaw.isNotEmpty) {
-                          final dt = DateTime.tryParse(dateRaw);
-                          if (dt != null) {
-                            dateStr = DateFormat('d MMM yyyy, HH:mm', AppLocale.instance.dateLocale).format(dt.toLocal());
-                          }
-                        }
-                        final methodLabel = isRefund && !method.toLowerCase().contains('refund')
-                            ? 'Refund: ${_paymentMethodEn(method)}'
-                            : _paymentMethodEn(method);
-                        final subtitleText = dateStr.isNotEmpty ? '$methodLabel • $dateStr' : methodLabel;
-                        return Text(
-                          subtitleText,
-                          style: TextStyle(
-                            color: isRefund ? Colors.red.shade600 : null,
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          height: 4,
+                          color: isEstimate
+                              ? Colors.orange.shade700
+                              : AppColors.primary,
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          docTitle,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w900,
+                                            fontSize: 15,
+                                            letterSpacing: 0.4,
+                                            color: AppColors.ink,
+                                          ),
+                                        ),
+                                        if (stamp.isNotEmpty)
+                                          Text(
+                                            stamp,
+                                            style: TextStyle(
+                                              fontSize: 11.5,
+                                              fontWeight: FontWeight.w600,
+                                              color: AppColors.inkMuted,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                  Text(
+                                    Formatters.formatCurrency(total),
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 20,
+                                      color: AppColors.primaryOnCard,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                itemsEditable
+                                    ? context.tr(
+                                        'Нажмите на строку для правки',
+                                        'Tap a line to edit',
+                                      )
+                                    : isCancelled
+                                        ? _itemsLockedReason(
+                                            context,
+                                            cancelled: true,
+                                            paid: false,
+                                          )
+                                        : context.tr(
+                                            'Нажмите на строку, чтобы отметить работу / запчасть',
+                                            'Tap a line to mark service or part',
+                                          ),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: AppColors.inkMuted,
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 6),
+                                child: Divider(
+                                  height: 1,
+                                  thickness: 1,
+                                  color: AppColors.border,
+                                ),
+                              ),
+                              for (final entry in items.asMap().entries)
+                                InkWell(
+                                  borderRadius: BorderRadius.circular(6),
+                                  onTap: _busy || isCancelled
+                                      ? null
+                                      : () => _editDocumentItem(
+                                            docIndex,
+                                            entry.key,
+                                            kindOnly: !itemsEditable,
+                                          ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 5,
+                                      horizontal: 2,
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                (entry.value['name'] ?? 'Item')
+                                                    .toString(),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  fontSize: 13.5,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: AppColors.ink,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 1),
+                                              _buildItemSubtitle(entry.value),
+                                            ],
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          '\$${(_money(entry.value['qty'], 1) * _money(entry.value['price'])).toStringAsFixed(2)}',
+                                          style: TextStyle(
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w800,
+                                            color: AppColors.ink,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 6),
+                                child: Divider(
+                                  height: 1,
+                                  thickness: 1,
+                                  color: AppColors.border,
+                                ),
+                              ),
+                              _buildTotalRow('Subtotal', subtotal),
+                              _buildTotalRow(
+                                'Tax (${(taxRate * 100).round()}%)',
+                                tax,
+                              ),
+                              const Divider(height: 10),
+                              _buildTotalRow('Total', total, isBold: true),
+                              if (paid > 0)
+                                _buildTotalRow(
+                                  'Paid',
+                                  paid,
+                                  color: Colors.green.shade700,
+                                ),
+                              if (due > 0)
+                                _buildTotalRow(
+                                  'Amount due',
+                                  due,
+                                  color: Colors.red.shade700,
+                                ),
+                            ],
                           ),
-                        );
-                      },
+                        ),
+                      ],
                     ),
                   ),
-                );
-              }),
-            ],
 
-            if (_signatureUrl(doc).isNotEmpty) ...[
-              const SizedBox(height: 16),
-              const Text(
-                'Client signature',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade50,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.grey.shade300),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Image.network(
-                      _signatureUrl(doc),
-                      height: 88,
-                      fit: BoxFit.contain,
-                      alignment: Alignment.centerLeft,
-                      cacheHeight: 264,
-                      errorBuilder: (context, error, stackTrace) =>
-                          const Text('Signature saved'),
+                  if (payments.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Payments',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                     ),
                     const SizedBox(height: 6),
-                    Text(
-                      'Printed on the invoice PDF',
-                      style: TextStyle(
-                        color: Colors.grey.shade700,
-                        fontSize: 12,
+                    ...payments.map((p) {
+                      final amount = (p['amount'] ?? 0).toDouble();
+                      final method = (p['method'] ?? 'Payment').toString();
+                      final isRefund = amount < -0.009 ||
+                          method.toLowerCase().contains('refund') ||
+                          method.toLowerCase().contains('возврат');
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        child: ListTile(
+                          dense: true,
+                          leading: Icon(
+                            isRefund
+                                ? Icons.undo
+                                : method.toString().contains('Stripe')
+                                    ? Icons.credit_card
+                                    : Icons.payments,
+                            color: isRefund ? Colors.red : Colors.green,
+                            size: 20,
+                          ),
+                          title: Text(
+                            Formatters.formatCurrency(amount.abs()),
+                            style: TextStyle(
+                              color: isRefund ? Colors.red.shade700 : null,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: Builder(
+                            builder: (context) {
+                              final dateRaw = p['date']?.toString();
+                              String dateStr = '';
+                              if (dateRaw != null && dateRaw.isNotEmpty) {
+                                final dt = DateTime.tryParse(dateRaw);
+                                if (dt != null) {
+                                  dateStr = DateFormat(
+                                    'd MMM yyyy, HH:mm',
+                                    AppLocale.instance.dateLocale,
+                                  ).format(dt.toLocal());
+                                }
+                              }
+                              final methodLabel = isRefund &&
+                                      !method.toLowerCase().contains('refund')
+                                  ? 'Refund: ${_paymentMethodEn(method)}'
+                                  : _paymentMethodEn(method);
+                              final subtitleText = dateStr.isNotEmpty
+                                  ? '$methodLabel • $dateStr'
+                                  : methodLabel;
+                              return Text(
+                                subtitleText,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: isRefund ? Colors.red.shade600 : null,
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      );
+                    }),
+                  ],
+
+                  if (_signatureUrl(doc).isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Client signature',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Image.network(
+                            _signatureUrl(doc),
+                            height: 72,
+                            fit: BoxFit.contain,
+                            alignment: Alignment.centerLeft,
+                            cacheHeight: 216,
+                            errorBuilder: (context, error, stackTrace) =>
+                                const Text('Signature saved'),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Printed on the invoice PDF',
+                            style: TextStyle(
+                              color: Colors.grey.shade700,
+                              fontSize: 11.5,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
-                ),
-              ),
-            ],
 
-            if (_stripeUrl(doc).isNotEmpty || _isStripeRefunded(doc)) ...[
-              const SizedBox(height: 16),
-              _buildStripeStatusCard(doc, due),
-            ],
+                  if (_stripeUrl(doc).isNotEmpty || _isStripeRefunded(doc)) ...[
+                    const SizedBox(height: 12),
+                    _buildStripeStatusCard(doc, due),
+                  ],
 
-            if (!isCancelled) ...[
-              if (!isEstimate && paid > 0.009) ...[
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _busy
-                        ? null
-                        : () => _confirmRefund(
-                              documentIndex: ctrl.viewingDocumentIndex!,
-                              maxAmount: paid,
+                  if (!isCancelled) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        if (!isEstimate && due > 0)
+                          Expanded(
+                            child: SizedBox(
+                              height: 42,
+                              child: ElevatedButton.icon(
+                                onPressed: _busy
+                                    ? null
+                                    : () => _showPaySheet(
+                                          documentIndex: docIndex,
+                                          total: total,
+                                          due: due,
+                                        ),
+                                icon: const Icon(Icons.payments, size: 19),
+                                label: Text(
+                                  'Выбор оплаты'.tr,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.accent,
+                                  foregroundColor: Colors.black,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                  ),
+                                ),
+                              ),
                             ),
-                    icon: const Icon(Icons.undo),
-                    label: Text('Вернуть средства'.tr),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.red.shade700,
-                      side: BorderSide(color: Colors.red.shade300),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                  ),
-                ),
-              ],
-              if (isEstimate || due <= 0) ...[
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: _busy
-                        ? null
-                        : () => _sendAppDocument(ctrl.viewingDocumentIndex!),
-                    icon: const Icon(Icons.send),
-                    label: Text('Отправить'.tr),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF14557F),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                  ),
-                ),
-              ],
-              if (!isEstimate && due > 0) ...[
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: _busy
-                        ? null
-                        : () => _showPaySheet(
-                              documentIndex: ctrl.viewingDocumentIndex!,
-                              total: total,
-                              due: due,
+                          ),
+                        if (!isEstimate && due > 0 && (isEstimate || due <= 0))
+                          const SizedBox(width: 8),
+                        if (isEstimate || due <= 0)
+                          Expanded(
+                            child: SizedBox(
+                              height: 42,
+                              child: ElevatedButton.icon(
+                                onPressed: _busy
+                                    ? null
+                                    : () => _sendAppDocument(docIndex),
+                                icon: const Icon(Icons.send, size: 18),
+                                label: Text(
+                                  'Отправить'.tr,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF14557F),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                  ),
+                                ),
+                              ),
                             ),
-                    icon: const Icon(Icons.payments),
-                    label: Text('Выбор оплаты'.tr),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.accent,
-                      foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                      ],
                     ),
-                  ),
-                ),
-              ],
-            ],
-          ],
-                ),
+                    if (!isEstimate && paid > 0.009) ...[
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 38,
+                        child: OutlinedButton.icon(
+                          onPressed: _busy
+                              ? null
+                              : () => _confirmRefund(
+                                    documentIndex: docIndex,
+                                    maxAmount: paid,
+                                  ),
+                          icon: const Icon(Icons.undo, size: 18),
+                          label: Text('Вернуть средства'.tr),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.red.shade700,
+                            side: BorderSide(color: Colors.red.shade300),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ],
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Job _currentJob() {
+    return Job.fromMap(
+      {
+        ...ctrl.jobData,
+        'documents': ctrl.documents,
+      },
+      ctrl.jobId,
+    );
+  }
+
+  Widget _buildJobFinanceSummaryCard() {
+    final job = _currentJob();
+    final summary = ReportMetrics.jobOf(
+      job,
+      warehouseCosts: WarehouseService.latestCosts,
+    );
+    if (summary.invoices.isEmpty) return const SizedBox.shrink();
+    String m(double v) => ReportBreakdownPage.money(v);
+
+    return Container(
+      margin: const EdgeInsets.only(top: 4, bottom: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF14557F),
+        borderRadius: BorderRadius.circular(11),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(11),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(11),
+          onTap: () => _openJobBreakdownPage(summary),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.savings_outlined,
+                      color: Color(0xFFFCC520),
+                      size: 17,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        context.tr(
+                          'Итого по этой заявке',
+                          'Total on this job',
+                        ),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 13.5,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${context.tr('Чистыми', 'Net')}: ${m(summary.netProfit)}',
+                      style: const TextStyle(
+                        color: Color(0xFFFCC520),
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Icon(
+                      Icons.chevron_right,
+                      color: Colors.white70,
+                      size: 18,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  [
+                    '${context.tr('Счёт', 'Total')}: ${m(summary.invoiced)} (${context.tr('без HST', 'ex HST')} ${m(summary.salesExHst)})',
+                    if (summary.parts.isNotEmpty)
+                      '${context.tr('Запчасти', 'Parts')}: ${context.tr('мне', 'cost')} ${m(summary.partsCost)} / ${context.tr('клиенту', 'client')} ${m(summary.partsSales)}',
+                  ].join('  ·  '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openJobBreakdownPage(ReportJob summary) {
+    String m(double v) => ReportBreakdownPage.money(v);
+    ReportBreakdownPage.open(
+      context,
+      title: summary.job.clientName.trim().isEmpty
+          ? context.tr('Экономика заявки', 'Job economics')
+          : summary.job.clientName,
+      periodLabel: summary.job.applianceType,
+      headline: m(summary.netProfit),
+      headlineLabel: context.tr(
+        'чистыми заработано по заявке',
+        'net earned on this job',
+      ),
+      headlineHint:
+          '${context.tr('Грязными без HST', 'Gross excl. HST')}: ${m(summary.salesExHst)} (${context.tr('с HST', 'incl. HST')} ${m(summary.invoiced)}) · ${context.tr('Запчасти мне', 'Parts my cost')}: ${m(summary.partsCost)} · ${context.tr('Запчасти клиенту', 'Parts client')}: ${m(summary.partsSales)}',
+      color: const Color(0xFF14557F),
+      icon: Icons.savings_outlined,
+      formula: [
+        (
+          context.tr('Грязными (счета с HST)', 'Gross (invoices incl. HST)'),
+          m(summary.invoiced),
+        ),
+        ('− HST', m(-summary.tax)),
+        (
+          '= ${context.tr('Грязными без HST (выручка)', 'Gross excl. HST (revenue)')}',
+          m(summary.salesExHst),
+        ),
+        (
+          context.tr('Работа и выезд', 'Labour and call-out'),
+          m(summary.labourSales),
+        ),
+        (
+          context.tr('Запчасти — стоит для клиента', 'Parts — client price'),
+          m(summary.partsSales),
+        ),
+        (
+          '− ${context.tr('Запчасти — стоило для меня', 'Parts — my cost')}',
+          m(-summary.partsCost),
+        ),
+        (
+          context.tr('Наценка на запчастях', 'Parts margin'),
+          m(summary.partsMargin),
+        ),
+        (
+          '= ${context.tr('Чистыми по заявке', 'Net on this job')}',
+          m(summary.netProfit),
+        ),
+      ],
+      sections: [
+        BreakdownSection(
+          title:
+              '${context.tr('Инвойсы заявки', 'Job invoices')} (${summary.invoices.length})',
+          rows: [
+            for (final inv in summary.invoices)
+              BreakdownRow(
+                title:
+                    'Invoice #${inv.number.isEmpty ? '${inv.docIndex + 1}' : inv.number}',
+                amount: inv.netProfit,
+                amountLabel: context.tr('чистыми', 'net'),
+                chips: [
+                  '${context.tr('Грязными без HST', 'Gross excl. HST')} ${m(inv.subtotal)}',
+                  '${context.tr('С HST', 'Incl. HST')} ${m(inv.total)}',
+                  '${context.tr('Запчасти мне', 'Parts my cost')} ${m(inv.partsCost)}',
+                  '${context.tr('Запчасти клиенту', 'Parts client')} ${m(inv.partsSales)}',
+                ],
+                onTap: () {
+                  Navigator.pop(context);
+                  ctrl.setViewingDocumentIndex(inv.docIndex);
+                  ctrl.setFinanceMode('view_document');
+                },
+              ),
           ],
         ),
-      );
+        BreakdownSection(
+          title:
+              '${context.tr('Каждая деталь в заявке', 'Every part on the job')} (${summary.parts.length})',
+          empty: context.tr('Запчастей нет.', 'No parts.'),
+          total: summary.parts.isEmpty ? null : summary.partsCost,
+          totalLabel: context.tr(
+            'Стоило для меня (закупка)',
+            'Total cost to me',
+          ),
+          rows: [
+            for (final item in summary.parts)
+              BreakdownRow(
+                title: item.name,
+                subtitle: item.invoiceNumber.isEmpty
+                    ? ''
+                    : 'Invoice #${item.invoiceNumber}',
+                amount: item.cost,
+                amountLabel: context.tr('для меня', 'my cost'),
+                chips: [
+                  '${context.tr('Для меня', 'My cost')}: ${m(item.cost)}',
+                  '${context.tr('Для клиента', 'For client')}: ${m(item.sold)}',
+                  '${context.tr('Чистыми с детали', 'Net on part')}: +${m(item.margin)}',
+                ],
+                onTap: () {
+                  Navigator.pop(context);
+                  ctrl.setViewingDocumentIndex(item.docIndex);
+                  ctrl.setFinanceMode('view_document');
+                },
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildItemSubtitle(Map item) {
+    final parsed = ReportMetrics.itemOf(
+      item,
+      warehouseCosts: WarehouseService.latestCosts,
+    );
+    final qty = _formatQty(parsed.qty);
+    return Row(
+      children: [
+        Text(
+          '$qty × \$${parsed.price.toStringAsFixed(2)}',
+          style: const TextStyle(fontSize: 11.5, color: Colors.black54),
+        ),
+        const SizedBox(width: 6),
+        _itemKindChip(
+          isPart: parsed.isPart,
+          classified: parsed.classified,
+        ),
+      ],
+    );
   }
 
   /// Плашка у позиции счёта. Серая с вопросом — метки нет, отчёт гадает.
@@ -2344,7 +3087,7 @@ class _FinanceTabState extends State<FinanceTab> {
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
@@ -2363,7 +3106,7 @@ class _FinanceTabState extends State<FinanceTab> {
                     width: 40,
                     height: 4,
                     decoration: BoxDecoration(
-                      color: Colors.black26,
+                      color: AppColors.border,
                       borderRadius: BorderRadius.circular(4),
                     ),
                   ),
@@ -2371,10 +3114,10 @@ class _FinanceTabState extends State<FinanceTab> {
                   Text(
                     'Вернуть средства?'.tr,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w800,
-                      color: Color(0xFF14557F),
+                      color: AppColors.primaryOnCard,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -2384,7 +3127,7 @@ class _FinanceTabState extends State<FinanceTab> {
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 14,
-                      color: Colors.grey.shade700,
+                      color: AppColors.inkMuted,
                       height: 1.35,
                     ),
                   ),
@@ -2406,7 +3149,7 @@ class _FinanceTabState extends State<FinanceTab> {
                     child: Text(
                       '${'Максимум'.tr}: ${Formatters.formatCurrency(maxAmount)}',
                       style: TextStyle(
-                        color: Colors.grey.shade600,
+                        color: AppColors.inkMuted,
                         fontSize: 13,
                       ),
                     ),
@@ -2688,6 +3431,56 @@ class _FinanceTabState extends State<FinanceTab> {
     return ctrl.contactPhone.trim();
   }
 
+  Future<JobChatContact?> _pickSmsContact() async {
+    if (ctrl.chatContacts.length <= 1) {
+      await ctrl.ensureChatContactsLoaded();
+      if (!mounted) return null;
+    }
+    final contacts = [
+      for (final c in ctrl.chatContacts)
+        if (c.hasPhone) c,
+    ];
+    if (contacts.isEmpty) return null;
+    if (contacts.length == 1) return contacts.first;
+    return showModalBottomSheet<JobChatContact>(
+      context: context,
+      useRootNavigator: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Кому отправить SMS?'.tr,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ),
+              for (final contact in contacts)
+                ListTile(
+                  leading: Icon(
+                    contact.isOwner ? Icons.person : Icons.location_on,
+                    color: AppColors.primary,
+                  ),
+                  title: Text(contact.displayName),
+                  subtitle: Text(contact.subtitleLine),
+                  onTap: () => Navigator.pop(sheetContext, contact),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _copyUrl(String url) async {
     if (!mounted) return;
     await AppFeedback.copy(context, url);
@@ -2701,7 +3494,9 @@ class _FinanceTabState extends State<FinanceTab> {
 
   Future<void> _resendCurrentLink(Map<String, dynamic> doc) async {
     final url = _stripeSmsUrl(doc);
-    final phone = _smsPhone;
+    final chosen = await _pickSmsContact();
+    if (!mounted) return;
+    final phone = (chosen?.phone ?? _smsPhone).trim();
     if (url.isEmpty || phone.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2751,6 +3546,8 @@ class _FinanceTabState extends State<FinanceTab> {
 
   Future<void> _sendAppDocument(int documentIndex) async {
     if (documentIndex < 0 || documentIndex >= ctrl.documents.length) return;
+    final chosen = await _pickSmsContact();
+    if (!mounted) return;
     final doc = ctrl.documents[documentIndex];
     final items = doc['items'] as List? ?? [];
     final subtotal = ctrl.calcSubtotal(items);
@@ -2767,8 +3564,10 @@ class _FinanceTabState extends State<FinanceTab> {
         kind: kind,
         jobId: ctrl.jobId,
         clientId: ctrl.clientId,
-        clientName: (ctrl.jobData['clientName'] ?? ctrl.contactName).toString(),
-        clientPhone: _smsPhone,
+        clientName:
+            chosen?.displayName ??
+            (ctrl.jobData['clientName'] ?? ctrl.contactName).toString(),
+        clientPhone: (chosen?.phone ?? _smsPhone).trim(),
         clientAddress: (ctrl.jobData['clientAddress'] ?? ctrl.workAddress).toString(),
         documentNumber: documentIndex + 1,
         items: items,
@@ -2783,7 +3582,9 @@ class _FinanceTabState extends State<FinanceTab> {
             ? ctrl.contactName
             : ctrl.workAddress,
         serviceDate: DateTime.tryParse((doc['createdAt'] ?? '').toString()),
-        clientEmail: ctrl.clientEmail,
+        clientEmail: (chosen != null && chosen.hasEmail)
+            ? chosen.email
+            : ctrl.clientEmail,
         clientCompany: (ctrl.jobData['companyName'] ?? '').toString(),
         persistPdfUrl: (url) async {
           final next = Map<String, dynamic>.from(ctrl.documents[documentIndex]);
@@ -2850,6 +3651,9 @@ class _FinanceTabState extends State<FinanceTab> {
     double? amount,
     double tip = 0,
   }) async {
+    final chosen = await _pickSmsContact();
+    if (!mounted) return;
+    final targetPhone = (chosen?.phone ?? _smsPhone).trim();
     setState(() => _busy = true);
     try {
       final result = await StripeService.createPayment(
@@ -2859,13 +3663,13 @@ class _FinanceTabState extends State<FinanceTab> {
         amount: amount,
         tip: tip,
         sendSms: true,
-        to: _smsPhone,
+        to: targetPhone,
       );
       var smsSent = result.smsSent;
-      if (!smsSent && _smsPhone.isNotEmpty) {
+      if (!smsSent && targetPhone.isNotEmpty) {
         final docs = await SettingsService.loadDocumentSettings();
         smsSent = await SmsService.sendSms(
-          to: _smsPhone,
+          to: targetPhone,
           body: DocumentSettings.stripePaySms(
             deposit: kind == 'deposit',
             dollars: result.amount.toStringAsFixed(2),
@@ -3121,23 +3925,23 @@ class _FinanceTabState extends State<FinanceTab> {
   Widget _buildTotalRow(String label, double amount,
       {bool isBold = false, Color? color}) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(
             label,
             style: TextStyle(
-              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-              fontSize: isBold ? 18 : 14,
+              fontWeight: isBold ? FontWeight.w800 : FontWeight.w500,
+              fontSize: isBold ? 15.5 : 13,
             ),
           ),
           Text(
             '\$${amount.toStringAsFixed(2)}',
             style: TextStyle(
-              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-              fontSize: isBold ? 18 : 14,
-              color: color ?? (isBold ? AppColors.primary : Colors.black),
+              fontWeight: isBold ? FontWeight.w900 : FontWeight.w600,
+              fontSize: isBold ? 16 : 13,
+              color: color ?? (isBold ? AppColors.primaryOnCard : AppColors.ink),
             ),
           ),
         ],
@@ -3297,10 +4101,12 @@ class _FinanceTabState extends State<FinanceTab> {
     }
     _lastReviewOfferAt = now;
     if (!mounted) return;
+    final chosen = await _pickSmsContact();
+    if (!mounted) return;
     await JobReviewOffer.askAndSend(
       context,
-      phone: ctrl.contactPhone,
-      name: ctrl.contactName,
+      phone: chosen?.phone ?? ctrl.contactPhone,
+      name: chosen?.displayName ?? ctrl.contactName,
       address: ctrl.workAddress,
       clientId: ctrl.clientId,
       jobId: ctrl.jobId,
@@ -3332,7 +4138,7 @@ class _EstimateStatusBanner extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: approved ? Colors.green.shade50 : const Color(0xFFFFF8E1),
+        color: AppColors.tint(color, 0.14),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: color),
       ),
@@ -3353,9 +4159,13 @@ class _EstimateStatusBanner extends StatelessWidget {
                       : 'Ждём согласие клиента'.tr,
                   style: TextStyle(
                     fontWeight: FontWeight.w800,
-                    color: approved
-                        ? Colors.green.shade800
-                        : const Color(0xFF92400E),
+                    color: AppColors.isDark
+                        ? (approved
+                            ? const Color(0xFF81C784)
+                            : const Color(0xFFFFCA28))
+                        : (approved
+                            ? Colors.green.shade800
+                            : const Color(0xFF92400E)),
                   ),
                 ),
               ),

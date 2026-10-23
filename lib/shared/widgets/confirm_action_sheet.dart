@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app_commands.dart';
+import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../unsaved_navigation_gate.dart';
 
@@ -25,7 +26,7 @@ Future<UnsavedChangesAction> showConfirmActionSheet(
     isScrollControlled: false,
     isDismissible: false,
     enableDrag: false,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     barrierColor: Colors.black54,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
@@ -41,7 +42,7 @@ Future<UnsavedChangesAction> showConfirmActionSheet(
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: Colors.black26,
+                  color: AppColors.border,
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),
@@ -49,10 +50,10 @@ Future<UnsavedChangesAction> showConfirmActionSheet(
               Text(
                 title,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
-                  color: Color(0xFF14557F),
+                  color: AppColors.primaryOnCard,
                 ),
               ),
               if (message != null && message.trim().isNotEmpty) ...[
@@ -62,7 +63,7 @@ Future<UnsavedChangesAction> showConfirmActionSheet(
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
-                    color: Colors.grey.shade700,
+                    color: AppColors.inkMuted,
                     height: 1.35,
                   ),
                 ),
@@ -130,7 +131,7 @@ Future<bool> showConfirmCancelSheet(
     isScrollControlled: false,
     isDismissible: false,
     enableDrag: false,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     barrierColor: Colors.black54,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
@@ -146,7 +147,7 @@ Future<bool> showConfirmCancelSheet(
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: Colors.black26,
+                  color: AppColors.border,
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),
@@ -154,10 +155,10 @@ Future<bool> showConfirmCancelSheet(
               Text(
                 title,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
-                  color: Color(0xFF14557F),
+                  color: AppColors.primaryOnCard,
                 ),
               ),
               if (message != null && message.trim().isNotEmpty) ...[
@@ -167,7 +168,7 @@ Future<bool> showConfirmCancelSheet(
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
-                    color: Colors.grey.shade700,
+                    color: AppColors.inkMuted,
                     height: 1.35,
                   ),
                 ),
@@ -216,7 +217,7 @@ Future<bool> showExitAppSheet(BuildContext context) async {
     isScrollControlled: false,
     isDismissible: true,
     enableDrag: false,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     barrierColor: Colors.black54,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
@@ -232,7 +233,7 @@ Future<bool> showExitAppSheet(BuildContext context) async {
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: Colors.black26,
+                  color: AppColors.border,
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),
@@ -240,10 +241,10 @@ Future<bool> showExitAppSheet(BuildContext context) async {
               Text(
                 AppLocale.instance.t('Хотите выйти?', 'Do you want to leave?'),
                 textAlign: TextAlign.center,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
-                  color: Color(0xFF14557F),
+                  color: AppColors.primaryOnCard,
                 ),
               ),
               const SizedBox(height: 22),

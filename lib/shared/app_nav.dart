@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/app_commands.dart';
 import '../services/sms_service.dart';
 import 'unsaved_navigation_gate.dart';
 
@@ -27,6 +28,39 @@ class AppNav {
 
   static final Map<NavigatorState, AppNavObserver> _observers =
       <NavigatorState, AppNavObserver>{};
+
+  static NavigatorState? Function()? _tabNavigatorGetter;
+
+  /// Привязывает навигатор текущей вкладки [MainScreen], чтобы все экраны
+  /// открывались внутри области над нижним меню.
+  static void bindTabNavigator(NavigatorState? Function()? getter) {
+    _tabNavigatorGetter = getter;
+  }
+
+  /// Активный навигатор вкладки внутри [MainScreen] (если он смонтирован).
+  static NavigatorState? get activeTabNavigator {
+    final nav = _tabNavigatorGetter?.call();
+    if (nav != null && nav.mounted) return nav;
+    return null;
+  }
+
+  /// Навигатор для открытия любого экрана так, чтобы нижнее меню оставалось
+  /// на месте. Если [context] находится в корневом навигаторе (боковое меню,
+  /// шторка уведомлений, модальное окно), переключается на навигатор активной
+  /// вкладки; в изолированных тестах без [MainScreen] берёт [Navigator.of].
+  static NavigatorState navigatorOf(BuildContext context) {
+    final tabNav = activeTabNavigator;
+    if (tabNav != null) {
+      final local = Navigator.maybeOf(context);
+      if (local != null &&
+          local.mounted &&
+          !identical(local, rootNavigatorKey.currentState)) {
+        return local;
+      }
+      return tabNav;
+    }
+    return Navigator.of(context);
+  }
 
   /// Наблюдатель корневого навигатора (`MaterialApp.navigatorObservers`).
   static final AppNavObserver rootObserver = AppNavObserver();
@@ -62,7 +96,7 @@ class AppNav {
     required WidgetBuilder builder,
     bool rootNavigator = false,
   }) async {
-    final navigator = Navigator.of(context, rootNavigator: rootNavigator);
+    final navigator = navigatorOf(context);
     final existing = _find(navigator, key);
     if (existing != null) {
       if (!existing.isCurrent) {

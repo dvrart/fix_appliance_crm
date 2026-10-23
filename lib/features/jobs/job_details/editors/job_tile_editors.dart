@@ -13,6 +13,7 @@ import '../../../../shared/widgets/appliance_picture.dart';
 import '../../../../shared/widgets/catalog_picker.dart';
 import '../../../../shared/widgets/app_bar_save.dart';
 import '../../../../shared/widgets/dirty_leave_scope.dart';
+import '../../../diagnostics/diagnostics_screen.dart';
 import '../widgets/full_screen_gallery.dart';
 import '../job_details_controller.dart';
 
@@ -80,6 +81,27 @@ String trackingStatusLabel(String status) {
   }
 }
 
+String trackingPartsFromLabel(String carrier) {
+  switch (carrier.trim()) {
+    case 'amazon':
+      return 'Запчасти с Amazon'.tr;
+    case 'reliable_parts':
+      return 'Запчасти с Reliable Parts'.tr;
+    case 'partselect':
+      return 'Запчасти с PartSelect'.tr;
+    case 'encompass':
+      return 'Запчасти с Encompass'.tr;
+    case 'marcone':
+      return 'Запчасти с Marcone'.tr;
+    case 'ebay':
+      return 'Запчасти с eBay'.tr;
+    case 'carrier':
+      return 'Запчасти (курьер)'.tr;
+    default:
+      return 'Заказаны запчасти'.tr;
+  }
+}
+
 String _cleanJobText(String raw) {
   final text = raw.trim();
   if (text.isEmpty || text == 'Нет описания') return '';
@@ -93,6 +115,7 @@ class _JobInfo {
   final String trackingNumber;
   final String amazonOrderId;
   final String carrier;
+  final String trackingPart;
   final int durationMinutes;
 
   const _JobInfo({
@@ -102,13 +125,18 @@ class _JobInfo {
     required this.trackingNumber,
     required this.amazonOrderId,
     required this.carrier,
+    required this.trackingPart,
     required this.durationMinutes,
   });
 
-  bool sameTracking(_JobInfo other) =>
+  bool sameTrackingCodes(_JobInfo other) =>
       trackingNumber == other.trackingNumber &&
-      amazonOrderId == other.amazonOrderId &&
-      carrier == other.carrier;
+      amazonOrderId == other.amazonOrderId;
+
+  bool sameTracking(_JobInfo other) =>
+      sameTrackingCodes(other) &&
+      carrier == other.carrier &&
+      trackingPart == other.trackingPart;
 
   @override
   bool operator ==(Object other) =>
@@ -127,6 +155,7 @@ class _JobInfo {
     trackingNumber,
     amazonOrderId,
     carrier,
+    trackingPart,
     durationMinutes,
   );
 }
@@ -135,22 +164,42 @@ Future<void> openJobInfoEditor(
   BuildContext context,
   JobDetailsController ctrl,
 ) async {
-  final carrier = (ctrl.jobData['trackingCarrier'] ?? '').toString().trim();
+  final rawCarrier = ctrl.trackingCarrier.trim().isNotEmpty
+      ? ctrl.trackingCarrier.trim()
+      : (ctrl.jobData['trackingCarrier'] ?? '').toString().trim();
+  final trackNum = ctrl.trackingNumber.trim();
   final amazonId = ctrl.amazonOrderId.trim();
+  final partName = ctrl.trackingPart.trim().isNotEmpty
+      ? ctrl.trackingPart.trim()
+      : (ctrl.jobData['trackingPart'] ?? '').toString().trim();
+  final hasAnyTracking =
+      trackNum.isNotEmpty ||
+      amazonId.isNotEmpty ||
+      partName.isNotEmpty ||
+      rawCarrier.isNotEmpty;
+  final resolvedCarrier = !hasAnyTracking
+      ? ''
+      : (_kTrackingSuppliers.containsKey(rawCarrier)
+            ? rawCarrier
+            : (amazonId.isNotEmpty ? 'amazon' : 'other'));
   final before = _JobInfo(
     problem: _cleanJobText(ctrl.currentDescription),
     solution: _cleanJobText(ctrl.currentSolution),
     packing: packingItemsFromNotes(ctrl.packingNotes).join('\n'),
-    trackingNumber: ctrl.trackingNumber.trim(),
+    trackingNumber: trackNum,
     amazonOrderId: amazonId,
-    carrier: _kTrackingSuppliers.containsKey(carrier)
-        ? carrier
-        : (carrier.isEmpty && amazonId.isNotEmpty ? 'amazon' : 'other'),
+    carrier: resolvedCarrier,
+    trackingPart: partName,
     durationMinutes: ctrl.durationMinutes,
   );
   final after = await _openEditor<_JobInfo>(
     context,
-    _JobInfoEditorPage(initial: before, trackingStatus: ctrl.trackingStatus),
+    _JobInfoEditorPage(
+      initial: before,
+      trackingStatus: ctrl.trackingStatus,
+      applianceType: _primaryApplianceField(ctrl, 'type', 'applianceType'),
+      applianceBrand: _primaryApplianceField(ctrl, 'brand', 'brand'),
+    ),
   );
   if (after == null) return;
   if (after.problem != before.problem || after.solution != before.solution) {
@@ -167,6 +216,7 @@ Future<void> openJobInfoEditor(
       number: after.trackingNumber,
       amazonId: after.amazonOrderId,
       carrier: after.carrier,
+      part: after.trackingPart,
     );
   }
   if (after.durationMinutes != before.durationMinutes) {
@@ -295,12 +345,30 @@ class _EditorScaffold extends StatelessWidget {
   }
 }
 
+String _primaryApplianceField(
+  JobDetailsController ctrl,
+  String itemKey,
+  String rootKey,
+) {
+  final raw = ctrl.jobData['appliances'];
+  if (raw is List && raw.isNotEmpty && raw.first is Map) {
+    final first = raw.first as Map;
+    final val = (first[itemKey] ?? '').toString().trim();
+    if (val.isNotEmpty) return val;
+  }
+  return (ctrl.jobData[rootKey] ?? '').toString().trim();
+}
+
 class _JobInfoEditorPage extends StatefulWidget {
   final _JobInfo initial;
   final String trackingStatus;
+  final String applianceType;
+  final String applianceBrand;
   const _JobInfoEditorPage({
     required this.initial,
     required this.trackingStatus,
+    this.applianceType = '',
+    this.applianceBrand = '',
   });
 
   @override
@@ -309,10 +377,14 @@ class _JobInfoEditorPage extends StatefulWidget {
 
 class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     with SingleTickerProviderStateMixin {
-  static const _problemTint = Color(0xFFFFF1F0);
-  static const _problemAccent = Color(0xFFB71C1C);
-  static const _solutionTint = Color(0xFFEFF8F1);
-  static const _solutionAccent = Color(0xFF1B5E20);
+  static Color get _problemTint =>
+      AppColors.isDark ? const Color(0xFF231618) : const Color(0xFFFFF1F0);
+  static Color get _problemAccent =>
+      AppColors.isDark ? const Color(0xFFEF9A9A) : const Color(0xFFB71C1C);
+  static Color get _solutionTint =>
+      AppColors.isDark ? const Color(0xFF142119) : const Color(0xFFEFF8F1);
+  static Color get _solutionAccent =>
+      AppColors.isDark ? const Color(0xFFA5D6A7) : const Color(0xFF1B5E20);
   static const _durationOptions = [30, 45, 60, 90, 120, 180];
 
   late final TabController _tabs;
@@ -321,6 +393,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   late final TextEditingController _packingInput;
   late final TextEditingController _trackingNumber;
   late final TextEditingController _amazonOrder;
+  late final TextEditingController _trackingPart;
   late final List<String> _packing;
   late String _carrier;
   late int _duration;
@@ -328,10 +401,11 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   int _hapticTab = 0;
   bool _translating = false;
   bool _swapLock = false;
-  String _problemOther = '';
+  String _problemRu = '';
+  String _problemEn = '';
 
   Color get _plainTint =>
-      Color.alphaBlend(AppColors.primary.withValues(alpha: 0.05), Colors.white);
+      Color.alphaBlend(AppColors.primary.withValues(alpha: 0.08), AppColors.card);
 
   @override
   void initState() {
@@ -346,6 +420,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     _packingInput = TextEditingController();
     _trackingNumber = TextEditingController(text: initial.trackingNumber);
     _amazonOrder = TextEditingController(text: initial.amazonOrderId);
+    _trackingPart = TextEditingController(text: initial.trackingPart);
     _packing = packingItemsFromNotes(initial.packing);
     _carrier = initial.carrier;
     _duration = initial.durationMinutes;
@@ -361,6 +436,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     _packingInput.dispose();
     _trackingNumber.dispose();
     _amazonOrder.dispose();
+    _trackingPart.dispose();
     super.dispose();
   }
 
@@ -383,6 +459,22 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     if (!_tabs.indexIsChanging) setState(() {});
   }
 
+  bool get _hasTrackingData =>
+      _trackingPart.text.trim().isNotEmpty ||
+      _trackingNumber.text.trim().isNotEmpty ||
+      _amazonOrder.text.trim().isNotEmpty ||
+      _carrier.trim().isNotEmpty;
+
+  String get _effectiveCarrier {
+    if (!_hasTrackingData) return '';
+    if (_carrier.trim().isNotEmpty) return _carrier.trim();
+    if (_amazonOrder.text.trim().isNotEmpty ||
+        _trackingNumber.text.trim().toUpperCase().startsWith('TBA')) {
+      return 'amazon';
+    }
+    return 'other';
+  }
+
   _JobInfo get _current {
     final typed = _packingInput.text.trim();
     return _JobInfo(
@@ -391,7 +483,8 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
       packing: [..._packing, if (typed.isNotEmpty) typed].join('\n'),
       trackingNumber: _trackingNumber.text.trim(),
       amazonOrderId: _amazonOrder.text.trim(),
-      carrier: _carrier,
+      carrier: _effectiveCarrier,
+      trackingPart: _trackingPart.text.trim(),
       durationMinutes: _duration,
     );
   }
@@ -410,30 +503,63 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     _packingInput.clear();
   }
 
+  void _applyProblemText(String next) {
+    _swapLock = true;
+    setState(() {
+      _problem.text = next;
+    });
+    _swapLock = false;
+  }
+
   Future<void> _translateProblem() async {
     final text = _problem.text.trim();
     if (text.isEmpty || _translating) return;
-    if (_problemOther.trim().isNotEmpty) {
-      final current = _problem.text;
-      _swapLock = true;
-      setState(() {
-        _problem.text = _problemOther;
-        _problemOther = current;
-      });
-      _swapLock = false;
-      return;
+    final bool wantRu;
+    if (_problemRu.trim().isNotEmpty && text == _problemRu.trim()) {
+      wantRu = false;
+    } else if (_problemEn.trim().isNotEmpty && text == _problemEn.trim()) {
+      wantRu = true;
+    } else {
+      wantRu = MessageTranslateService.prefersRussian(text);
     }
+
+    if (wantRu) {
+      if (!MessageTranslateService.hasCyrillic(text)) {
+        _problemEn = text;
+      }
+      if (_problemRu.trim().isNotEmpty && _problemRu.trim() != text) {
+        _applyProblemText(_problemRu);
+        return;
+      }
+    } else {
+      _problemRu = text;
+      if (_problemEn.trim().isNotEmpty && _problemEn.trim() != text) {
+        _applyProblemText(_problemEn);
+        return;
+      }
+    }
+
     setState(() => _translating = true);
     try {
-      final translated = MessageTranslateService.looksRussian(text)
-          ? await MessageTranslateService.toEnglish(text)
-          : await MessageTranslateService.toRussian(text);
+      final appliance = [
+        widget.applianceType.trim(),
+        widget.applianceBrand.trim(),
+      ].where((s) => s.isNotEmpty).join(' ');
+      final translated = wantRu
+          ? await MessageTranslateService.toRussianJob(
+              text,
+              appliance: appliance,
+            )
+          : await MessageTranslateService.toEnglish(text);
       if (!mounted) return;
-      if (translated.trim().isEmpty || translated.trim() == text) return;
-      setState(() {
-        _problemOther = text;
-        _problem.text = translated;
-      });
+      final out = translated.trim();
+      if (out.isEmpty || out == text) return;
+      if (wantRu) {
+        _problemRu = out;
+      } else {
+        _problemEn = out;
+      }
+      _applyProblemText(out);
     } finally {
       if (mounted) setState(() => _translating = false);
     }
@@ -444,7 +570,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
       labelText: label,
       hintText: hint,
       filled: true,
-      fillColor: Colors.white,
+      fillColor: AppColors.card,
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
     );
   }
@@ -452,7 +578,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   TextStyle get _sectionStyle => TextStyle(
     fontSize: 13,
     fontWeight: FontWeight.w800,
-    color: Colors.grey.shade700,
+    color: AppColors.inkMuted,
   );
 
   Widget _textPane({
@@ -486,7 +612,10 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
               child: TextField(
                 controller: controller,
                 onChanged: (_) {
-                  if (translate && !_swapLock) _problemOther = '';
+                  if (translate && !_swapLock) {
+                    _problemRu = '';
+                    _problemEn = '';
+                  }
                   setState(() {});
                 },
                 maxLines: null,
@@ -503,13 +632,14 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
 
   Future<void> _openSheet(
     String title,
-    Widget Function(BuildContext sheetContext, VoidCallback refresh) body,
-  ) async {
+    Widget Function(BuildContext sheetContext, VoidCallback refresh) body, {
+    String Function()? titleBuilder,
+  }) async {
     FocusScope.of(context).unfocus();
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -521,6 +651,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
               if (mounted) setState(() {});
             }
 
+            final currentTitle = titleBuilder != null ? titleBuilder() : title;
             return Padding(
               padding: EdgeInsets.only(
                 bottom: MediaQuery.viewInsetsOf(context).bottom,
@@ -528,7 +659,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
               child: SafeArea(
                 child: ConstrainedBox(
                   constraints: BoxConstraints(
-                    maxHeight: MediaQuery.sizeOf(context).height * 0.75,
+                    maxHeight: MediaQuery.sizeOf(context).height * 0.82,
                   ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -540,7 +671,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                           children: [
                             Expanded(
                               child: Text(
-                                title,
+                                currentTitle,
                                 style: const TextStyle(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 18,
@@ -647,70 +778,108 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
 
   void _openTrackingSheet() {
     final status = widget.trackingStatus.trim();
-    _openSheet('Доставка'.tr, (sheetContext, refresh) {
-      return ListView(
-        shrinkWrap: true,
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-        children: [
-          if (status.isNotEmpty) ...[
-            Row(
-              children: [
-                Icon(
-                  Icons.local_shipping_outlined,
-                  size: 20,
-                  color: AppColors.primary,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '${'Статус'.tr}: ${trackingStatusLabel(status)}',
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
+    _openSheet(
+      'Доставка'.tr,
+      titleBuilder: () => _hasTrackingData
+          ? trackingPartsFromLabel(_effectiveCarrier)
+          : 'Доставка'.tr,
+      (sheetContext, refresh) {
+        return ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+          children: [
+            if (status.isNotEmpty) ...[
+              Row(
+                children: [
+                  Icon(
+                    Icons.local_shipping_outlined,
+                    size: 20,
+                    color: AppColors.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${'Статус'.tr}: ${trackingStatusLabel(status)}',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
-                ),
+                ],
+              ),
+              const SizedBox(height: 16),
+            ],
+            Text('Поставщик'.tr, style: _sectionStyle),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final entry in _kTrackingSuppliers.entries)
+                  ChoiceChip(
+                    label: Text(entry.value.tr),
+                    selected: _carrier == entry.key,
+                    onSelected: (_) {
+                      _carrier = _carrier == entry.key ? '' : entry.key;
+                      refresh();
+                    },
+                  ),
               ],
             ),
             const SizedBox(height: 16),
-          ],
-          Text('Поставщик'.tr, style: _sectionStyle),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final entry in _kTrackingSuppliers.entries)
-                ChoiceChip(
-                  label: Text(entry.value.tr),
-                  selected: _carrier == entry.key,
-                  onSelected: (_) {
-                    _carrier = entry.key;
-                    refresh();
-                  },
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _trackingNumber,
-            textInputAction: TextInputAction.next,
-            onChanged: (_) => refresh(),
-            decoration: _field(label: 'Трек-номер'.tr),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _amazonOrder,
-            textInputAction: TextInputAction.done,
-            onChanged: (_) => refresh(),
-            decoration: _field(
-              label: 'Номер заказа'.tr,
-              hint: '123-1234567-1234567',
+            TextField(
+              controller: _trackingPart,
+              textCapitalization: TextCapitalization.sentences,
+              textInputAction: TextInputAction.next,
+              onChanged: (_) => refresh(),
+              decoration: _field(
+                label: 'Какая запчасть'.tr,
+                hint: 'Помпа, ТЭН, плата…'.tr,
+              ),
             ),
-          ),
-        ],
-      );
-    });
+            const SizedBox(height: 12),
+            TextField(
+              controller: _trackingNumber,
+              textInputAction: TextInputAction.next,
+              onChanged: (_) => refresh(),
+              decoration: _field(label: 'Трек-номер'.tr),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _amazonOrder,
+              textInputAction: TextInputAction.done,
+              onChanged: (_) => refresh(),
+              onSubmitted: (_) => Navigator.pop(sheetContext),
+              decoration: _field(
+                label: 'Номер заказа'.tr,
+                hint: '123-1234567-1234567',
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 48,
+              child: FilledButton.icon(
+                onPressed: () => Navigator.pop(sheetContext),
+                style: FilledButton.styleFrom(
+                  backgroundColor: kConfirmGreen,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                icon: const Icon(Icons.check_rounded, size: 22),
+                label: Text('Сохранить'.tr),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _openDurationSheet() {
@@ -752,6 +921,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     required String caption,
     required String value,
     required VoidCallback onTap,
+    bool highlightCaption = false,
   }) {
     final empty = value.isEmpty;
     return Material(
@@ -780,12 +950,16 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
               const SizedBox(height: 6),
               Text(
                 caption,
-                maxLines: 1,
+                textAlign: TextAlign.center,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 11,
+                  height: 1.15,
                   fontWeight: FontWeight.bold,
-                  color: Colors.grey.shade600,
+                  color: highlightCaption
+                      ? AppColors.primaryOnCard
+                      : AppColors.inkMuted,
                 ),
               ),
               const SizedBox(height: 2),
@@ -798,7 +972,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                   fontSize: 13,
                   height: 1.2,
                   fontWeight: FontWeight.w800,
-                  color: empty ? Colors.grey : const Color(0xFF1A1A1A),
+                  color: empty ? Colors.grey : AppColors.ink,
                 ),
               ),
             ],
@@ -811,20 +985,113 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   Widget _visitPanel() {
     final typed = _packingInput.text.trim();
     final packing = [..._packing, if (typed.isNotEmpty) typed];
+    final part = _trackingPart.text.trim();
     final number = _trackingNumber.text.trim();
     final order = _amazonOrder.text.trim();
     final status = widget.trackingStatus.trim();
-    final tracking = number.isEmpty && order.isEmpty
+    final hasTracking = _hasTrackingData;
+    final trackCode =
+        status.isNotEmpty && _current.sameTrackingCodes(widget.initial)
+        ? trackingStatusLabel(status)
+        : (number.isNotEmpty ? number : order);
+    final tracking = !hasTracking
         ? ''
-        : (status.isNotEmpty && _current.sameTracking(widget.initial)
-              ? trackingStatusLabel(status)
-              : (number.isNotEmpty ? number : order));
+        : [
+            if (part.isNotEmpty) part,
+            if (trackCode.isNotEmpty) trackCode,
+          ].join('\n');
+    final trackingCaption = hasTracking
+        ? trackingPartsFromLabel(_effectiveCarrier)
+        : 'Доставка'.tr;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => DiagnosticsScreen.showForJob(
+                    context,
+                    applianceType: widget.applianceType,
+                    brand: widget.applianceBrand,
+                    description: _problem.text,
+                    initialKind: 'test_modes',
+                  ),
+                  icon: const Icon(
+                    Icons.tune,
+                    size: 18,
+                    color: Color(0xFF1976D2),
+                  ),
+                  label: Text(
+                    context.tr(
+                      'Как войти в тестовый режим',
+                      'How to enter test mode',
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF1976D2),
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: AppColors.tint(const Color(0xFF1976D2), 0.10),
+                    side: BorderSide(color: const Color(0xFF1976D2).withValues(alpha: 0.45)),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 10,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => DiagnosticsScreen.showForJob(
+                    context,
+                    applianceType: widget.applianceType,
+                    brand: widget.applianceBrand,
+                    description: _problem.text,
+                    initialKind: 'error_codes',
+                  ),
+                  icon: const Icon(
+                    Icons.error_outline,
+                    size: 18,
+                    color: Color(0xFFD32F2F),
+                  ),
+                  label: Text(
+                    context.tr('Какие виды ошибок', 'Error codes & guide'),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFFD32F2F),
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: AppColors.tint(const Color(0xFFD32F2F), 0.10),
+                    side: BorderSide(color: const Color(0xFFD32F2F).withValues(alpha: 0.45)),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 10,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
           Padding(
             padding: const EdgeInsets.only(left: 4, bottom: 6),
             child: Text('К визиту'.tr, style: _sectionStyle),
@@ -849,8 +1116,9 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                 Expanded(
                   child: _visitTile(
                     icon: Icons.local_shipping_outlined,
-                    caption: 'Доставка'.tr,
+                    caption: trackingCaption,
                     value: tracking,
+                    highlightCaption: hasTracking,
                     onTap: _openTrackingSheet,
                   ),
                 ),
@@ -906,7 +1174,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                       child: TabBar(
                         controller: _tabs,
                         labelColor: accent,
-                        unselectedLabelColor: const Color(0xFF5A5A5A),
+                        unselectedLabelColor: AppColors.inkMuted,
                         indicatorColor: accent,
                         indicatorWeight: 3,
                         labelStyle: const TextStyle(
@@ -942,7 +1210,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
               ],
             ),
             bottomNavigationBar: Material(
-              color: Colors.white,
+              color: AppColors.card,
               elevation: 8,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1139,14 +1407,14 @@ class _ApplianceEditorPageState extends State<_ApplianceEditorPage> {
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: Colors.grey.shade300),
+            borderSide: BorderSide(color: AppColors.border),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
             borderSide: const BorderSide(color: Color(0xFFFCC520), width: 2),
           ),
           filled: true,
-          fillColor: Colors.grey.shade50,
+          fillColor: AppColors.cardMuted,
         ),
       ),
     );
@@ -1159,7 +1427,7 @@ class _ApplianceEditorPageState extends State<_ApplianceEditorPage> {
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+        side: BorderSide(color: AppColors.border),
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -1171,9 +1439,9 @@ class _ApplianceEditorPageState extends State<_ApplianceEditorPage> {
               children: [
                 Text(
                   '${'Аппарат'.tr} ${index + 1}',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFF14557F),
+                    color: AppColors.primaryOnCard,
                   ),
                 ),
                 if (_items.length > 1)

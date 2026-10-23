@@ -53,14 +53,15 @@ class AssistantController extends ChangeNotifier {
 После действия коротко скажи, что сделал.
 
 По ремонту и диагностике НЕ выдумывай сервисный режим, коды ошибок и омы из памяти.
-Всегда сначала вызови lookup_service_guide:
+Всегда сначала вызови lookup_service_guide (база хранится на сервере):
 - query — что спросил мастер (можно целиком фразу);
-- brand — Samsung, LG, Whirlpool, GE и т.д., если известен;
-- appliance — fridge / washer / dryer / dishwasher / range;
-- code — код ошибки, если назвали (F21, 3E, LE, E18…);
-- kind — test_modes (вход в тест), field_guide (ошибка/симптом), electrical (омы/сопротивление), или пусто.
-Если мастер говорит про текущую заявку — сначала get_job, потом lookup с брендом и техникой из заявки.
-Отвечай по карточкам из справочника: кнопки входа, шаги, выход, типичный ремонт. Если found=false — так и скажи, не сочиняй процедуру.
+- brand — Samsung, LG, Whirlpool, Maytag, KitchenAid, GE, Bosch, Frigidaire, Electrolux, Miele, Fisher & Paykel, Midea, Panasonic и т.д., если известен;
+- appliance — fridge / freezer / washer / dryer / dishwasher / range / cooktop / microwave / other;
+- code — код ошибки, если назвали (F21, 3E, LE, E15, E09, Er IF, SY EF, d80, F7E1, H97…);
+- kind — error_codes (коды ошибок), test_modes (вход в тестовый режим и калибровка), field_guide (диагностика по симптомам), electrical (омы/сопротивление/датчики), или пусто.
+Если мастер говорит про текущую заявку — сначала get_job, потом lookup_service_guide с брендом и техникой из заявки.
+Если мастер просит открыть раздел «Ошибка и диагностика» на экране («открой ошибки», «открой диагностику», «покажи коды ошибок Samsung») — вызови open_diagnostics.
+Отвечай по карточкам из справочника: расшифровка ошибки, кнопки входа в тест, шаги проверки, омы, выход, типичный ремонт. Если found=false — так и скажи, не сочиняй процедуру.
 
 Если мастер говорит «отправь SMS, что я поехал» — вызови send_sms с template=on_way и job_query=следующая, если не назван клиент.
 Если просит написать клиенту свой текст (перенос, «буду сегодня», ответ на вопрос) — вызови send_sms с text=готовое сообщение. Не обещай, что отправил, пока инструмент не вернул ok.
@@ -105,14 +106,15 @@ Call the tool first, wait for the result, then say one short sentence.
 After an action, say briefly what you did and for whom.
 
 For repair, error codes, test/service mode, and ohm specs do NOT invent procedures from memory.
-Always call lookup_service_guide first:
+Always call lookup_service_guide first (stored on the server):
 - query — the technician's question;
-- brand — Samsung, LG, Whirlpool, GE, etc. if known;
-- appliance — fridge / washer / dryer / dishwasher / range;
-- code — error code if given (F21, 3E, LE, E18…);
-- kind — test_modes, field_guide, electrical, or empty.
-If they mean the current job, call get_job first, then lookup with that brand and appliance.
-Answer from the guide cards: how to enter, steps, how to exit, typical fix. If found=false, say the guide has no card — do not invent a sequence.
+- brand — Samsung, LG, Whirlpool, Maytag, KitchenAid, GE, Bosch, Frigidaire, Electrolux, Miele, Fisher & Paykel, Midea, Panasonic, etc. if known;
+- appliance — fridge / freezer / washer / dryer / dishwasher / range / cooktop / microwave / other;
+- code — error code if given (F21, 3E, LE, E15, E09, Er IF, SY EF, d80, F7E1, H97…);
+- kind — error_codes, test_modes, field_guide, electrical, or empty.
+If they mean the current job, call get_job first, then lookup_service_guide with that brand and appliance.
+If they ask to open the "Errors & diagnostics" screen ("open diagnostics", "show error codes") — call open_diagnostics.
+Answer from the guide cards: error meaning, how to enter test mode, steps, ohms, how to exit, typical fix. If found=false, say the guide has no card — do not invent a sequence.
 
 If they say "send SMS that I'm on my way" — call send_sms with template=on_way and job_query=next if no client is named.
 If they want you to text the client a custom reply (reschedule, "I'll be there today", answer a question) — call send_sms with text=the message. Do not claim you sent it until the tool returns ok.
@@ -496,6 +498,14 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
     return operation;
   }
 
+  Future<void> refreshAudioRoute() async {
+    final generation = _generation;
+    if (!_isCurrent(generation) || isConnecting || _opening) return;
+    await AssistantAudioService.requestFocus();
+    if (!_isCurrent(generation) || isPaused) return;
+    await _startMic(generation);
+  }
+
   Future<void> _stopMic() => _serializeMic(() async {
     final subscription = _micSub;
     _micSub = null;
@@ -522,20 +532,23 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
       }
     } catch (_) {}
     if (!current()) return;
+    final inputDevice = await AssistantAudioService.preferredInputDevice();
+    if (!current()) return;
     final stream = await _recorder.startStream(
-      const RecordConfig(
+      RecordConfig(
         encoder: AudioEncoder.pcm16bits,
         sampleRate: 16000,
         numChannels: 1,
+        device: inputDevice,
         echoCancel: true,
         noiseSuppress: true,
         autoGain: true,
         audioInterruption: AudioInterruptionMode.none,
-        androidConfig: AndroidRecordConfig(
-          manageBluetooth: true,
+        androidConfig: const AndroidRecordConfig(
+          manageBluetooth: false,
           audioSource: AndroidAudioSource.voiceCommunication,
-          speakerphone: true,
-          audioManagerMode: AudioManagerMode.modeInCommunication,
+          speakerphone: false,
+          audioManagerMode: AudioManagerMode.modeNormal,
         ),
       ),
     );
@@ -887,7 +900,7 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
         behavior: Behavior.BLOCKING,
         name: 'lookup_service_guide',
         description:
-            'Справочник мастера: тестовые/сервисные режимы, коды ошибок, омы и диагностика. Вызывать при любом вопросе про ошибку, тест, сопротивление или ремонт по бренду.',
+            'Серверный справочник мастера: коды ошибок (error_codes), вход в тестовый/сервисный режим и калибровка (test_modes), пошаговая диагностика всех видов техники (field_guide), нормы сопротивлений в Омах и датчики (electrical). Вызывать при любом вопросе про ошибку, тестовый режим, сопротивление или ремонт.',
         parameters: {
           'type': 'OBJECT',
           'properties': {
@@ -897,22 +910,55 @@ Today's date and time come from tools. Do not invent jobs: call list_jobs or get
             },
             'brand': {
               'type': 'STRING',
-              'description': 'Samsung, LG, Whirlpool, GE, Bosch…',
+              'description':
+                  'Samsung, LG, Whirlpool, Maytag, KitchenAid, GE, Bosch, Frigidaire, Electrolux, Miele, Fisher & Paykel, Midea, Panasonic…',
             },
             'appliance': {
               'type': 'STRING',
-              'description': 'fridge, washer, dryer, dishwasher, range',
+              'description':
+                  'fridge, freezer, washer, dryer, dishwasher, range, cooktop, microwave, other',
             },
             'code': {
               'type': 'STRING',
-              'description': 'Код ошибки, например F21, 3E, LE, E18',
+              'description':
+                  'Код ошибки, например F21, 3E, LE, E15, E09, Er IF, SY EF, d80, F7E1, H97',
             },
             'kind': {
               'type': 'STRING',
-              'description': 'test_modes | field_guide | electrical',
+              'description':
+                  'error_codes | test_modes | field_guide | electrical',
             },
           },
           'required': ['query'],
+        },
+      ),
+      FunctionDeclaration(
+        behavior: Behavior.BLOCKING,
+        name: 'open_diagnostics',
+        description:
+            'Открыть экран «Ошибка и диагностика» с кодами ошибок, тестовыми режимами и диагностикой бытовой техники.',
+        parameters: {
+          'type': 'OBJECT',
+          'properties': {
+            'query': {
+              'type': 'STRING',
+              'description': 'Код ошибки или поисковый запрос (необязательно)',
+            },
+            'appliance': {
+              'type': 'STRING',
+              'description':
+                  'fridge, freezer, washer, dryer, dishwasher, range, cooktop, microwave, other, all',
+            },
+            'brand': {
+              'type': 'STRING',
+              'description': 'Бренд техники (необязательно)',
+            },
+            'kind': {
+              'type': 'STRING',
+              'description':
+                  'error_codes | test_modes | field_guide | electrical | all',
+            },
+          },
         },
       ),
       FunctionDeclaration(

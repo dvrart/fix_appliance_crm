@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
-import '../../core/motion.dart';
 import '../../core/ui_scale.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/widgets/custom_drawer.dart';
@@ -15,7 +14,7 @@ import '../../shared/widgets/count_badge.dart';
 import '../../shared/widgets/fade_indexed_stack.dart';
 import '../../shared/widgets/offline_chip.dart';
 import '../calendar/calendar_screen.dart';
-import '../jobs/create_job_screen.dart';
+import '../jobs/active_jobs_screen.dart';
 import '../clients/clients_screen.dart';
 import '../comms/comms_hub_screen.dart';
 import '../calls/dial_pad_screen.dart';
@@ -23,7 +22,6 @@ import '../messages/messages_screen.dart';
 import '../messages/compose_speed_dial.dart';
 import '../messages/conversation_screen.dart';
 import '../ai/assistant/assistant_face.dart';
-import '../ai/assistant/review_bell_button.dart';
 import '../../services/comms_badge_service.dart';
 import '../../services/job_service.dart';
 import '../../services/notification_service.dart';
@@ -43,11 +41,9 @@ class _MainScreenState extends State<MainScreen>
     with UiSettingsAware, SingleTickerProviderStateMixin {
   int _currentIndex = 0;
   bool _onRoot = true;
-  bool _openingJob = false;
   bool _handlingBack = false;
   bool _composeOpen = false;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
-  final _inboxKey = GlobalKey<ReviewInboxPanelState>();
   late final List<_TabNavObserver> _navObservers;
   late final AnimationController _menu = AnimationController(
     vsync: this,
@@ -76,6 +72,7 @@ class _MainScreenState extends State<MainScreen>
       _TabNavObserver(_syncRoot),
       _TabNavObserver(_syncRoot),
     ];
+    AppNav.bindTabNavigator(() => _navigatorKeys[_currentIndex].currentState);
     OfflineQueueService.flush();
     unawaited(JobService.completeLegacyJobsIfNeeded());
     AppCommands.selectTab.addListener(_onSelectTabCommand);
@@ -87,6 +84,7 @@ class _MainScreenState extends State<MainScreen>
 
   @override
   void dispose() {
+    AppNav.bindTabNavigator(null);
     AppCommands.selectTab.removeListener(_onSelectTabCommand);
     AppCommands.commsTab.removeListener(_onCommsTabChanged);
     _menu.dispose();
@@ -149,6 +147,11 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Future<void> _selectTab(int index) async {
+    if (_menuOpen) unawaited(_closeMenu());
+    final scaffold = _scaffoldKey.currentState;
+    if (scaffold != null && scaffold.isEndDrawerOpen) {
+      scaffold.closeEndDrawer();
+    }
     if (_currentIndex == index) {
       AppFeedback.pleasant();
       await _popToRoot(_navigatorKeys[index].currentState);
@@ -241,15 +244,15 @@ class _MainScreenState extends State<MainScreen>
     }
   }
 
-  void _openNotifications() {
+  void _openVisits() {
     _scaffoldKey.currentState?.openEndDrawer();
   }
 
-  void _closeNotifications() {
+  void _closeVisits() {
     _scaffoldKey.currentState?.closeEndDrawer();
   }
 
-  void _toggleNotifications() {
+  void _toggleVisits() {
     final scaffold = _scaffoldKey.currentState;
     if (scaffold == null) return;
     if (scaffold.isEndDrawerOpen) {
@@ -259,6 +262,9 @@ class _MainScreenState extends State<MainScreen>
     }
   }
 
+  /// Свайп вверх по нижней панели больше ничего не открывает: «Все визиты»
+  /// переехали в правую шторку, и вертикальный жест остался бы единственным
+  /// способом попасть в уже закрытый экран.
   void _onDockPanEnd(DragEndDetails details) {
     final dx = details.velocity.pixelsPerSecond.dx;
     final dy = details.velocity.pixelsPerSecond.dy;
@@ -267,7 +273,7 @@ class _MainScreenState extends State<MainScreen>
     if (dx > 0) {
       unawaited(_openMenu());
     } else {
-      _openNotifications();
+      _openVisits();
     }
   }
 
@@ -287,20 +293,12 @@ class _MainScreenState extends State<MainScreen>
       child: Scaffold(
         key: _scaffoldKey,
         resizeToAvoidBottomInset: false,
-        backgroundColor: AppColors.primary,
-        endDrawer: ReviewInboxDrawer(
+        backgroundColor: AppColors.footer,
+        endDrawer: _AllVisitsDrawer(
           hostContext: context,
-          panelKey: _inboxKey,
-          onClose: _closeNotifications,
+          onClose: _closeVisits,
         ),
         endDrawerEnableOpenDragGesture: false,
-        onEndDrawerChanged: (open) {
-          if (open) {
-            _inboxKey.currentState?.onHostOpened();
-          } else {
-            _inboxKey.currentState?.onHostClosed();
-          }
-        },
         body: Stack(
           children: [
             _buildBody(),
@@ -358,7 +356,7 @@ class _MainScreenState extends State<MainScreen>
                       children: [_buildTab(0), _buildTab(1), _buildTab(2)],
                     ),
                   ),
-                  if (_onRoot && (_currentIndex == 0 || _currentIndex == 1))
+                  if (_onRoot && _currentIndex == 1)
                     Positioned(
                       left: 0,
                       right: 0,
@@ -369,21 +367,25 @@ class _MainScreenState extends State<MainScreen>
               ),
             ),
             ColoredBox(
-              color: AppColors.primary,
+              color: AppColors.footer,
               child: Stack(
                 children: [
-                  Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(height: 64, child: _buildBottomDock()),
-                      const SafeArea(top: false, child: SizedBox.shrink()),
-                    ],
+                  GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onPanEnd: _onDockPanEnd,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(height: 64, child: _buildBottomDock()),
+                        const SafeArea(top: false, child: SizedBox.shrink()),
+                      ],
+                    ),
                   ),
                   _LeftMenuHandle(onOpen: _openMenu),
-                  _RightNotifyHandle(
-                    onToggle: _toggleNotifications,
-                    onOpen: _openNotifications,
-                    onClose: _closeNotifications,
+                  _RightVisitsHandle(
+                    onToggle: _toggleVisits,
+                    onOpen: _openVisits,
+                    onClose: _closeVisits,
                   ),
                 ],
               ),
@@ -392,76 +394,26 @@ class _MainScreenState extends State<MainScreen>
         );
   }
 
-  Future<void> _openCreateJob() async {
-    if (_openingJob) return;
-    _openingJob = true;
-    try {
-      var nav = _navigatorKeys[_currentIndex].currentState;
-      if (nav == null) {
-        await Future<void>.delayed(Duration.zero);
-        if (!mounted) return;
-        nav = _navigatorKeys[_currentIndex].currentState;
-      }
-      if (nav == null) return;
-      await nav.push(_slideUpJobRoute());
-      _syncRoot();
-    } finally {
-      _openingJob = false;
-    }
-  }
-
-  Route<void> _slideUpJobRoute() {
-    return PageRouteBuilder<void>(
-      pageBuilder: (context, animation, secondary) {
-        return const CreateJobScreen();
-      },
-      transitionDuration: AppMotion.pageIn,
-      reverseTransitionDuration: AppMotion.pageOut,
-      transitionsBuilder: (context, animation, secondary, child) {
-        final curved = CurvedAnimation(
-          parent: animation,
-          curve: AppMotion.enter,
-          reverseCurve: AppMotion.exit,
-        );
-        // Затухание вдогонку подъёму: экран не «вылетает» снизу, а проявляется.
-        return FadeTransition(
-          opacity: curved,
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(0, 1),
-              end: Offset.zero,
-            ).animate(curved),
-            child: child,
-          ),
-        );
-      },
-    );
-  }
-
   Widget _buildBottomDock() {
-    return GestureDetector(
-      behavior: HitTestBehavior.translucent,
-      onPanEnd: _onDockPanEnd,
-      child: SizedBox(
-        height: 64,
-        child: Row(
-          children: [
-            const SizedBox(width: _handleWidth),
-            Expanded(
-              child: Center(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _dockTab(0, Icons.calendar_month),
-                    _dockTab(1, Icons.forum),
-                    _dockTab(2, Icons.people),
-                  ],
-                ),
+    return SizedBox(
+      height: 64,
+      child: Row(
+        children: [
+          const SizedBox(width: _handleWidth),
+          Expanded(
+            child: Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _dockTab(0, Icons.calendar_month),
+                  _dockTab(1, Icons.forum),
+                  _dockTab(2, Icons.people),
+                ],
               ),
             ),
-            const SizedBox(width: _handleWidth),
-          ],
-        ),
+          ),
+          const SizedBox(width: _handleWidth),
+        ],
       ),
     );
   }
@@ -478,7 +430,6 @@ class _MainScreenState extends State<MainScreen>
 
   Widget _tabRoundButton() {
     final commsChat = _currentIndex == 1 && AppCommands.commsTab.value == 1;
-    final dial = _currentIndex == 1 && !commsChat;
     if (commsChat) {
       return ComposeSpeedDial(
         open: _composeOpen,
@@ -491,19 +442,15 @@ class _MainScreenState extends State<MainScreen>
       );
     }
     return FloatingActionButton(
-      heroTag: dial ? 'dock-dial' : 'dock-add',
+      heroTag: 'dock-dial',
       backgroundColor: AppColors.accent,
       foregroundColor: AppColors.primary,
       elevation: 4,
       onPressed: () {
         AppFeedback.pleasant();
-        if (dial) {
-          _openDialPad();
-        } else {
-          _openCreateJob();
-        }
+        _openDialPad();
       },
-      child: Icon(dial ? Icons.dialpad : Icons.add, size: dial ? 30 : 34),
+      child: const Icon(Icons.dialpad, size: 30),
     );
   }
 
@@ -513,7 +460,7 @@ class _MainScreenState extends State<MainScreen>
     Widget glyph = Icon(
       icon,
       size: 32 * scale,
-      color: selected ? AppColors.primary : Colors.white,
+      color: selected ? AppColors.footer : Colors.white,
     );
     // Новый звонок и непрочитанное сообщение теперь видно там, где их
     // разбирают, а не в колокольчике.
@@ -729,22 +676,45 @@ class _SideMenuLayerState extends State<_SideMenuLayer> {
   }
 }
 
-class _RightNotifyHandle extends StatefulWidget {
+/// Правая шторка: все визиты подряд по датам. Раньше этот список открывался
+/// свайпом вверх по нижней панели, а в шторке жил колокольчик — он переехал
+/// в правый верхний угол календаря.
+class _AllVisitsDrawer extends StatelessWidget {
+  final BuildContext hostContext;
+  final VoidCallback onClose;
+
+  const _AllVisitsDrawer({required this.hostContext, required this.onClose});
+
+  @override
+  Widget build(BuildContext context) {
+    return Drawer(
+      width: MediaQuery.sizeOf(context).width,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(),
+      clipBehavior: Clip.hardEdge,
+      child: RepaintBoundary(
+        child: AllVisitsScreen(onLeave: onClose, hostContext: hostContext),
+      ),
+    );
+  }
+}
+
+class _RightVisitsHandle extends StatefulWidget {
   final VoidCallback onToggle;
   final VoidCallback onOpen;
   final VoidCallback onClose;
 
-  const _RightNotifyHandle({
+  const _RightVisitsHandle({
     required this.onToggle,
     required this.onOpen,
     required this.onClose,
   });
 
   @override
-  State<_RightNotifyHandle> createState() => _RightNotifyHandleState();
+  State<_RightVisitsHandle> createState() => _RightVisitsHandleState();
 }
 
-class _RightNotifyHandleState extends State<_RightNotifyHandle> {
+class _RightVisitsHandleState extends State<_RightVisitsHandle> {
   double _dragDx = 0;
 
   @override
@@ -776,10 +746,10 @@ class _RightNotifyHandleState extends State<_RightNotifyHandle> {
             customBorder: const RoundedRectangleBorder(borderRadius: radius),
             onTap: widget.onToggle,
             child: const Center(
-              child: ReviewBellPickleIcon(
+              child: Icon(
+                Icons.event_note,
                 color: Color(0xFF14557F),
                 size: 22,
-                badgeAlignment: Alignment.topLeft,
               ),
             ),
           ),

@@ -9,6 +9,7 @@ import '../../shared/widgets/confirm_action_sheet.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/motion.dart';
 import '../../core/utils/number_input.dart';
@@ -1334,7 +1335,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               final action = await showModalBottomSheet<String>(
                 context: context,
                 useRootNavigator: true,
-                backgroundColor: Colors.white,
+                backgroundColor: AppColors.card,
                 shape: const RoundedRectangleBorder(
                   borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
                 ),
@@ -1632,13 +1633,13 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 interchangeController.dispose();
               },
               child: Scaffold(
-                backgroundColor: Colors.grey.shade100,
+                backgroundColor: AppColors.surface,
                 appBar: AppBar(
                   title: Text(
                     isEditing ? 'Редактировать'.tr : 'Новая деталь'.tr,
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
-                  backgroundColor: const Color(0xFF14557F),
+                  backgroundColor: AppColors.primary,
                   foregroundColor: Colors.white,
                   automaticallyImplyLeading: false,
                 ),
@@ -1673,7 +1674,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                         margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFFDEBEC),
+                          color: AppColors.tint(Colors.red, 0.12),
                           border: Border.all(color: Colors.red.shade200),
                           borderRadius: BorderRadius.circular(12),
                         ),
@@ -1691,7 +1692,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                 'такую же на полке не подставляю.'.tr,
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: Colors.red.shade900,
+                                  color: AppColors.isDark
+                                      ? const Color(0xFFEF9A9A)
+                                      : Colors.red.shade900,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
@@ -2028,7 +2031,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF8E6),
+        color: AppColors.tint(Colors.orange, 0.12),
         border: Border.all(color: Colors.orange.shade300),
         borderRadius: BorderRadius.circular(12),
       ),
@@ -2038,7 +2041,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
           Text(
             title,
             style: TextStyle(
-              color: Colors.orange.shade900,
+              color: AppColors.isDark
+                  ? const Color(0xFFFFCA28)
+                  : Colors.orange.shade900,
               fontWeight: FontWeight.w800,
               fontSize: 13,
             ),
@@ -2046,7 +2051,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
           const SizedBox(height: 4),
           Text(
             subtitle,
-            style: const TextStyle(fontSize: 11.5, color: Colors.black54),
+            style: TextStyle(fontSize: 11.5, color: AppColors.inkMuted),
           ),
           const SizedBox(height: 10),
           Row(
@@ -2105,7 +2110,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
     return Container(
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: color.withValues(alpha: 0.45)),
       ),
@@ -2453,29 +2458,29 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFFEFF6FF),
+        color: AppColors.tint(AppColors.primary, 0.10),
         border: Border.all(
-          color: const Color(0xFF14557F).withValues(alpha: 0.35),
+          color: AppColors.primary.withValues(alpha: 0.35),
         ),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
         children: [
-          const SizedBox(
+          SizedBox(
             width: 16,
             height: 16,
             child: CircularProgressIndicator(
               strokeWidth: 2.2,
-              color: Color(0xFF14557F),
+              color: AppColors.primaryOnCard,
             ),
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               'ИИ ищет фото детали в интернете…'.tr,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12.5,
-                color: Color(0xFF14557F),
+                color: AppColors.primaryOnCard,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -2572,13 +2577,13 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(
           'Склад'.tr,
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        backgroundColor: const Color(0xFF14557F),
+        backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
         elevation: 0,
@@ -2586,7 +2591,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       body: Column(
         children: [
           Container(
-            color: Colors.white,
+            color: AppColors.card,
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(
               children: [
@@ -2613,12 +2618,12 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                             decoration: BoxDecoration(
                               color: isSelected
                                   ? const Color(0xFF14557F)
-                                  : Colors.grey.shade100,
+                                  : AppColors.cardMuted,
                               borderRadius: BorderRadius.circular(10),
                               border: Border.all(
                                 color: isSelected
                                     ? const Color(0xFF14557F)
-                                    : Colors.grey.shade300,
+                                    : AppColors.border,
                               ),
                             ),
                             padding: const EdgeInsets.all(4),
@@ -2628,7 +2633,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                     size: 22,
                                     color: isSelected
                                         ? Colors.white
-                                        : const Color(0xFF14557F),
+                                        : AppColors.primaryOnCard,
                                   )
                                 : Image.asset(
                                     AppliancePicture.assetOf(
@@ -2647,12 +2652,12 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 Container(
                   margin: const EdgeInsets.only(right: 12, left: 4),
                   decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
+                    color: AppColors.cardMuted,
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.grey.shade300),
+                    border: Border.all(color: AppColors.border),
                   ),
                   child: PopupMenuButton<String>(
-                    icon: const Icon(Icons.sort, color: Color(0xFF14557F)),
+                    icon: Icon(Icons.sort, color: AppColors.primaryOnCard),
                     tooltip: 'Сортировка'.tr,
                     onSelected: (newValue) =>
                         setState(() => _sortMethod = newValue),
@@ -2816,10 +2821,10 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                       width: 48,
                                       margin: const EdgeInsets.only(right: 10),
                                       decoration: BoxDecoration(
-                                        color: Colors.grey.shade100,
+                                        color: AppColors.cardMuted,
                                         borderRadius: BorderRadius.circular(8),
                                         border: Border.all(
-                                          color: Colors.grey.shade200,
+                                          color: AppColors.border,
                                         ),
                                         image: imageUrl.isNotEmpty
                                             ? DecorationImage(
@@ -2882,7 +2887,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                         'Part: $partNumber',
                                         style: TextStyle(
                                           fontSize: 11,
-                                          color: Colors.grey.shade700,
+                                          color: AppColors.inkMuted,
                                           fontFamily: 'monospace',
                                           fontWeight: FontWeight.w600,
                                         ),
@@ -2903,9 +2908,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                       children: [
                                         Text(
                                           '\$${price.toStringAsFixed(2)}',
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                             fontSize: 14,
-                                            color: Color(0xFF14557F),
+                                            color: AppColors.primaryOnCard,
                                             fontWeight: FontWeight.w900,
                                           ),
                                         ),
@@ -2917,7 +2922,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                               vertical: 1,
                                             ),
                                             decoration: BoxDecoration(
-                                              color: Colors.orange.shade50,
+                                              color: AppColors.tint(Colors.orange, 0.14),
                                               borderRadius:
                                                   BorderRadius.circular(5),
                                               border: Border.all(
@@ -2945,10 +2950,10 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                   Container(
                                     height: 32,
                                     decoration: BoxDecoration(
-                                      color: Colors.grey.shade50,
+                                      color: AppColors.cardMuted,
                                       borderRadius: BorderRadius.circular(8),
                                       border: Border.all(
-                                        color: Colors.grey.shade200,
+                                        color: AppColors.border,
                                       ),
                                     ),
                                     child: Row(
@@ -3028,7 +3033,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
           ),
           // Поиск и «+» внизу — под большим пальцем.
           Container(
-            color: const Color(0xFF14557F),
+            color: AppColors.footer,
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
             child: SafeArea(
               top: false,
@@ -3058,7 +3063,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                               )
                             : null,
                         filled: true,
-                        fillColor: Colors.white,
+                        fillColor: AppColors.card,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
                           borderSide: BorderSide.none,

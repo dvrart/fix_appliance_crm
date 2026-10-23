@@ -60,7 +60,7 @@ class EmailOfferPage {
         : (loaded.counterpartEmail.isNotEmpty
             ? loaded.counterpartEmail
             : loaded.from);
-    await Navigator.of(context, rootNavigator: true).push(
+    await AppNav.navigatorOf(context).push(
       MaterialPageRoute(
         builder: (_) => JobPreviewScreen(
           extractedData: extracted,

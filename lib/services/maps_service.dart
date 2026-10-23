@@ -14,11 +14,37 @@ import 'network_status_service.dart';
 /// `placeId` важнее текста: Google Maps по нему открывает ровно то здание,
 /// даже если в адресе не хватает города.
 class MapPlace {
-  const MapPlace({required this.address, this.placeId, this.location});
+  const MapPlace({
+    required this.address,
+    this.placeId,
+    this.location,
+    this.isHouse = false,
+    this.insideServiceArea,
+  });
 
   final String address;
   final String? placeId;
   final LatLng? location;
+
+  /// Точный дом найден геокодером (а не просто город, индекс или улица).
+  final bool isHouse;
+
+  /// Входит ли найденная точка в зону обслуживания (`null`, если полигон не
+  /// задан или координаты не получены).
+  final bool? insideServiceArea;
+
+  MapPlace withAreaCheck(ServiceArea area) {
+    if (location == null || !area.hasPolygon) return this;
+    final inside = area.contains(location!);
+    if (inside == insideServiceArea) return this;
+    return MapPlace(
+      address: address,
+      placeId: placeId,
+      location: location,
+      isHouse: isHouse,
+      insideServiceArea: inside,
+    );
+  }
 }
 
 /// Результат построения маршрута через Google Directions API
@@ -314,6 +340,104 @@ class MapsService {
   static bool hasRoutableAddress(String address) =>
       navigationQuery(address).isNotEmpty;
 
+  static final RegExp _canadianPostal = RegExp(
+    r'\b[A-Za-z]\d[A-Za-z]\s*\d[A-Za-z]\d\b',
+  );
+
+  /// Номера домов из строки адреса (без почтового индекса и квартиры).
+  static Set<String> houseNumbersInAddress(String address) {
+    final cleaned = address.replaceAll(_canadianPostal, ' ');
+    final numbers = <String>{};
+    for (final rawPart in cleaned.split(',')) {
+      var part = rawPart.trim();
+      if (part.isEmpty || _unitPart.hasMatch(part)) continue;
+      part = part.replaceFirst(
+        RegExp(
+          r'^(?:unit|apt|apartment|suite|ste|bsmt|basement|кв|кварт\w*|оф|офис|#)\s*[:.#-]?\s*[\w-]+\s+',
+          caseSensitive: false,
+        ),
+        '',
+      );
+      if (!RegExp(r'[a-zA-Zа-яА-Я]').hasMatch(part)) continue;
+      for (final m in RegExp(r'\b(\d+)[a-zA-Z]?\b').allMatches(part)) {
+        final digits = m.group(1);
+        if (digits != null && digits.isNotEmpty) numbers.add(digits);
+      }
+    }
+    return numbers;
+  }
+
+  /// Вписан ли в адрес номер дома с улицей (а не только город или индекс).
+  static bool hasHouseNumber(String address) =>
+      houseNumbersInAddress(address).isNotEmpty;
+
+  /// Разбор ответа Google Geocoding с проверкой, найден ли именно этот дом.
+  static MapPlace parseGeocodeResult(
+    Map<String, dynamic> first, {
+    required String queryAddress,
+    ServiceArea? area,
+  }) {
+    final loc = first['geometry']?['location'];
+    final location = loc is Map
+        ? LatLng(
+            (loc['lat'] as num).toDouble(),
+            (loc['lng'] as num).toDouble(),
+          )
+        : null;
+    final placeIdRaw = (first['place_id'] ?? '').toString().trim();
+    final components = first['address_components'] as List?;
+    final streetNumber = _component(components, const ['street_number']) ?? '';
+    final route = _component(components, const ['route']) ?? '';
+    final premise =
+        _component(components, const ['premise', 'subpremise']) ?? '';
+    final resultTypes = (first['types'] is List)
+        ? (first['types'] as List).map((e) => e.toString()).toSet()
+        : const <String>{};
+    final locationType =
+        (first['geometry']?['location_type'] ?? '').toString().trim();
+    final partialMatch = first['partial_match'] == true;
+
+    final queryNumbers = houseNumbersInAddress(queryAddress);
+    final geocodeDigits = RegExp(r'\d+')
+        .allMatches('$streetNumber $premise')
+        .map((m) => m.group(0)!)
+        .toSet();
+    final numberMatched =
+        queryNumbers.isNotEmpty &&
+        geocodeDigits.isNotEmpty &&
+        queryNumbers.any(geocodeDigits.contains);
+    final hasStreetBuilding =
+        (streetNumber.isNotEmpty && route.isNotEmpty) ||
+        resultTypes.contains('street_address') ||
+        resultTypes.contains('premise') ||
+        resultTypes.contains('subpremise');
+    final preciseEnough =
+        locationType == 'ROOFTOP' ||
+        locationType == 'RANGE_INTERPOLATED' ||
+        (!partialMatch &&
+            (resultTypes.contains('street_address') ||
+                resultTypes.contains('premise') ||
+                resultTypes.contains('subpremise')));
+
+    final isHouse =
+        location != null &&
+        numberMatched &&
+        hasStreetBuilding &&
+        preciseEnough;
+
+    final insideArea = (location != null && area != null && area.hasPolygon)
+        ? area.contains(location)
+        : null;
+
+    return MapPlace(
+      address: (first['formatted_address'] ?? queryAddress).toString(),
+      placeId: placeIdRaw.isEmpty ? null : placeIdRaw,
+      location: location,
+      isHouse: isHouse,
+      insideServiceArea: insideArea,
+    );
+  }
+
   static ServiceArea? _area;
   static DateTime? _areaAt;
   static const Duration _areaTtl = Duration(minutes: 10);
@@ -348,7 +472,7 @@ class MapsService {
     if (query.isEmpty) return null;
     if (kGoogleApiKey.isEmpty) return MapPlace(address: query);
     final cached = _placeCache[query];
-    if (cached != null) return cached;
+    if (cached != null) return cached.withAreaCheck(area);
 
     final bounds = area.boundingBox;
     final base = {
@@ -367,7 +491,7 @@ class MapsService {
       {...base, 'components': 'country:CA'},
       base,
     ]) {
-      final place = await _geocodeOnce(params);
+      final place = await _geocodeOnce(params, area: area);
       if (place != null) {
         _placeCache[query] = place;
         return place;
@@ -378,7 +502,10 @@ class MapsService {
     return MapPlace(address: query);
   }
 
-  static Future<MapPlace?> _geocodeOnce(Map<String, String> params) async {
+  static Future<MapPlace?> _geocodeOnce(
+    Map<String, String> params, {
+    ServiceArea? area,
+  }) async {
     try {
       final uri = Uri.https(
         'maps.googleapis.com',
@@ -392,18 +519,10 @@ class MapsService {
       final results = data['results'] as List?;
       if (results == null || results.isEmpty) return null;
       final first = results.first as Map<String, dynamic>;
-      final loc = first['geometry']?['location'];
-      return MapPlace(
-        address: (first['formatted_address'] ?? params['address']).toString(),
-        placeId: (first['place_id'] ?? '').toString().isEmpty
-            ? null
-            : first['place_id'].toString(),
-        location: loc == null
-            ? null
-            : LatLng(
-                (loc['lat'] as num).toDouble(),
-                (loc['lng'] as num).toDouble(),
-              ),
+      return parseGeocodeResult(
+        first,
+        queryAddress: (params['address'] ?? '').toString(),
+        area: area,
       );
     } catch (_) {
       return null;
@@ -550,6 +669,20 @@ class MapsService {
   static String getStaticMapUrl(String address, {int width = 400, int height = 200}) {
     final encodedAddress = Uri.encodeComponent(address);
     return 'https://maps.googleapis.com/maps/api/staticmap?center=$encodedAddress&zoom=15&size=${width}x$height&markers=color:red%7C$encodedAddress&key=$kGoogleApiKey';
+  }
+
+  /// Статическая карта по точным координатам найденного дома.
+  static String getStaticMapUrlForPoint(
+    LatLng point, {
+    int width = 600,
+    int height = 220,
+    int zoom = 16,
+  }) {
+    final lat = point.latitude;
+    final lng = point.longitude;
+    return 'https://maps.googleapis.com/maps/api/staticmap'
+        '?center=$lat,$lng&zoom=$zoom&size=${width}x$height&scale=2'
+        '&markers=color:red%7C$lat,$lng&key=$kGoogleApiKey';
   }
 
   /// Построить маршрут по нескольким адресам через Google Directions API.

@@ -78,7 +78,9 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
     super.initState();
     final data = widget.extractedData;
 
-    _nameController = TextEditingController(text: data.clientName ?? '');
+    _nameController = TextEditingController(
+      text: Client.stripClientWord(data.clientName),
+    );
     _phoneController = TextEditingController(
       text: data.clientPhone ?? widget.fallbackPhone ?? '',
     );
@@ -184,8 +186,11 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
   Future<bool> _saveJob() async {
     final email = _emailController.text.trim();
     final phone = _phoneController.text.trim();
-    var name = _nameController.text.trim();
-    if (name.isEmpty && email.contains('@')) {
+    var name = Client.stripClientWord(_nameController.text.trim());
+    if (name.isEmpty && phone.isNotEmpty) {
+      name = phone;
+      _nameController.text = name;
+    } else if (name.isEmpty && email.contains('@')) {
       name = email.split('@').first;
       _nameController.text = name;
     }
@@ -496,13 +501,13 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
                     margin: const EdgeInsets.only(bottom: 12),
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     decoration: BoxDecoration(
-                      color: Colors.grey.shade50,
-                      border: Border.all(color: Colors.grey.shade300),
+                      color: AppColors.cardMuted,
+                      border: Border.all(color: AppColors.border),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Row(
                       children: [
-                        Icon(Icons.search, color: AppColors.primary, size: 24),
+                        Icon(Icons.search, color: AppColors.primaryOnCard, size: 24),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
@@ -517,7 +522,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
                               color: _addressController.text.isEmpty &&
                                       _cityController.text.isEmpty
                                   ? Colors.grey
-                                  : Colors.black87,
+                                  : AppColors.ink,
                               fontSize: 16,
                             ),
                           ),
@@ -820,7 +825,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
             borderRadius: BorderRadius.circular(12),
           ),
           filled: true,
-          fillColor: Colors.grey.shade50,
+          fillColor: AppColors.cardMuted,
         ),
       ),
     );

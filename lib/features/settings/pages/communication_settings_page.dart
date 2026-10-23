@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../core/utils/app_time_picker.dart';
 import '../../../services/morning_briefing_service.dart';
 import '../../../services/notification_service.dart';
-import '../../../services/on_the_way_service.dart';
 import '../../../services/settings_service.dart';
 import '../../../services/twilio_service.dart';
 import '../../../shared/widgets/email_field.dart';
@@ -42,16 +42,13 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
   bool _savingGmail = false;
   String _smsHeader = 'fix-appliance.ca';
   bool _morning = true;
-  bool _onWayGeo = true;
-  bool _bookingSms = true;
-  bool _reminderSms = true;
+  bool _bookingSms = false;
+  bool _reminderSms = false;
   bool _autoReview = true;
   List<String> _reminderOffsets = const ['24h'];
   int _morningHour = 7;
   int _eveningHour = 19;
   int _reminderMorningHour = 8;
-  int _onWayMeters = 2000;
-  String _onWayText = '';
   final _gmailUserCtrl = TextEditingController();
   final _gmailPassCtrl = TextEditingController();
   final _watchCtrl = TextEditingController();
@@ -62,19 +59,17 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
   bool _gmailSaved = false;
   bool _gmailListening = false;
   bool _notificationsEnabled = true;
+  bool _callOverlayEnabled = true;
   String _gmailUserHint = '';
   String _savedSmsHeader = 'fix-appliance.ca';
   bool _savedMorning = true;
-  bool _savedOnWayGeo = true;
-  bool _savedBookingSms = true;
-  bool _savedReminderSms = true;
+  bool _savedBookingSms = false;
+  bool _savedReminderSms = false;
   bool _savedAutoReview = true;
   List<String> _savedReminderOffsets = const ['24h'];
   int _savedMorningHour = 7;
   int _savedEveningHour = 19;
   int _savedReminderMorningHour = 8;
-  int _savedOnWayMeters = 2000;
-  String _savedOnWayText = '';
 
   @override
   void initState() {
@@ -117,7 +112,12 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
 
   Future<void> _loadNotificationAccess() async {
     final enabled = await NotificationService.areNotificationsEnabled();
-    if (mounted) setState(() => _notificationsEnabled = enabled);
+    final overlay = await NotificationService.canOverlayCalls();
+    if (!mounted) return;
+    setState(() {
+      _notificationsEnabled = enabled;
+      _callOverlayEnabled = overlay;
+    });
   }
 
   @override
@@ -174,7 +174,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     if (!mounted) return;
     setState(() {
       _morning = SettingsService.boolFlag(config, 'morningBriefingEnabled');
-      _onWayGeo = SettingsService.boolFlag(config, 'onTheWayPromptEnabled');
       _bookingSms = SettingsService.readBookingSmsEnabled(config);
       _reminderSms = SettingsService.readReminderSmsEnabled(config);
       _autoReview = SettingsService.readAutoReviewSmsEnabled(config);
@@ -182,12 +181,9 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       _morningHour = SettingsService.readMorningBriefingHour(config);
       _eveningHour = SettingsService.readEveningBriefingHour(config);
       _reminderMorningHour = SettingsService.readReminderMorningHour(config);
-      _onWayMeters = SettingsService.readOnTheWayMeters(config);
-      _onWayText = SettingsService.readOnTheWayText(config);
       _watchedSenders = watched;
       _savedWatchers = List<WatchedEmailSender>.from(watched);
       _savedMorning = _morning;
-      _savedOnWayGeo = _onWayGeo;
       _savedBookingSms = _bookingSms;
       _savedReminderSms = _reminderSms;
       _savedAutoReview = _autoReview;
@@ -195,8 +191,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       _savedMorningHour = _morningHour;
       _savedEveningHour = _eveningHour;
       _savedReminderMorningHour = _reminderMorningHour;
-      _savedOnWayMeters = _onWayMeters;
-      _savedOnWayText = _onWayText;
     });
   }
 
@@ -210,23 +204,16 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       _bookingSms != _savedBookingSms ||
       _reminderSms != _savedReminderSms ||
       _autoReview != _savedAutoReview ||
-      _onWayMeters != _savedOnWayMeters ||
-      _onWayText != _savedOnWayText ||
       _reminderMorningHour != _savedReminderMorningHour ||
       _offsetsKey(_reminderOffsets) != _offsetsKey(_savedReminderOffsets);
 
   bool get _alertsDirty =>
       _morning != _savedMorning ||
-      _onWayGeo != _savedOnWayGeo ||
       _morningHour != _savedMorningHour ||
       _eveningHour != _savedEveningHour;
 
   void _setMorning(bool value) {
     setState(() => _morning = value);
-  }
-
-  void _setOnWayGeo(bool value) {
-    setState(() => _onWayGeo = value);
   }
 
   Future<bool> _saveSms() async {
@@ -239,8 +226,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       'autoReviewSmsEnabled': _autoReview,
       'reminderOffsets': _reminderOffsets,
       'reminderMorningHour': _reminderMorningHour,
-      'onTheWayMeters': _onWayMeters,
-      'onTheWayText': _onWayText,
     });
     if (!mounted) return true;
     setState(() {
@@ -250,8 +235,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       _savedAutoReview = _autoReview;
       _savedReminderOffsets = List<String>.from(_reminderOffsets);
       _savedReminderMorningHour = _reminderMorningHour;
-      _savedOnWayMeters = _onWayMeters;
-      _savedOnWayText = _onWayText;
     });
     return true;
   }
@@ -259,16 +242,13 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
   Future<bool> _saveAlerts() async {
     await SettingsService.updateConfigMap({
       'morningBriefingEnabled': _morning,
-      'onTheWayPromptEnabled': _onWayGeo,
       'morningBriefingHour': _morningHour,
       'eveningBriefingHour': _eveningHour,
     });
     await MorningBriefingService.refresh();
-    if (!_onWayGeo) await OnTheWayService.instance.stop();
     if (!mounted) return true;
     setState(() {
       _savedMorning = _morning;
-      _savedOnWayGeo = _onWayGeo;
       _savedMorningHour = _morningHour;
       _savedEveningHour = _eveningHour;
     });
@@ -412,63 +392,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     setState(() {
       _morningHour = morning.hour;
       _eveningHour = evening.hour;
-    });
-  }
-
-  Future<void> _editOnWay() async {
-    final kmCtrl = TextEditingController(
-      text: (_onWayMeters / 1000).toStringAsFixed(
-        _onWayMeters % 1000 == 0 ? 0 : 1,
-      ),
-    );
-    final textCtrl = TextEditingController(text: _onWayText);
-    final saved = await showDialog<bool>(
-      context: context,
-      useRootNavigator: true,
-      builder: (context) => AlertDialog(
-        title: Text('SMS «я в пути»'.tr),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: kmCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(
-                labelText: 'Расстояние, км'.tr,
-                helperText: 'Спросить после этого отъезда от клиента'.tr,
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: textCtrl,
-              minLines: 2,
-              maxLines: 4,
-              decoration: InputDecoration(
-                labelText: 'Текст SMS'.tr,
-                hintText: 'Hi, this is your technician. I am on the way.'.tr,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text('Сохранить'.tr),
-          ),
-        ],
-      ),
-    );
-    if (saved != true || !mounted) return;
-    final km = double.tryParse(kmCtrl.text.replaceAll(',', '.').trim()) ?? 2;
-    final meters = (km * 1000).round().clamp(200, 20000);
-    final text = textCtrl.text.trim();
-    setState(() {
-      _onWayMeters = meters;
-      _onWayText = text;
     });
   }
 
@@ -723,15 +646,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                 onTap: _editSmsHeader,
               ),
               SettingsHubTile(
-                title: 'Я в пути'.tr,
-                subtitle:
-                    '${(_onWayMeters / 1000).toStringAsFixed(_onWayMeters % 1000 == 0 ? 0 : 1)} ${'км'.tr}',
-                icon: Icons.near_me,
-                color: Colors.teal,
-                active: _onWayGeo,
-                onTap: _editOnWay,
-              ),
-              SettingsHubTile(
                 title: 'При записи'.tr,
                 subtitle: _bookingSms ? 'Вкл'.tr : 'Выкл'.tr,
                 icon: Icons.event_available,
@@ -816,6 +730,30 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                   await _loadNotificationAccess();
                 },
               ),
+              SettingsHubTile(
+                title: context.tr('Звонок на весь экран', 'Full-screen call'),
+                subtitle: _callOverlayEnabled
+                    ? 'Вкл'.tr
+                    : context.tr('Разрешить поверх окон', 'Allow over other apps'),
+                icon: Icons.open_in_full,
+                color: _callOverlayEnabled ? Colors.green : Colors.red,
+                active: _callOverlayEnabled,
+                onTap: () async {
+                  await NotificationService.openCallOverlaySettings();
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        context.tr(
+                          'Включите «Поверх других окон», а на Xiaomi — и «Открывать новые окна в фоне».',
+                          'Enable "Display over other apps" (and on Xiaomi: "Background pop-up windows").',
+                        ),
+                      ),
+                    ),
+                  );
+                  await _loadNotificationAccess();
+                },
+              ),
               _registrationTile(
                 title: context.tr('Регистрация уведомлений', 'Push registration'),
                 state: NotificationService.registrationState,
@@ -838,14 +776,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                     ),
                   );
                 },
-              ),
-              SettingsHubTile(
-                title: 'Я в пути'.tr,
-                subtitle: _onWayGeo ? 'Вкл'.tr : 'Выкл'.tr,
-                icon: Icons.near_me,
-                color: Colors.teal,
-                active: _onWayGeo,
-                onTap: () => _setOnWayGeo(!_onWayGeo),
               ),
               SettingsHubTile(
                 title: 'Брифинг'.tr,
@@ -939,7 +869,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
         children: [
           Text(
             'Проверяются только письма с адресов из списка ниже. Из них составляется заявка. Ответы клиентов на ваши письма попадают в переписку. Пароль — «Пароль приложения» Google, не обычный пароль от почты.'.tr,
-            style: const TextStyle(color: Colors.black54),
+            style: TextStyle(color: AppColors.inkMuted),
           ),
           const SizedBox(height: 12),
           EmailAutocompleteField(
@@ -949,7 +879,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
               prefixIcon: const Icon(Icons.email, color: Color(0xFFEA4335)),
               border: const OutlineInputBorder(),
               filled: true,
-              fillColor: Colors.white,
+              fillColor: AppColors.card,
             ),
           ),
           const SizedBox(height: 12),
@@ -964,7 +894,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
               prefixIcon: const Icon(Icons.password),
               border: const OutlineInputBorder(),
               filled: true,
-              fillColor: Colors.white,
+              fillColor: AppColors.card,
             ),
           ),
           const SizedBox(height: 16),
@@ -978,7 +908,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
           const SizedBox(height: 6),
           Text(
             'Заявки составляются только с этих адресов. Имя переписки — как нить показывается в чате.'.tr,
-            style: const TextStyle(color: Colors.black54),
+            style: TextStyle(color: AppColors.inkMuted),
           ),
           const SizedBox(height: 12),
           Row(
@@ -994,7 +924,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                     prefixIcon: const Icon(Icons.mark_email_unread_outlined),
                     border: const OutlineInputBorder(),
                     filled: true,
-                    fillColor: Colors.white,
+                    fillColor: AppColors.card,
                   ),
                 ),
               ),
@@ -1010,7 +940,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                     hintText: 'Например Jobber'.tr,
                     border: const OutlineInputBorder(),
                     filled: true,
-                    fillColor: Colors.white,
+                    fillColor: AppColors.card,
                   ),
                 ),
               ),
@@ -1038,9 +968,9 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                 margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: AppColors.card,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.black12),
+                  border: Border.all(color: AppColors.border),
                 ),
                 child: Row(
                   key: ValueKey('watch-${sender.email}'),

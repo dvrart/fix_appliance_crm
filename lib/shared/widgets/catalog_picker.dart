@@ -17,7 +17,7 @@ Future<String?> showCatalogPicker({
     isScrollControlled: true,
     useRootNavigator: true,
     useSafeArea: true,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
@@ -74,7 +74,7 @@ class _CatalogPickerSheetState extends State<_CatalogPickerSheet> {
             width: 40,
             height: 4,
             decoration: BoxDecoration(
-              color: Colors.grey.shade300,
+              color: AppColors.border,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -89,7 +89,7 @@ class _CatalogPickerSheetState extends State<_CatalogPickerSheet> {
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
-                      color: AppColors.primary,
+                      color: AppColors.primaryOnCard,
                     ),
                   ),
                 ),
@@ -110,14 +110,14 @@ class _CatalogPickerSheetState extends State<_CatalogPickerSheet> {
                 hintText: 'Поиск или новое значение...'.tr,
                 prefixIcon: const Icon(Icons.search),
                 filled: true,
-                fillColor: Colors.grey.shade50,
+                fillColor: AppColors.cardMuted,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey.shade300),
+                  borderSide: BorderSide(color: AppColors.border),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey.shade300),
+                  borderSide: BorderSide(color: AppColors.border),
                 ),
               ),
               onChanged: (v) => setState(() => _query = v),
@@ -173,12 +173,12 @@ class _CatalogPickerSheetState extends State<_CatalogPickerSheet> {
                                 height: 24,
                                 child: CircularProgressIndicator(strokeWidth: 2),
                               )
-                            : Icon(Icons.add_circle, color: AppColors.primary),
+                            : Icon(Icons.add_circle, color: AppColors.primaryOnCard),
                         title: Text(
                           '${'Добавить'.tr} «${_searchCtrl.text.trim()}»',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
-                            color: AppColors.primary,
+                            color: AppColors.primaryOnCard,
                           ),
                         ),
                         onTap: _isAdding

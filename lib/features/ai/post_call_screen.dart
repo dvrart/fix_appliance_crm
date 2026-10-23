@@ -399,18 +399,18 @@ class _PostCallScreenState extends State<PostCallScreen>
                   hintStyle: TextStyle(color: Colors.grey.shade400),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
+                    borderSide: BorderSide(color: AppColors.border),
                   ),
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
+                    borderSide: BorderSide(color: AppColors.border),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
                     borderSide: BorderSide(color: AppColors.primary, width: 2),
                   ),
                   filled: true,
-                  fillColor: Colors.white,
+                  fillColor: AppColors.card,
                 ),
               ),
             ),
@@ -422,7 +422,7 @@ class _PostCallScreenState extends State<PostCallScreen>
             child: Text(
               _statusText,
               style: TextStyle(
-                color: _isListening ? Colors.green : Colors.grey.shade600,
+                color: _isListening ? Colors.green : AppColors.inkMuted,
                 fontWeight: _isListening ? FontWeight.bold : FontWeight.normal,
               ),
               textAlign: TextAlign.center,
@@ -449,8 +449,8 @@ class _PostCallScreenState extends State<PostCallScreen>
                         },
                   icon: const Icon(Icons.clear),
                   style: IconButton.styleFrom(
-                    backgroundColor: Colors.grey.shade200,
-                    foregroundColor: Colors.grey.shade700,
+                    backgroundColor: AppColors.cardMuted,
+                    foregroundColor: AppColors.inkMuted,
                   ),
                 ),
                 const SizedBox(width: 12),

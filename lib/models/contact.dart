@@ -1,3 +1,5 @@
+import '../core/sms_text.dart';
+
 /// Контактное лицо (владелец, арендатор, управляющий)
 class Contact {
   final String id;
@@ -15,10 +17,11 @@ class Contact {
   });
 
   factory Contact.fromMap(Map<String, dynamic> map, [String? docId]) {
+    final phone = (map['phone'] ?? '').toString();
     return Contact(
       id: docId ?? map['id'] ?? '',
-      name: map['name'] ?? '',
-      phone: map['phone'] ?? '',
+      name: SmsText.stripClientWord((map['name'] ?? '').toString(), phone),
+      phone: phone,
       role: map['role'] ?? 'owner',
       isPrimary: map['isPrimary'] ?? false,
     );

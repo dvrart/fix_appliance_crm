@@ -1,58 +1,26 @@
 import 'package:flutter/material.dart';
-import '../../../shared/widgets/confirm_action_sheet.dart';
 
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
-import '../../../models/document_settings.dart';
+import '../../../core/sms_text.dart';
 import '../../../services/settings_service.dart';
+import '../../../shared/widgets/confirm_action_sheet.dart';
 import '../widgets/settings_ui.dart';
 
-enum _TplSection {
-  hub,
-  booking,
-  reminder,
-  cancel,
-  reschedule,
-  onWay,
-  parts,
-  done,
-  review,
-  invoice,
-  estimate,
-  receipt,
-  pay,
-}
-
 class MessageTemplatesPage extends StatefulWidget {
-  const MessageTemplatesPage({super.key}) : _sectionIndex = 0;
-
-  const MessageTemplatesPage._at(this._sectionIndex, {super.key});
-
-  final int _sectionIndex;
-
-  _TplSection get _section =>
-      _TplSection.values[_sectionIndex.clamp(0, _TplSection.values.length - 1)];
+  const MessageTemplatesPage({super.key});
 
   @override
   State<MessageTemplatesPage> createState() => _MessageTemplatesPageState();
 }
 
 class _MessageTemplatesPageState extends State<MessageTemplatesPage> {
-  final _onWay = TextEditingController();
-  final _parts = TextEditingController();
-  final _done = TextEditingController();
-  final _book = TextEditingController();
-  final _day = TextEditingController();
-  final _cancelSave = TextEditingController();
-  final _rescheduleAsk = TextEditingController();
-  final _reviewUrl = TextEditingController();
-  final _invoiceSms = TextEditingController();
-  final _estimateSms = TextEditingController();
-  final _receiptSms = TextEditingController();
-  final _paySms = TextEditingController();
+  Map<String, String> _templates = {};
+  Map<String, String> _titles = {};
   List<Map<String, String>> _customTemplates = [];
+  String _reviewUrl = '';
   bool _loading = true;
-  bool _dirty = false;
+  bool _guideExpanded = true;
 
   @override
   void initState() {
@@ -60,230 +28,230 @@ class _MessageTemplatesPageState extends State<MessageTemplatesPage> {
     _load();
   }
 
-  @override
-  void dispose() {
-    for (final c in [
-      _onWay,
-      _parts,
-      _done,
-      _book,
-      _day,
-      _cancelSave,
-      _rescheduleAsk,
-      _reviewUrl,
-      _invoiceSms,
-      _estimateSms,
-      _receiptSms,
-      _paySms,
-    ]) {
-      c.dispose();
-    }
-    super.dispose();
+  Future<void> _load() async {
+    final results = await Future.wait([
+      SettingsService.loadSmsTemplates(),
+      SettingsService.loadSmsTemplateTitles(),
+      SettingsService.loadChatCustomTemplates(),
+      SettingsService.loadConfig(),
+    ]);
+    if (!mounted) return;
+    final templates = results[0] as Map<String, String>;
+    final titles = results[1] as Map<String, String>;
+    final custom = results[2] as List<Map<String, String>>;
+    final config = results[3] as Map<String, dynamic>;
+    setState(() {
+      _templates = Map<String, String>.from(templates);
+      _titles = Map<String, String>.from(titles);
+      _customTemplates = List<Map<String, String>>.from(custom);
+      _reviewUrl = SettingsService.readGoogleReviewUrl(config);
+      _loading = false;
+    });
   }
 
-  void _open(_TplSection section) {
-    Navigator.push(
+  String _titleForSpec(
+    ({
+      String key,
+      String section,
+      String defaultTitle,
+      IconData icon,
+      Color color,
+    }) spec,
+  ) {
+    final custom = (_titles[spec.key] ?? '').trim();
+    if (custom.isNotEmpty) return custom;
+    return spec.defaultTitle.tr;
+  }
+
+  bool _isBuiltinModified(
+    ({
+      String key,
+      String section,
+      String defaultTitle,
+      IconData icon,
+      Color color,
+    }) spec,
+  ) {
+    final defaults = SettingsService.defaultSmsTemplates();
+    final defBody = (defaults[spec.key] ?? '').trim();
+    final curBody = (_templates[spec.key] ?? '').trim();
+    final curTitle = (_titles[spec.key] ?? '').trim();
+    return curBody != defBody ||
+        (curTitle.isNotEmpty &&
+            curTitle != spec.defaultTitle &&
+            curTitle != spec.defaultTitle.tr);
+  }
+
+  Future<void> _openBuiltinEditor(
+    ({
+      String key,
+      String section,
+      String defaultTitle,
+      IconData icon,
+      Color color,
+    }) spec,
+  ) async {
+    final defaults = SettingsService.defaultSmsTemplates();
+    final defaultBody = defaults[spec.key] ?? '';
+    final defaultTitle = spec.defaultTitle.tr;
+    final initialTitle = _titleForSpec(spec);
+    final initialBody = _templates[spec.key] ?? defaultBody;
+
+    final result = await Navigator.push<_TemplateEditResult>(
       context,
       MaterialPageRoute(
-        builder: (_) => MessageTemplatesPage._at(section.index),
+        builder: (_) => _TemplateEditorPage(
+          pageTitle: 'Изменить шаблон'.tr,
+          initialTitle: initialTitle,
+          initialBody: initialBody,
+          defaultTitle: defaultTitle,
+          defaultBody: defaultBody,
+          canDelete: false,
+        ),
       ),
-    ).then((_) {
-      if (mounted && widget._section == _TplSection.hub) _load();
-    });
-  }
-
-  void _onEdit() {
-    if (_loading || _dirty) return;
-    setState(() => _dirty = true);
-  }
-
-  Future<void> _load() async {
-    final templates = await SettingsService.loadSmsTemplates();
-    final docs = await SettingsService.loadDocumentSettings();
-    final config = await SettingsService.loadConfig();
-    final custom = await SettingsService.loadChatCustomTemplates();
-    if (!mounted) return;
-    _customTemplates = custom;
-    _onWay.text = templates['on_way'] ?? '';
-    _parts.text = templates['part_ordered'] ?? '';
-    _done.text = templates['job_done'] ?? '';
-    _book.text = templates['booking_confirm'] ?? '';
-    _day.text = templates['day_before'] ?? '';
-    _cancelSave.text = templates['cancel_save'] ?? '';
-    _rescheduleAsk.text = templates['reschedule_ask'] ?? '';
-    _reviewUrl.text = SettingsService.readGoogleReviewUrl(config);
-    _invoiceSms.text = docs.invoiceSms;
-    _estimateSms.text = docs.estimateSms;
-    _receiptSms.text = docs.receiptSms;
-    _paySms.text = docs.paySms;
-    for (final controller in [
-      _onWay,
-      _parts,
-      _done,
-      _book,
-      _day,
-      _cancelSave,
-      _rescheduleAsk,
-      _reviewUrl,
-      _invoiceSms,
-      _estimateSms,
-      _receiptSms,
-      _paySms,
-    ]) {
-      controller.addListener(_onEdit);
+    );
+    if (result == null || !mounted) return;
+    if (result.action == _TemplateEditAction.save) {
+      final nextTemplates = Map<String, String>.from(_templates);
+      nextTemplates[spec.key] = result.body;
+      final nextTitles = Map<String, String>.from(_titles);
+      if (result.title.isEmpty ||
+          result.title == spec.defaultTitle ||
+          result.title == spec.defaultTitle.tr) {
+        nextTitles.remove(spec.key);
+      } else {
+        nextTitles[spec.key] = result.title;
+      }
+      await Future.wait([
+        SettingsService.saveSmsTemplates(nextTemplates),
+        SettingsService.saveSmsTemplateTitles(nextTitles),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _templates = nextTemplates;
+        _titles = nextTitles;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Шаблон сохранен'.tr),
+          backgroundColor: Colors.green,
+        ),
+      );
     }
+  }
+
+  Future<void> _resetBuiltinTemplate(
+    ({
+      String key,
+      String section,
+      String defaultTitle,
+      IconData icon,
+      Color color,
+    }) spec,
+  ) async {
+    final confirmed = await showConfirmCancelSheet(
+      context,
+      title: 'Сбросить шаблон?'.tr,
+      message:
+          '${_titleForSpec(spec)}\n\n${'Вернуть стандартное название и текст этого шаблона?'.tr}',
+      confirmLabel: 'Сбросить'.tr,
+    );
+    if (!confirmed || !mounted) return;
+    final defaults = SettingsService.defaultSmsTemplates();
+    final nextTemplates = Map<String, String>.from(_templates);
+    nextTemplates[spec.key] = defaults[spec.key] ?? '';
+    final nextTitles = Map<String, String>.from(_titles)..remove(spec.key);
+    await Future.wait([
+      SettingsService.saveSmsTemplates(nextTemplates),
+      SettingsService.saveSmsTemplateTitles(nextTitles),
+    ]);
+    if (!mounted) return;
     setState(() {
-      _loading = false;
-      _dirty = false;
+      _templates = nextTemplates;
+      _titles = nextTitles;
     });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Шаблон восстановлен'.tr),
+        backgroundColor: Colors.green,
+      ),
+    );
   }
 
   Future<void> _addCustomTemplate() async {
-    final titleCtrl = TextEditingController();
-    final bodyCtrl = TextEditingController();
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('Новый шаблон'.tr),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: titleCtrl,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: InputDecoration(
-                    labelText: 'Название'.tr,
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: bodyCtrl,
-                  minLines: 3,
-                  maxLines: 8,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: InputDecoration(
-                    labelText: 'Текст'.tr,
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: Text('Отмена'.tr),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                if (bodyCtrl.text.trim().isEmpty) return;
-                Navigator.pop(context, true);
-              },
-              child: Text('Сохранить'.tr),
-            ),
-          ],
-        );
-      },
+    final result = await Navigator.push<_TemplateEditResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _TemplateEditorPage(
+          pageTitle: 'Новый шаблон'.tr,
+          initialTitle: '',
+          initialBody: '',
+          canDelete: false,
+        ),
+      ),
     );
-    titleCtrl.dispose();
-    bodyCtrl.dispose();
-    if (saved != true || !mounted) return;
+    if (result == null ||
+        result.action != _TemplateEditAction.save ||
+        result.body.trim().isEmpty ||
+        !mounted) {
+      return;
+    }
     final next = [
       ..._customTemplates,
       {
         'id': DateTime.now().millisecondsSinceEpoch.toString(),
-        'title': titleCtrl.text.trim().isEmpty
-            ? bodyCtrl.text.trim()
-            : titleCtrl.text.trim(),
-        'body': bodyCtrl.text.trim(),
+        'title': result.title.trim().isEmpty
+            ? result.body.trim()
+            : result.title.trim(),
+        'body': result.body.trim(),
       },
     ];
     await SettingsService.saveChatCustomTemplates(next);
     if (!mounted) return;
     setState(() => _customTemplates = next);
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Шаблон добавлен'.tr)),
+      SnackBar(
+        content: Text('Шаблон добавлен'.tr),
+        backgroundColor: Colors.green,
+      ),
     );
   }
 
   Future<void> _editCustomTemplate(int index) async {
     if (index < 0 || index >= _customTemplates.length) return;
     final item = _customTemplates[index];
-    final titleCtrl = TextEditingController(text: item['title'] ?? '');
-    final bodyCtrl = TextEditingController(text: item['body'] ?? '');
-    final action = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('Изменить шаблон'.tr),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: titleCtrl,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: InputDecoration(
-                    labelText: 'Название'.tr,
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: bodyCtrl,
-                  minLines: 3,
-                  maxLines: 8,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: InputDecoration(
-                    labelText: 'Текст'.tr,
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'delete'),
-              child: Text('Удалить'.tr, style: const TextStyle(color: Colors.red)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'cancel'),
-              child: Text('Отмена'.tr),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                if (bodyCtrl.text.trim().isEmpty) return;
-                Navigator.pop(context, 'save');
-              },
-              child: Text('Сохранить'.tr),
-            ),
-          ],
-        );
-      },
+    final result = await Navigator.push<_TemplateEditResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _TemplateEditorPage(
+          pageTitle: 'Изменить шаблон'.tr,
+          initialTitle: item['title'] ?? '',
+          initialBody: item['body'] ?? '',
+          canDelete: true,
+        ),
+      ),
     );
-    final updatedTitle = titleCtrl.text.trim();
-    final updatedBody = bodyCtrl.text.trim();
-    titleCtrl.dispose();
-    bodyCtrl.dispose();
-    if (!mounted) return;
-    if (action == 'delete') {
+    if (result == null || !mounted) return;
+    if (result.action == _TemplateEditAction.delete) {
       await _deleteCustomTemplate(index);
-    } else if (action == 'save' && updatedBody.isNotEmpty) {
+    } else if (result.action == _TemplateEditAction.save &&
+        result.body.trim().isNotEmpty) {
       final next = [..._customTemplates];
       next[index] = {
         ...item,
-        'title': updatedTitle.isEmpty ? updatedBody : updatedTitle,
-        'body': updatedBody,
+        'title': result.title.trim().isEmpty
+            ? result.body.trim()
+            : result.title.trim(),
+        'body': result.body.trim(),
       };
       await SettingsService.saveChatCustomTemplates(next);
       if (!mounted) return;
       setState(() => _customTemplates = next);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Шаблон сохранен'.tr)),
+        SnackBar(
+          content: Text('Шаблон сохранен'.tr),
+          backgroundColor: Colors.green,
+        ),
       );
     }
   }
@@ -307,147 +275,228 @@ class _MessageTemplatesPageState extends State<MessageTemplatesPage> {
     );
   }
 
-  /// Проверка обязательных подстановок в SMS-шаблонах.
-  static List<String> _validateTemplates(Map<String, String> templates) {
-    final errors = <String>[];
-    final requiredPlaceholders = ['{name}'];
-    final requiredKeys = [
-      'booking_confirm',
-      'day_before',
-      'job_done',
-      'on_way',
-      'cancel_save',
-      'reschedule_ask',
-    ];
-    for (final key in requiredKeys) {
-      final text = (templates[key] ?? '').trim();
-      for (final ph in requiredPlaceholders) {
-        if (!text.contains(ph)) {
-          errors.add('$key: отсутствует $ph');
-        }
-      }
-    }
-    return errors;
-  }
-
-  Future<bool> _save() async {
-    final templates = <String, String>{
-      'on_way': _onWay.text.trim(),
-      'part_ordered': _parts.text.trim(),
-      'job_done': _done.text.trim(),
-      'booking_confirm': _book.text.trim(),
-      'day_before': _day.text.trim(),
-      'cancel_save': _cancelSave.text.trim(),
-      'reschedule_ask': _rescheduleAsk.text.trim(),
-    };
-    final validationErrors = _validateTemplates(templates);
-    if (validationErrors.isNotEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Проверьте шаблоны: ${validationErrors.join(', ')}'),
-            backgroundColor: Colors.red,
+  Future<void> _editReviewUrl() async {
+    final ctrl = TextEditingController(text: _reviewUrl);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Ссылка на Google-отзыв'.tr),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Эта ссылка автоматически подставляется вместо фразы {review} в шаблонах сообщений.'
+                  .tr,
+              style: TextStyle(fontSize: 13, color: AppColors.inkMuted),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              keyboardType: TextInputType.url,
+              decoration: InputDecoration(
+                labelText: 'URL отзыва Google'.tr,
+                hintText: 'https://g.page/r/...',
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Отмена'.tr),
           ),
-        );
-      }
-      return false;
-    }
-    await SettingsService.saveSmsTemplates(templates);
-    await SettingsService.updateConfig('googleReviewUrl', _reviewUrl.text.trim());
-    final current = await SettingsService.loadDocumentSettings();
-    await SettingsService.saveDocumentSettings(
-      current.copyWith(
-        invoiceSms: _invoiceSms.text.trim().isEmpty
-            ? DocumentSettings.defaults.invoiceSms
-            : _invoiceSms.text.trim(),
-        estimateSms: _estimateSms.text.trim().isEmpty
-            ? DocumentSettings.defaults.estimateSms
-            : _estimateSms.text.trim(),
-        receiptSms: _receiptSms.text.trim().isEmpty
-            ? DocumentSettings.defaults.receiptSms
-            : _receiptSms.text.trim(),
-        paySms: _paySms.text.trim().isEmpty
-            ? DocumentSettings.kDefaultPaySms
-            : _paySms.text.trim(),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('Сохранить'.tr),
+          ),
+        ],
       ),
     );
-    if (!mounted) return false;
-    setState(() => _dirty = false);
+    final nextUrl = ctrl.text.trim();
+    ctrl.dispose();
+    if (saved != true || !mounted) return;
+    await SettingsService.updateConfig('googleReviewUrl', nextUrl);
+    if (!mounted) return;
+    setState(() => _reviewUrl = nextUrl);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Шаблоны сохранены'.tr),
+        content: Text('Ссылка сохранена'.tr),
         backgroundColor: Colors.green,
       ),
     );
-    return true;
   }
 
-  String _preview(TextEditingController c) {
-    final t = c.text.trim();
-    if (t.isEmpty) return '—';
-    return t.length > 24 ? '${t.substring(0, 24)}…' : t;
+  Widget _buildPlaceholderGuideCard() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+      decoration: BoxDecoration(
+        color: AppColors.tint(AppColors.primary, 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => setState(() => _guideExpanded = !_guideExpanded),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(
+                      Icons.help_outline_rounded,
+                      color: AppColors.primaryOnCard,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Памятка: как пользоваться {name}, {url} и др.'.tr,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 14,
+                            color: AppColors.primaryOnCard,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Автоподстановка имени, ссылок, даты и сумм в SMS'.tr,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.inkMuted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    _guideExpanded ? Icons.expand_less : Icons.expand_more,
+                    color: AppColors.primaryOnCard,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_guideExpanded) ...[
+            Divider(height: 1, color: AppColors.border),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
+              child: const PlaceholderGuideContent(),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
-  TextEditingController? _controllerFor(_TplSection section) {
-    switch (section) {
-      case _TplSection.booking:
-        return _book;
-      case _TplSection.reminder:
-        return _day;
-      case _TplSection.cancel:
-        return _cancelSave;
-      case _TplSection.reschedule:
-        return _rescheduleAsk;
-      case _TplSection.onWay:
-        return _onWay;
-      case _TplSection.parts:
-        return _parts;
-      case _TplSection.done:
-        return _done;
-      case _TplSection.review:
-        return _reviewUrl;
-      case _TplSection.invoice:
-        return _invoiceSms;
-      case _TplSection.estimate:
-        return _estimateSms;
-      case _TplSection.receipt:
-        return _receiptSms;
-      case _TplSection.pay:
-        return _paySms;
-      case _TplSection.hub:
-        return null;
-    }
+  Widget _buildSectionHeader(String title, {Widget? trailing}) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+                color: AppColors.ink,
+              ),
+            ),
+          ),
+          if (trailing != null) trailing,
+        ],
+      ),
+    );
   }
 
-  String _titleFor(_TplSection section) {
-    switch (section) {
-      case _TplSection.booking:
-        return 'Booking confirm';
-      case _TplSection.reminder:
-        return 'Day-before';
-      case _TplSection.cancel:
-        return 'Cancel (0)';
-      case _TplSection.reschedule:
-        return 'Reschedule (5)';
-      case _TplSection.onWay:
-        return 'On my way';
-      case _TplSection.parts:
-        return 'Waiting for part';
-      case _TplSection.done:
-        return 'Job done';
-      case _TplSection.review:
-        return 'Google review URL';
-      case _TplSection.invoice:
-        return 'Invoice SMS';
-      case _TplSection.estimate:
-        return 'Estimate SMS';
-      case _TplSection.receipt:
-        return 'Receipt SMS';
-      case _TplSection.pay:
-        return 'Payment link SMS';
-      case _TplSection.hub:
-        return 'Шаблоны сообщений'.tr;
-    }
+  Widget _buildBuiltinSection(String sectionName) {
+    final specs = SettingsService.builtinSmsSpecs
+        .where((s) => s.section == sectionName)
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader(sectionName.tr),
+        SettingsGroup(
+          children: [
+            for (var i = 0; i < specs.length; i++) ...[
+              Builder(
+                builder: (context) {
+                  final spec = specs[i];
+                  final modified = _isBuiltinModified(spec);
+                  final title = _titleForSpec(spec);
+                  final body = (_templates[spec.key] ?? '').trim();
+                  return ListTile(
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: spec.color.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(spec.icon, color: spec.color),
+                    ),
+                    title: Text(
+                      title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                    ),
+                    subtitle: Text(
+                      body.isEmpty ? '—' : body,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (modified)
+                          IconButton(
+                            tooltip: 'Сбросить по умолчанию'.tr,
+                            icon: const Icon(
+                              Icons.restart_alt,
+                              color: Colors.orange,
+                              size: 20,
+                            ),
+                            onPressed: () => _resetBuiltinTemplate(spec),
+                          ),
+                        IconButton(
+                          tooltip: 'Изменить'.tr,
+                          icon: const Icon(
+                            Icons.edit_outlined,
+                            color: Colors.blueGrey,
+                            size: 20,
+                          ),
+                          onPressed: () => _openBuiltinEditor(spec),
+                        ),
+                      ],
+                    ),
+                    onTap: () => _openBuiltinEditor(spec),
+                  );
+                },
+              ),
+              if (i < specs.length - 1)
+                Divider(height: 1, indent: 64, color: AppColors.border),
+            ],
+          ],
+        ),
+      ],
+    );
   }
 
   @override
@@ -458,183 +507,503 @@ class _MessageTemplatesPageState extends State<MessageTemplatesPage> {
         body: Center(child: CircularProgressIndicator(color: AppColors.accent)),
       );
     }
-    if (widget._section == _TplSection.hub) {
-      return SettingsPageScaffold(
-        title: 'Шаблоны сообщений'.tr,
-        dirty: _dirty,
-        onSave: _save,
-        body: ListView(
-          padding: const EdgeInsets.only(top: 12, bottom: 32),
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Text(
-                'English SMS to clients. {name} {date} {time} {address} {review} {url}'.tr,
-                style: const TextStyle(color: Colors.black54, fontSize: 12),
-              ),
+
+    return SettingsPageScaffold(
+      title: 'Шаблоны сообщений'.tr,
+      body: ListView(
+        padding: const EdgeInsets.only(top: 8, bottom: 36),
+        children: [
+          _buildPlaceholderGuideCard(),
+          _buildSectionHeader(
+            'Мои шаблоны'.tr,
+            trailing: TextButton.icon(
+              onPressed: _addCustomTemplate,
+              icon: const Icon(Icons.add, size: 20),
+              label: Text('Добавить шаблон'.tr),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Мои шаблоны'.tr,
+          ),
+          if (_customTemplates.isEmpty)
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+              decoration: BoxDecoration(
+                color: AppColors.card,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black12,
+                    blurRadius: 4,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Center(
+                child: Column(
+                  children: [
+                    Icon(
+                      Icons.chat_bubble_outline,
+                      size: 32,
+                      color: AppColors.inkMuted,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Нет своих шаблонов'.tr,
+                      style: TextStyle(color: AppColors.inkMuted),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _addCustomTemplate,
+                      icon: const Icon(Icons.add),
+                      label: Text('Добавить шаблон'.tr),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            SettingsGroup(
+              children: [
+                for (var i = 0; i < _customTemplates.length; i++) ...[
+                  ListTile(
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        Icons.chat_bubble_outline,
+                        color: AppColors.primaryOnCard,
+                      ),
+                    ),
+                    title: Text(
+                      _customTemplates[i]['title'] ?? '',
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                        color: Colors.black87,
+                        fontSize: 15,
                       ),
                     ),
-                  ),
-                  TextButton.icon(
-                    onPressed: _addCustomTemplate,
-                    icon: const Icon(Icons.add, size: 20),
-                    label: Text('Добавить шаблон'.tr),
-                  ),
-                ],
-              ),
-            ),
-            if (_customTemplates.isEmpty)
-              Container(
-                margin: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: const [
-                    BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2)),
-                  ],
-                ),
-                child: Center(
-                  child: Column(
-                    children: [
-                      Icon(Icons.chat_bubble_outline, size: 36, color: Colors.grey.shade400),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Нет своих шаблонов'.tr,
-                        style: TextStyle(color: Colors.grey.shade600),
-                      ),
-                      const SizedBox(height: 10),
-                      OutlinedButton.icon(
-                        onPressed: _addCustomTemplate,
-                        icon: const Icon(Icons.add),
-                        label: Text('Добавить шаблон'.tr),
-                      ),
-                    ],
-                  ),
-                ),
-              )
-            else
-              SettingsGroup(
-                children: [
-                  for (var i = 0; i < _customTemplates.length; i++) ...[
-                    ListTile(
-                      leading: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(10),
+                    subtitle: Text(
+                      _customTemplates[i]['body'] ?? '',
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Изменить'.tr,
+                          icon: const Icon(
+                            Icons.edit_outlined,
+                            color: Colors.blueGrey,
+                            size: 20,
+                          ),
+                          onPressed: () => _editCustomTemplate(i),
                         ),
-                        child: Icon(Icons.chat_bubble_outline, color: AppColors.primary),
-                      ),
-                      title: Text(
-                        _customTemplates[i]['title'] ?? '',
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                      ),
-                      subtitle: Text(
-                        _customTemplates[i]['body'] ?? '',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 13),
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            tooltip: 'Изменить'.tr,
-                            icon: const Icon(Icons.edit_outlined, color: Colors.blueGrey, size: 20),
-                            onPressed: () => _editCustomTemplate(i),
+                        IconButton(
+                          tooltip: 'Удалить'.tr,
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            color: Colors.red,
+                            size: 20,
                           ),
-                          IconButton(
-                            tooltip: 'Удалить'.tr,
-                            icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
-                            onPressed: () => _deleteCustomTemplate(i),
-                          ),
-                        ],
-                      ),
-                      onTap: () => _editCustomTemplate(i),
+                          onPressed: () => _deleteCustomTemplate(i),
+                        ),
+                      ],
                     ),
-                    if (i < _customTemplates.length - 1)
-                      const Divider(height: 1, indent: 64, color: Colors.black12),
-                  ],
+                    onTap: () => _editCustomTemplate(i),
+                  ),
+                  if (i < _customTemplates.length - 1)
+                    Divider(height: 1, indent: 64, color: AppColors.border),
                 ],
+              ],
+            ),
+          _buildBuiltinSection('В пути и работа'),
+          _buildBuiltinSection('Визиты'),
+          _buildBuiltinSection('Документы и оплата'),
+          _buildSectionHeader('Ссылка для {review}'.tr),
+          SettingsGroup(
+            children: [
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.star_outline, color: Colors.amber.shade800),
+                ),
+                title: Text(
+                  'Ссылка на Google-отзыв ({review})'.tr,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
+                ),
+                subtitle: Text(
+                  _reviewUrl.isEmpty ? 'Не указана'.tr : _reviewUrl,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13),
+                ),
+                trailing: IconButton(
+                  tooltip: 'Изменить'.tr,
+                  icon: const Icon(
+                    Icons.edit_outlined,
+                    color: Colors.blueGrey,
+                    size: 20,
+                  ),
+                  onPressed: _editReviewUrl,
+                ),
+                onTap: _editReviewUrl,
               ),
-            const SizedBox(height: 8),
-            SettingsTileSection(
-              title: 'Визиты'.tr,
-              tiles: [
-                _tile(_TplSection.booking, Icons.event_available, Colors.blue),
-                _tile(_TplSection.reminder, Icons.notifications, Colors.indigo),
-                _tile(_TplSection.cancel, Icons.cancel_outlined, Colors.red),
-                _tile(_TplSection.reschedule, Icons.event_repeat, Colors.orange),
-              ],
-            ),
-            SettingsTileSection(
-              title: 'В пути'.tr,
-              tiles: [
-                _tile(_TplSection.onWay, Icons.near_me, Colors.teal),
-                _tile(_TplSection.parts, Icons.local_shipping_outlined, Colors.brown),
-                _tile(_TplSection.done, Icons.check_circle_outline, Colors.green),
-                _tile(_TplSection.review, Icons.star_outline, Colors.amber),
-              ],
-            ),
-            SettingsTileSection(
-              title: 'Документы'.tr,
-              tiles: [
-                _tile(_TplSection.invoice, Icons.receipt_long, AppColors.primary),
-                _tile(_TplSection.estimate, Icons.description, Colors.teal),
-                _tile(_TplSection.receipt, Icons.receipt, Colors.blueGrey),
-                _tile(_TplSection.pay, Icons.link, const Color(0xFF635BFF)),
-              ],
-            ),
-          ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _TemplateEditAction { save, delete }
+
+class _TemplateEditResult {
+  final _TemplateEditAction action;
+  final String title;
+  final String body;
+
+  const _TemplateEditResult({
+    required this.action,
+    required this.title,
+    required this.body,
+  });
+}
+
+class _TemplateEditorPage extends StatefulWidget {
+  final String pageTitle;
+  final String initialTitle;
+  final String initialBody;
+  final String? defaultTitle;
+  final String? defaultBody;
+  final bool canDelete;
+
+  const _TemplateEditorPage({
+    required this.pageTitle,
+    required this.initialTitle,
+    required this.initialBody,
+    this.defaultTitle,
+    this.defaultBody,
+    this.canDelete = false,
+  });
+
+  @override
+  State<_TemplateEditorPage> createState() => _TemplateEditorPageState();
+}
+
+class _TemplateEditorPageState extends State<_TemplateEditorPage> {
+  late final TextEditingController _titleCtrl;
+  late final TextEditingController _bodyCtrl;
+  final FocusNode _bodyFocus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _titleCtrl = TextEditingController(text: widget.initialTitle);
+    _bodyCtrl = TextEditingController(text: widget.initialBody);
+  }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _bodyCtrl.dispose();
+    _bodyFocus.dispose();
+    super.dispose();
+  }
+
+  void _insertPlaceholder(String tag) {
+    final text = _bodyCtrl.text;
+    final sel = _bodyCtrl.selection;
+    final int start;
+    final int end;
+    if (sel.isValid && sel.start >= 0 && sel.end <= text.length) {
+      start = sel.start;
+      end = sel.end;
+    } else {
+      start = text.length;
+      end = text.length;
+    }
+    final nextText = text.replaceRange(start, end, tag);
+    _bodyCtrl.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: start + tag.length),
+    );
+    _bodyFocus.requestFocus();
+  }
+
+  void _restoreDefaults() {
+    setState(() {
+      if (widget.defaultTitle != null) {
+        _titleCtrl.text = widget.defaultTitle!;
+      }
+      if (widget.defaultBody != null) {
+        _bodyCtrl.text = widget.defaultBody!;
+      }
+    });
+  }
+
+  void _save() {
+    final body = _bodyCtrl.text.trim();
+    if (body.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Введите текст шаблона'.tr),
+          backgroundColor: Colors.red,
         ),
       );
+      return;
     }
-    final ctrl = _controllerFor(widget._section)!;
-    final lines = widget._section == _TplSection.review ? 2 : 6;
-    return SettingsPageScaffold(
-      title: _titleFor(widget._section),
-      dirty: _dirty,
-      onSave: _save,
+    Navigator.pop(
+      context,
+      _TemplateEditResult(
+        action: _TemplateEditAction.save,
+        title: _titleCtrl.text.trim(),
+        body: body,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasDefaults = widget.defaultBody != null;
+    return Scaffold(
+      backgroundColor: AppColors.surface,
+      appBar: AppBar(
+        title: Text(
+          widget.pageTitle,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        actions: [
+          if (widget.canDelete)
+            IconButton(
+              tooltip: 'Удалить'.tr,
+              icon: const Icon(Icons.delete_outline),
+              onPressed: () => Navigator.pop(
+                context,
+                const _TemplateEditResult(
+                  action: _TemplateEditAction.delete,
+                  title: '',
+                  body: '',
+                ),
+              ),
+            ),
+          TextButton(
+            onPressed: _save,
+            child: Text(
+              'Сохранить'.tr,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 36),
         children: [
           TextField(
-            controller: ctrl,
-            maxLines: lines,
+            controller: _titleCtrl,
+            textCapitalization: TextCapitalization.sentences,
             decoration: InputDecoration(
-              labelText: _titleFor(widget._section),
+              labelText: 'Название шаблона'.tr,
               border: const OutlineInputBorder(),
               filled: true,
-              fillColor: Colors.white,
+              fillColor: AppColors.card,
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _bodyCtrl,
+            focusNode: _bodyFocus,
+            minLines: 5,
+            maxLines: 12,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: InputDecoration(
+              labelText: 'Текст сообщения'.tr,
               alignLabelWithHint: true,
+              border: const OutlineInputBorder(),
+              filled: true,
+              fillColor: AppColors.card,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Нажмите на фразу, чтобы вставить её в текст на место курсора:'.tr,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppColors.ink,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final item in SmsText.placeholderGuide)
+                ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  backgroundColor: AppColors.card,
+                  side: BorderSide(
+                    color: AppColors.primary.withValues(alpha: 0.35),
+                  ),
+                  label: Text(
+                    item.tag,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                      color: AppColors.primaryOnCard,
+                    ),
+                  ),
+                  tooltip: item.title.tr,
+                  onPressed: () => _insertPlaceholder(item.tag),
+                ),
+            ],
+          ),
+          if (hasDefaults) ...[
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _restoreDefaults,
+                icon: const Icon(Icons.restart_alt, size: 18),
+                label: Text('Вернуть стандартный текст'.tr),
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton.icon(
+              onPressed: _save,
+              icon: const Icon(Icons.check),
+              label: Text('Сохранить шаблон'.tr),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.tint(AppColors.primary, 0.08),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.25),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Памятка: как работают фразы в скобках'.tr,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: AppColors.primaryOnCard,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const PlaceholderGuideContent(),
+              ],
             ),
           ),
         ],
       ),
     );
   }
+}
 
-  SettingsHubTile _tile(_TplSection section, IconData icon, Color color) {
-    final ctrl = _controllerFor(section)!;
-    return SettingsHubTile(
-      title: _titleFor(section),
-      subtitle: _preview(ctrl),
-      icon: icon,
-      color: color,
-      onTap: () => _open(section),
+class PlaceholderGuideContent extends StatelessWidget {
+  const PlaceholderGuideContent({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '• Пишите специальные слова в фигурных скобках: например {name} или {url}.\n'
+                  '• Регистр букв не важен: {url}, {URL} и {Name} работают одинаково.\n'
+                  '• Вы можете свободно менять любой шаблон, добавлять или убирать любые фразы — ограничений нет.\n'
+                  '• При выборе шаблона в чате или отправке документа программа сама подставит нужные данные:'
+              .tr,
+          style: TextStyle(
+            fontSize: 12.5,
+            height: 1.4,
+            color: AppColors.ink,
+          ),
+        ),
+        const SizedBox(height: 10),
+        for (final item in SmsText.placeholderGuide)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  constraints: const BoxConstraints(minWidth: 78),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.card,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: AppColors.primary.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Text(
+                    item.tag,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12,
+                      color: AppColors.primaryOnCard,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: RichText(
+                    text: TextSpan(
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        height: 1.35,
+                        color: AppColors.ink,
+                      ),
+                      children: [
+                        TextSpan(
+                          text: '${item.title.tr} — ',
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        TextSpan(text: item.description.tr),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }

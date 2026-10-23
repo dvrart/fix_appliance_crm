@@ -185,9 +185,18 @@ Future<void> reviewCall(
     }
   }
 
+  // Разбор живого разговора лежит в aiReception.extracted, а итоговый — в
+  // extractedData. Берём оба, как это делает карточка звонка: иначе из
+  // колокольчика заявка открывалась с половиной данных (просьба FIX,
+  // 13.10.2026 — «вся информация подтягивается из разговора»).
+  final merged = <String, dynamic>{
+    ...?call.extractedData,
+    if (call.aiReception?['extracted'] is Map)
+      ...Map<String, dynamic>.from(call.aiReception!['extracted'] as Map),
+  };
   ExtractedJobData extractedData;
-  if (call.extractedData != null && call.extractedData!.isNotEmpty) {
-    extractedData = ExtractedJobData.fromJson(call.extractedData!);
+  if (merged.isNotEmpty) {
+    extractedData = ExtractedJobData.fromJson(merged);
   } else if (call.transcription != null && call.transcription!.isNotEmpty) {
     showDialog<void>(
       animationStyle: AppMotion.dialog,
@@ -227,7 +236,7 @@ Future<void> reviewCall(
     if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
   } else {
     if (!context.mounted) return;
-    final dictated = await Navigator.of(context, rootNavigator: true).push<bool>(
+    final dictated = await AppNav.navigatorOf(context).push<bool>(
       MaterialPageRoute(builder: (_) => const PostCallScreen()),
     );
     if (dictated == true) {
@@ -238,12 +247,16 @@ Future<void> reviewCall(
   }
 
   if (!context.mounted) return;
-  final result = await Navigator.of(context, rootNavigator: true).push(
+  final result = await AppNav.navigatorOf(context).push(
     MaterialPageRoute(
       builder: (_) => JobPreviewScreen(
         extractedData: extractedData,
         originalText: call.transcription ?? '',
         fallbackPhone: call.isIncoming ? call.fromNumber : call.toNumber,
+        // Без этих двух заявка не привязывалась к звонку: запись и расшифровка
+        // не попадали в карточку, а source оставался пустым вместо «phone».
+        existingClientId: call.clientId,
+        sourceCallId: call.id,
       ),
     ),
   );

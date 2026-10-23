@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../core/utils/formatters.dart';
+import '../../../../shared/app_nav.dart';
 
 /// Экран для клиента: чаевые выбирают до списания карты / ссылки / наличных.
 class ClientTipPage extends StatefulWidget {
@@ -10,7 +11,7 @@ class ClientTipPage extends StatefulWidget {
   const ClientTipPage({super.key, required this.due});
 
   static Future<double?> ask(BuildContext context, {required double due}) {
-    return Navigator.of(context, rootNavigator: true).push<double>(
+    return AppNav.navigatorOf(context).push<double>(
       MaterialPageRoute(
         builder: (_) => ClientTipPage(due: due),
         fullscreenDialog: true,

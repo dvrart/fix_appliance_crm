@@ -135,6 +135,7 @@ class ClientsDuplicatesScreen extends StatefulWidget {
 
   static int _completeness(Map<String, dynamic> data) {
     var score = 0;
+    if (data['isRegular'] == true) score += 2;
     if (ClientService.normalizePhone((data['phone'] ?? '').toString()).length >= 7) {
       score += 3;
     }
@@ -262,7 +263,7 @@ class _ClientsDuplicatesScreenState extends State<ClientsDuplicatesScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -374,9 +375,19 @@ class _ClientsDuplicatesScreenState extends State<ClientsDuplicatesScreen> {
             });
           },
         ),
-        title: Text(
-          name == 'Без имени' ? 'Без имени'.tr : name,
-          style: const TextStyle(fontWeight: FontWeight.w600),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(
+                name == 'Без имени' ? 'Без имени'.tr : name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            if (ClientService.isRegularMap(data, id))
+              const RegularClientStar(size: 16),
+          ],
         ),
         subtitle: Text(
           [if (keep) 'Оставить этого'.tr, phone, email]

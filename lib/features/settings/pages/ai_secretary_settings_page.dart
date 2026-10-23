@@ -172,7 +172,7 @@ class _AiSecretarySettingsPageState extends State<AiSecretarySettingsPage> {
                 'How she talks lives on the server. Here you only choose who picks up. '
                 'Hours: Schedule → Working days. Area: Company → Area. Prices: Company → Prices.',
               ),
-              style: const TextStyle(color: Colors.black54, fontSize: 13),
+              style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
             ),
           ),
           if (_saving)
@@ -221,7 +221,7 @@ class _AiSecretarySettingsPageState extends State<AiSecretarySettingsPage> {
                 'Задержка, секунд (0 = сразу секретарю)',
                 'Delay in seconds (0 = secretary at once)',
               ),
-              style: const TextStyle(color: Colors.black54),
+              style: TextStyle(color: AppColors.inkMuted),
             ),
           ),
           Slider(
@@ -250,7 +250,7 @@ class _AiSecretarySettingsPageState extends State<AiSecretarySettingsPage> {
                       'Сначала звонок вам. Не взяли — отвечает секретарь.',
                       'Rings you first. Miss it — secretary answers.',
                     ),
-              style: const TextStyle(color: Colors.black54, fontSize: 13),
+              style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
             ),
           ),
         ],

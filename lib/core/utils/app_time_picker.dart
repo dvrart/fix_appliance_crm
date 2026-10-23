@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../services/app_time_service.dart';
-import '../../core/l10n/app_locale.dart';
+import '../constants.dart';
+import '../l10n/app_locale.dart';
 
 /// Единый выбор времени: барабан часов и минут, 24 часа. Окно снизу —
 /// кнопки под большим пальцем.
@@ -16,7 +17,7 @@ Future<TimeOfDay?> showAppTimePicker({
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
     ),
@@ -96,7 +97,7 @@ class _AppTimePickerDialogState extends State<_AppTimePickerDialog> {
                 height: 4,
                 margin: const EdgeInsets.only(bottom: 10),
                 decoration: BoxDecoration(
-                  color: Colors.black26,
+                  color: AppColors.border,
                   borderRadius: BorderRadius.circular(4),
                 ),
               ),
@@ -104,10 +105,10 @@ class _AppTimePickerDialogState extends State<_AppTimePickerDialog> {
             Text(
               widget.title,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w800,
-                color: Colors.black,
+                color: AppColors.ink,
               ),
             ),
             const SizedBox(height: 8),
@@ -115,13 +116,14 @@ class _AppTimePickerDialogState extends State<_AppTimePickerDialog> {
               height: 216,
               width: double.infinity,
               child: CupertinoTheme(
-                data: const CupertinoThemeData(
-                  brightness: Brightness.light,
+                data: CupertinoThemeData(
+                  brightness:
+                      AppColors.isDark ? Brightness.dark : Brightness.light,
                   textTheme: CupertinoTextThemeData(
                     dateTimePickerTextStyle: TextStyle(
                       fontSize: 22,
                       fontWeight: FontWeight.w600,
-                      color: Colors.black,
+                      color: AppColors.ink,
                     ),
                   ),
                 ),
@@ -159,8 +161,8 @@ class _AppTimePickerDialogState extends State<_AppTimePickerDialog> {
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 style: TextButton.styleFrom(
-                  foregroundColor: const Color(0xFF14557F),
-                  backgroundColor: const Color(0xFF14557F).withValues(alpha: 0.08),
+                  foregroundColor: AppColors.primaryOnCard,
+                  backgroundColor: AppColors.primary.withValues(alpha: 0.12),
                   shape: const StadiumBorder(),
                 ),
               ),
@@ -181,13 +183,13 @@ class _AppTimePickerDialogState extends State<_AppTimePickerDialog> {
                     child: TextButton(
                       onPressed: () => Navigator.pop(context),
                       style: TextButton.styleFrom(
-                        backgroundColor: const Color(0xFFE8E8E8),
-                        foregroundColor: Colors.black,
+                        backgroundColor: AppColors.cardMuted,
+                        foregroundColor: AppColors.ink,
                         shape: const StadiumBorder(),
                       ),
                       child: Text(
                         'Отмена'.tr,
-                        style: TextStyle(
+                        style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
                         ),
@@ -202,8 +204,12 @@ class _AppTimePickerDialogState extends State<_AppTimePickerDialog> {
                     child: TextButton(
                       onPressed: () => Navigator.pop(context, _time),
                       style: TextButton.styleFrom(
-                        backgroundColor: Colors.black,
-                        foregroundColor: Colors.white,
+                        backgroundColor: AppColors.isDark
+                            ? AppColors.accent
+                            : Colors.black,
+                        foregroundColor: AppColors.isDark
+                            ? Colors.black
+                            : Colors.white,
                         shape: const StadiumBorder(),
                       ),
                       child: const Text(

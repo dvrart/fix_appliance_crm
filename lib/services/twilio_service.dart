@@ -1062,6 +1062,28 @@ class TwilioService {
     return CallRecord.fromMap(data as Map<String, dynamic>, snap.id);
   }
 
+  /// Первый из переданных id, под которым звонок действительно лежит в
+  /// базе. В уведомлении приходят и SID Twilio, и id документа: обычно это
+  /// одно и то же, но у дочернего звонка SID свой, и разбор по нему
+  /// открылся бы пустым. Если ничего не нашлось — отдаём первый непустой,
+  /// чтобы экран показал честное «звонок не найден», а не промолчал.
+  static Future<String> firstExistingCallId(Iterable<String> ids) async {
+    final want = <String>[];
+    for (final raw in ids) {
+      final id = raw.trim();
+      if (id.isNotEmpty && !want.contains(id)) want.add(id);
+    }
+    for (final id in want) {
+      try {
+        if ((await _callsRef.doc(id).get()).exists) return id;
+      } catch (e) {
+        debugPrint('TwilioService: firstExistingCallId: $e');
+        return id;
+      }
+    }
+    return want.isEmpty ? '' : want.first;
+  }
+
   static Future<List<CallRecord>> recentCalls({int limit = 20}) async {
     final snap = await _callsRef
         .orderBy('startTime', descending: true)
@@ -1115,11 +1137,35 @@ class TwilioService {
     }
   }
 
-  static Future<void> markReviewed(String callId) async {
+  /// Звонок просмотрен. Снимаем и пометку «новое» в приложении, и карточку
+  /// в шторке телефона: FIX уже увидел, что ему звонили, и видеть это ещё
+  /// раз в списке уведомлений незачем.
+  static Future<void> markReviewed(String callId, {CallRecord? call}) async {
     if (callId.trim().isEmpty) return;
     await _callsRef.doc(callId).set({
       'reviewed': true,
     }, SetOptions(merge: true));
+    await dismissCallShade(callId, call: call);
+  }
+
+  static Future<void> dismissCallShade(
+    String callId, {
+    CallRecord? call,
+  }) async {
+    try {
+      final record = call ?? await getById(callId);
+      final phone = record == null
+          ? ''
+          : (record.isIncoming ? record.fromNumber : record.toNumber);
+      await NotificationService.dismissCall(
+        callId: callId,
+        callSid: record?.callSid ?? '',
+        phone: phone,
+        jobId: record?.createdJobId ?? '',
+      );
+    } catch (e) {
+      debugPrint('TwilioService: dismissCallShade: $e');
+    }
   }
 
   static Future<String> latestInboxCallId({String from = ''}) async {
@@ -1156,6 +1202,12 @@ class TwilioService {
       batch.set(doc.reference, {'reviewed': true}, SetOptions(merge: true));
     }
     await batch.commit();
+    for (final doc in snap.docs) {
+      await dismissCallShade(
+        doc.id,
+        call: CallRecord.fromMap(doc.data() as Map<String, dynamic>, doc.id),
+      );
+    }
   }
 
   static Future<void> markJobCallsReviewed(String jobId) async {
@@ -1172,6 +1224,7 @@ class TwilioService {
     }
     for (final id in ids) {
       await _callsRef.doc(id).set({'reviewed': true}, SetOptions(merge: true));
+      await dismissCallShade(id);
     }
   }
 

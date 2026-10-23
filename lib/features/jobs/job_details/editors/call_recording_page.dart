@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -15,6 +16,7 @@ import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/assistant_audio_service.dart';
+import '../../../../services/firestore_service.dart';
 import '../../../../services/job_service.dart';
 import '../../../../services/twilio_service.dart';
 import '../../../../services/message_translate_service.dart';
@@ -118,7 +120,7 @@ String callTranscriptText(Map<String, dynamic> attachment) {
   String longer(String a, String b) {
     if (_hasBothSpeakers(b) && !_hasBothSpeakers(a)) return b;
     if (_hasBothSpeakers(a) && !_hasBothSpeakers(b)) return a;
-    return a.trim().length >= b.trim().length ? a : b;
+    return keepFullerTranscript(a, b);
   }
 
   final fromHistory = transcriptFromHistory(attachment['history']);
@@ -185,9 +187,9 @@ class _CallRecordingSheet extends StatefulWidget {
 }
 
 class _CallRecordingSheetState extends State<_CallRecordingSheet> {
-  late String _summary;
-  late String _transcriptRu;
-  late String _transcriptEn;
+  String _summary = '';
+  String _transcriptRu = '';
+  String _transcriptEn = '';
   String _lang = 'ru';
   bool _translating = false;
 
@@ -198,38 +200,52 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
     super.initState();
     _summary = (widget.attachment['summary'] ?? '').toString().trim();
     final stored = callTranscriptText(widget.attachment);
-    _transcriptRu = (widget.attachment['transcriptionRu'] ?? stored).toString().trim();
-    if (_transcriptRu.isEmpty) _transcriptRu = stored;
-    _transcriptEn = (widget.attachment['transcriptionEn'] ?? '').toString().trim();
-    if (_transcriptEn.isEmpty && MessageTranslateService.looksEnglish(stored)) {
+    final rawRu =
+        (widget.attachment['transcriptionRu'] ?? stored).toString().trim();
+    _transcriptRu = rawRu.isEmpty ? stored : rawRu;
+    _transcriptEn =
+        (widget.attachment['transcriptionEn'] ?? '').toString().trim();
+    if (_transcriptEn.isEmpty &&
+        !MessageTranslateService.isRussianDialog(stored) &&
+        MessageTranslateService.hasLatin(stored)) {
       _transcriptEn = stored;
     }
     _ensureLanguages();
   }
 
   Future<void> _ensureLanguages() async {
-    final needRu = MessageTranslateService.needsRussian(_transcriptRu) ||
+    if (_translating) return;
+    final needRu = MessageTranslateService.needsRussianDialog(_transcriptRu) ||
         (_transcriptRu.isEmpty && _transcriptEn.isNotEmpty);
-    final needEn = _transcriptEn.isEmpty && _transcriptRu.isNotEmpty;
-    final needSummary = MessageTranslateService.needsRussian(_summary);
+    final needEn = (_transcriptEn.isEmpty ||
+            MessageTranslateService.isRussianDialog(_transcriptEn)) &&
+        _transcriptRu.isNotEmpty;
+    final needSummary = MessageTranslateService.needsRussianDialog(_summary);
     if (!needRu && !needEn && !needSummary) return;
     setState(() => _translating = true);
+    final answeredBy = (widget.attachment['answeredBy'] ?? '').toString();
     try {
       var ru = _transcriptRu;
       var en = _transcriptEn;
       var summary = _summary;
       if (needRu) {
+        final source = (!MessageTranslateService.isRussianDialog(en) &&
+                en.length >= ru.length)
+            ? en
+            : (ru.isNotEmpty ? ru : en);
         ru = keepFullerTranscript(
           ru,
           await MessageTranslateService.toRussianDialog(
-            ru.isNotEmpty ? ru : en,
+            source,
+            answeredBy: answeredBy,
           ),
         );
       }
       if (needEn) {
         en = keepFullerTranscript(
           en,
-          await MessageTranslateService.toEnglish(_transcriptRu),
+          await MessageTranslateService.toEnglish(ru),
+          preferRussian: false,
         );
       }
       if (needSummary) {
@@ -266,12 +282,19 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
         if (mounted) setState(() => _translating = false);
       }
     }
-    if (lang == 'ru' && _transcriptRu.isEmpty && _transcriptEn.isNotEmpty) {
+    if (lang == 'ru' &&
+        (_transcriptRu.isEmpty ||
+            MessageTranslateService.needsRussianDialog(_transcriptRu)) &&
+        _transcriptEn.isNotEmpty) {
       setState(() => _translating = true);
+      final answeredBy = (widget.attachment['answeredBy'] ?? '').toString();
       try {
         final ru = keepFullerTranscript(
           _transcriptRu,
-          await MessageTranslateService.toRussianDialog(_transcriptEn),
+          await MessageTranslateService.toRussianDialog(
+            _transcriptEn,
+            answeredBy: answeredBy,
+          ),
         );
         if (!mounted) return;
         setState(() {
@@ -286,8 +309,21 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
   }
 
   Future<void> _persist(String ru, String en, String summary) async {
+    widget.attachment['transcription'] = ru;
+    widget.attachment['transcriptionRu'] = ru;
+    widget.attachment['transcriptionEn'] = en;
+    if (summary.trim().isNotEmpty) widget.attachment['summary'] = summary;
     final jobId = (widget.jobId ?? '').trim();
     final callId = (widget.attachment['callId'] ?? '').toString().trim();
+    if (callId.isNotEmpty) {
+      try {
+        await FirestoreService.callsRef.doc(callId).set({
+          'transcriptionRu': ru,
+          'transcriptionEn': en,
+          if (summary.trim().isNotEmpty) 'summary': summary,
+        }, SetOptions(merge: true));
+      } catch (_) {}
+    }
     if (jobId.isEmpty || callId.isEmpty) return;
     await JobService.patchCallNotes(
       jobId: jobId,
@@ -333,10 +369,10 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                         children: [
                           Text(
                             'Запись разговора'.tr,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontWeight: FontWeight.w800,
                               fontSize: 18,
-                              color: Color(0xFF1A1A1A),
+                              color: AppColors.ink,
                             ),
                           ),
                           if (CallRecord.parseStamp(
@@ -349,10 +385,10 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                                   widget.attachment['startTime'],
                                 ),
                               ),
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontWeight: FontWeight.w700,
                                 fontSize: 14,
-                                color: Color(0xFF546E7A),
+                                color: AppColors.inkMuted,
                               ),
                             ),
                         ],
@@ -374,10 +410,10 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                 const SizedBox(height: 20),
                 Text(
                   'Выжимка'.tr,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.w800,
                     fontSize: 14,
-                    color: Color(0xFF1A1A1A),
+                    color: AppColors.ink,
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -392,20 +428,20 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                           ? 'Перевожу...'.tr
                           : 'Пока нет выжимки'.tr)
                       : _summary,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 15,
                     height: 1.35,
-                    color: Color(0xFF1A1A1A),
+                    color: AppColors.ink,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
                 const SizedBox(height: 16),
                 Text(
                   'Разговор'.tr,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.w800,
                     fontSize: 14,
-                    color: Color(0xFF1A1A1A),
+                    color: AppColors.ink,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -863,11 +899,11 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
       labelStyle: TextStyle(
         fontSize: 12,
         fontWeight: FontWeight.w700,
-        color: selected ? Colors.white : const Color(0xFF475569),
+        color: selected ? Colors.white : AppColors.inkMuted,
       ),
       selectedColor: AppColors.primary,
-      backgroundColor: Colors.white,
-      side: const BorderSide(color: Color(0xFFE2E8F0)),
+      backgroundColor: AppColors.card,
+      side: BorderSide(color: AppColors.border),
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       showCheckmark: false,
@@ -908,9 +944,9 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 10, 16, 10),
       decoration: BoxDecoration(
-        color: const Color(0xFFF4F6FB),
+        color: AppColors.cardMuted,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         children: [
@@ -943,10 +979,10 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
               ),
               Text(
                 '${_fmt(_position)} / ${_fmt(_duration)}',
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
-                  color: Color(0xFF475569),
+                  color: AppColors.inkMuted,
                 ),
               ),
             ],
@@ -983,7 +1019,7 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
               style: TextButton.styleFrom(
-                foregroundColor: AppColors.primary,
+                foregroundColor: AppColors.primaryOnCard,
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 visualDensity: VisualDensity.compact,
               ),
@@ -996,8 +1032,8 @@ class _CallAudioPlayerState extends State<CallAudioPlayer> {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   'Готовим запись...'.tr,
-                  style: const TextStyle(
-                    color: Color(0xFF475569),
+                  style: TextStyle(
+                    color: AppColors.inkMuted,
                     fontWeight: FontWeight.w600,
                     fontSize: 13,
                   ),

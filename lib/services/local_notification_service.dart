@@ -204,35 +204,36 @@ class LocalNotificationService {
 
   static int inboxIdForTag(String tag) => 7400 + ((tag).hashCode.abs() % 180);
 
-  static Future<void> dismissInboxPayload(Map<String, dynamic> data) async {
-    final tags = <String>{};
-    final tag = (data['tag'] ?? '').toString().trim();
-    if (tag.isNotEmpty) tags.add(tag);
-    final type = (data['type'] ?? '').toString().trim();
-    final keys = <String>{
-      (data['from'] ?? '').toString().trim(),
-      (data['to'] ?? '').toString().trim(),
-      (data['callSid'] ?? '').toString().trim(),
-      (data['callId'] ?? '').toString().trim(),
-      (data['jobId'] ?? '').toString().trim(),
-      'inbox',
-    };
-    for (final from in keys) {
-      if (from.isEmpty) continue;
-      final digits = from.replaceAll(RegExp(r'\D'), '');
-      if (digits.length >= 10) {
-        final phone = digits.substring(digits.length - 10);
-        tags.add('crm_inbox_$phone');
-      } else if (from.contains('@')) {
-        final email = from.trim().toLowerCase();
-        final tag = 'crm_inbox_$email';
-        tags.add(tag.length <= 50 ? tag : tag.substring(0, 50));
-      }
-      if (type.isEmpty) continue;
-      final raw = 'crm_${type}_$from';
-      tags.add(raw.length <= 50 ? raw : raw.substring(0, 50));
+  /// Каналы, карточки которых держатся «пока не разобрано»: SMS, письмо,
+  /// звонок. Напоминания, утренний список и «отправить / не отправлять»
+  /// живут по своим правилам — их никто не «просматривает».
+  static const inboxChannelIds = <String>{
+    smsChannelId,
+    emailChannelId,
+    callChannelId,
+  };
+
+  /// Теги карточек входящих, которые прямо сейчас висят в шторке телефона.
+  /// Нужно, чтобы снять те, за которыми уже ничего не стоит.
+  static Future<Set<String>> activeInboxTags() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return const {};
+    await initialize();
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    try {
+      final active = await android?.getActiveNotifications() ?? const [];
+      return {
+        for (final item in active)
+          if (inboxChannelIds.contains(item.channelId) &&
+              (item.tag ?? '').trim().isNotEmpty)
+            item.tag!.trim(),
+      };
+    } catch (e) {
+      debugPrint('LocalNotificationService: active tags: $e');
+      return const {};
     }
-    await cancelTags(tags);
   }
 
   static Future<void> cancelTags(Iterable<String> tags) async {

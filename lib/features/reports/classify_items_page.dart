@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../models/job.dart';
 import '../../services/job_service.dart';
@@ -259,13 +260,13 @@ class _ClassifyItemsPageState extends State<ClassifyItemsPage> {
   Widget build(BuildContext context) {
     final parts = _rows.where((r) => r.isPart).length;
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F6F8),
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(
           context.tr('Разобрать позиции', 'Classify lines'),
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
-        backgroundColor: const Color(0xFF14557F),
+        backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
       ),
       bottomNavigationBar: _rows.isEmpty
@@ -336,12 +337,12 @@ class _ClassifyItemsPageState extends State<ClassifyItemsPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.checklist, size: 64, color: Colors.black26),
+            Icon(Icons.checklist, size: 64, color: AppColors.inkMuted),
             const SizedBox(height: 14),
             Text(
               text,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.black54, height: 1.4),
+              style: TextStyle(color: AppColors.inkMuted, height: 1.4),
             ),
             if (retry) ...[
               const SizedBox(height: 14),
@@ -360,18 +361,18 @@ class _ClassifyItemsPageState extends State<ClassifyItemsPage> {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFFEFF5FA),
+        color: AppColors.tint(AppColors.primary, 0.10),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFBBD4E6)),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             '${context.tr('Позиций без метки', 'Unlabelled lines')}: ${_rows.length}',
-            style: const TextStyle(
+            style: TextStyle(
               fontWeight: FontWeight.w800,
-              color: Color(0xFF14557F),
+              color: AppColors.primaryOnCard,
             ),
           ),
           const SizedBox(height: 6),
@@ -380,12 +381,12 @@ class _ClassifyItemsPageState extends State<ClassifyItemsPage> {
               'Это старые счета, выписанные до того, как в позицию добавили выбор «Работа / Запчасть». Подсказка уже проставлена по названию — поправьте, что не так, и нажмите «Сохранить».',
               'These invoices were issued before the Service / Part switch existed. A guess is filled in from the line name — fix what is wrong and tap Save.',
             ),
-            style: const TextStyle(height: 1.35, color: Colors.black87),
+            style: TextStyle(height: 1.35, color: AppColors.ink),
           ),
           const SizedBox(height: 6),
           Text(
             '${context.tr('Сейчас помечено запчастями', 'Currently marked as parts')}: $parts',
-            style: const TextStyle(fontSize: 12.5, color: Colors.black54),
+            style: TextStyle(fontSize: 12.5, color: AppColors.inkMuted),
           ),
           const SizedBox(height: 6),
           Text(
@@ -393,7 +394,7 @@ class _ClassifyItemsPageState extends State<ClassifyItemsPage> {
               'Суммы счетов не меняются — метка нужна только отчётам.',
               'Invoice amounts do not change — the label is only for reports.',
             ),
-            style: const TextStyle(fontSize: 12.5, color: Colors.black54),
+            style: TextStyle(fontSize: 12.5, color: AppColors.inkMuted),
           ),
         ],
       ),
@@ -410,7 +411,7 @@ class _ClassifyItemsPageState extends State<ClassifyItemsPage> {
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -435,9 +436,9 @@ class _ClassifyItemsPageState extends State<ClassifyItemsPage> {
           const SizedBox(height: 2),
           Text(
             '$number${row.clientName}${date.isEmpty ? '' : ' · $date'}',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12.5,
-              color: Colors.black54,
+              color: AppColors.inkMuted,
               height: 1.3,
             ),
           ),

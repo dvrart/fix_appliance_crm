@@ -1,6 +1,9 @@
 package com.lib.flutter_pcm_sound;
 
+import android.content.Context;
 import android.os.Build;
+import android.media.AudioDeviceCallback;
+import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
@@ -37,10 +40,31 @@ public class FlutterPcmSoundPlugin implements
     private static final String CHANNEL_NAME = "flutter_pcm_sound/methods";
     private static final int MAX_FRAMES_PER_BUFFER = 200;
 
+    private static final int[] COMMUNICATION_OUTPUT_PRIORITY = new int[] {
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_BLE_HEADSET,
+        AudioDeviceInfo.TYPE_BUS,
+        AudioDeviceInfo.TYPE_USB_HEADSET,
+        AudioDeviceInfo.TYPE_USB_ACCESSORY,
+        AudioDeviceInfo.TYPE_USB_DEVICE,
+        AudioDeviceInfo.TYPE_DOCK,
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_BLE_SPEAKER,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+    };
+
+    private static final int[] MEDIA_CAR_OUTPUT_PRIORITY = new int[] {
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        AudioDeviceInfo.TYPE_LINE_ANALOG,
+        AudioDeviceInfo.TYPE_AUX_LINE,
+    };
+
+    private Context mContext;
     private MethodChannel mMethodChannel;
     private Handler mainThreadHandler = new Handler(Looper.getMainLooper());
     private Thread playbackThread;
     private volatile boolean mShouldCleanup = false;
+    private AudioDeviceCallback mAudioDeviceCallback;
 
     private AudioTrack mAudioTrack;
     private int mNumChannels;
@@ -67,6 +91,7 @@ public class FlutterPcmSoundPlugin implements
 
     @Override
     public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
+        mContext = binding.getApplicationContext();
         BinaryMessenger messenger = binding.getBinaryMessenger();
         mMethodChannel = new MethodChannel(messenger, CHANNEL_NAME);
         mMethodChannel.setMethodCallHandler(this);
@@ -76,6 +101,7 @@ public class FlutterPcmSoundPlugin implements
     public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
         mMethodChannel.setMethodCallHandler(null);
         cleanup();
+        mContext = null;
     }
 
     @Override
@@ -109,10 +135,14 @@ public class FlutterPcmSoundPlugin implements
                     }
 
                     if (Build.VERSION.SDK_INT >= 23) { // Android 6 (Marshmallow) and above
+                        boolean mediaOnlyCarOutput = isMediaOnlyCarOutputConnected();
+                        int usage = mediaOnlyCarOutput
+                            ? AudioAttributes.USAGE_MEDIA
+                            : AudioAttributes.USAGE_VOICE_COMMUNICATION;
                         mAudioTrack = new AudioTrack.Builder()
                             .setAudioAttributes(new AudioAttributes.Builder()
-                                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .setUsage(usage)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                                     .build())
                             .setAudioFormat(new AudioFormat.Builder()
                                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -122,9 +152,11 @@ public class FlutterPcmSoundPlugin implements
                             .setBufferSizeInBytes(mMinBufferSize)
                             .setTransferMode(AudioTrack.MODE_STREAM)
                             .build();
+                        applyPreferredOutputDevice(mAudioTrack);
+                        registerOutputDeviceCallback();
                     } else {
                         mAudioTrack = new AudioTrack(
-                            AudioManager.STREAM_MUSIC,
+                            AudioManager.STREAM_VOICE_CALL,
                             sampleRate,
                             channelConfig,
                             AudioFormat.ENCODING_PCM_16BIT,
@@ -212,6 +244,7 @@ public class FlutterPcmSoundPlugin implements
      * Cleans up resources by stopping the playback thread and releasing AudioTrack.
      */
     private void cleanup() {
+        unregisterOutputDeviceCallback();
         // stop playback thread
         if (playbackThread != null) {
             mShouldCleanup = true;
@@ -223,6 +256,98 @@ public class FlutterPcmSoundPlugin implements
             }
             playbackThread = null;
             mDidSetup = false;
+        }
+    }
+
+    private AudioManager getAudioManager() {
+        if (mContext == null) return null;
+        return (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
+    }
+
+    private AudioDeviceInfo findOutputByPriority(AudioDeviceInfo[] outputs, int[] priority) {
+        if (outputs == null) return null;
+        for (int type : priority) {
+            for (AudioDeviceInfo info : outputs) {
+                if (info.isSink() && info.getType() == type) {
+                    return info;
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean isMediaOnlyCarOutputConnected() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false;
+        AudioManager am = getAudioManager();
+        if (am == null) return false;
+        AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+        AudioDeviceInfo commOut = findOutputByPriority(outputs, COMMUNICATION_OUTPUT_PRIORITY);
+        if (commOut != null) return false;
+        return findOutputByPriority(outputs, MEDIA_CAR_OUTPUT_PRIORITY) != null;
+    }
+
+    private void applyPreferredOutputDevice(AudioTrack track) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || track == null) return;
+        AudioManager am = getAudioManager();
+        if (am == null) return;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                AudioDeviceInfo commDevice = am.getCommunicationDevice();
+                if (commDevice != null && commDevice.isSink()) {
+                    track.setPreferredDevice(commDevice);
+                    return;
+                }
+            }
+            AudioDeviceInfo[] outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+            AudioDeviceInfo preferred = findOutputByPriority(outputs, COMMUNICATION_OUTPUT_PRIORITY);
+            if (preferred == null) {
+                preferred = findOutputByPriority(outputs, MEDIA_CAR_OUTPUT_PRIORITY);
+            }
+            if (preferred == null) {
+                preferred = findOutputByPriority(
+                    outputs,
+                    new int[] { AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                );
+            }
+            if (preferred != null) {
+                track.setPreferredDevice(preferred);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void registerOutputDeviceCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        unregisterOutputDeviceCallback();
+        AudioManager am = getAudioManager();
+        if (am == null) return;
+        mAudioDeviceCallback = new AudioDeviceCallback() {
+            @Override
+            public void onAudioDevicesAdded(AudioDeviceInfo[] addedDevices) {
+                applyPreferredOutputDevice(mAudioTrack);
+            }
+
+            @Override
+            public void onAudioDevicesRemoved(AudioDeviceInfo[] removedDevices) {
+                applyPreferredOutputDevice(mAudioTrack);
+            }
+        };
+        try {
+            am.registerAudioDeviceCallback(mAudioDeviceCallback, mainThreadHandler);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void unregisterOutputDeviceCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || mAudioDeviceCallback == null) return;
+        AudioManager am = getAudioManager();
+        try {
+            if (am != null) {
+                am.unregisterAudioDeviceCallback(mAudioDeviceCallback);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            mAudioDeviceCallback = null;
         }
     }
 

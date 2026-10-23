@@ -11,14 +11,27 @@ class WarehouseService {
 
   static CollectionReference get ref => _ref;
 
+  /// Последние известные закупочные цены склада (id → costPrice), чтобы
+  /// карточка заявки, счёт и список счетов сразу знали себестоимость детали.
+  static Map<String, double> latestCosts = const {};
+
+  static Map<String, double> costsOf(Iterable<WarehouseItem> items) {
+    return {
+      for (final item in items)
+        if (item.costPrice != null) item.id: item.costPrice!,
+    };
+  }
+
   /// Стрим всех товаров
   static Stream<List<WarehouseItem>> streamAll() {
     return _ref.snapshots().map((snapshot) {
-      return snapshot.docs
+      final items = snapshot.docs
           .map((doc) => WarehouseItem.fromMap(
               doc.data() as Map<String, dynamic>, doc.id))
           .where((item) => !item.isDeleted)
           .toList();
+      latestCosts = costsOf(items);
+      return items;
     });
   }
 

@@ -16,6 +16,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
   bool _loading = true;
   bool _ai = true;
   bool _warehouse = true;
+  bool _diagnostics = true;
   bool _statistics = true;
   bool _reports = true;
   bool _expenses = true;
@@ -23,6 +24,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
   bool _trash = true;
   bool _savedAi = true;
   bool _savedWarehouse = true;
+  bool _savedDiagnostics = true;
   bool _savedStatistics = true;
   bool _savedReports = true;
   bool _savedExpenses = true;
@@ -33,6 +35,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
       !_loading &&
       (_ai != _savedAi ||
           _warehouse != _savedWarehouse ||
+          _diagnostics != _savedDiagnostics ||
           _statistics != _savedStatistics ||
           _reports != _savedReports ||
           _expenses != _savedExpenses ||
@@ -51,6 +54,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
     setState(() {
       _ai = SettingsService.menuFlag(data, 'menuShowAi');
       _warehouse = SettingsService.menuFlag(data, 'menuShowWarehouse');
+      _diagnostics = SettingsService.menuFlag(data, 'menuShowDiagnostics');
       _statistics = SettingsService.menuFlag(data, 'menuShowStatistics');
       _reports = SettingsService.menuFlag(data, 'menuShowReports');
       _expenses = SettingsService.menuFlag(data, 'menuShowExpenses');
@@ -59,6 +63,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
       _trash = SettingsService.menuFlag(data, 'menuShowTrash');
       _savedAi = _ai;
       _savedWarehouse = _warehouse;
+      _savedDiagnostics = _diagnostics;
       _savedStatistics = _statistics;
       _savedReports = _reports;
       _savedExpenses = _expenses;
@@ -72,6 +77,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
     await SettingsService.updateConfigMap({
       'menuShowAi': _ai,
       'menuShowWarehouse': _warehouse,
+      'menuShowDiagnostics': _diagnostics,
       'menuShowStatistics': _statistics,
       'menuShowReports': _reports,
       'menuShowExpenses': _expenses,
@@ -83,6 +89,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
     setState(() {
       _savedAi = _ai;
       _savedWarehouse = _warehouse;
+      _savedDiagnostics = _diagnostics;
       _savedStatistics = _statistics;
       _savedReports = _reports;
       _savedExpenses = _expenses;
@@ -107,7 +114,7 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: Text(
                     'Какие плитки показывать в боковом меню. Звонки и переписка — в нижней вкладке «Связь». Настройки всегда остаются.'.tr,
-                    style: const TextStyle(color: Colors.black54),
+                    style: TextStyle(color: AppColors.inkMuted),
                   ),
                 ),
                 SettingsTileSection(
@@ -122,6 +129,13 @@ class _MenuSettingsPageState extends State<MenuSettingsPage> {
                       Colors.orange,
                       _warehouse,
                       (v) => setState(() => _warehouse = v),
+                    ),
+                    _tile(
+                      'Ошибка и диагностика'.tr,
+                      Icons.troubleshoot,
+                      const Color(0xFFD32F2F),
+                      _diagnostics,
+                      (v) => setState(() => _diagnostics = v),
                     ),
                     _tile(
                       'Статистика'.tr,

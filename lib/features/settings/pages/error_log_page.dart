@@ -40,10 +40,10 @@ class ErrorLogPage extends StatelessWidget {
                     const SizedBox(height: 12),
                     Text(
                       context.tr('Ошибок нет', 'No errors'),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
-                        color: Colors.black87,
+                        color: AppColors.ink,
                       ),
                     ),
                     const SizedBox(height: 6),
@@ -55,9 +55,9 @@ class ErrorLogPage extends StatelessWidget {
                         'come here and tap Copy all.',
                       ),
                       textAlign: TextAlign.center,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 13,
-                        color: Colors.black54,
+                        color: AppColors.inkMuted,
                         height: 1.35,
                       ),
                     ),
@@ -107,7 +107,7 @@ class ErrorLogPage extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: accent.withValues(alpha: 0.35)),
       ),
@@ -134,7 +134,7 @@ class ErrorLogPage extends StatelessWidget {
               ),
               Text(
                 when,
-                style: const TextStyle(fontSize: 11, color: Colors.black45),
+                style: TextStyle(fontSize: 11, color: AppColors.inkMuted),
               ),
             ],
           ),
@@ -149,9 +149,9 @@ class ErrorLogPage extends StatelessWidget {
               item.stack,
               maxLines: 4,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 10.5,
-                color: Colors.black45,
+                color: AppColors.inkMuted,
                 height: 1.25,
                 fontFamily: 'monospace',
               ),

@@ -7,6 +7,7 @@ import '../../core/l10n/app_locale.dart';
 import '../../models/models.dart';
 import '../../services/services.dart';
 import '../../features/ai/assistant/assistant_host.dart';
+import '../../features/diagnostics/diagnostics_screen.dart';
 import '../../features/warehouse/warehouse_screen.dart';
 import '../../features/jobs/basket_screen.dart';
 import '../../features/jobs/active_jobs_screen.dart';
@@ -18,6 +19,7 @@ import '../../features/finance/documents_list_screen.dart';
 import '../../features/search/global_search_overlay.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/settings/widgets/company_logo.dart';
+import '../app_nav.dart';
 import '../unsaved_navigation_gate.dart';
 
 class CustomDrawer extends StatefulWidget {
@@ -54,18 +56,18 @@ class _CustomDrawerState extends State<CustomDrawer> {
     if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
     if (!context.mounted) return;
     await _dismiss(context);
-    final ctx = rootNavigatorKey.currentContext;
-    if (ctx == null || !ctx.mounted) return;
-    Navigator.push(ctx, MaterialPageRoute(builder: (_) => page));
+    final nav = AppNav.activeTabNavigator ?? rootNavigatorKey.currentState;
+    if (nav == null || !nav.mounted) return;
+    nav.push(MaterialPageRoute(builder: (_) => page));
   }
 
   void _openSearch(BuildContext context) async {
     if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
     if (!context.mounted) return;
     await _dismiss(context);
-    final overlayContext = rootNavigatorKey.currentContext;
-    if (overlayContext != null && overlayContext.mounted) {
-      await GlobalSearchOverlay.open(overlayContext);
+    final nav = AppNav.activeTabNavigator ?? rootNavigatorKey.currentState;
+    if (nav != null && nav.mounted) {
+      await GlobalSearchOverlay.open(nav.context);
     }
   }
 
@@ -75,7 +77,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
       listenable: AppUiSettings.instance,
       builder: (context, _) {
         return Drawer(
-          backgroundColor: Colors.grey.shade100,
+          backgroundColor: AppColors.surface,
           child: Column(
             children: [
               StreamBuilder<DocumentSettings>(
@@ -178,6 +180,21 @@ class _CustomDrawerState extends State<CustomDrawer> {
                         ),
                       if (SettingsService.menuFlag(
                         config,
+                        'menuShowDiagnostics',
+                      ))
+                        _buildTile(
+                          context,
+                          title: context.tr(
+                            'Ошибка и диагностика',
+                            'Errors & diagnostics',
+                          ),
+                          icon: Icons.troubleshoot,
+                          color: const Color(0xFFD32F2F),
+                          onTap: () =>
+                              _open(context, const DiagnosticsScreen()),
+                        ),
+                      if (SettingsService.menuFlag(
+                        config,
                         'menuShowStatistics',
                       ))
                         _buildTile(
@@ -220,7 +237,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
                         context,
                         title: context.tr('Настройки', 'Settings'),
                         icon: Icons.settings_outlined,
-                        color: Colors.grey.shade700,
+                        color: AppColors.inkMuted,
                         onTap: () => _openSettings(context),
                       ),
                     ];
@@ -431,7 +448,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
     required VoidCallback onTap,
   }) {
     return Material(
-      color: Colors.white,
+      color: AppColors.card,
       borderRadius: BorderRadius.circular(16),
       elevation: 2,
       shadowColor: Colors.black12,
@@ -449,15 +466,21 @@ class _CustomDrawerState extends State<CustomDrawer> {
               ),
               child: Icon(icon, color: color, size: 36),
             ),
-            const SizedBox(height: 12),
-            Text(
-              title,
-              style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-                color: Colors.black87,
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Text(
+                title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13.5,
+                  height: 1.15,
+                  color: AppColors.ink,
+                ),
+                textAlign: TextAlign.center,
               ),
-              textAlign: TextAlign.center,
             ),
           ],
         ),

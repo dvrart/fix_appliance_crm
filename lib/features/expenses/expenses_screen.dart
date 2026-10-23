@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../models/expense.dart';
 import '../../services/error_log_service.dart';
@@ -287,10 +288,10 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(context.tr('Расходы', 'Expenses')),
-        backgroundColor: const Color(0xFF14557F),
+        backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
       ),
@@ -377,7 +378,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
               return Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Material(
-                  color: Colors.white,
+                  color: AppColors.card,
                   borderRadius: BorderRadius.circular(12),
                   child: InkWell(
                     onTap: () {
@@ -400,7 +401,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                           CircleAvatar(
                             backgroundColor:
                                 const Color(0xFF14557F).withValues(alpha: 0.12),
-                            child: Icon(info.icon, color: const Color(0xFF14557F)),
+                            child: Icon(info.icon, color: AppColors.primaryOnCard),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
@@ -423,7 +424,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                                   '${item.capitalAsset ? ' · CCA' : ''}\n'
                                   '${DateFormat('d MMM yyyy', AppLocale.instance.dateLocale).format(item.date)}',
                                   style: TextStyle(
-                                    color: Colors.grey.shade700,
+                                    color: AppColors.inkMuted,
                                     height: 1.35,
                                   ),
                                 ),
@@ -701,10 +702,10 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
       dirty: _dirty,
       onSave: _persist,
       child: Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(context.tr('Чек', 'Receipt')),
-        backgroundColor: const Color(0xFF14557F),
+        backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         actions: [
           if (_draft.id.isNotEmpty)
@@ -732,7 +733,7 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
                   decoration: InputDecoration(
                     labelText: context.tr('Магазин', 'Vendor'),
                     filled: true,
-                    fillColor: Colors.white,
+                    fillColor: AppColors.card,
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
@@ -744,7 +745,7 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
           const SizedBox(height: 10),
           ..._duplicateBanners(),
           ListTile(
-            tileColor: Colors.white,
+            tileColor: AppColors.card,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             title: Text(DateFormat('d MMMM yyyy', AppLocale.instance.dateLocale).format(_draft.date)),
             trailing: const Icon(Icons.calendar_month),
@@ -756,7 +757,7 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
             decoration: InputDecoration(
               labelText: context.tr('Категория', 'Category'),
               filled: true,
-              fillColor: Colors.white,
+              fillColor: AppColors.card,
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
             ),
             items: [
@@ -782,7 +783,7 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
                   decoration: InputDecoration(
                     labelText: context.tr('Без HST', 'Excl. HST'),
                     filled: true,
-                    fillColor: Colors.white,
+                    fillColor: AppColors.card,
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
@@ -796,7 +797,7 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
                   decoration: InputDecoration(
                     labelText: 'HST',
                     filled: true,
-                    fillColor: Colors.white,
+                    fillColor: AppColors.card,
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
@@ -810,7 +811,7 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
                   decoration: InputDecoration(
                     labelText: context.tr('Итого', 'Total'),
                     filled: true,
-                    fillColor: Colors.white,
+                    fillColor: AppColors.card,
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
@@ -823,7 +824,7 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
               'В T2 идёт сумма без HST, код GIFI ${info.gifi}. HST — в GST34 как ITC.',
               'T2 uses the amount excluding HST, GIFI ${info.gifi}. HST goes on GST34 as an ITC.',
             ),
-            style: const TextStyle(color: Colors.black54, height: 1.35),
+            style: TextStyle(color: AppColors.inkMuted, height: 1.35),
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -845,7 +846,7 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
             decoration: InputDecoration(
               labelText: context.tr('Заметка', 'Note'),
               filled: true,
-              fillColor: Colors.white,
+              fillColor: AppColors.card,
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
             ),
           ),
@@ -874,7 +875,7 @@ class _ExpenseDuplicateBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final english = AppLocale.instance.isEn;
     return Material(
-      color: const Color(0xFFFFF8E6),
+      color: AppColors.tint(Colors.orange, 0.14),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: Colors.orange.shade300),
@@ -898,7 +899,9 @@ class _ExpenseDuplicateBanner extends StatelessWidget {
                         'Similar receipts are already saved',
                       ),
                 style: TextStyle(
-                  color: Colors.orange.shade900,
+                  color: AppColors.isDark
+                      ? const Color(0xFFFFCA28)
+                      : Colors.orange.shade900,
                   fontWeight: FontWeight.w800,
                   fontSize: 14,
                 ),
@@ -909,7 +912,7 @@ class _ExpenseDuplicateBanner extends StatelessWidget {
                   'Нажмите, чтобы открыть. Сохранять второй не обязательно.',
                   'Tap to open it. You don’t have to save a second copy.',
                 ),
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: TextStyle(fontSize: 12, color: AppColors.inkMuted),
               ),
               const SizedBox(height: 8),
               for (final item in matches.take(3))

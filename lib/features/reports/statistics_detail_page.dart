@@ -189,7 +189,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
     final showMoney = moneyTotal > 0;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F6F8),
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(
           widget.title,
@@ -202,7 +202,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
         children: [
           Container(
             width: double.infinity,
-            color: Colors.white,
+            color: AppColors.card,
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
             child: Row(
               children: [
@@ -213,13 +213,13 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
                       label: Text(
                         trAny(filter),
                         style: TextStyle(
-                          color: _filter == filter ? Colors.white : Colors.black87,
+                          color: _filter == filter ? Colors.white : AppColors.ink,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                       selected: _filter == filter,
                       selectedColor: const Color(0xFF14557F),
-                      backgroundColor: Colors.grey.shade200,
+                      backgroundColor: AppColors.cardMuted,
                       onSelected: (selected) {
                         if (!selected) return;
                         setState(() => _filter = filter);
@@ -230,31 +230,31 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
             ),
           ),
           Container(
-            color: Colors.white,
+            color: AppColors.card,
             padding: const EdgeInsets.only(bottom: 8),
             child: Row(
               children: [
                 IconButton(
-                  icon: const Icon(Icons.chevron_left, size: 30, color: Color(0xFF14557F)),
+                  icon: Icon(Icons.chevron_left, size: 30, color: AppColors.primaryOnCard),
                   onPressed: () => _shift(-1),
                 ),
                 Expanded(
                   child: TextButton.icon(
-                    icon: const Icon(Icons.calendar_month, color: Color(0xFF14557F)),
+                    icon: Icon(Icons.calendar_month, color: AppColors.primaryOnCard),
                     label: Text(
                       _periodLabel,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFF14557F),
+                        color: AppColors.primaryOnCard,
                       ),
                     ),
                     onPressed: _pickDate,
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.chevron_right, size: 30, color: Color(0xFF14557F)),
+                  icon: Icon(Icons.chevron_right, size: 30, color: AppColors.primaryOnCard),
                   onPressed: () => _shift(1),
                 ),
               ],
@@ -307,10 +307,10 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
                   const SizedBox(height: 16),
                   Text(
                     _filter == 'День' ? 'По часам'.tr : 'По дням'.tr,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w800,
-                      color: Color(0xFF14557F),
+                      color: AppColors.primaryOnCard,
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -334,7 +334,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
                     child: Center(
                       child: Text(
                         'Нет данных за этот период'.tr,
-                        style: const TextStyle(color: Colors.black54, fontSize: 16),
+                        style: TextStyle(color: AppColors.inkMuted, fontSize: 16),
                       ),
                     ),
                   ),
@@ -350,7 +350,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
@@ -408,7 +408,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
@@ -418,8 +418,8 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
           const SizedBox(height: 8),
           Text(
             title,
-            style: const TextStyle(
-              color: Colors.black54,
+            style: TextStyle(
+              color: AppColors.inkMuted,
               fontWeight: FontWeight.w700,
               fontSize: 12,
             ),
@@ -459,7 +459,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
@@ -473,15 +473,15 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
               children: [
                 Text(
                   _filter == 'День' ? 'Тихие часы'.tr : 'Тихие дни'.tr,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.w800,
-                    color: Color(0xFF455A64),
+                    color: AppColors.inkMuted,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   ranges,
-                  style: const TextStyle(color: Colors.black54, height: 1.3),
+                  style: TextStyle(color: AppColors.inkMuted, height: 1.3),
                 ),
               ],
             ),
@@ -497,7 +497,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
       height: 220,
       padding: const EdgeInsets.fromLTRB(8, 16, 8, 8),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
       ),
       child: BarChart(
@@ -537,7 +537,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
                   if (i % step != 0) return const SizedBox.shrink();
                   return Text(
                     buckets[i].label,
-                    style: const TextStyle(fontSize: 10, color: Colors.black54),
+                    style: TextStyle(fontSize: 10, color: AppColors.inkMuted),
                   );
                 },
               ),
@@ -581,7 +581,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
       child: Container(
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AppColors.card,
           borderRadius: BorderRadius.circular(12),
           border: isPeak
               ? Border.all(color: AppColors.accent, width: 1.4)
@@ -602,7 +602,7 @@ class _StatisticsDetailPageState extends State<StatisticsDetailPage> {
                 child: LinearProgressIndicator(
                   value: t.clamp(0, 1),
                   minHeight: 10,
-                  backgroundColor: const Color(0xFFE8EEF3),
+                  backgroundColor: AppColors.cardMuted,
                   color: isPeak ? AppColors.accent : widget.color,
                 ),
               ),

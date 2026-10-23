@@ -192,7 +192,7 @@ function jobFillScore(data) {
   const job = data || {};
   let score = 0;
   const name = String(job.clientName || '').trim();
-  if (name && name !== 'Клиент' && !/^Клиент\s+\d/.test(name)) score += 4;
+  if (name && !voiceFacts.isPlaceholderClientName(name)) score += 4;
   if (String(job.clientAddress || '').trim()) score += 3;
   const type = String(job.applianceType || '').trim();
   if (type && type !== 'Техника') score += 3;

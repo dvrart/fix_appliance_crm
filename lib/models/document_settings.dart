@@ -340,18 +340,27 @@ class DocumentSettings {
     required String url,
     String company = 'FIX-Appliance CA',
     String template = kDefaultPaySms,
+    String clientName = '',
   }) {
     final amount = '\$$dollars';
     final kindLine = deposit
         ? 'Please pay a $amount deposit for your repair.'
         : 'Please pay $amount for your repair.';
-    final rendered = SmsText.fillName(template, '')
-        .replaceAll('{company}', company)
-        .replaceAll('{amount}', amount)
-        .replaceAll('{url}', url)
-        .trim();
-    if (rendered.contains(url) && rendered.contains(amount)) return rendered;
-    return 'Thank you for choosing $company.\n\n$kindLine\n\nOpen this page to pay:\n$url';
+    final raw = template.trim().isEmpty ? kDefaultPaySms : template.trim();
+    var rendered = SmsText.fillName(raw, clientName);
+    rendered = SmsText.replacePlaceholder(rendered, 'company', company);
+    rendered = SmsText.replacePlaceholder(rendered, 'amount', amount);
+    rendered = SmsText.replacePlaceholder(rendered, 'total', amount);
+    rendered = SmsText.replacePlaceholder(rendered, 'due', amount);
+    rendered = SmsText.replacePlaceholder(rendered, 'url', url);
+    rendered = rendered.trim();
+    if (rendered.isEmpty) {
+      return 'Thank you for choosing $company.\n\n$kindLine\n\nOpen this page to pay:\n$url';
+    }
+    if (url.isNotEmpty && !rendered.contains(url)) {
+      rendered = '$rendered\n\n$url';
+    }
+    return rendered;
   }
 
   String renderSms({
@@ -383,19 +392,25 @@ class DocumentSettings {
     required List<dynamic> items,
     String url = '',
   }) {
-    return SmsText.fillName(template, clientName)
-        .replaceAll('{company}', companyName)
-        .replaceAll('{phone}', companyPhone)
-        .replaceAll('{email}', companyEmail)
-        .replaceAll('{address}', companyAddress)
-        .replaceAll('{hst}', hstNumber)
-        .replaceAll('{total}', Formatters.formatCurrency(total))
-        .replaceAll('{due}', Formatters.formatCurrency(due))
-        .replaceAll('{paid}', Formatters.formatCurrency(paid))
-        .replaceAll('{items}', formatItems(items))
-        .replaceAll('{valid_days}', '$estimateValidDays')
-        .replaceAll('{url}', url)
-        .trim();
+    final amountValue = due > 0 ? due : total;
+    var text = SmsText.fillName(template, clientName);
+    text = SmsText.replacePlaceholder(text, 'company', companyName);
+    text = SmsText.replacePlaceholder(text, 'phone', companyPhone);
+    text = SmsText.replacePlaceholder(text, 'email', companyEmail);
+    text = SmsText.replacePlaceholder(text, 'address', companyAddress);
+    text = SmsText.replacePlaceholder(text, 'hst', hstNumber);
+    text = SmsText.replacePlaceholder(text, 'total', Formatters.formatCurrency(total));
+    text = SmsText.replacePlaceholder(text, 'due', Formatters.formatCurrency(due));
+    text = SmsText.replacePlaceholder(text, 'paid', Formatters.formatCurrency(paid));
+    text = SmsText.replacePlaceholder(
+      text,
+      'amount',
+      Formatters.formatCurrency(amountValue),
+    );
+    text = SmsText.replacePlaceholder(text, 'items', formatItems(items));
+    text = SmsText.replacePlaceholder(text, 'valid_days', '$estimateValidDays');
+    text = SmsText.replacePlaceholder(text, 'url', url);
+    return text.trim();
   }
 
   static String formatItems(List<dynamic> items) {

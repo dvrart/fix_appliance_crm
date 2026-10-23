@@ -216,67 +216,62 @@ async function secretaryTakesCall(sid) {
   await webhook(api.aiRelayComplete, { CallSid: sid, CallStatus: 'completed' });
 }
 
-test('secretary call: no job until the recording is analysed, then one job, one client, no visit, linked recording', async () => {
+// Заявку со звонка сервер не заводит (решение FIX, 21.10.2026). Разбор
+// записи при этом обязан доехать до конца: мастер открывает карточку
+// звонка, читает расшифровку и жмёт «Создать заявку на ремонт» сам.
+test('secretary call: the recording is analysed, but neither job nor client appears by itself', async () => {
   const sid = `CA${'1'.repeat(32)}`;
   await secretaryTakesCall(sid);
   assert.equal(call(sid).status, 'completed');
   assert.equal(call(sid).aiStatus, 'done');
   assert.equal(jobs().length, 0);
   assert.deepEqual(notifications.map((n) => n.data.kind), ['call_offer']);
+  // Уведомление о звонке больше ничего не предлагает создать.
+  assert.equal(notifications[0].title, 'Входящий звонок');
 
   const event = await recordingArrives(sid, '3');
   await api.processQueuedCallRecording(event);
 
-  const created = jobs();
-  assert.equal(created.length, 1);
-  const job = created[0];
-  assert.equal(job.status, 'Вызов');
-  assert.equal(job.needsReview, true);
-  assert.equal(job.createdByAi, true);
-  assert.equal(job.sourceCallId, sid);
-  assert.equal(job.clientName, 'Amelia');
-  assert.equal(job.clientPhone, '4165550101');
-  assert.equal(job.applianceType, 'Стиральная машина');
-  assert.equal(job.city, 'Brantford');
-  assert.equal(job.scheduledAt, null);
-  assert.deepEqual(job.visits, []);
-  assert.match(job.description, /Удобное время/);
-  assert.match(job.aiReviewNotes, /время не назначала/);
-  assert.equal(job.attachments.length, 1);
-  assert.equal(job.attachments[0].kind, 'call');
-  assert.equal(job.attachments[0].callId, sid);
-  assert.equal(job.attachments[0].storageUrl, `https://storage.test/${sid}.mp3`);
-  assert.equal(clients().length, 1);
-  assert.equal(clients()[0].fullName, 'Amelia');
-  assert.equal(job.clientId, [...store.keys()].find((path) => /\/clients\//.test(path)).split('/').pop());
+  assert.equal(jobs().length, 0);
+  assert.equal(clients().length, 0);
   const done = call(sid);
   assert.equal(done.aiStatus, 'done');
-  assert.equal(done.createdJobId, job.id);
+  assert.equal(done.createdJobId, undefined);
   assert.equal(done.aiProcessedRecordingSid, `RE${'3'.repeat(32)}`);
   assert.equal(done.recordingProcessingLease, null);
   assert.match(done.transcription, /Амелия/);
-  assert.deepEqual(notifications.map((n) => n.data.kind), ['call_offer', 'job']);
-  assert.equal(notifications[1].data.jobId, job.id);
+  assert.match(done.summary, /стиральная машина/i);
+  // Форму ручного создания заполняет этот разбор — без него кнопка пустая.
+  assert.equal(done.extractedData.client_name, 'Amelia');
+  assert.equal(done.extractedData.appliance_type, 'Стиральная машина');
+  assert.equal(done.extractedData.city, 'Brantford');
+  assert.deepEqual(notifications.map((n) => n.data.kind), ['call_offer']);
   assert.equal(downloads.length, 1);
 });
 
-test('a replayed recording trigger and a concurrent second trigger do not create a second job or alert', async () => {
+test('a replayed recording trigger and a concurrent second trigger still create nothing and download once', async () => {
   const sid = `CA${'2'.repeat(32)}`;
   await secretaryTakesCall(sid);
   const event = await recordingArrives(sid, '4');
   await Promise.all([api.processQueuedCallRecording(event), api.processQueuedCallRecording(event).catch(() => {})]);
   await api.processQueuedCallRecording(event);
-  assert.equal(jobs().length, 1);
-  assert.equal(clients().length, 1);
-  assert.equal(notifications.filter((n) => n.data.kind === 'job').length, 1);
+  assert.equal(jobs().length, 0);
+  assert.equal(clients().length, 0);
+  assert.equal(notifications.filter((n) => n.data.kind === 'job').length, 0);
   assert.equal(downloads.length, 1);
 });
 
-test('the same client calling again about the same appliance lands on the open job, not a clone', async () => {
-  const first = `CA${'5'.repeat(32)}`;
-  await secretaryTakesCall(first);
-  await api.processQueuedCallRecording(await recordingArrives(first, '5'));
-  const [job] = jobs();
+test('a client with an open job calling again lands on that job, not on a clone', async () => {
+  // Заявку завёл мастер руками — её и должен найти следующий звонок.
+  apply(`${COMPANY}/clients/client-amelia`, {
+    fullName: 'Amelia', phone: '4165550101', address: '12 King Street, Brantford',
+  }, false);
+  apply(`${COMPANY}/jobs/job-amelia`, {
+    clientId: 'client-amelia', clientName: 'Amelia', clientPhone: '4165550101',
+    applianceType: 'Стиральная машина', status: 'Вызов', needsReview: false,
+    description: 'Не сливает воду', attachments: [], documents: [],
+    createdAt: new Date(),
+  }, false);
 
   const second = `CA${'6'.repeat(32)}`;
   await webhook(api.incomingCall, { CallSid: second, From: CALLER, To: '+14165550100' });
@@ -288,26 +283,24 @@ test('the same client calling again about the same appliance lands on the open j
 
   assert.equal(jobs().length, 1);
   assert.equal(clients().length, 1);
-  assert.equal(call(second).createdJobId, job.id);
+  assert.equal(call(second).createdJobId, 'job-amelia');
   const updated = jobs()[0];
-  assert.equal(updated.attachments.length, 2);
-  assert.equal(updated.attachments[1].callId, second);
-  assert.equal(updated.attachments[1].answeredBy, 'master');
+  assert.equal(updated.attachments.length, 1);
+  assert.equal(updated.attachments[0].callId, second);
+  assert.equal(updated.attachments[0].answeredBy, 'master');
 });
 
-test('a call the owner answered and booked gets a visit at the spoken time', async () => {
+test('a time spoken on the call reaches the call card, but books nothing by itself', async () => {
   const sid = `CA${'7'.repeat(32)}`;
   await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });
   await webhook(api.dialAction, { CallSid: sid, DialCallStatus: 'completed', DialCallDuration: '120' });
   geminiScript.transcript = 'Me: FixApplianceCA.\nClient: My washer does not drain, I am Amelia, 12 King Street, Brantford.\nMe: Tomorrow at two works, see you then.';
   geminiScript.extracted = { ...geminiScript.extracted, scheduled_date: '2099-01-07', scheduled_time: '14:00' };
   await api.processQueuedCallRecording(await recordingArrives(sid, '7'));
-  const [job] = jobs();
-  assert.ok(job.scheduledAt, 'visit should be booked when the owner spoke to the client');
-  assert.equal(job.visits.length, 1);
-  assert.equal(job.visits[0].outcome, 'scheduled');
-  assert.equal(new Date(job.scheduledAt).toISOString(), '2099-01-07T19:00:00.000Z');
-  assert.equal(job.needsReview, true);
+  assert.equal(jobs().length, 0);
+  const done = call(sid);
+  assert.equal(done.extractedData.scheduled_date, '2099-01-07');
+  assert.equal(done.extractedData.scheduled_time, '14:00');
 });
 
 test('after the relay hangs up on a silent line the call ends instead of re-opening the stream', async () => {
@@ -347,3 +340,35 @@ test('a declined or deleted call never becomes a job', async () => {
   assert.equal(clients().length, 0);
   assert.equal(downloads.length, 1);
 });
+
+test('a shorter Russian translation is kept over a longer English live transcript with Russian speaker labels', async () => {
+  const sid = `CA${'b'.repeat(32)}`;
+  await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });
+  await webhook(api.dialAction, { CallSid: sid, DialCallStatus: 'no-answer' });
+  apply(`${COMPANY}/calls/${sid}`, {
+    aiReception: {
+      ...call(sid).aiReception,
+      done: true,
+      extracted: geminiScript.extracted,
+      history: [
+        { role: 'assistant', text: 'FixApplianceCA, this is Sarah. How can I help you today with your appliance?' },
+        { role: 'user', text: 'My washing machine does not drain water at all, I am Amelia at 12 King Street in Brantford.' },
+        { role: 'assistant', text: 'Got it, our technician will contact you within thirty minutes to confirm.' },
+        { role: 'user', text: 'Wednesday afternoon works great for me. Thank you very much, goodbye.' },
+      ],
+    },
+  });
+  // Русский перевод короче английской live-истории с метками «ИИ:» / «Клиент:».
+  geminiScript.transcriptRu =
+    'ИИ: FixApplianceCA, Сара. Чем помочь?\n' +
+    'Клиент: Стиралка не сливает, я Амелия, 12 King Street, Brantford.\n' +
+    'ИИ: Мастер позвонит через 30 минут.\n' +
+    'Клиент: Среда после обеда подходит. Пока.';
+  await webhook(api.aiRelayComplete, { CallSid: sid, CallStatus: 'completed' });
+  await api.processQueuedCallRecording(await recordingArrives(sid, 'b'));
+  const done = call(sid);
+  assert.match(done.transcriptionRu, /Стиралка не сливает/);
+  assert.doesNotMatch(done.transcriptionRu, /How can I help you today/);
+  assert.match(done.transcription, /Стиралка не сливает/);
+});
+

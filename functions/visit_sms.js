@@ -20,8 +20,10 @@ const SMS_STATUS_CB =
 const DEFAULTS = {
   booking_confirm:
     'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day',
+  // Напоминание ничего не спрашивает: подтверждение просим один раз, в первом
+  // SMS при записи (решение FIX, 13.10.2026).
   day_before:
-    'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}\n\nReply 1 ✅ to confirm this visit, 0 ❌ to cancel, 5 🔁 to pick another day.',
+    'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}\n\nSee you then! No reply needed.',
   // Красиво, но без промо-блока: длинный текст с рядом звёзд и «supporting
   // our small business» операторы режут (30007), а этот вариант (~200 симв.
   // с шапкой и ссылкой на google-хосте) дошёл замером 21.09.2026.
@@ -238,6 +240,56 @@ function stripUnwantedSmsBits(text) {
     .trim();
 }
 
+/**
+ * Снимает с текста просьбу ответить кодом («Reply 1 ✅ confirm», «❌ CANCEL -
+ * 2️⃣», «Ответьте 1 — подтверждаю»).
+ *
+ * Решение FIX 13.10.2026: «утром перед визитом опять просит подтверждение —
+ * этого делать не нужно». Подтверждение просим **один раз**, в первом SMS при
+ * записи (`booking_confirm`); напоминания только напоминают. Шаблон
+ * `day_before` правит сам FIX из приложения, и боевой текст просьбу содержит,
+ * поэтому её снимаем на отправке, а не только в значении по умолчанию.
+ *
+ * Строки с подстановками ({date}, {time}, {address}, {name}) не трогаем —
+ * именно ради них напоминание и шлётся, а цифры в них есть всегда.
+ */
+function stripConfirmAsk(template) {
+  const kept = [];
+  for (const line of String(template || '').split(/\r?\n/)) {
+    if (/\{(date|time|address|name|review|appliance)\}/i.test(line)) {
+      kept.push(line);
+      continue;
+    }
+    // Кейкапы «1️⃣» — это цифра плюс два невидимых символа.
+    const plain = line.replace(/[\uFE0F\u20E3]/g, '');
+    if (/^\s*(reply|ответь(те)?|отвечайте)\b/i.test(plain)) continue;
+    if (/^\s*reply\s*:?\s*$/i.test(plain)) continue;
+    // Подводка к меню («Please let us know:», «Дайте знать, пожалуйста:») —
+    // без самого меню это голая просьба ответить, её тоже снимаем.
+    if (/(let us know|дайте знать|сообщите|your plans|ваши планы)/i.test(plain)) continue;
+    const choice =
+      /(confirm|cancel|another day|reschedule|подтвер|отмен|перенес|другой день)/i.test(
+        plain
+      );
+    if (choice && /\d/.test(plain)) continue;
+    kept.push(line);
+  }
+  // Заголовок, под которым ничего не осталось («Please choose:»), тоже лишний.
+  while (kept.length && /:\s*$/.test(kept[kept.length - 1])) kept.pop();
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * Утреннее напоминание и «за 2 часа» идут тем же шаблоном, что и за сутки,
+ * а в нём «Reminder for tomorrow!». В день визита это вводит в заблуждение
+ * (так ушло в бою 16.10.2026) — меняем «завтра» на «сегодня».
+ */
+function sameDayWording(text) {
+  return String(text || '')
+    .replace(/\btomorrow\b/gi, (word) => (word[0] === 'T' ? 'Today' : 'today'))
+    .replace(/завтра/gi, (word) => (word[0] === 'З' ? 'Сегодня' : 'сегодня'));
+}
+
 function dedupeAddress(value) {
   const parts = String(value || '')
     .split(',')
@@ -276,7 +328,11 @@ function jobPhone(job) {
 
 /** Подпись заявки для уведомлений мастеру — она остаётся русской. */
 function jobName(job) {
-  return String(job.clientName || job.jobSiteName || '').trim() || 'клиент';
+  return (
+    visitPersonName(job) ||
+    jobPhone(job) ||
+    voiceFacts.stripClientPrefix(job && (job.clientName || job.jobSiteName))
+  );
 }
 
 /** Обращение в SMS клиенту: только настоящее имя, иначе пусто. */
@@ -523,6 +579,28 @@ async function getCompanyName() {
  * отправка через Twilio падает, оно всё равно попадает в очередь на одобрение,
  * чтобы мастер мог повторить вручную.
  */
+async function hasDuplicateOutbound({ to, jobId, kind, body, auto }) {
+  try {
+    const snap = await messagesRef().where('to', '==', to).get();
+    for (const doc of snap.docs || []) {
+      const data = doc.data() || {};
+      if (data.direction !== 'outbound') continue;
+      const sameJob = String(data.jobId || '') === String(jobId || '');
+      const sameBody = String(data.body || '').trim() === String(body || '').trim();
+      const sameKind = Boolean(kind) && String(data.kind || '') === String(kind);
+      if (auto) {
+        const failed = ['failed', 'undelivered', 'canceled', 'rejected'].includes(
+          String(data.status || '')
+        );
+        if (!failed && sameJob && sameKind && sameBody) return true;
+      } else if (data.status === 'awaiting_approval' && data.approval === 'pending') {
+        if (sameBody || (sameJob && sameKind)) return true;
+      }
+    }
+  } catch (_) {}
+  return false;
+}
+
 async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody, auto }) {
   const sms = twilioClient();
   const configured = Boolean(sms);
@@ -549,6 +627,10 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody, au
     const fallbackRaw = smsText.latinizeSms(String(fallbackBody || '').trim(), 'sms fallback');
     const fallbackText =
       fallbackRaw && fallbackRaw !== text ? withSmsHeader(fallbackRaw, header) : '';
+    if (await hasDuplicateOutbound({ to: e164, jobId, kind, body: wrapped, auto: Boolean(auto) })) {
+      console.log(`sendTwilioSms skip duplicate kind=${kind || ''} job=${jobId || ''} to=${e164}`);
+      return true;
+    }
     if (auto) {
       try {
         const sent = await sms.messages.create({
@@ -587,6 +669,10 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody, au
           error && error.message ? error.message : error
         );
       }
+    }
+    if (await hasDuplicateOutbound({ to: e164, jobId, kind, body: wrapped, auto: false })) {
+      console.log(`sendTwilioSms skip duplicate queue kind=${kind || ''} job=${jobId || ''} to=${e164}`);
+      return true;
     }
     const doc = await messagesRef().add({
       sid: '',
@@ -989,11 +1075,11 @@ async function queueManualBooking(jobId, before, { reconcileOnly = false } = {})
 async function sendBookingIfNeeded(jobId, before, after, config, templates) {
   if (!after || after.deletedAt) return;
   if (after.needsReview === true) return;
-  if (!boolFlag(config, 'bookingSmsEnabled', true)) {
-    console.log(`sendBookingIfNeeded skip ${jobId}: bookingSmsEnabled=false`);
+  if (isClosedJob(after)) return;
+  if (!boolFlag(config, 'bookingSmsEnabled', false)) {
+    await queueManualBooking(jobId, before, { reconcileOnly: true });
     return;
   }
-  if (isClosedJob(after)) return;
   const { viaEmail, email, phone } = await jobContact(after);
   const hasPhone = Boolean(normalizePhone(phone));
   if (viaEmail) {
@@ -1185,7 +1271,6 @@ async function processJobWrite(before, after, jobId) {
   const templates = await loadTemplates();
   await sendReviewIfNeeded(jobId, before, after, config, templates);
   await sendBookingIfNeeded(jobId, before, after, config, templates);
-  await sendManualConfirmAckIfNeeded(jobId, before, after, templates);
   await recordJobChanges(before, after, jobId);
 }
 
@@ -1233,7 +1318,7 @@ async function recordJobChanges(before, after, jobId) {
     const prevName = String((before || {}).clientName || '').trim();
     const nextName = String(after.clientName || '').trim();
     if (prevName !== nextName && nextName && nextName !== prevName &&
-        !/^(клиент|client)/i.test(nextName)) {
+        !voiceFacts.isPlaceholderClientName(nextName)) {
       changes.push({ at: now, by, event: 'client_name_set', value: nextName });
     }
 
@@ -1367,7 +1452,7 @@ async function sendManualConfirmAckIfNeeded(jobId, before, after, templates) {
 
 async function sendDayBeforeReminders() {
   const config = await loadConfig();
-  if (!boolFlag(config, 'reminderSmsEnabled')) return;
+  if (!boolFlag(config, 'reminderSmsEnabled', false)) return;
   // Напоминание тоже не уходит само: `sendSms` кладёт его в очередь, мастер
   // жмёт «Отправить». Раньше здесь стоял выход по `manualSmsApproval`, и
   // напоминания не работали вовсе, хотя в настройках числились включёнными.
@@ -1393,18 +1478,20 @@ async function sendDayBeforeReminders() {
     for (const visit of visits) {
       if (String(visit.smsDialog || '') === 'no_auto') continue;
       if (!isScheduledVisit(visit)) continue;
+      // Если клиент уже подтвердил визит — повторное напоминание/подтверждение не шлём.
+      if (String(visit.smsConfirmStatus || '').trim() === 'confirmed') continue;
       const sent = reminderSentMap(visit);
       for (const offset of offsets) {
         if (sent[offset]) continue;
         if (!offsetMatches(offset, visit, config)) continue;
-        if (
-          (offset === '24h' || offset === '48h') &&
-          visit.smsBookingSentAt &&
-          hoursSince(visit.smsBookingSentAt) < 8
-        ) {
+        if (visit.smsBookingSentAt && hoursSince(visit.smsBookingSentAt) < 8) {
           continue;
         }
-        const body = applyTemplate(templates.day_before, visitVars(job, visit));
+        let template = stripConfirmAsk(templates.day_before);
+        if (torontoDayKey(visit.startAt) === torontoDayKey(new Date())) {
+          template = sameDayWording(template);
+        }
+        const body = applyTemplate(template, visitVars(job, visit));
         const ok = await sendSms({
           to: viaEmail ? email : phone,
           body,
@@ -1454,7 +1541,7 @@ async function sendOwnerVisitSoon(config) {
       // больше 1.5 ч (и он ещё впереди), и шлёт напоминание.
       if (hours == null || hours > 1.5 || hours <= 0) continue;
       const time = formatVisit(visit.startAt, 'time');
-      const who = String(job.clientName || job.jobSiteName || '').trim() || 'Клиент';
+      const who = jobName(job);
       const appliance = jobAppliance(job);
       const body = [time, [who, appliance].filter(Boolean).join(', ')]
         .filter(Boolean)
@@ -1509,6 +1596,26 @@ function parseConfirmReply(body) {
     return 'reschedule';
   }
   return null;
+}
+
+/// Какой цифрой шаблон просит отменить визит.
+///
+/// Разбор знал только «0», а боевой `booking_confirm` (его правит FIX) просит
+/// «❌ CANCEL - 2️⃣». Ответ «2» не опознавался как код, уходил в поиск времени,
+/// где `inferTimeFromText('2')` = 14:00 — и визит молча переносился на два
+/// часа дня вместо отмены (найдено проверкой 12.10.2026). Теперь коды берём
+/// из самих текстов: поменяется шаблон — поменяется и разбор.
+function cancelDigitsFromTemplates(templates) {
+  const digits = new Set(['0']);
+  for (const key of ['booking_confirm', 'day_before']) {
+    const text = String((templates && templates[key]) || '');
+    for (const line of text.split(/[\r\n]+/)) {
+      if (!/cancel|отмен/i.test(line)) continue;
+      const found = line.replace(/[\uFE0F\u20E3]/g, '').match(/\d/);
+      if (found) digits.add(found[0]);
+    }
+  }
+  return digits;
 }
 
 function parseSlotFromText(text, fallbackDate, fallbackTime) {
@@ -1605,19 +1712,30 @@ async function jobsForContact(from, clientId) {
   });
 }
 
-async function findPendingJob(from, clientId) {
+async function findPendingJob(from, clientId, { includeConfirmed = false } = {}) {
   const docs = await jobsForContact(from, clientId);
 
   const now = Date.now();
   let best = null;
+  let bestConfirmed = null;
   for (const doc of docs) {
     const job = doc.data() || {};
     for (const visit of schedule.upcomingVisits(job, now)) {
       const start = toDate(visit.startAt);
       const status = String(visit.smsConfirmStatus || '').trim();
-      // Already done — ignore. «Перенос» / empty still accept «1».
-      if (status === 'confirmed' || status === 'cancelled') continue;
+      if (status === 'cancelled') continue;
       const smsMs = lastVisitSmsMs(visit);
+      if (status === 'confirmed') {
+        if (
+          includeConfirmed &&
+          (!bestConfirmed ||
+            smsMs > bestConfirmed.smsMs ||
+            (smsMs === bestConfirmed.smsMs && start.getTime() < bestConfirmed.start.getTime()))
+        ) {
+          bestConfirmed = { doc, job, visit, start, smsMs };
+        }
+        continue;
+      }
       if (
         !best ||
         smsMs > best.smsMs ||
@@ -1627,7 +1745,7 @@ async function findPendingJob(from, clientId) {
       }
     }
   }
-  return best;
+  return best || bestConfirmed;
 }
 
 function looksLikeRescheduleIntent(body) {
@@ -1841,6 +1959,7 @@ async function beginRescheduleAsk(match, from, clientId, body) {
     ...visits[idx],
     smsDialog: 'ask_slot',
     smsConfirmStatus: 'reschedule',
+    smsConfirmNotifiedStatus: 'reschedule',
     smsPickKind: '',
     smsPickIndex: null,
   };
@@ -1936,27 +2055,43 @@ async function findDialogJob(from, clientId) {
 
 async function confirmVisitMatch(match, from, clientId) {
   if (!match) return false;
-  const visits = coalesceVisits(match.job);
-  const idx = visits.findIndex(
-    (visit) => String(visit.id || '') === String(match.visit.id || '')
-  );
-  if (idx < 0) return false;
-  const vars = visitVars(match.job, visits[idx]);
-  visits[idx] = {
-    ...visits[idx],
-    smsConfirmStatus: 'confirmed',
-    smsConfirmNotifiedStatus: 'confirmed',
-    smsDialog: '',
-    smsPickKind: '',
-    smsPickIndex: null,
-  };
-  const nextStatus =
-    String(match.job.status || '').trim() === 'Перенос' ? 'Вызов' : match.job.status;
-  await match.doc.ref.update({
-    visits,
-    ...(nextStatus && nextStatus !== match.job.status ? { status: nextStatus } : {}),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  let vars = null;
+  let alreadyConfirmed = false;
+  await db().runTransaction(async (tx) => {
+    const snap = await tx.get(match.doc.ref);
+    const jobData = snap.exists ? snap.data() || {} : match.job;
+    const visits = coalesceVisits(jobData);
+    const idx = visits.findIndex(
+      (visit) => String(visit.id || '') === String(match.visit.id || '')
+    );
+    if (idx < 0) return;
+    const current = visits[idx];
+    if (
+      String(current.smsConfirmStatus || '').trim() === 'confirmed' &&
+      String(current.smsConfirmNotifiedStatus || '').trim() === 'confirmed'
+    ) {
+      alreadyConfirmed = true;
+      return;
+    }
+    vars = visitVars(jobData, current);
+    visits[idx] = {
+      ...current,
+      smsConfirmStatus: 'confirmed',
+      smsConfirmNotifiedStatus: 'confirmed',
+      smsDialog: '',
+      smsPickKind: '',
+      smsPickIndex: null,
+    };
+    const nextStatus =
+      String(jobData.status || '').trim() === 'Перенос' ? 'Вызов' : jobData.status;
+    tx.update(match.doc.ref, {
+      visits,
+      ...(nextStatus && nextStatus !== jobData.status ? { status: nextStatus } : {}),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
   });
+  if (alreadyConfirmed) return true;
+  if (!vars) return false;
   await sendSms({
     to: from,
     body: `Thanks${nameTail(vars.name)}! See you ${vars.date} at ${vars.time}. ✅`,
@@ -1968,15 +2103,12 @@ async function confirmVisitMatch(match, from, clientId) {
     // одобрения мастером (решение FIX, 11.10.2026).
     auto: true,
   });
-  await notifyMaster(
-    'Заявка подтверждена',
-    `${jobName(match.job)} — ${vars.date} ${vars.time}`,
-    {
-      type: 'visit_confirm',
-      from: from || '',
-      jobId: match.doc.id,
-    }
-  );
+  // Подтверждения в шторку не выносим (решение FIX, 21.10.2026): клиент
+  // сказал «да», ничего делать не надо, а карточка в шторке требует её
+  // смахнуть. Событие видно там, где его разбирают: ответ клиента остаётся
+  // непрочитанным сообщением на вкладке «Связь», а в карточке заявки визит
+  // становится подтверждённым. В шторке остаются только звонки и SMS и то,
+  // что требует решения: отмена, перенос, занятое время.
   return true;
 }
 
@@ -2068,6 +2200,7 @@ async function applyVisitSlot(match, nextDate, extra = {}) {
       durationMinutes: schedule.BOOKING_MINUTES,
       smsDialog: '',
       smsConfirmStatus: 'confirmed',
+      smsConfirmNotifiedStatus: 'confirmed',
       smsBookingDayKey: torontoDayKey(nextDate),
       smsBookingSlotKey: visitSlotKey(nextDate),
       smsBookingSentAt: admin.firestore.Timestamp.now(),
@@ -2174,7 +2307,12 @@ async function handleDialogReply(match, body, from, clientId) {
       (visit) => String(visit.id || '') === String(match.visit.id || '')
     );
     if (idx >= 0) {
-      visits[idx] = { ...visits[idx], smsDialog: 'ask_slot', smsConfirmStatus: 'reschedule' };
+      visits[idx] = {
+        ...visits[idx],
+        smsDialog: 'ask_slot',
+        smsConfirmStatus: 'reschedule',
+        smsConfirmNotifiedStatus: 'reschedule',
+      };
       await match.doc.ref.update({
         visits,
         status: rescheduleStatus(match.job),
@@ -2212,7 +2350,7 @@ async function handleDialogReply(match, body, from, clientId) {
 
 async function tryHandleConfirmReply({ from, body, clientId }) {
   const text = String(from || '').includes('@') ? visibleEmailReply(body) : body;
-  const kind = parseConfirmReply(text);
+  let kind = parseConfirmReply(text);
   const compactReply = String(text || '')
     .trim()
     .toLowerCase()
@@ -2220,10 +2358,23 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
     .replace(/[.!,#:\-]/g, '')
     .replace(/\s+/g, '');
 
+  // Голая цифра, которую шаблон назвал отменой. Шаблоны читаем только ради
+  // такого ответа — лишнее чтение настроек на каждую входящую SMS не нужно.
+  let cancelDigits = null;
+  if (!kind && /^\d$/.test(compactReply)) {
+    cancelDigits = cancelDigitsFromTemplates(await loadTemplates());
+    if (cancelDigits.has(compactReply)) kind = 'cancelled';
+  }
+
   // Bare «1» / «0» / «5» must confirm even if a leftover ask_slot dialog is open.
   if (kind === 'confirmed' && (compactReply === '1' || compactReply === 'yes' || compactReply === 'да' || compactReply === 'ok' || compactReply === 'ок')) {
     const pending = await findPendingJob(from, clientId);
     if (pending) return confirmVisitMatch(pending, from, clientId);
+    const alreadyUpcoming = await listUpcomingVisits(from, clientId);
+    if (alreadyUpcoming.length) {
+      // Визит уже подтверждён — повторное подтверждение и ложную тревогу не шлём.
+      return true;
+    }
     // Клиент подтвердил, а подходящего визита нет: заявку удалили, закрыли или
     // визит уже прошёл. Раньше «1» в этом случае просто исчезала — владелец
     // ждал, что статус сменится, и не понимал, почему ничего не происходит.
@@ -2242,9 +2393,15 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
   }
 
   const upcoming = kind === 'cancelled' ? await listUpcomingVisits(from, clientId) : [];
-  const cancelThisSms = compactReply === '0';
+  // «Отменить именно этот визит» — любая цифра, которой шаблон подписал отмену,
+  // а не только «0»: клиент нажимает ту кнопку, которую ему показали.
+  const cancelThisSms =
+    compactReply === '0' ||
+    ((cancelDigits || new Set()).has(compactReply) && /^\d$/.test(compactReply));
   if (kind && !(kind === 'cancelled' && upcoming.length > 1 && !cancelThisSms)) {
-    const match = await findPendingJob(from, clientId);
+    const match = await findPendingJob(from, clientId, {
+      includeConfirmed: kind !== 'confirmed',
+    });
     if (match) {
       const visits = coalesceVisits(match.job);
       const idx = visits.findIndex((visit) => String(visit.id || '') === String(match.visit.id || ''));
@@ -2278,7 +2435,12 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
           return true;
         }
 
-        visits[idx] = { ...visits[idx], smsConfirmStatus: 'reschedule', smsDialog: 'ask_slot' };
+        visits[idx] = {
+          ...visits[idx],
+          smsConfirmStatus: 'reschedule',
+          smsConfirmNotifiedStatus: 'reschedule',
+          smsDialog: 'ask_slot',
+        };
         await match.doc.ref.update({
           visits,
           status: rescheduleStatus(match.job),
@@ -2299,6 +2461,9 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
         });
         return true;
       }
+    } else if (kind === 'confirmed') {
+      const alreadyUpcoming = await listUpcomingVisits(from, clientId);
+      if (alreadyUpcoming.length) return true;
     }
   }
 
@@ -2318,6 +2483,7 @@ async function keepVisit(match, from, clientId) {
       ...visits[idx],
       smsDialog: '',
       smsConfirmStatus: 'confirmed',
+      smsConfirmNotifiedStatus: 'confirmed',
     };
     await match.doc.ref.update({
       visits,
@@ -2333,15 +2499,8 @@ async function keepVisit(match, from, clientId) {
     kind: 'confirm_kept',
     job: match.job,
   });
-  await notifyMaster(
-    'Клиент оставил заявку',
-    `${jobName(match.job)} — ${vars.date} ${vars.time}`,
-    {
-      type: 'visit_confirm',
-      from: from || '',
-      jobId: match.doc.id,
-    }
-  );
+  // Клиент оставил визит у себя — это тоже подтверждение, в шторку не идёт
+  // (см. confirmVisitMatch).
   return true;
 }
 
@@ -2380,9 +2539,7 @@ exports.sendVisitReminders = onSchedule(
   },
   async () => {
     try {
-      await sendMissedBookingConfirms();
       await sendMissedReviewSms();
-      await sendDayBeforeReminders();
     } catch (error) {
       console.error('sendVisitReminders error:', error);
     }
@@ -2408,6 +2565,9 @@ exports.sendOwnerReminders = onSchedule(
 );
 
 exports.sendOwnerVisitSoon = sendOwnerVisitSoon;
+exports.sendDayBeforeReminders = sendDayBeforeReminders;
+exports.stripConfirmAsk = stripConfirmAsk;
+exports.sameDayWording = sameDayWording;
 exports.tryHandleConfirmReply = tryHandleConfirmReply;
 exports.sendApprovedBookingSms = sendApprovedBookingSms;
 exports.recordBookingDelivery = recordBookingDelivery;

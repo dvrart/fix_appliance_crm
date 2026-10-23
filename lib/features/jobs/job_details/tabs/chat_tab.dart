@@ -48,6 +48,8 @@ class ChatTab extends StatelessWidget {
                             email: contact.email,
                           ),
                       ],
+                      onRecipientChanged: (peer) =>
+                          controller.setChatRole(peer.id),
                       embedded: true,
                     ),
             ),

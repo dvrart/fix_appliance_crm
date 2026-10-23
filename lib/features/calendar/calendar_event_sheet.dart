@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/utils/app_date_picker.dart';
 import '../../models/calendar_event.dart';
@@ -18,7 +19,7 @@ Future<void> showCalendarEventSheet(
     context: context,
     isScrollControlled: true,
     useRootNavigator: true,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
     ),
@@ -185,10 +186,10 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
                   ? 'Новое мероприятие'.tr
                   : 'Мероприятие'.tr,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w800,
-                color: Color(0xFF14557F),
+                color: AppColors.primaryOnCard,
               ),
             ),
             const SizedBox(height: 16),
@@ -201,7 +202,7 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
                 labelText: 'Текст'.tr,
                 border: const OutlineInputBorder(),
                 filled: true,
-                fillColor: Colors.grey.shade50,
+                fillColor: AppColors.cardMuted,
               ),
             ),
             const SizedBox(height: 14),
@@ -210,7 +211,7 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w700,
-                color: Colors.grey.shade700,
+                color: AppColors.inkMuted,
               ),
             ),
             const SizedBox(height: 8),
@@ -237,9 +238,9 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
               child: Container(
                 height: 140,
                 decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
+                  color: AppColors.cardMuted,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Colors.black12),
+                  border: Border.all(color: AppColors.border),
                   image: preview.isEmpty
                       ? null
                       : DecorationImage(
@@ -258,9 +259,9 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(Icons.add_a_photo_outlined,
-                              color: Colors.grey.shade600, size: 32),
+                              color: AppColors.inkMuted, size: 32),
                           const SizedBox(height: 6),
-                          Text('Фото'.tr, style: TextStyle(color: Colors.grey.shade700)),
+                          Text('Фото'.tr, style: TextStyle(color: AppColors.inkMuted)),
                         ],
                       )
                     : null,
@@ -269,7 +270,7 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
             const SizedBox(height: 8),
             ListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.timer_outlined, color: Color(0xFF14557F)),
+              leading: Icon(Icons.timer_outlined, color: AppColors.primaryOnCard),
               title: Text('$_duration ${'мин'.tr}'),
               subtitle: Text('Длительность'.tr),
               trailing: DropdownButtonHideUnderline(
@@ -290,7 +291,7 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
             ),
             ListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.event, color: Color(0xFF14557F)),
+              leading: Icon(Icons.event, color: AppColors.primaryOnCard),
               title: Text(
                 appDateTimeLabel(_startAt),
                 style: const TextStyle(fontWeight: FontWeight.w700),

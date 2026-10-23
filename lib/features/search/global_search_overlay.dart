@@ -15,7 +15,7 @@ import '../warehouse/warehouse_screen.dart';
 
 class GlobalSearchOverlay {
   static Future<void> open(BuildContext context) {
-    return Navigator.of(context, rootNavigator: true).push(
+    return AppNav.navigatorOf(context).push(
       PageRouteBuilder<void>(
         opaque: false,
         barrierColor: const Color(0x99000000),
@@ -110,7 +110,7 @@ class _GlobalSearchPageState extends State<_GlobalSearchPage> {
 
   /// [card] — ключ карточки (заявка, клиент): по нему стек не плодит копии.
   void _openRoute(Widget page, {String? card}) {
-    final nav = Navigator.of(context, rootNavigator: true);
+    final nav = AppNav.navigatorOf(context);
     nav.pop();
     if (card != null) {
       AppNav.openCard<void>(nav.context, key: card, builder: (_) => page);
@@ -230,13 +230,13 @@ class _SearchField extends StatelessWidget {
       elevation: 10,
       shadowColor: Colors.black38,
       borderRadius: BorderRadius.circular(28),
-      color: Colors.white,
+      color: AppColors.card,
       child: SizedBox(
         height: 56,
         child: Row(
           children: [
             const SizedBox(width: 16),
-            Icon(Icons.search, color: AppColors.primary),
+            Icon(Icons.search, color: AppColors.primaryOnCard),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
@@ -310,7 +310,7 @@ class _ResultsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final maxH = MediaQuery.sizeOf(context).height * 0.55;
     return Material(
-      color: Colors.white,
+      color: AppColors.card,
       elevation: 8,
       shadowColor: Colors.black26,
       borderRadius: BorderRadius.circular(20),
@@ -362,6 +362,13 @@ class _ResultsCard extends StatelessWidget {
   }
 
   Widget _clientTile(BuildContext context, Client client) {
+    final isRegular =
+        client.isRegular ||
+        ClientService.isRegularClient(
+          clientId: client.id,
+          phone: client.phone,
+          email: client.email,
+        );
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: Colors.blue.shade50,
@@ -370,10 +377,17 @@ class _ResultsCard extends StatelessWidget {
           style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold),
         ),
       ),
-      title: HighlightText(
-        client.fullName,
-        query: query,
-        style: const TextStyle(fontWeight: FontWeight.bold),
+      title: Row(
+        children: [
+          Flexible(
+            child: HighlightText(
+              client.fullName,
+              query: query,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          if (isRegular) const RegularClientStar(size: 17),
+        ],
       ),
       subtitle: HighlightText(
         client.phone.isNotEmpty ? client.phone : client.address,
@@ -387,6 +401,7 @@ class _ResultsCard extends StatelessWidget {
             'phone': client.phone,
             'address': client.address,
             'companyName': client.companyName,
+            'isRegular': isRegular,
           },
         ),
         card: AppNav.clientKey(client.id),
@@ -395,6 +410,12 @@ class _ResultsCard extends StatelessWidget {
   }
 
   Widget _jobTile(BuildContext context, Job job) {
+    final isRegular =
+        job.clientIsRegular ||
+        ClientService.isRegularClient(
+          clientId: job.clientId,
+          phone: job.clientPhone,
+        );
     return ListTile(
       leading: Container(
         padding: const EdgeInsets.all(8),
@@ -404,10 +425,17 @@ class _ResultsCard extends StatelessWidget {
         ),
         child: Icon(job.applianceIcon, color: job.statusColor),
       ),
-      title: HighlightText(
-        '${trAny(job.applianceType)} — ${job.clientName}',
-        query: query,
-        style: const TextStyle(fontWeight: FontWeight.bold),
+      title: Row(
+        children: [
+          Flexible(
+            child: HighlightText(
+              '${trAny(job.applianceType)} — ${job.clientName}',
+              query: query,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          if (isRegular) const RegularClientStar(size: 16),
+        ],
       ),
       subtitle: HighlightText(
         '${trAny(job.status)} • ${job.workAddress}',
@@ -423,6 +451,7 @@ class _ResultsCard extends StatelessWidget {
             'clientName': job.clientName,
             'clientPhone': job.clientPhone,
             'clientAddress': job.clientAddress,
+            'clientIsRegular': isRegular,
             'applianceType': job.applianceType,
             'brand': job.applianceBrand,
             'status': job.status,

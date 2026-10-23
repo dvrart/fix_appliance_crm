@@ -122,7 +122,7 @@ class _InvoiceBuilderPageState extends State<InvoiceBuilderPage> {
       dirty: _dirty,
       onSave: _save,
       child: Scaffold(
-        backgroundColor: Colors.grey.shade100,
+        backgroundColor: AppColors.surface,
         appBar: AppBar(
           title: Text('Конструктор счёта'.tr),
           backgroundColor: AppColors.primary,
@@ -138,7 +138,7 @@ class _InvoiceBuilderPageState extends State<InvoiceBuilderPage> {
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                     child: Text(
                       'Зажмите логотип или QR и перетащите в зону на макете.'.tr,
-                      style: const TextStyle(color: Colors.black54),
+                      style: TextStyle(color: AppColors.inkMuted),
                     ),
                   ),
                   Padding(
@@ -528,9 +528,9 @@ class _InvoiceBuilderPageState extends State<InvoiceBuilderPage> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -576,11 +576,11 @@ class _InvoiceBuilderPageState extends State<InvoiceBuilderPage> {
             ),
           ],
           if (_showPayments)
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
               child: Text(
                 'Payments  ·  Mastercard',
-                style: TextStyle(fontSize: 11, color: Colors.black54),
+                style: TextStyle(fontSize: 11, color: AppColors.inkMuted),
               ),
             ),
           if (qrInFooter || _dragging == _DragKind.qr) ...[
@@ -595,10 +595,10 @@ class _InvoiceBuilderPageState extends State<InvoiceBuilderPage> {
                         : null,
                   ),
                 ),
-                const Expanded(
+                Expanded(
                   child: Text(
                     'fix-appliance.ca',
-                    style: TextStyle(fontSize: 9, color: Colors.black54),
+                    style: TextStyle(fontSize: 9, color: AppColors.inkMuted),
                     textAlign: TextAlign.center,
                   ),
                 ),

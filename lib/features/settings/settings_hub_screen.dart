@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../core/ui_scale.dart';
 import '../../services/settings_service.dart';
 import 'pages/about_settings_page.dart';
 import 'pages/appearance_settings_page.dart';
@@ -48,51 +49,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.grey.shade100,
-      appBar: AppBar(
-        title: Text(
-          context.tr('Настройки', 'Settings'),
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
-        automaticallyImplyLeading: false,
-      ),
-      body: StreamBuilder(
-        stream: _documentSettings,
-        builder: (context, docsSnap) {
-          final docs = docsSnap.data;
-          final name = docs?.companyName ?? 'Fix Appliance';
-          final address = docs?.companyAddress ?? '';
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        AppLocale.instance,
+        AppUiSettings.instance,
+      ]),
+      builder: (context, _) {
+        return Scaffold(
+          backgroundColor: AppColors.surface,
+          appBar: AppBar(
+            title: Text(
+              context.tr('Настройки', 'Settings'),
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            backgroundColor: AppColors.primary,
+            foregroundColor: Colors.white,
+            automaticallyImplyLeading: false,
+          ),
+          body: StreamBuilder(
+            stream: _documentSettings,
+            builder: (context, docsSnap) {
+              final docs = docsSnap.data;
+              final name = docs?.companyName ?? 'Fix Appliance';
+              final address = docs?.companyAddress ?? '';
 
-          return StreamBuilder<Map<String, dynamic>>(
-            stream: _config,
-            builder: (context, configSnap) {
-              final config = configSnap.data ?? <String, dynamic>{};
-              final workStart = SettingsService.readWorkStartMinutes(config);
-              final workEnd = SettingsService.readWorkEndMinutes(config);
-              final workDays = SettingsService.readWorkDays(config);
-              final serviceCall = SettingsService.readServiceCallFee(config);
-              final areaLabel = SettingsService.describeServiceArea(config);
-              final polygon = config['servicePolygon'];
-              final hasPolygon = polygon is List && polygon.length >= 3;
-              final area = areaLabel.isNotEmpty
-                  ? areaLabel
-                  : hasPolygon
-                      ? context.tr('Отмечена', 'Marked')
-                      : context.tr('Не отмечена', 'Not marked');
-              final assistantOn = SettingsService.readAssistantEnabled(config);
-              final secretaryOn = SettingsService.readAiAnswerEnabled(config);
-              final secretaryTimeout =
-                  SettingsService.readAiAnswerTimeoutSeconds(config);
-              final defaultView = SettingsService.readDefaultCalendarView(
-                config,
-              );
+              return StreamBuilder<Map<String, dynamic>>(
+                stream: _config,
+                builder: (context, configSnap) {
+                  final config = configSnap.data ?? <String, dynamic>{};
+                  final workStart = SettingsService.readWorkStartMinutes(config);
+                  final workEnd = SettingsService.readWorkEndMinutes(config);
+                  final workDays = SettingsService.readWorkDays(config);
+                  final serviceCall = SettingsService.readServiceCallFee(config);
+                  final areaLabel = SettingsService.describeServiceArea(config);
+                  final polygon = config['servicePolygon'];
+                  final hasPolygon = polygon is List && polygon.length >= 3;
+                  final area = areaLabel.isNotEmpty
+                      ? areaLabel
+                      : hasPolygon
+                          ? context.tr('Отмечена', 'Marked')
+                          : context.tr('Не отмечена', 'Not marked');
+                  final assistantOn = SettingsService.readAssistantEnabled(config);
+                  final secretaryOn = SettingsService.readAiAnswerEnabled(config);
+                  final secretaryTimeout =
+                      SettingsService.readAiAnswerTimeoutSeconds(config);
+                  final defaultView = SettingsService.readDefaultCalendarView(
+                    config,
+                  );
 
-              return ListenableBuilder(
-                listenable: AppLocale.instance,
-                builder: (context, _) {
                   return ListView(
                     padding: const EdgeInsets.only(top: 12, bottom: 32),
                     children: [
@@ -420,9 +424,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 },
               );
             },
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 }

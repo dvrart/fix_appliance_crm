@@ -190,13 +190,13 @@ class _LessonListTab extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(emptyIcon, size: 48, color: Colors.black26),
+              Icon(emptyIcon, size: 48, color: AppColors.inkMuted),
               const SizedBox(height: 16),
               Text(
                 emptyText,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.black54,
+                style: TextStyle(
+                  color: AppColors.inkMuted,
                   fontSize: 15,
                   height: 1.35,
                 ),
@@ -213,9 +213,9 @@ class _LessonListTab extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: AppColors.card,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.black12),
+            border: Border.all(color: AppColors.border),
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -225,8 +225,8 @@ class _LessonListTab extends StatelessWidget {
               Expanded(
                 child: Text(
                   description,
-                  style: const TextStyle(
-                    color: Colors.black87,
+                  style: TextStyle(
+                    color: AppColors.ink,
                     fontSize: 13,
                     height: 1.35,
                   ),
@@ -241,9 +241,9 @@ class _LessonListTab extends StatelessWidget {
           children: [
             Text(
               '${context.tr('Всего', 'Total')}: ${items.length}',
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.w700,
-                color: Colors.black54,
+                color: AppColors.inkMuted,
                 fontSize: 13,
               ),
             ),
@@ -522,7 +522,7 @@ class _ErrorCardState extends State<_ErrorCard> {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
         side: BorderSide(
-          color: isPending ? Colors.orange.shade200 : Colors.black12,
+          color: isPending ? Colors.orange.shade200 : AppColors.border,
         ),
       ),
       child: Padding(
@@ -540,8 +540,8 @@ class _ErrorCardState extends State<_ErrorCard> {
                 if (stamp.isNotEmpty)
                   Text(
                     stamp,
-                    style: const TextStyle(
-                      color: Colors.black54,
+                    style: TextStyle(
+                      color: AppColors.inkMuted,
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                     ),
@@ -598,12 +598,12 @@ class _ErrorCardState extends State<_ErrorCard> {
               const SizedBox(height: 4),
               Row(
                 children: [
-                  const Icon(Icons.phone, size: 14, color: Colors.black54),
+                  Icon(Icons.phone, size: 14, color: AppColors.inkMuted),
                   const SizedBox(width: 4),
                   Text(
                     phone,
-                    style: const TextStyle(
-                      color: Colors.black54,
+                    style: TextStyle(
+                      color: AppColors.inkMuted,
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
                     ),
@@ -626,10 +626,10 @@ class _ErrorCardState extends State<_ErrorCard> {
               const SizedBox(height: 8),
               Text(
                 happened,
-                style: const TextStyle(
+                style: TextStyle(
                   height: 1.35,
                   fontSize: 13,
-                  color: Colors.black87,
+                  color: AppColors.ink,
                 ),
               ),
             ],
@@ -640,9 +640,9 @@ class _ErrorCardState extends State<_ErrorCard> {
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFFFF8E1),
+                  color: AppColors.tint(const Color(0xFFFFB300), 0.12),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFFFE082)),
+                  border: Border.all(color: const Color(0xFFFFE082).withValues(alpha: 0.5)),
                 ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -652,9 +652,9 @@ class _ErrorCardState extends State<_ErrorCard> {
                     Expanded(
                       child: Text(
                         '${context.tr('Зацепилась за', 'Stuck on')}: $clungTo',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12,
-                          color: Color(0xFFE65100),
+                          color: AppColors.isDark ? const Color(0xFFFFCA28) : const Color(0xFFE65100),
                           height: 1.3,
                         ),
                       ),
@@ -670,9 +670,9 @@ class _ErrorCardState extends State<_ErrorCard> {
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFE8F5E9),
+                  color: AppColors.tint(const Color(0xFF2E7D32), 0.12),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFA5D6A7)),
+                  border: Border.all(color: const Color(0xFFA5D6A7).withValues(alpha: 0.5)),
                 ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -682,9 +682,9 @@ class _ErrorCardState extends State<_ErrorCard> {
                     Expanded(
                       child: Text(
                         '${context.tr('Как надо было', 'Suggested fix')}: $fix',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12,
-                          color: Color(0xFF1B5E20),
+                          color: AppColors.isDark ? const Color(0xFF81C784) : const Color(0xFF1B5E20),
                           height: 1.3,
                           fontWeight: FontWeight.w500,
                         ),
@@ -701,16 +701,16 @@ class _ErrorCardState extends State<_ErrorCard> {
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
+                  color: AppColors.cardMuted,
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.black12),
+                  border: Border.all(color: AppColors.border),
                 ),
                 child: Text(
                   '${context.tr('Правило (EN)', 'Rule (EN)')}: $rule',
                   style: TextStyle(
                     fontSize: 11,
                     fontFamily: 'monospace',
-                    color: Colors.grey.shade800,
+                    color: AppColors.ink,
                     height: 1.3,
                   ),
                 ),
@@ -754,16 +754,16 @@ class _ErrorCardState extends State<_ErrorCard> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF8F9FA),
+                    color: AppColors.cardMuted,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.black12),
+                    border: Border.all(color: AppColors.border),
                   ),
                   child: SelectableText(
                     transcript,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12,
                       height: 1.35,
-                      color: Colors.black87,
+                      color: AppColors.ink,
                     ),
                   ),
                 ),

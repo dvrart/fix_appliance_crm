@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_commands.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../models/client.dart';
 import '../../services/catalog_service.dart';
 import '../../services/client_service.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
@@ -38,6 +39,7 @@ class _EditClientSheetState extends State<EditClientSheet> {
   late final TextEditingController postalController;
   late String source;
   late String unit;
+  late bool isRegular;
   late final String _initialName;
   late final String _initialPhone;
   late final String _initialEmail;
@@ -48,6 +50,7 @@ class _EditClientSheetState extends State<EditClientSheet> {
   late final String _initialCity;
   late final String _initialPostal;
   late final String _initialUnit;
+  late final bool _initialRegular;
 
   @override
   void initState() {
@@ -78,6 +81,8 @@ class _EditClientSheetState extends State<EditClientSheet> {
     postalController = TextEditingController(text: _initialPostal);
     source = _initialSource;
     unit = _initialUnit;
+    _initialRegular = ClientService.isRegularMap(currentData, widget.clientId);
+    isRegular = _initialRegular;
     for (final controller in [
       nameController,
       phoneController,
@@ -124,17 +129,22 @@ class _EditClientSheetState extends State<EditClientSheet> {
         streetController.text.trim() != _initialStreet.trim() ||
         cityController.text.trim() != _initialCity.trim() ||
         postalController.text.trim() != _initialPostal.trim() ||
-        unit.trim() != _initialUnit.trim();
+        unit.trim() != _initialUnit.trim() ||
+        isRegular != _initialRegular;
   }
 
   Future<bool> _persist() async {
+    final phone = phoneController.text.trim();
+    final name = Client.stripClientWord(nameController.text.trim(), phone);
     await ClientService.update(widget.clientId, {
-      'fullName': nameController.text.trim(),
-      'phone': phoneController.text.trim(),
+      'fullName': name,
+      'name': name,
+      'phone': phone,
       'email': emailController.text.trim(),
       'companyName': companyController.text.trim(),
       'notes': notesController.text.trim(),
       'source': source,
+      'isRegular': isRegular,
       ...ClientService.addressFields(
         street: streetController.text.trim(),
         city: cityController.text.trim(),
@@ -193,6 +203,42 @@ class _EditClientSheetState extends State<EditClientSheet> {
                           ),
                         ),
                         const SizedBox(height: 12),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: isRegular
+                                ? const Color(0xFFFFFBEB)
+                                : Colors.grey.shade50,
+                            border: Border.all(
+                              color: isRegular
+                                  ? const Color(0xFFF59E0B)
+                                  : Colors.grey.shade300,
+                            ),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: SwitchListTile(
+                            contentPadding:
+                                const EdgeInsets.symmetric(horizontal: 12),
+                            secondary: Icon(
+                              isRegular
+                                  ? Icons.star_rounded
+                                  : Icons.star_border_rounded,
+                              color: isRegular
+                                  ? const Color(0xFFF59E0B)
+                                  : Colors.grey,
+                              size: 26,
+                            ),
+                            title: Text(
+                              'Постоянный клиент'.tr,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            value: isRegular,
+                            onChanged: (val) =>
+                                setState(() => isRegular = val),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
                         TextField(
                           controller: phoneController,
                           keyboardType: TextInputType.phone,
@@ -228,8 +274,8 @@ class _EditClientSheetState extends State<EditClientSheet> {
                               vertical: 14,
                             ),
                             decoration: BoxDecoration(
-                              color: Colors.grey.shade50,
-                              border: Border.all(color: Colors.grey.shade300),
+                              color: AppColors.cardMuted,
+                              border: Border.all(color: AppColors.border),
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Row(
@@ -243,17 +289,17 @@ class _EditClientSheetState extends State<EditClientSheet> {
                                 Expanded(
                                   child: Text(
                                     cityController.text.isEmpty
-                                        ? 'Нажмите, чтобы ввести адрес...'.tr
-                                        : '${streetController.text}, ${cityController.text}',
+                                       ? 'Нажмите, чтобы ввести адрес...'.tr
+                                       : '${streetController.text}, ${cityController.text}',
                                     style: TextStyle(
                                       color: cityController.text.isEmpty
-                                          ? Colors.black54
-                                          : Colors.black87,
+                                          ? AppColors.inkMuted
+                                          : AppColors.ink,
                                       fontSize: 16,
                                     ),
                                   ),
                                 ),
-                                Icon(Icons.search, color: AppColors.primary),
+                                Icon(Icons.search, color: AppColors.primaryOnCard),
                               ],
                             ),
                           ),

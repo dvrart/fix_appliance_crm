@@ -57,13 +57,13 @@ class AppTimeWheel extends StatelessWidget {
     return SizedBox(
       height: height,
       child: CupertinoTheme(
-        data: const CupertinoThemeData(
-          brightness: Brightness.light,
+        data: CupertinoThemeData(
+          brightness: AppColors.isDark ? Brightness.dark : Brightness.light,
           textTheme: CupertinoTextThemeData(
             dateTimePickerTextStyle: TextStyle(
               fontSize: 22,
               fontWeight: FontWeight.w600,
-              color: Colors.black,
+              color: AppColors.ink,
             ),
           ),
         ),
@@ -152,7 +152,7 @@ class _AppDateTimePanelState extends State<AppDateTimePanel> {
             style: TextStyle(
               fontSize: 17,
               fontWeight: FontWeight.w800,
-              color: AppColors.primary,
+              color: AppColors.primaryOnCard,
             ),
           ),
         ),
@@ -177,7 +177,7 @@ class _AppDateTimePanelState extends State<AppDateTimePanel> {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
-                color: i >= 5 ? Colors.red.shade400 : Colors.grey.shade600,
+                color: i >= 5 ? Colors.red.shade400 : AppColors.inkMuted,
               ),
             ),
           ),
@@ -249,10 +249,10 @@ class _AppDateTimePanelState extends State<AppDateTimePanel> {
                                       ? FontWeight.w800
                                       : FontWeight.w500,
                                   color: !enabled
-                                      ? Colors.grey.shade400
+                                      ? AppColors.inkMuted.withValues(alpha: 0.4)
                                       : isSel
                                       ? Colors.white
-                                      : Colors.black87,
+                                      : AppColors.ink,
                                 ),
                               ),
                             ),
@@ -315,21 +315,25 @@ Widget _sheetTitle(String title, String? subtitle) {
           height: 4,
           margin: const EdgeInsets.only(bottom: 10),
           decoration: BoxDecoration(
-            color: Colors.black26,
+            color: AppColors.border,
             borderRadius: BorderRadius.circular(4),
           ),
         ),
         Text(
           title,
           textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            color: AppColors.ink,
+          ),
         ),
         if (subtitle != null)
           Padding(
             padding: const EdgeInsets.only(top: 2),
             child: Text(
               subtitle,
-              style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+              style: TextStyle(fontSize: 14, color: AppColors.inkMuted),
             ),
           ),
       ],
@@ -365,7 +369,7 @@ Future<DateTime?> showAppDateTimeSheet({
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
     ),
@@ -410,7 +414,7 @@ Future<DateTimeRange?> showAppDateRangeSheet({
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
     ),
@@ -483,7 +487,7 @@ Future<DateTime?> showAppDateSheet({
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.card,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
     ),
@@ -529,10 +533,10 @@ Future<DateTime?> showAppDateSheet({
                       onPressed: () => Navigator.pop(sheetContext),
                       child: Text(
                         'Отмена'.tr,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
-                          color: Colors.black54,
+                          color: AppColors.inkMuted,
                         ),
                       ),
                     ),

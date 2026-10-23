@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 
 /// Одна строка расшифровки: что это было, когда и на сколько.
@@ -10,6 +11,9 @@ class BreakdownRow {
 
   /// Если цифра не деньги (например «8 заявок») — показываем её текстом.
   final String? amountText;
+
+  /// Короткая подпись под суммой справа: «чистыми», «для меня», «клиенту».
+  final String? amountLabel;
 
   /// Мелкие подписи под строкой: «Без HST $200 · HST $26».
   final List<String> chips;
@@ -24,6 +28,7 @@ class BreakdownRow {
     this.subtitle = '',
     this.amount,
     this.amountText,
+    this.amountLabel,
     this.chips = const [],
     this.negative = false,
     this.warning,
@@ -69,6 +74,9 @@ class ReportBreakdownPage extends StatelessWidget {
   /// Строки формулы: («Выручка без HST», «$1 820.00»).
   final List<(String, String)> formula;
   final List<BreakdownSection> sections;
+  final String? actionLabel;
+  final IconData? actionIcon;
+  final VoidCallback? onAction;
 
   const ReportBreakdownPage({
     super.key,
@@ -82,6 +90,9 @@ class ReportBreakdownPage extends StatelessWidget {
     this.explain = const [],
     this.formula = const [],
     this.sections = const [],
+    this.actionLabel,
+    this.actionIcon,
+    this.onAction,
   });
 
   static Future<void> open(
@@ -96,6 +107,9 @@ class ReportBreakdownPage extends StatelessWidget {
     List<String> explain = const [],
     List<(String, String)> formula = const [],
     List<BreakdownSection> sections = const [],
+    String? actionLabel,
+    IconData? actionIcon,
+    VoidCallback? onAction,
   }) {
     return Navigator.push(
       context,
@@ -111,6 +125,9 @@ class ReportBreakdownPage extends StatelessWidget {
           explain: explain,
           formula: formula,
           sections: sections,
+          actionLabel: actionLabel,
+          actionIcon: actionIcon,
+          onAction: onAction,
         ),
       ),
     );
@@ -124,16 +141,38 @@ class ReportBreakdownPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F6F8),
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF14557F),
+        backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
           _headCard(),
+          if (actionLabel != null && onAction != null) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: onAction,
+                icon: Icon(actionIcon ?? Icons.open_in_new, size: 18),
+                label: Text(
+                  actionLabel!,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF14557F),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            ),
+          ],
           if (explain.isNotEmpty) ...[
             const SizedBox(height: 12),
             _explainCard(context),
@@ -158,7 +197,7 @@ class ReportBreakdownPage extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
@@ -185,21 +224,21 @@ class ReportBreakdownPage extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text(
                   headlineLabel,
-                  style: const TextStyle(
-                    color: Colors.black87,
+                  style: TextStyle(
+                    color: AppColors.ink,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
                 Text(
                   periodLabel,
-                  style: const TextStyle(color: Colors.black45, fontSize: 13),
+                  style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
                 ),
                 if (headlineHint.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Text(
                     headlineHint,
-                    style: const TextStyle(
-                      color: Colors.black54,
+                    style: TextStyle(
+                      color: AppColors.inkMuted,
                       fontSize: 12,
                       height: 1.35,
                     ),
@@ -218,22 +257,22 @@ class ReportBreakdownPage extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFFEFF5FA),
+        color: AppColors.tint(AppColors.primary, 0.10),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFBBD4E6)),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.help_outline, size: 18, color: Color(0xFF14557F)),
+              Icon(Icons.help_outline, size: 18, color: AppColors.primaryOnCard),
               const SizedBox(width: 6),
               Text(
                 context.tr('Что это за цифра', 'What this number is'),
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.w800,
-                  color: Color(0xFF14557F),
+                  color: AppColors.primaryOnCard,
                 ),
               ),
             ],
@@ -243,7 +282,7 @@ class ReportBreakdownPage extends StatelessWidget {
               padding: const EdgeInsets.only(top: 6),
               child: Text(
                 line,
-                style: const TextStyle(height: 1.35, color: Colors.black87),
+                style: TextStyle(height: 1.35, color: AppColors.ink),
               ),
             ),
         ],
@@ -256,9 +295,9 @@ class ReportBreakdownPage extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade300),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -267,9 +306,9 @@ class ReportBreakdownPage extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 4, top: 2),
             child: Text(
               context.tr('Как посчитано', 'How it is calculated'),
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.w800,
-                color: Color(0xFF14557F),
+                color: AppColors.primaryOnCard,
               ),
             ),
           ),
@@ -287,8 +326,8 @@ class ReportBreakdownPage extends StatelessWidget {
                         fontWeight:
                             label.startsWith('=') ? FontWeight.w800 : null,
                         color: label.startsWith('=')
-                            ? const Color(0xFF14557F)
-                            : Colors.black87,
+                            ? AppColors.primaryOnCard
+                            : AppColors.ink,
                       ),
                     ),
                   ),
@@ -298,8 +337,8 @@ class ReportBreakdownPage extends StatelessWidget {
                     style: TextStyle(
                       fontWeight: FontWeight.w800,
                       color: label.startsWith('=')
-                          ? const Color(0xFF14557F)
-                          : Colors.black,
+                          ? AppColors.primaryOnCard
+                          : AppColors.ink,
                     ),
                   ),
                 ],
@@ -316,10 +355,10 @@ class ReportBreakdownPage extends StatelessWidget {
       children: [
         Text(
           section.title,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w800,
-            color: Color(0xFF14557F),
+            color: AppColors.primaryOnCard,
           ),
         ),
         if (section.hint.isNotEmpty)
@@ -327,8 +366,8 @@ class ReportBreakdownPage extends StatelessWidget {
             padding: const EdgeInsets.only(top: 4),
             child: Text(
               section.hint,
-              style: const TextStyle(
-                color: Colors.black54,
+              style: TextStyle(
+                color: AppColors.inkMuted,
                 fontSize: 12,
                 height: 1.35,
               ),
@@ -344,20 +383,20 @@ class ReportBreakdownPage extends StatelessWidget {
         width: double.infinity,
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AppColors.card,
           borderRadius: BorderRadius.circular(14),
         ),
         child: Text(
           section.empty.isEmpty
               ? context.tr('Пусто за этот период.', 'Nothing in this period.')
               : section.empty,
-          style: const TextStyle(color: Colors.black54, height: 1.35),
+          style: TextStyle(color: AppColors.inkMuted, height: 1.35),
         ),
       );
     }
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -377,18 +416,18 @@ class ReportBreakdownPage extends StatelessWidget {
                       section.totalLabel.isEmpty
                           ? context.tr('Итого', 'Total')
                           : section.totalLabel,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w800,
-                        color: Color(0xFF14557F),
+                        color: AppColors.primaryOnCard,
                       ),
                     ),
                   ),
                   Text(
                     money(section.total!),
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontWeight: FontWeight.w900,
                       fontSize: 17,
-                      color: Color(0xFF14557F),
+                      color: AppColors.primaryOnCard,
                     ),
                   ),
                 ],
@@ -421,8 +460,8 @@ class ReportBreakdownPage extends StatelessWidget {
                     padding: const EdgeInsets.only(top: 2),
                     child: Text(
                       row.subtitle,
-                      style: const TextStyle(
-                        color: Colors.black54,
+                      style: TextStyle(
+                        color: AppColors.inkMuted,
                         fontSize: 12.5,
                         height: 1.3,
                       ),
@@ -442,14 +481,14 @@ class ReportBreakdownPage extends StatelessWidget {
                               vertical: 3,
                             ),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFF0F3F6),
+                              color: AppColors.cardMuted,
                               borderRadius: BorderRadius.circular(20),
                             ),
                             child: Text(
                               chip,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 11.5,
-                                color: Colors.black87,
+                                color: AppColors.ink,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
@@ -487,13 +526,27 @@ class ReportBreakdownPage extends StatelessWidget {
           ),
           if (value.isNotEmpty) ...[
             const SizedBox(width: 10),
-            Text(
-              value,
-              style: TextStyle(
-                fontWeight: FontWeight.w800,
-                fontSize: 15,
-                color: row.negative ? const Color(0xFFC62828) : Colors.black,
-              ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 15,
+                    color: row.negative ? const Color(0xFFC62828) : AppColors.ink,
+                  ),
+                ),
+                if (row.amountLabel != null && row.amountLabel!.isNotEmpty)
+                  Text(
+                    row.amountLabel!,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: AppColors.inkMuted,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+              ],
             ),
           ],
           if (row.onTap != null)

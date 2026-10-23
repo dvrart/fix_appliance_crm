@@ -341,12 +341,27 @@ class _PinCard extends StatelessWidget {
                 Row(
                   children: [
                     Expanded(
-                      child: Text(
-                        name,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 16,
-                        ),
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ),
+                          if (pin.client.isRegular ||
+                              ClientService.isRegularClient(
+                                clientId: pin.client.id,
+                                phone: pin.client.phone,
+                                email: pin.client.email,
+                              ))
+                            const RegularClientStar(size: 18),
+                        ],
                       ),
                     ),
                     IconButton(

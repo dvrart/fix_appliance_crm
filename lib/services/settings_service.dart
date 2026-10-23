@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 import '../core/constants.dart';
 import '../models/document_settings.dart';
 import '../models/job.dart';
@@ -44,12 +45,103 @@ class SettingsService {
       'Have a great day! 😊';
   static const String defaultBookingConfirmSms =
       'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day';
+  /// Напоминание не просит подтверждения: его просим один раз, в
+  /// `booking_confirm` (решение FIX, 13.10.2026). Даже если в шаблоне просьба
+  /// останется, сервер снимает её при отправке (`stripConfirmAsk`).
   static const String defaultDayBeforeSms =
-      'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}\n\nReply 1 ✅ to confirm this visit, 0 ❌ to cancel, 5 🔁 to pick another day.';
+      'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}\n\nSee you then! No reply needed.';
   static const String defaultCancelSaveSms =
       'Sorry you need to cancel, {name}. 😔\nWe can keep the visit with 10% off, or even 25% off, or move it to another day.\n\nReply:\n• a new day and time (example: Friday 11:00)\n• 1 — keep {date} at {time} with 10% off\n• 2 — keep it with 25% off\n• 0 — cancel';
   static const String defaultRescheduleAskSms =
       'No problem, {name}. 🔁\nWhat day and time should the technician come?\nExample: Thursday at 14:00';
+
+  /// Единый каталог встроенных шаблонов сообщений для Настроек и Чата.
+  static final List<
+      ({
+        String key,
+        String section,
+        String defaultTitle,
+        IconData icon,
+        Color color,
+      })> builtinSmsSpecs = [
+    (
+      key: 'on_way',
+      section: 'В пути и работа',
+      defaultTitle: 'Я в пути',
+      icon: Icons.directions_car,
+      color: Colors.green,
+    ),
+    (
+      key: 'part_ordered',
+      section: 'В пути и работа',
+      defaultTitle: 'Запчасть заказана',
+      icon: Icons.inventory_2_outlined,
+      color: Colors.orange,
+    ),
+    (
+      key: 'job_done',
+      section: 'В пути и работа',
+      defaultTitle: 'Работа завершена',
+      icon: Icons.check_circle_outline,
+      color: Colors.blue,
+    ),
+    (
+      key: 'booking_confirm',
+      section: 'Визиты',
+      defaultTitle: 'Подтверждение визита',
+      icon: Icons.event_available,
+      color: Colors.indigo,
+    ),
+    (
+      key: 'day_before',
+      section: 'Визиты',
+      defaultTitle: 'Напоминание о визите',
+      icon: Icons.notifications_outlined,
+      color: Colors.deepPurple,
+    ),
+    (
+      key: 'reschedule_ask',
+      section: 'Визиты',
+      defaultTitle: 'Перенос визита',
+      icon: Icons.event_repeat,
+      color: Colors.teal,
+    ),
+    (
+      key: 'cancel_save',
+      section: 'Визиты',
+      defaultTitle: 'Отмена визита',
+      icon: Icons.cancel_outlined,
+      color: Colors.red,
+    ),
+    (
+      key: 'invoice',
+      section: 'Документы и оплата',
+      defaultTitle: 'Счёт (Invoice)',
+      icon: Icons.receipt_long,
+      color: AppColors.primary,
+    ),
+    (
+      key: 'estimate',
+      section: 'Документы и оплата',
+      defaultTitle: 'Смета (Estimate)',
+      icon: Icons.description_outlined,
+      color: Colors.teal,
+    ),
+    (
+      key: 'receipt',
+      section: 'Документы и оплата',
+      defaultTitle: 'Чек об оплате (Receipt)',
+      icon: Icons.task_alt,
+      color: Colors.blueGrey,
+    ),
+    (
+      key: 'pay',
+      section: 'Документы и оплата',
+      defaultTitle: 'Ссылка на оплату',
+      icon: Icons.link,
+      color: Color(0xFF635BFF),
+    ),
+  ];
 
   static Map<String, String> defaultSmsTemplates() => {
         'on_way': defaultOnWaySms,
@@ -59,27 +151,89 @@ class SettingsService {
         'day_before': defaultDayBeforeSms,
         'cancel_save': defaultCancelSaveSms,
         'reschedule_ask': defaultRescheduleAskSms,
+        'invoice': DocumentSettings.defaults.invoiceSms,
+        'estimate': DocumentSettings.defaults.estimateSms,
+        'receipt': DocumentSettings.defaults.receiptSms,
+        'pay': DocumentSettings.kDefaultPaySms,
       };
 
-  /// Загрузить SMS-шаблоны
+  static Map<String, String> defaultSmsTemplateTitles() => {
+        for (final spec in builtinSmsSpecs) spec.key: spec.defaultTitle,
+      };
+
+  /// Загрузить все SMS-шаблоны (включая шаблоны документов и ссылки на оплату)
   static Future<Map<String, String>> loadSmsTemplates() async {
     final defaults = defaultSmsTemplates();
+    final out = Map<String, String>.from(defaults);
     try {
-      final doc = await FirestoreService.smsTemplatesRef.get();
+      final results = await Future.wait([
+        FirestoreService.smsTemplatesRef.get(),
+        loadDocumentSettings(),
+      ]);
+      final doc = results[0] as DocumentSnapshot;
+      final docs = results[1] as DocumentSettings;
+      out['invoice'] = docs.invoiceSms;
+      out['estimate'] = docs.estimateSms;
+      out['receipt'] = docs.receiptSms;
+      out['pay'] = docs.paySms;
       if (doc.exists && doc.data() != null) {
         final data = doc.data() as Map<String, dynamic>;
-        return {
-          for (final key in defaults.keys)
-            key: (data[key] ?? defaults[key]!).toString(),
-        };
+        for (final key in defaults.keys) {
+          final raw = data[key];
+          if (raw != null && raw.toString().trim().isNotEmpty) {
+            out[key] = raw.toString();
+          }
+        }
       }
     } catch (e) {
       // ignore
     }
-    return defaults;
+    return out;
+  }
+
+  /// Загрузить пользовательские названия встроенных шаблонов
+  static Future<Map<String, String>> loadSmsTemplateTitles() async {
+    final out = <String, String>{};
+    try {
+      final doc = await FirestoreService.smsTemplatesRef.get();
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data() as Map<String, dynamic>;
+        final raw = data['custom_titles'];
+        if (raw is Map) {
+          for (final entry in raw.entries) {
+            final k = entry.key.toString().trim();
+            final v = (entry.value ?? '').toString().trim();
+            if (k.isNotEmpty && v.isNotEmpty) {
+              out[k] = v;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// Сохранить пользовательские названия встроенных шаблонов
+  static Future<void> saveSmsTemplateTitles(Map<String, String> titles) async {
+    final defaults = defaultSmsTemplateTitles();
+    final custom = <String, String>{};
+    for (final entry in titles.entries) {
+      final val = entry.value.trim();
+      final def = defaults[entry.key] ?? '';
+      if (val.isNotEmpty && val != def && val != def.tr) {
+        custom[entry.key] = val;
+      }
+    }
+    await settleWrite(
+      FirestoreService.smsTemplatesRef.set(
+        {'custom_titles': custom},
+        SetOptions(merge: true),
+      ),
+    );
   }
 
   /// Клиентские SMS должны оставаться на английском даже при русском интерфейсе.
+  /// Пользовательские правки шаблонов в настройках не перезаписываются.
   static Future<void> ensureEnglishClientCopy() async {
     try {
       const legacySms = {
@@ -93,24 +247,6 @@ class SettingsService {
         'day_before':
             'Напоминание: завтра {date} в {time}. Ответьте 1 — подтверждаю, 2 — перенос.',
       };
-      const oldEnglishConfirm = {
-        'booking_confirm':
-            'Hi {name}! Visit {date} at {time}. Address: {address}. Reply 1 to confirm, 2 to reschedule.',
-        'day_before':
-            'Reminder: tomorrow {date} at {time}. Reply 1 to confirm, 2 to reschedule.',
-      };
-      const previousPlainEnglish = {
-        'on_way':
-            "Hi {name}, this is your technician. I'll be there in about 30 minutes.",
-        'part_ordered':
-            'The part for your appliance has been ordered. Delivery is usually 3-5 days.',
-        'job_done':
-            'Repair complete! Thank you for choosing us. Please leave a review: {review}',
-        'booking_confirm':
-            'Hi {name}! Visit {date} at {time}. Address: {address}. Reply 1 to confirm, 0 to cancel, 5 to reschedule.',
-        'day_before':
-            'Reminder: tomorrow {date} at {time}. Reply 1 to confirm, 0 to cancel, 5 to reschedule.',
-      };
       final templates = await loadSmsTemplates();
       final next = Map<String, String>.from(templates);
       final defaults = defaultSmsTemplates();
@@ -121,39 +257,6 @@ class SettingsService {
           smsChanged = true;
         }
       }
-      for (final entry in oldEnglishConfirm.entries) {
-        if ((next[entry.key] ?? '').trim() == entry.value) {
-          next[entry.key] = defaults[entry.key]!;
-          smsChanged = true;
-        }
-      }
-      for (final entry in previousPlainEnglish.entries) {
-        if ((next[entry.key] ?? '').trim() == entry.value) {
-          next[entry.key] = defaults[entry.key]!;
-          smsChanged = true;
-        }
-      }
-      const previousCancelSave = {
-        'cancel_save':
-            'Sorry you need to cancel, {name}. 😔\nWe can keep the visit with 10% off, or move it to another day.\n\nReply with a new day and time (example: Friday 11:00), 1 to keep {date} at {time} with the discount, or 0 again to cancel.',
-      };
-      for (final entry in previousCancelSave.entries) {
-        if ((next[entry.key] ?? '').trim() == entry.value) {
-          next[entry.key] = defaults[entry.key]!;
-          smsChanged = true;
-        }
-      }
-      // Промо-шаблон отзыва (431 символ, ряд ⭐️, «supporting our small
-      // business») операторы режут (Twilio 30007) — заменяем на проверенный.
-      final storedJobDone = (next['job_done'] ?? '').trim();
-      final jobDoneLower = storedJobDone.toLowerCase();
-      if (storedJobDone.isNotEmpty &&
-          (jobDoneLower.contains('supporting our small business') ||
-              jobDoneLower.contains('the repair is complete!') ||
-              jobDoneLower.contains('⭐️⭐️'))) {
-        next['job_done'] = defaults['job_done']!;
-        smsChanged = true;
-      }
       if ((next['cancel_save'] ?? '').trim().isEmpty) {
         next['cancel_save'] = defaults['cancel_save']!;
         smsChanged = true;
@@ -161,23 +264,6 @@ class SettingsService {
       if ((next['reschedule_ask'] ?? '').trim().isEmpty) {
         next['reschedule_ask'] = defaults['reschedule_ask']!;
         smsChanged = true;
-      }
-      for (final key in ['booking_confirm', 'day_before']) {
-        final raw = (next[key] ?? '').trim();
-        if (raw.isEmpty) continue;
-        final cleaned = raw
-            .replaceAll(RegExp(r'\n?🔧\s*\{appliance\}', caseSensitive: false), '')
-            .replaceAll(
-              RegExp(r'\n?This SMS is only for this address\.?', caseSensitive: false),
-              '',
-            )
-            .replaceAll('{appliance}', '')
-            .replaceAll(RegExp(r'\n{3,}'), '\n\n')
-            .trim();
-        if (cleaned != raw) {
-          next[key] = cleaned;
-          smsChanged = true;
-        }
       }
       if (smsChanged) await saveSmsTemplates(next);
 
@@ -187,23 +273,16 @@ class SettingsService {
       var receiptSms = docs.receiptSms;
       var docsChanged = false;
       if (invoiceSms.trim() ==
-              'Счёт на оплату {total}. К оплате: {due}.\n{items}' ||
-          invoiceSms.trim() ==
-              'Invoice {total}. Amount due: {due}.\n{items}') {
+          'Счёт на оплату {total}. К оплате: {due}.\n{items}') {
         invoiceSms = DocumentSettings.defaults.invoiceSms;
         docsChanged = true;
       }
       if (estimateSms.trim() ==
-              'Смета {total}. Действует {valid_days} дн.\n{items}' ||
-          estimateSms.trim() ==
-              'Estimate {total}. Valid for {valid_days} days.\n{items}' ||
-          !estimateSms.contains('{url}')) {
+          'Смета {total}. Действует {valid_days} дн.\n{items}') {
         estimateSms = DocumentSettings.defaults.estimateSms;
         docsChanged = true;
       }
-      if (receiptSms.trim() == 'Чек об оплате {total}. Спасибо, {name}!' ||
-          receiptSms.trim() == 'Payment receipt {total}. Thank you, {name}!' ||
-          !receiptSms.contains('{url}')) {
+      if (receiptSms.trim() == 'Чек об оплате {total}. Спасибо, {name}!') {
         receiptSms = DocumentSettings.defaults.receiptSms;
         docsChanged = true;
       }
@@ -240,7 +319,13 @@ class SettingsService {
           aliases.toLowerCase().contains('purish') ||
           aliases.toLowerCase().contains('purysh') ||
           aliases.toLowerCase() ==
-              'fix, fiks, feeks, фикс, фик, фикса, fixes') {
+              'fix, fiks, feeks, фикс, фик, фикса, fixes' ||
+          // Одиночные «фикс» и «fix» будили ассистента на обычной работе —
+          // мастер произносит их постоянно (жалоба FIX, 13.10.2026).
+          aliases.toLowerCase() ==
+              'fix appliance, fix-appliance, fixappliance, фикс апплаенс, фиксапплаенс, фикс, fix' ||
+          aliases.toLowerCase() ==
+              'fix appliance, fix-appliance, fixappliance, фикс апплаенс, фиксапплаенс') {
         await updateConfig(
           'assistantWakeAliases',
           defaultAssistantWakeAliases,
@@ -309,14 +394,28 @@ class SettingsService {
     await settleWrite(
       FirestoreService.smsTemplatesRef.set(templates, SetOptions(merge: true)),
     );
+    if (templates.containsKey('invoice') ||
+        templates.containsKey('estimate') ||
+        templates.containsKey('receipt') ||
+        templates.containsKey('pay')) {
+      final current = await loadDocumentSettings();
+      await saveDocumentSettings(
+        current.copyWith(
+          invoiceSms: templates['invoice'] ?? current.invoiceSms,
+          estimateSms: templates['estimate'] ?? current.estimateSms,
+          receiptSms: templates['receipt'] ?? current.receiptSms,
+          paySms: templates['pay'] ?? current.paySms,
+        ),
+      );
+    }
   }
 
   static bool readBookingSmsEnabled(Map<String, dynamic> config) {
-    return boolFlag(config, 'bookingSmsEnabled');
+    return boolFlag(config, 'bookingSmsEnabled', defaultValue: false);
   }
 
   static bool readReminderSmsEnabled(Map<String, dynamic> config) {
-    return boolFlag(config, 'reminderSmsEnabled');
+    return boolFlag(config, 'reminderSmsEnabled', defaultValue: false);
   }
 
   static const reminderOffsetKeys = ['48h', '24h', 'morning', '2h'];
@@ -855,6 +954,7 @@ class SettingsService {
     }
 
     add(listAllFilter);
+    add(JobStatuses.inProgress, JobStatuses.inProgress);
     if (known.contains(JobStatuses.call) || defs.isEmpty) {
       add(JobStatuses.call);
     }
@@ -874,6 +974,15 @@ class SettingsService {
   static bool jobMatchesListFilter(Job job, String filter) {
     if (filter == listAllFilter) return true;
     if (filter == listUnpaidFilter) return job.isUnpaid;
+    if (filter == JobStatuses.inProgress) {
+      return !JobStatuses.isClosed(job.status);
+    }
+    if (filter == JobStatuses.completed) {
+      return JobStatuses.isCompletedStatus(job.status);
+    }
+    if (filter == JobStatuses.cancelled) {
+      return JobStatuses.isCancelledStatus(job.status);
+    }
     return job.status == filter;
   }
 
@@ -892,8 +1001,14 @@ class SettingsService {
   }
 
   static const String defaultAssistantWakeWord = 'FIX-Appliance';
+
+  /// Только полное имя. Одиночные «фикс» и «fix» отсюда убраны: мастер
+  /// произносит их по работе постоянно, и ассистент включался сам
+  /// (жалоба FIX, 13.10.2026). Короткий псевдоним, если он всё же нужен,
+  /// можно вписать в настройках — срабатывать он будет только отдельным
+  /// словом и без опечаток.
   static const String defaultAssistantWakeAliases =
-      'fix appliance, fix-appliance, fixappliance, фикс апплаенс, фиксапплаенс, фикс, fix';
+      'фикс-аплаянс, фикс аплаянс, фиксаплаянс, фикс апплаенс, фиксапплаенс, fix appliance, fix-appliance, fixappliance';
 
   static const int defaultAiAnswerTimeoutSeconds = 20;
   static const int minAiAnswerTimeoutSeconds = 0;

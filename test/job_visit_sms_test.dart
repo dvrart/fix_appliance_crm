@@ -554,6 +554,36 @@ void main() {
 
       expect(visit.bookingSmsState, 'pending');
     });
+
+    test('keeps the server reminder map when the app rewrites the visit', () {
+      // Сервер помнит, какие напоминания уже ушли (утро, за сутки, за 2 часа),
+      // в `smsReminders`. Модель этого поля не знала и при любом сохранении
+      // заявки стирала его — напоминание могло уйти повторно (18.10.2026).
+      final reminders = {'morning': startAt, '2h': startAt};
+      final visit = JobVisit.fromMap({
+        'id': 'visit',
+        'startAt': startAt,
+        'smsReminders': reminders,
+        'smsConfirmNotifiedStatus': 'confirmed',
+        'ownerSoonAt': startAt,
+      });
+
+      expect(visit.toMap()['smsReminders'], reminders);
+      expect(visit.toMap()['smsConfirmNotifiedStatus'], 'confirmed');
+      expect(visit.toMap()['ownerSoonAt'], startAt);
+      expect(visit.copyWith(note: 'x').toMap()['smsReminders'], reminders);
+      expect(
+        visit.copyWith(note: 'x').toMap()['smsConfirmNotifiedStatus'],
+        'confirmed',
+      );
+      expect(visit.copyWith(note: 'x').toMap()['ownerSoonAt'], startAt);
+      expect(visit.copyWith(clearSms: true).toMap()['smsReminders'], isEmpty);
+      expect(
+        visit.copyWith(clearSms: true).toMap()['smsConfirmNotifiedStatus'],
+        isNull,
+      );
+      expect(visit.copyWith(clearSms: true).toMap()['ownerSoonAt'], isNull);
+    });
   });
 
   group('Booking send waits for saved visits', () {

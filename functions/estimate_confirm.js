@@ -3,7 +3,6 @@
  */
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
-const { notifyMaster } = require('./notify');
 
 const COMPANY_ID = 'fix_appliance_ca';
 
@@ -121,15 +120,9 @@ exports.estimateConfirm = functions.https.onRequest(async (req, res) => {
         documents,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
-      try {
-        await notifyMaster(
-          'Клиент подтвердил ремонт',
-          `${job.clientName || 'Клиент'} — смета $${money(grand)}`,
-          { type: 'estimate_confirm', jobId, from: job.clientPhone || '' }
-        );
-      } catch (error) {
-        console.warn('estimateConfirm notify:', error.message);
-      }
+      // Подтверждение сметы в шторку не выносим (решение FIX, 21.10.2026):
+      // в шторке только звонки и SMS и то, что требует решения. Согласие
+      // клиента видно в самой смете — «Клиент подтвердил ремонт».
       res.send(page({
         title: 'Confirmed',
         ok: true,

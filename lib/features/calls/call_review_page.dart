@@ -8,6 +8,7 @@ import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
+import '../../models/client.dart';
 import '../../models/secretary_lesson.dart';
 import '../../services/ai_service.dart';
 import '../../services/client_service.dart';
@@ -18,10 +19,10 @@ import '../../services/secretary_learn_service.dart';
 import '../../services/twilio_service.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/widgets/call_transcript_chat.dart';
+import '../../shared/widgets/job_link_button.dart';
 import '../../shared/widgets/linked_text.dart';
 import '../ai/job_preview_screen.dart';
 import '../jobs/job_details/editors/call_recording_page.dart';
-import '../jobs/job_details/job_details_screen.dart';
 import '../messages/conversation_screen.dart';
 import 'call_screen.dart';
 
@@ -46,9 +47,10 @@ class CallReviewPage extends StatelessWidget {
     final id = callId.trim().isNotEmpty ? callId : (call?.id ?? '');
     if (id.isEmpty) return Future.value();
     // Открыл звонок — значит, посмотрел: гасим «новое» и на вкладке
-    // «Звонки», и в колокольчике. Иначе счётчик входящих не обнулить.
-    unawaited(TwilioService.markReviewed(id));
-    return Navigator.of(context, rootNavigator: true).push(
+    // «Звонки», и в колокольчике, и карточку в шторке телефона. Иначе
+    // счётчик входящих не обнулить.
+    unawaited(TwilioService.markReviewed(id, call: call));
+    return AppNav.navigatorOf(context).push(
       MaterialPageRoute(
         builder: (_) => CallReviewPage(
           callId: id,
@@ -106,6 +108,7 @@ class CallReviewPage extends StatelessWidget {
       clientId: clientId.isNotEmpty ? clientId : null,
       jobId: (call.createdJobId ?? '').trim().isNotEmpty ? call.createdJobId : null,
       initialChannel: ConversationChannel.sms,
+      askRecipient: true,
     );
   }
 
@@ -122,7 +125,7 @@ class CallReviewPage extends StatelessWidget {
                 ? (call.isIncoming ? call.fromNumber : call.toNumber).trim()
                 : '';
             return Scaffold(
-              backgroundColor: const Color(0xFFF4F6F8),
+              backgroundColor: AppColors.surface,
               appBar: AppBar(
                 title: Text(
                   context.tr('Звонок', 'Call'),
@@ -140,6 +143,14 @@ class CallReviewPage extends StatelessWidget {
                         call: call,
                         contactName: contactName,
                       ),
+                    ),
+                  // По какой заявке звонок — значком рядом с «Написать»,
+                  // чтобы не занимать верх экрана плашкой.
+                  if (call != null)
+                    JobLinkButton(
+                      jobId: call.createdJobId,
+                      clientId: call.clientId,
+                      phone: phone,
                     ),
                   if (call != null && !call.isDeleted)
                     IconButton(
@@ -187,9 +198,9 @@ class _CallReviewBody extends StatefulWidget {
 }
 
 class _CallReviewBodyState extends State<_CallReviewBody> {
-  late String _summary;
-  late String _transcriptRu;
-  late String _transcriptEn;
+  String _summary = '';
+  String _transcriptRu = '';
+  String _transcriptEn = '';
   String _lang = 'ru';
   bool _translating = false;
   String? _clientLookupName;
@@ -221,14 +232,16 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
     super.didUpdateWidget(oldWidget);
     final next = widget.call;
     final prev = oldWidget.call;
-    final grew = (next.transcription ?? '').length >
-            (prev.transcription ?? '').length ||
-        (next.transcriptionRu ?? '').length >
-            (prev.transcriptionRu ?? '').length ||
-        (next.transcriptionEn ?? '').length >
-            (prev.transcriptionEn ?? '').length ||
-        (next.summary ?? '').length > (prev.summary ?? '').length;
-    if (next.id != prev.id || grew) {
+    final changed = (next.transcription ?? '') != (prev.transcription ?? '') ||
+        (next.transcriptionRu ?? '') != (prev.transcriptionRu ?? '') ||
+        (next.transcriptionEn ?? '') != (prev.transcriptionEn ?? '') ||
+        (next.summary ?? '') != (prev.summary ?? '');
+    if (next.id != prev.id) {
+      _summary = '';
+      _transcriptRu = '';
+      _transcriptEn = '';
+    }
+    if (next.id != prev.id || changed) {
       _hydrate(next);
       _ensureLanguages();
     }
@@ -256,12 +269,15 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
   }
 
   String _effectiveName(CallRecord call) {
-    if ((widget.contactName ?? '').trim().isNotEmpty) {
-      return widget.contactName!.trim();
+    String clean(String? raw) {
+      final s = Client.stripClientWord(raw);
+      return Client.isPlaceholderName(s) ? '' : s;
     }
-    if ((_clientLookupName ?? '').trim().isNotEmpty) {
-      return _clientLookupName!.trim();
-    }
+
+    final fromWidget = clean(widget.contactName);
+    if (fromWidget.isNotEmpty) return fromWidget;
+    final fromLookup = clean(_clientLookupName);
+    if (fromLookup.isNotEmpty) return fromLookup;
     final extracted = {
       ...?call.extractedData,
       if (call.aiReception?['extracted'] is Map)
@@ -274,7 +290,7 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
       'caller_name',
       'contactName',
     ]) {
-      final val = (extracted[key] ?? '').toString().trim();
+      final val = clean(extracted[key]?.toString());
       if (val.isNotEmpty) return val;
     }
     return '';
@@ -316,6 +332,7 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
       clientId: clientId,
       jobId: jobId,
       initialChannel: ConversationChannel.sms,
+      askRecipient: true,
     );
   }
 
@@ -334,20 +351,36 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
   void _hydrate(CallRecord call) {
     final attachment = call.toAttachment();
     final stored = callTranscriptText(attachment);
-    _summary = (call.summary ?? '').trim();
-    _transcriptRu = (call.transcriptionRu ?? stored).trim();
-    if (_transcriptRu.isEmpty) _transcriptRu = stored;
-    _transcriptEn = (call.transcriptionEn ?? '').trim();
-    if (_transcriptEn.isEmpty && MessageTranslateService.looksEnglish(stored)) {
-      _transcriptEn = stored;
+    final nextSummary = (call.summary ?? '').trim();
+    if (nextSummary.isNotEmpty) {
+      _summary = nextSummary;
+    }
+    final rawRu = (call.transcriptionRu ?? stored).trim();
+    final nextRu = rawRu.isEmpty ? stored : rawRu;
+    _transcriptRu = keepFullerTranscript(_transcriptRu, nextRu);
+    final rawEn = (call.transcriptionEn ?? '').trim();
+    final fallbackEn = (!MessageTranslateService.isRussianDialog(stored) &&
+            MessageTranslateService.hasLatin(stored))
+        ? stored
+        : '';
+    final nextEn = rawEn.isNotEmpty ? rawEn : fallbackEn;
+    if (nextEn.isNotEmpty) {
+      _transcriptEn = keepFullerTranscript(
+        _transcriptEn,
+        nextEn,
+        preferRussian: false,
+      );
     }
   }
 
   Future<void> _ensureLanguages() async {
-    final needRu = MessageTranslateService.needsRussian(_transcriptRu) ||
+    if (_translating) return;
+    final needRu = MessageTranslateService.needsRussianDialog(_transcriptRu) ||
         (_transcriptRu.isEmpty && _transcriptEn.isNotEmpty);
-    final needEn = _transcriptEn.isEmpty && _transcriptRu.isNotEmpty;
-    final needSummary = MessageTranslateService.needsRussian(_summary);
+    final needEn = (_transcriptEn.isEmpty ||
+            MessageTranslateService.isRussianDialog(_transcriptEn)) &&
+        _transcriptRu.isNotEmpty;
+    final needSummary = MessageTranslateService.needsRussianDialog(_summary);
     if (!needRu && !needEn && !needSummary) return;
     setState(() => _translating = true);
     try {
@@ -355,17 +388,23 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
       var en = _transcriptEn;
       var summary = _summary;
       if (needRu) {
+        final source = (!MessageTranslateService.isRussianDialog(en) &&
+                en.length >= ru.length)
+            ? en
+            : (ru.isNotEmpty ? ru : en);
         ru = keepFullerTranscript(
           ru,
           await MessageTranslateService.toRussianDialog(
-            ru.isNotEmpty ? ru : en,
+            source,
+            answeredBy: widget.call.answeredBy,
           ),
         );
       }
       if (needEn) {
         en = keepFullerTranscript(
           en,
-          await MessageTranslateService.toEnglish(_transcriptRu),
+          await MessageTranslateService.toEnglish(ru),
+          preferRussian: false,
         );
       }
       if (needSummary) {
@@ -401,12 +440,18 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
         if (mounted) setState(() => _translating = false);
       }
     }
-    if (lang == 'ru' && _transcriptRu.isEmpty && _transcriptEn.isNotEmpty) {
+    if (lang == 'ru' &&
+        (_transcriptRu.isEmpty ||
+            MessageTranslateService.needsRussianDialog(_transcriptRu)) &&
+        _transcriptEn.isNotEmpty) {
       setState(() => _translating = true);
       try {
         final ru = keepFullerTranscript(
           _transcriptRu,
-          await MessageTranslateService.toRussianDialog(_transcriptEn),
+          await MessageTranslateService.toRussianDialog(
+            _transcriptEn,
+            answeredBy: widget.call.answeredBy,
+          ),
         );
         if (!mounted) return;
         setState(() {
@@ -474,7 +519,7 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
     final data = ExtractedJobData.fromJson(extracted);
     final phone = call.isIncoming ? call.fromNumber : call.toNumber;
     if (!context.mounted) return;
-    final result = await Navigator.of(context, rootNavigator: true).push<bool>(
+    final result = await AppNav.navigatorOf(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => JobPreviewScreen(
           extractedData: data,
@@ -506,34 +551,31 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
       children: [
-        // Главная кнопка: «Преобразовать в заявку» или «Открыть заявку»
-        if (hasLinkedJob)
-          ElevatedButton.icon(
-            onPressed: () => _openJob(context, call.createdJobId!),
-            icon: const Icon(Icons.assignment),
-            label: Text(context.tr('Открыть заявку', 'Open the job')),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.accent,
-              foregroundColor: Colors.black,
-              minimumSize: const Size.fromHeight(52),
-            ),
-          )
-        else
+        // Заявку заводит мастер — сама она со звонка не появляется.
+        // Когда заявка уже есть, её открывает значок в шапке.
+        if (!hasLinkedJob) ...[
           ElevatedButton.icon(
             onPressed: () => _convertToJob(context),
             icon: const Icon(Icons.add_task),
-            label: Text(context.tr('Преобразовать в заявку', 'Convert to job')),
+            label: Text(
+              context.tr('Создать заявку на ремонт', 'Create a repair job'),
+            ),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF16A34A),
               foregroundColor: Colors.white,
               minimumSize: const Size.fromHeight(52),
             ),
           ),
-        const SizedBox(height: 12),
+          const SizedBox(height: 12),
+        ],
         CallReviewHeaderCard(
           call: call,
           name: name,
           phone: phone,
+          isRegular: ClientService.isRegularClient(
+            clientId: _effectiveClientId(call),
+            phone: phone,
+          ),
           onCall: phone.isEmpty ? null : _callBack,
           onMessage: phone.isEmpty ? null : _openMessage,
         ),
@@ -554,7 +596,7 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
                     'Запись ещё не готова. Подождите немного и откройте звонок снова.',
                     'The recording is not ready yet. Wait a bit and open the call again.',
                   ),
-                  style: const TextStyle(color: Colors.black54, height: 1.35),
+                  style: TextStyle(color: AppColors.inkMuted, height: 1.35),
                 )
               : CallAudioPlayer(
                   key: ValueKey(url),
@@ -637,25 +679,11 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
   }
 }
 
-Future<void> _openJob(BuildContext context, String jobId) async {
-  final job = await JobService.getById(jobId);
-  if (!context.mounted || job == null) return;
-  await AppNav.openCard(
-    context,
-    rootNavigator: true,
-    key: AppNav.jobKey(job.id),
-    builder: (_) => JobDetailsScreen(
-      jobId: job.id,
-      clientId: job.clientId,
-      jobData: job.toMap(),
-    ),
-  );
-}
-
 class CallReviewHeaderCard extends StatelessWidget {
   final CallRecord call;
   final String name;
   final String phone;
+  final bool isRegular;
   final VoidCallback? onCall;
   final VoidCallback? onMessage;
 
@@ -664,6 +692,7 @@ class CallReviewHeaderCard extends StatelessWidget {
     required this.call,
     required this.name,
     required this.phone,
+    this.isRegular = false,
     this.onCall,
     this.onMessage,
   });
@@ -675,8 +704,12 @@ class CallReviewHeaderCard extends StatelessWidget {
         : call.answeredBy == 'master'
             ? context.tr('Ответили вы', 'You answered')
             : context.tr('Звонок', 'Call');
+    final showStar =
+        isRegular ||
+        ClientService.isRegularClient(clientId: call.clientId, phone: phone);
     return _SectionCard(
       title: name.isNotEmpty ? name : phone,
+      titleTrailing: showStar ? const RegularClientStar(size: 18) : null,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -691,13 +724,13 @@ class CallReviewHeaderCard extends StatelessWidget {
                   children: [
                     Text(
                       phone,
-                      style: const TextStyle(
-                        color: Colors.black87,
+                      style: TextStyle(
+                        color: AppColors.ink,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
                     const SizedBox(width: 6),
-                    const Icon(Icons.copy, size: 14, color: Colors.black38),
+                    Icon(Icons.copy, size: 14, color: AppColors.inkMuted),
                   ],
                 ),
               ),
@@ -877,10 +910,10 @@ class _ProblemCard extends StatelessWidget {
       children: [
         Text(
           title,
-          style: const TextStyle(
+          style: TextStyle(
             fontWeight: FontWeight.w800,
             fontSize: 12,
-            color: Colors.black54,
+            color: AppColors.inkMuted,
           ),
         ),
         const SizedBox(height: 4),
@@ -892,25 +925,40 @@ class _ProblemCard extends StatelessWidget {
 
 class _SectionCard extends StatelessWidget {
   final String title;
+  final Widget? titleTrailing;
   final Widget child;
 
-  const _SectionCard({required this.title, required this.child});
+  const _SectionCard({
+    required this.title,
+    this.titleTrailing,
+    required this.child,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            title,
-            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+          Row(
+            children: [
+              Flexible(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              if (titleTrailing != null) titleTrailing!,
+            ],
           ),
           const SizedBox(height: 10),
           child,

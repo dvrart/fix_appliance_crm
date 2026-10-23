@@ -32,7 +32,7 @@ class SettingsPageScaffold extends StatelessWidget {
       listenable: AppUiSettings.instance,
       builder: (context, _) {
         final page = Scaffold(
-          backgroundColor: Colors.grey.shade100,
+          backgroundColor: AppColors.surface,
           appBar: AppBar(
             title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
             backgroundColor: AppColors.primary,
@@ -73,7 +73,7 @@ class SettingsGroup extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
         boxShadow: const [
           BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2)),
@@ -131,7 +131,7 @@ class SettingsRow extends StatelessWidget {
           onTap: onTap,
         ),
         if (showDivider)
-          const Divider(height: 1, indent: 64, color: Colors.black12),
+          Divider(height: 1, indent: 64, color: AppColors.border),
       ],
     );
   }
@@ -164,7 +164,7 @@ class SettingsHubTile extends StatelessWidget {
     final borderColor = selected ? AppColors.primary : (active ? color : Colors.transparent);
     final borderWidth = selected ? 2.0 : (active ? 1.5 : 0.0);
     return Material(
-      color: selected ? AppColors.primary.withValues(alpha: 0.06) : Colors.white,
+      color: selected ? AppColors.selectedCard : AppColors.card,
       borderRadius: BorderRadius.circular(12),
       elevation: 1.5,
       shadowColor: Colors.black12,
@@ -198,11 +198,11 @@ class SettingsHubTile extends StatelessWidget {
                     title,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontWeight: FontWeight.w700,
                       fontSize: 11,
                       height: 1.15,
-                      color: Colors.black87,
+                      color: AppColors.ink,
                     ),
                     textAlign: TextAlign.center,
                   ),
@@ -214,7 +214,7 @@ class SettingsHubTile extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 9,
-                        color: Colors.grey.shade600,
+                        color: AppColors.inkMuted,
                         height: 1.1,
                       ),
                       textAlign: TextAlign.center,
@@ -257,10 +257,10 @@ class SettingsTileSection extends StatelessWidget {
             padding: const EdgeInsets.only(left: 4, bottom: 8),
             child: Text(
               title,
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.bold,
                 fontSize: 16,
-                color: Colors.black87,
+                color: AppColors.ink,
               ),
             ),
           ),

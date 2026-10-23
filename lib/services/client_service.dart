@@ -1,4 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../core/app_commands.dart';
 import '../core/constants.dart';
@@ -12,13 +14,178 @@ import 'network_status_service.dart';
 class ClientService {
   static final _ref = FirestoreService.clientsRef;
 
+  /// Счётчик изменений меток постоянных клиентов — для мгновенного обновления
+  /// звёздочки в списках заявок, звонков и сообщений без лишних подписок.
+  static final ValueNotifier<int> regularRevision = ValueNotifier<int>(0);
+  static final Set<String> _regularClientIds = <String>{};
+  static final Set<String> _regularPhones = <String>{};
+  static final Set<String> _regularEmails = <String>{};
+
+  static void _bumpRegularRevision() {
+    try {
+      final phase = SchedulerBinding.instance.schedulerPhase;
+      if (phase == SchedulerPhase.persistentCallbacks ||
+          phase == SchedulerPhase.midFrameMicrotasks) {
+        Future.microtask(() => regularRevision.value++);
+        return;
+      }
+    } catch (_) {}
+    regularRevision.value++;
+  }
+
+  static void _addClientPhonesAndEmail(
+    Client client,
+    Set<String> phones,
+    Set<String> emails,
+  ) {
+    final p = normalizePhone(client.phone);
+    if (p.length >= 7) phones.add(p);
+    final e = (client.email ?? '').trim().toLowerCase();
+    if (e.contains('@')) emails.add(e);
+    for (final loc in client.locations) {
+      for (final c in loc.contacts) {
+        final cp = normalizePhone(c.phone);
+        if (cp.length >= 7) phones.add(cp);
+      }
+    }
+  }
+
+  static void syncRegularFromClients(Iterable<Client> clients) {
+    final nextIds = <String>{};
+    final nextPhones = <String>{};
+    final nextEmails = <String>{};
+    for (final client in clients) {
+      if (client.isDeleted || !client.isRegular) continue;
+      if (client.id.isNotEmpty) nextIds.add(client.id);
+      _addClientPhonesAndEmail(client, nextPhones, nextEmails);
+    }
+    if (!setEquals(_regularClientIds, nextIds) ||
+        !setEquals(_regularPhones, nextPhones) ||
+        !setEquals(_regularEmails, nextEmails)) {
+      _regularClientIds
+        ..clear()
+        ..addAll(nextIds);
+      _regularPhones
+        ..clear()
+        ..addAll(nextPhones);
+      _regularEmails
+        ..clear()
+        ..addAll(nextEmails);
+      _bumpRegularRevision();
+    }
+  }
+
+  static void syncRegularFromMaps(Iterable<Map<String, dynamic>> maps) {
+    final clients = <Client>[];
+    for (final map in maps) {
+      final id = (map['id'] ?? '').toString();
+      try {
+        clients.add(Client.fromMap(map, id));
+      } catch (_) {}
+    }
+    syncRegularFromClients(clients);
+  }
+
+  static void noteClientRegular(Client client) {
+    var changed = false;
+    final phones = <String>{};
+    final emails = <String>{};
+    _addClientPhonesAndEmail(client, phones, emails);
+    if (client.isRegular && !client.isDeleted) {
+      if (client.id.isNotEmpty && _regularClientIds.add(client.id)) {
+        changed = true;
+      }
+      for (final p in phones) {
+        if (_regularPhones.add(p)) changed = true;
+      }
+      for (final e in emails) {
+        if (_regularEmails.add(e)) changed = true;
+      }
+    } else {
+      if (client.id.isNotEmpty && _regularClientIds.remove(client.id)) {
+        changed = true;
+      }
+      for (final p in phones) {
+        if (_regularPhones.remove(p)) changed = true;
+      }
+      for (final e in emails) {
+        if (_regularEmails.remove(e)) changed = true;
+      }
+    }
+    if (changed) _bumpRegularRevision();
+  }
+
+  static void noteClientMap(String id, Map<String, dynamic>? data) {
+    if (data == null) return;
+    try {
+      noteClientRegular(Client.fromMap(data, id));
+    } catch (_) {}
+  }
+
+  static bool isRegularClient({
+    String? clientId,
+    String? phone,
+    String? email,
+  }) {
+    final id = (clientId ?? '').trim();
+    if (id.isNotEmpty && _regularClientIds.contains(id)) return true;
+    final p = normalizePhone(phone ?? '');
+    if (p.length >= 7 && _regularPhones.contains(p)) return true;
+    final e = (email ?? '').trim().toLowerCase();
+    if (e.contains('@') && _regularEmails.contains(e)) return true;
+    return false;
+  }
+
+  static bool isRegularMap(Map<String, dynamic>? data, [String? id]) {
+    if (data == null) return false;
+    if (data['isRegular'] == true || data['clientIsRegular'] == true) {
+      return true;
+    }
+    return isRegularClient(
+      clientId: id ?? (data['id'] ?? data['clientId'])?.toString(),
+      phone: (data['phone'] ?? data['clientPhone'])?.toString(),
+      email: (data['email'] ?? data['clientEmail'])?.toString(),
+    );
+  }
+
+  /// Пометить или снять метку постоянного клиента.
+  static Future<void> setRegular(
+    String id,
+    bool isRegular, {
+    Map<String, dynamic>? currentData,
+  }) async {
+    final cleanId = id.trim();
+    if (cleanId.isEmpty) return;
+    if (currentData != null) {
+      noteClientMap(cleanId, {...currentData, 'isRegular': isRegular});
+    } else {
+      if (isRegular) {
+        _regularClientIds.add(cleanId);
+      } else {
+        _regularClientIds.remove(cleanId);
+      }
+      _bumpRegularRevision();
+    }
+    if (isRegular) AppCommands.reactHappy();
+    await settleWrite(
+      _ref.doc(cleanId).update({
+        'isRegular': isRegular,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }),
+    );
+    invalidateCache();
+    await ClientJobSync.apply(clientId: cleanId, isRegular: isRegular);
+  }
+
   /// Стрим всех клиентов
   static Stream<List<Client>> streamAll() {
     return _ref.snapshots().map((snapshot) {
-      return snapshot.docs
+      final list = snapshot.docs
           .map((doc) => Client.fromMap(doc.data() as Map<String, dynamic>, doc.id))
           .where((client) => !client.isDeleted)
           .toList();
+      syncRegularFromClients(list);
+      return list;
     });
   }
 
@@ -35,7 +202,9 @@ class ClientService {
   static Future<Client?> getById(String id) async {
     final doc = await _ref.doc(id).get();
     if (!doc.exists) return null;
-    return Client.fromMap(doc.data() as Map<String, dynamic>, doc.id);
+    final client = Client.fromMap(doc.data() as Map<String, dynamic>, doc.id);
+    noteClientRegular(client);
+    return client;
   }
 
   /// Поиск клиентов по телефону (для автозаполнения)
@@ -108,10 +277,12 @@ class ClientService {
 
   static Future<List<Client>> loadAllOnce() async {
     final snapshot = await _ref.get();
-    return snapshot.docs
+    final list = snapshot.docs
         .map((doc) => Client.fromMap(doc.data() as Map<String, dynamic>, doc.id))
         .where((client) => !client.isDeleted)
         .toList();
+    syncRegularFromClients(list);
+    return list;
   }
 
   /// Обновить клиента
@@ -119,6 +290,8 @@ class ClientService {
     final name = (data['fullName'] ?? data['name'] ?? data['clientName'])
         ?.toString()
         .trim();
+    final hasRegular = data.containsKey('isRegular');
+    final isRegular = hasRegular ? data['isRegular'] == true : null;
     final payload = <String, dynamic>{
       ...data,
       if (name != null && name.isNotEmpty) ...{
@@ -128,6 +301,9 @@ class ClientService {
       },
       'updatedAt': FieldValue.serverTimestamp(),
     };
+    if (hasRegular) {
+      noteClientMap(id, payload);
+    }
     await settleWrite(_ref.doc(id).update(payload));
     invalidateCache();
     await ClientJobSync.apply(
@@ -136,6 +312,7 @@ class ClientService {
       phone: data['phone']?.toString(),
       address: data['address']?.toString(),
       email: data['email']?.toString(),
+      isRegular: isRegular,
     );
   }
 
@@ -370,6 +547,7 @@ class ClientService {
           'clientName': keep.fullName,
           'clientPhone': keep.phone,
           'clientAddress': keep.address,
+          'clientIsRegular': keep.isRegular || merge.isRegular,
           'updatedAt': FieldValue.serverTimestamp(),
         }),
       );
@@ -395,8 +573,11 @@ class ClientService {
       );
     }
 
-    // 3. Скопировать email и заметки если у основного нет
+    // 3. Скопировать email, заметки и метку постоянного клиента если у основного нет
     final updates = <String, dynamic>{};
+    if (!keep.isRegular && merge.isRegular) {
+      updates['isRegular'] = true;
+    }
     if ((keep.email == null || keep.email!.isEmpty) &&
         merge.email != null && merge.email!.isNotEmpty) {
       updates['email'] = merge.email;
@@ -537,6 +718,7 @@ class ClientService {
       client.notes ?? '',
       client.source ?? '',
       client.address,
+      if (client.isRegular) 'постоянный клиент regular',
     ];
     for (final location in client.locations) {
       parts.addAll([

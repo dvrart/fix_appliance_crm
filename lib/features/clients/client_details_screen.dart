@@ -13,6 +13,7 @@ import '../calls/call_screen.dart';
 import '../messages/conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/motion.dart';
+import '../../models/client.dart';
 import '../../models/job.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/stale_routes.dart';
@@ -40,6 +41,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
   Stream<DocumentSnapshot>? _clientStream;
   late Stream<List<Job>> _jobsStream;
   StreamSubscription<DocumentSnapshot>? _goneSub;
+  bool? _optimisticRegular;
 
   @override
   void initState() {
@@ -49,6 +51,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
   }
 
   void _bindClient() {
+    _optimisticRegular = null;
     _clientStream = widget.clientId.isEmpty
         ? null
         : FirestoreService.clientsRef.doc(widget.clientId).snapshots();
@@ -96,9 +99,32 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     super.dispose();
   }
 
-  void _makeCall(String phone, String name) {
-    if (phone.isEmpty) return;
-    CallScreen.open(context, phoneNumber: phone, contactName: name);
+  Future<void> _makeCall(String phone, String name) async {
+    final peers = await ConversationPeer.loadForClient(
+      clientId: widget.clientId,
+      name: name,
+      phone: phone,
+    );
+    if (!mounted) return;
+    final chosen = peers.isEmpty
+        ? ConversationPeer(
+            id: 'owner',
+            label: 'Хозяин'.tr,
+            name: name,
+            phone: phone,
+          )
+        : await ConversationPeer.pick(
+            context,
+            peers,
+            title: 'Кому позвонить?'.tr,
+            phoneOnly: true,
+          );
+    if (chosen == null || !mounted || chosen.phone.trim().isEmpty) return;
+    CallScreen.open(
+      context,
+      phoneNumber: chosen.phone,
+      contactName: chosen.displayName,
+    );
   }
 
   Future<void> _sendSms(String phone, String name, {String? email}) async {
@@ -109,7 +135,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
       email: email ?? '',
     );
     if (!mounted) return;
-    ConversationPeer? chosen = peers.isEmpty
+    final chosen = peers.isEmpty
         ? ConversationPeer(
             id: 'owner',
             label: 'Хозяин'.tr,
@@ -117,52 +143,12 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
             phone: phone,
             email: email ?? '',
           )
-        : peers.first;
-    if (peers.length > 1) {
-      chosen = await showModalBottomSheet<ConversationPeer>(
-        context: context,
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-        ),
-        builder: (context) {
-          return SafeArea(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    'Кому написать?'.tr,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
-                    ),
-                  ),
-                ),
-                for (final peer in peers)
-                  ListTile(
-                    leading: Icon(
-                      peer.id == 'owner' ? Icons.person : Icons.location_on,
-                      color: AppColors.primary,
-                    ),
-                    title: Text(peer.displayName),
-                    subtitle: Text(
-                      [
-                        peer.label,
-                        if (peer.hasPhone) peer.phone,
-                        if (peer.hasEmail) peer.email,
-                      ].join(' · '),
-                    ),
-                    onTap: () => Navigator.pop(context, peer),
-                  ),
-                const SizedBox(height: 8),
-              ],
-            ),
+        : await ConversationPeer.pick(
+            context,
+            peers,
+            title: 'Кому написать?'.tr,
           );
-        },
-      );
-      if (chosen == null || !mounted) return;
-    }
+    if (chosen == null || !mounted) return;
     if (chosen.phone.isEmpty && !chosen.hasEmail) return;
     await AppNav.openCard(
       context,
@@ -171,30 +157,27 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         email: chosen.hasEmail ? chosen.email : null,
       ),
       builder: (context) => ConversationScreen(
-        phoneNumber: chosen!.phone,
+        phoneNumber: chosen.phone,
         email: chosen.hasEmail ? chosen.email : null,
         contactName: chosen.displayName,
         clientId: widget.clientId,
-        recipients: peers.length > 1 ? peers : const [],
+        recipients: peers,
       ),
     );
   }
 
   String _extractClientName(Map<String, dynamic> data) {
-    for (final key in ['fullName', 'name', 'clientName']) {
-      final value = data[key]?.toString().trim() ?? '';
-      if (value.isNotEmpty) return value;
-    }
-    return 'Без имени'.tr;
+    return Client.extractName(data, fallback: 'Без имени'.tr);
   }
 
   void _openNewJob(String name, String phone, String address, {String? email, String? company}) {
+    final cleanName = name == 'Без имени'.tr ? phone : name;
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => CreateJobScreen(
           existingClientId: widget.clientId,
-          initialName: name,
+          initialName: cleanName,
           initialPhone: phone,
           initialAddress: address,
           initialEmail: email,
@@ -257,7 +240,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
       useRootNavigator: true,
       isDismissible: false,
       enableDrag: false,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -270,12 +253,38 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
   }
 
 
+  Future<void> _toggleRegular(
+    Map<String, dynamic> currentData,
+    bool current,
+  ) async {
+    if (widget.clientId.trim().isEmpty) return;
+    final next = !current;
+    AppFeedback.selection();
+    setState(() => _optimisticRegular = next);
+    await ClientService.setRegular(
+      widget.clientId,
+      next,
+      currentData: currentData,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot>(
       stream: _clientStream,
       builder: (context, snapshot) {
-        final data = snapshot.data?.data() as Map<String, dynamic>? ?? widget.clientData;
+        final remoteData =
+            snapshot.data?.data() as Map<String, dynamic>?;
+        final data = remoteData ?? widget.clientData;
+        if (remoteData != null) {
+          ClientService.noteClientMap(widget.clientId, remoteData);
+          if (_optimisticRegular != null &&
+              (remoteData['isRegular'] == true) == _optimisticRegular) {
+            _optimisticRegular = null;
+          }
+        }
+        final isRegular = _optimisticRegular ??
+            ClientService.isRegularMap(data, widget.clientId);
         final name = _extractClientName(data);
         final phone = data['phone'] ?? '';
         final address = data['address'] ?? '';
@@ -333,10 +342,11 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                   iconSize: 26,
                   style: IconButton.styleFrom(
                     minimumSize: const Size(52, 52),
-                    foregroundColor: AppColors.primary,
-                    backgroundColor: AppColors.primary.withValues(alpha: 0.1),
+                    foregroundColor: AppColors.primaryOnCard,
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.14),
                   ),
-                  onPressed: () => _editClientDialog(data),
+                  onPressed: () =>
+                      _editClientDialog({...data, 'isRegular': isRegular}),
                   icon: const Icon(Icons.edit),
                 ),
               ],
@@ -371,12 +381,44 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                         ),
                       ),
                       const SizedBox(height: 16),
-                      Text(
-                        name,
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                name,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Tooltip(
+                              message: 'Постоянный клиент'.tr,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => _toggleRegular(data, isRegular),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(4),
+                                  child: Icon(
+                                    isRegular
+                                        ? Icons.star_rounded
+                                        : Icons.star_border_rounded,
+                                    color: isRegular
+                                        ? AppColors.accent
+                                        : Colors.white54,
+                                    size: 28,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       if (company.isNotEmpty)
@@ -384,6 +426,53 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                           company,
                           style: const TextStyle(color: Colors.white70),
                         ),
+                      const SizedBox(height: 8),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _toggleRegular(data, isRegular),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isRegular
+                                ? AppColors.accent.withValues(alpha: 0.18)
+                                : Colors.white.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: isRegular
+                                  ? AppColors.accent
+                                  : Colors.white24,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                isRegular
+                                    ? Icons.star_rounded
+                                    : Icons.star_border_rounded,
+                                size: 16,
+                                color: isRegular
+                                    ? AppColors.accent
+                                    : Colors.white70,
+                              ),
+                              const SizedBox(width: 5),
+                              Text(
+                                'Постоянный клиент'.tr,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: isRegular
+                                      ? AppColors.accent
+                                      : Colors.white70,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                       const SizedBox(height: 16),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -529,13 +618,13 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AppColors.card,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.grey.shade200),
+          border: Border.all(color: AppColors.border),
         ),
         child: Row(
           children: [
-            Icon(icon, color: AppColors.primary),
+            Icon(icon, color: AppColors.primaryOnCard),
             const SizedBox(width: 16),
             Expanded(
               child: Column(
@@ -543,7 +632,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    style: TextStyle(color: AppColors.inkMuted, fontSize: 12),
                   ),
                   Text(
                     value,
@@ -553,7 +642,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
               ),
             ),
             if (onTap != null)
-              Icon(Icons.edit, color: Colors.grey.shade400, size: 18),
+              Icon(Icons.edit, color: AppColors.inkMuted, size: 18),
           ],
         ),
       ),
@@ -700,13 +789,13 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
               Container(
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
+                  color: AppColors.cardMuted,
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Center(
                   child: Text(
                     'Нет заявок'.tr,
-                    style: const TextStyle(color: Colors.grey),
+                    style: TextStyle(color: AppColors.inkMuted),
                   ),
                 ),
               ),

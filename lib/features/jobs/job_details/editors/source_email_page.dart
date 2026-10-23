@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/constants.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../services/sms_service.dart';
+import '../../../../shared/app_nav.dart';
 import '../../../messages/conversation_screen.dart';
 
 Future<void> openSourceEmailSheet(
@@ -88,7 +90,7 @@ class _SourceEmailSheetState extends State<_SourceEmailSheet> {
 
   void _openLetter() {
     final email = _from.contains('@') ? _from : widget.clientEmail.trim();
-    final nav = Navigator.of(context, rootNavigator: true);
+    final nav = AppNav.navigatorOf(context);
     Navigator.pop(context);
     ConversationScreen.open(
       nav.context,
@@ -133,7 +135,7 @@ class _SourceEmailSheetState extends State<_SourceEmailSheet> {
                 const SizedBox(height: 6),
                 Text(
                   _from,
-                  style: const TextStyle(color: Colors.black54),
+                  style: TextStyle(color: AppColors.inkMuted),
                 ),
               ],
               if (_subject.isNotEmpty) ...[
@@ -155,7 +157,7 @@ class _SourceEmailSheetState extends State<_SourceEmailSheet> {
                       )
                     : DecoratedBox(
                         decoration: BoxDecoration(
-                          color: Colors.grey.shade100,
+                          color: AppColors.cardMuted,
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: SingleChildScrollView(

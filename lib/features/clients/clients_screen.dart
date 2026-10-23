@@ -46,6 +46,9 @@ class _ClientsScreenState extends State<ClientsScreen> {
   final TextEditingController _searchCtrl = TextEditingController();
   late final Stream<QuerySnapshot> _clientsStream;
   late final bool Function() _dismissSelection;
+  final Map<String, String> _knownNamesByClientId = {};
+  final Map<String, String> _knownNamesByPhone = {};
+  final Set<String> _backfilledClientIds = {};
 
   @override
   void initState() {
@@ -62,6 +65,81 @@ class _ClientsScreenState extends State<ClientsScreen> {
       return true;
     };
     AppCommands.addSelectionGuard(_dismissSelection);
+    unawaited(_loadExternalClientNames());
+  }
+
+  void _rememberExternalName({
+    String? clientId,
+    String? phone,
+    String? rawName,
+  }) {
+    final cleaned = Client.stripClientWord(rawName);
+    if (cleaned.isEmpty || Client.isPlaceholderName(cleaned)) return;
+    final id = (clientId ?? '').trim();
+    if (id.isNotEmpty) {
+      _knownNamesByClientId.putIfAbsent(id, () => cleaned);
+    }
+    final normPhone = ClientService.normalizePhone(phone ?? '');
+    if (normPhone.length >= 7) {
+      _knownNamesByPhone.putIfAbsent(normPhone, () => cleaned);
+    }
+  }
+
+  Future<void> _loadExternalClientNames() async {
+    try {
+      final company = FirebaseFirestore.instance
+          .collection('companies')
+          .doc(kCompanyId);
+      final results = await Future.wait([
+        company.collection('jobs').get(),
+        company.collection('calls').get(),
+      ]);
+      if (!mounted) return;
+      for (final doc in results[0].docs) {
+        final d = doc.data();
+        final cid = (d['clientId'] ?? '').toString();
+        final phone = (d['clientPhone'] ?? d['phone'] ?? '').toString();
+        for (final key in const ['clientName', 'name', 'jobSiteName']) {
+          _rememberExternalName(
+            clientId: cid,
+            phone: phone,
+            rawName: d[key]?.toString(),
+          );
+        }
+      }
+      for (final doc in results[1].docs) {
+        final d = doc.data();
+        final cid = (d['clientId'] ?? '').toString();
+        final isInbound = (d['direction'] ?? 'inbound') != 'outbound';
+        final phone = (isInbound ? d['fromNumber'] : d['toNumber'])?.toString();
+        final extracted = <String, dynamic>{
+          if (d['extractedData'] is Map)
+            ...Map<String, dynamic>.from(d['extractedData'] as Map),
+          if (d['aiReception'] is Map &&
+              (d['aiReception'] as Map)['extracted'] is Map)
+            ...Map<String, dynamic>.from(
+              (d['aiReception'] as Map)['extracted'] as Map,
+            ),
+        };
+        for (final key in const [
+          'client_name',
+          'clientName',
+          'name',
+          'caller_name',
+          'contactName',
+        ]) {
+          _rememberExternalName(
+            clientId: cid,
+            phone: phone,
+            rawName: extracted[key]?.toString(),
+          );
+        }
+      }
+      if (mounted &&
+          (_knownNamesByClientId.isNotEmpty || _knownNamesByPhone.isNotEmpty)) {
+        setState(() {});
+      }
+    } catch (_) {}
   }
 
   @override
@@ -76,7 +154,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
   void _setSelected(Set<String>? next) => _selected.value = next;
 
   void _openMap() {
-    Navigator.of(context, rootNavigator: true).push(
+    AppNav.navigatorOf(context).push(
       MaterialPageRoute(builder: (_) => const ClientsMapScreen()),
     );
   }
@@ -116,7 +194,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
   }
 
   void _openDuplicates() {
-    Navigator.of(context, rootNavigator: true).push(
+    AppNav.navigatorOf(context).push(
       MaterialPageRoute(
         builder: (_) => ClientsDuplicatesScreen(clients: _latestClients),
       ),
@@ -155,7 +233,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
       isScrollControlled: true,
       isDismissible: false,
       enableDrag: false,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -163,6 +241,10 @@ class _ClientsScreenState extends State<ClientsScreen> {
         return StatefulBuilder(
           builder: (builderContext, setSheetState) {
             Future<bool> saveClient() async {
+              final phone = phoneCtrl.text.trim();
+              if (nameCtrl.text.trim().isEmpty && phone.isNotEmpty) {
+                nameCtrl.text = phone;
+              }
               if (nameCtrl.text.trim().isEmpty) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
@@ -172,7 +254,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 );
                 return false;
               }
-              final phone = phoneCtrl.text.trim();
               final existing = phone.isEmpty
                   ? const <Client>[]
                   : (phoneMatches.isNotEmpty
@@ -385,8 +466,8 @@ class _ClientsScreenState extends State<ClientsScreen> {
                                   vertical: 14,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: Colors.grey.shade50,
-                                  border: Border.all(color: Colors.grey.shade300),
+                                  color: AppColors.cardMuted,
+                                  border: Border.all(color: AppColors.border),
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                                 child: Row(
@@ -404,13 +485,13 @@ class _ClientsScreenState extends State<ClientsScreen> {
                                             : '${streetCtrl.text}, ${cityCtrl.text}',
                                         style: TextStyle(
                                           color: cityCtrl.text.isEmpty
-                                              ? Colors.black54
-                                              : Colors.black87,
+                                              ? AppColors.inkMuted
+                                              : AppColors.ink,
                                           fontSize: 16,
                                         ),
                                       ),
                                     ),
-                                    Icon(Icons.search, color: AppColors.primary),
+                                    Icon(Icons.search, color: AppColors.primaryOnCard),
                                   ],
                                 ),
                               ),
@@ -517,16 +598,20 @@ class _ClientsScreenState extends State<ClientsScreen> {
     bool selecting,
   ) {
     final name = (data['display_name'] as String?) ?? 'Без имени';
+    final isRegular = ClientService.isRegularMap(data);
     final company = (data['company'] as String?) ?? '';
-    final phone = ((data['phone'] as String?) ?? '').trim().isEmpty
-        ? 'Нет телефона'.tr
-        : (data['phone'] as String).trim();
+    final rawPhone = ((data['phone'] as String?) ?? '').trim();
+    final phone = rawPhone.isEmpty ? 'Нет телефона'.tr : rawPhone;
+    final hasRealName =
+        name.isNotEmpty &&
+        name != 'Без имени' &&
+        !Client.isPlaceholderName(name);
     final avatar = CircleAvatar(
-      backgroundColor: Colors.blue.shade50,
+      backgroundColor: AppColors.tint(AppColors.primary, 0.14),
       child: Text(
-        name != 'Без имени' ? name[0].toUpperCase() : '?',
+        hasRealName ? name[0].toUpperCase() : '?',
         style: TextStyle(
-          color: AppColors.primary,
+          color: AppColors.primaryOnCard,
           fontWeight: FontWeight.bold,
           fontSize: 18,
         ),
@@ -536,12 +621,12 @@ class _ClientsScreenState extends State<ClientsScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Material(
-        color: selected ? const Color(0xFFE8EEF4) : Colors.white,
+        color: selected ? AppColors.selectedCard : AppColors.card,
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
           side: BorderSide(
-            color: selected ? AppColors.primary : const Color(0xFFBBDEFB),
+            color: selected ? AppColors.primary : AppColors.border,
             width: selected ? 2 : 1,
           ),
         ),
@@ -595,21 +680,35 @@ class _ClientsScreenState extends State<ClientsScreen> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          name == 'Без имени' ? 'Без имени'.tr : name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                name == 'Без имени' ? 'Без имени'.tr : name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ),
+                            if (isRegular) const RegularClientStar(size: 18),
+                          ],
+                        ),
+                        if (hasRealName ||
+                            rawPhone.isEmpty ||
+                            company.isNotEmpty)
+                          Text(
+                            !hasRealName && rawPhone.isNotEmpty
+                                ? company
+                                : (company.isNotEmpty
+                                      ? '$company • $phone'
+                                      : phone),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: AppColors.inkMuted),
                           ),
-                        ),
-                        Text(
-                          company.isNotEmpty ? '$company • $phone' : phone,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: Colors.grey.shade600),
-                        ),
                       ],
                     ),
                   ),
@@ -625,17 +724,23 @@ class _ClientsScreenState extends State<ClientsScreen> {
 
   // --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ ПОИСКА ИМЕНИ ---
   String _extractClientName(Map<String, dynamic> data) {
-    if (data['name'] != null && data['name'].toString().trim().isNotEmpty) {
-      return data['name'].toString().trim();
+    final extracted = Client.extractName(data, fallback: '');
+    if (extracted.isNotEmpty && !Client.isPlaceholderName(extracted)) {
+      return extracted;
     }
-    if (data['clientName'] != null &&
-        data['clientName'].toString().trim().isNotEmpty) {
-      return data['clientName'].toString().trim();
+    final id = (data['id'] ?? '').toString().trim();
+    if (id.isNotEmpty) {
+      final byId = _knownNamesByClientId[id];
+      if (byId != null && byId.isNotEmpty) return byId;
     }
-    if (data['fullName'] != null &&
-        data['fullName'].toString().trim().isNotEmpty) {
-      return data['fullName'].toString().trim();
+    final normPhone = ClientService.normalizePhone(
+      (data['phone'] ?? '').toString(),
+    );
+    if (normPhone.length >= 7) {
+      final byPhone = _knownNamesByPhone[normPhone];
+      if (byPhone != null && byPhone.isNotEmpty) return byPhone;
     }
+    if (extracted.isNotEmpty) return extracted;
     return 'Без имени';
   }
 
@@ -645,7 +750,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
       listenable: AppUiSettings.instance,
       builder: (context, _) {
         return Scaffold(
-      backgroundColor: Colors.grey.shade100,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -796,15 +901,15 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 hintMaxLines: 1,
                 prefixIcon: const Icon(Icons.search, color: Colors.grey),
                 filled: true,
-                fillColor: Colors.white,
+                fillColor: AppColors.card,
                 contentPadding: const EdgeInsets.symmetric(vertical: 0),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey.shade300),
+                  borderSide: BorderSide(color: AppColors.border),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey.shade300),
+                  borderSide: BorderSide(color: AppColors.border),
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -854,14 +959,53 @@ class _ClientsScreenState extends State<ClientsScreen> {
                   );
                 }
 
-                List<Map<String, dynamic>> clients = snapshot.data!.docs.map((
+                final rawDocs = snapshot.data!.docs;
+                for (final doc in rawDocs) {
+                  final d = doc.data() as Map<String, dynamic>;
+                  if (d['deletedAt'] != null) continue;
+                  final own = Client.extractName(d, fallback: '');
+                  if (own.isNotEmpty && !Client.isPlaceholderName(own)) {
+                    _rememberExternalName(
+                      clientId: doc.id,
+                      phone: (d['phone'] ?? '').toString(),
+                      rawName: own,
+                    );
+                  }
+                }
+
+                List<Map<String, dynamic>> clients = rawDocs.map((
                   doc,
                 ) {
-                  var data = doc.data() as Map<String, dynamic>;
+                  var data = Map<String, dynamic>.from(
+                    doc.data() as Map<String, dynamic>,
+                  );
                   data['id'] = doc.id;
-                  data['display_name'] = _extractClientName(data);
+                  final displayName = _extractClientName(data);
+                  data['display_name'] = displayName;
+                  if (displayName.isNotEmpty &&
+                      displayName != 'Без имени' &&
+                      !Client.isPlaceholderName(displayName)) {
+                    final storedFull =
+                        (data['fullName'] ?? '').toString().trim();
+                    final storedName = (data['name'] ?? '').toString().trim();
+                    data['fullName'] = displayName;
+                    data['name'] = displayName;
+                    if ((Client.isPlaceholderName(storedFull) ||
+                            Client.isPlaceholderName(storedName)) &&
+                        _backfilledClientIds.add(doc.id)) {
+                      unawaited(
+                        doc.reference
+                            .set(
+                              {'fullName': displayName, 'name': displayName},
+                              SetOptions(merge: true),
+                            )
+                            .catchError((_) {}),
+                      );
+                    }
+                  }
                   return data;
                 }).where((data) => data['deletedAt'] == null).toList();
+                ClientService.syncRegularFromMaps(clients);
 
                 if (_searchQuery.isNotEmpty) {
                   clients = clients.where((data) {

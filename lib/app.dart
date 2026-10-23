@@ -36,9 +36,21 @@ class FixApplianceCrmApp extends StatelessWidget {
       theme: AppTheme.light(
         fontId: ui.fontFamily,
         primary: ui.primaryColor,
+        footer: ui.footerColor,
         accent: ui.accentColor,
         scale: ui.scale,
       ),
+      darkTheme: AppTheme.dark(
+        fontId: ui.fontFamily,
+        primary: ui.primaryColor,
+        footer: ui.footerColor,
+        accent: ui.accentColor,
+        scale: ui.scale,
+        shade: ui.nightShade,
+      ),
+      // Системную тему не слушаем: ночной режим — решение мастера или его
+      // расписание, а не настройка телефона.
+      themeMode: ui.darkNow ? ThemeMode.dark : ThemeMode.light,
       scrollBehavior: const _AppScrollBehavior(),
       locale: AppLocale.instance.locale,
       supportedLocales: const [
@@ -56,14 +68,16 @@ class FixApplianceCrmApp extends StatelessWidget {
           value: SystemUiOverlayStyle(
             statusBarColor: Colors.transparent,
             statusBarIconBrightness: Brightness.light,
-            systemNavigationBarColor: ui.primaryColor,
+            systemNavigationBarColor: ui.footerColor,
             systemNavigationBarIconBrightness: Brightness.light,
-            systemNavigationBarDividerColor: ui.primaryColor,
+            systemNavigationBarDividerColor: ui.footerColor,
           ),
           child: MediaQuery(
             data: media.copyWith(
               alwaysUse24HourFormat: true,
               textScaler: TextScaler.linear(ui.scale),
+              platformBrightness:
+                  ui.darkNow ? Brightness.dark : Brightness.light,
             ),
             child: AppHapticScope(
               child: RepaintBoundary(

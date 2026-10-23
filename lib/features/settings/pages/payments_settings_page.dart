@@ -166,7 +166,7 @@ class _PaymentsSettingsPageState extends State<PaymentsSettingsPage> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text(
               'Все карточные платежи идут только через Stripe.'.tr,
-              style: const TextStyle(color: Colors.black54),
+              style: TextStyle(color: AppColors.inkMuted),
             ),
           ),
           SettingsTileSection(
@@ -257,7 +257,7 @@ class _PaymentsSettingsPageState extends State<PaymentsSettingsPage> {
         children: [
           Text(
             'Не сопрягайте WisePad 3 в настройках Android Bluetooth — из‑за этого приложение его не видит. Забудьте устройство там, если уже сопрягали.\n\nВключите Геолокацию (точную) и Bluetooth. На WisePad 3 подержите питание, пока не замигает, держите рядом и нажмите «Найти терминал».'.tr,
-            style: const TextStyle(color: Colors.black54, height: 1.35),
+            style: TextStyle(color: AppColors.inkMuted, height: 1.35),
           ),
           const SizedBox(height: 16),
           SizedBox(
@@ -274,7 +274,7 @@ class _PaymentsSettingsPageState extends State<PaymentsSettingsPage> {
             Text(
               _status,
               style: TextStyle(
-                color: _pairing ? const Color(0xFF14557F) : Colors.black87,
+                color: _pairing ? AppColors.primaryOnCard : AppColors.ink,
                 fontWeight: FontWeight.w600,
               ),
             ),

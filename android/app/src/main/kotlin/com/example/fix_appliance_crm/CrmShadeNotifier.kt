@@ -82,8 +82,9 @@ object CrmShadeNotifier {
         // Сервер шлёт appliance, старые уведомления — applianceType.
         val appliance = data["appliance"]?.takeIf { it.isNotBlank() }
             ?: data["applianceType"].orEmpty()
-        val name = data["clientName"]?.takeIf { it.isNotBlank() }
+        val rawName = data["clientName"]?.takeIf { it.isNotBlank() }
             ?: guessName(title, peerOf(data))
+        val name = stripClientWord(rawName, peerOf(data))
 
         // «Картинка» — большой эмодзи типа; иконку приложения One UI
         // рисует сама в левом круге.
@@ -360,6 +361,13 @@ object CrmShadeNotifier {
             }
         }
         if (raw.isNotBlank() && raw != title.trim()) return raw
-        return from.ifBlank { "Клиент" }
+        return from
+    }
+
+    private fun stripClientWord(raw: String, fallbackPhone: String): String {
+        val cleaned = raw.trim()
+            .replace(Regex("^(клиент|client)(?=\\s|$|\\+)\\s*", RegexOption.IGNORE_CASE), "")
+            .trim()
+        return cleaned.ifBlank { fallbackPhone.trim() }
     }
 }

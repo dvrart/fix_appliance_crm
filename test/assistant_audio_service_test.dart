@@ -135,7 +135,7 @@ void main() {
       expect(nativeCalls, ['assistantAudioState']);
     });
 
-    for (final field in clear.keys) {
+    for (final field in ['mediaPlaying', 'callActive']) {
       test('$field blocks automatic microphone use', () async {
         nativeHandler = (_) async => {...clear, field: true};
         expect(await AssistantAudioService.canListenForWake(), isFalse);
@@ -144,13 +144,24 @@ void main() {
     }
 
     test(
-      'disconnecting the car permits listening again, without requesting focus',
+      'car connection permits wake listening and resolves the car microphone',
       () async {
-        nativeHandler = (_) async => {...clear, 'carConnected': true};
-        expect(await AssistantAudioService.canListenForWake(), isFalse);
-        nativeHandler = (_) async => clear;
+        nativeHandler = (call) async {
+          if (call.method == 'preferredAssistantInputDevice') {
+            return {'id': '77', 'label': 'KIA MOTORS'};
+          }
+          return {...clear, 'carConnected': true};
+        };
         expect(await AssistantAudioService.canListenForWake(), isTrue);
-        expect(nativeCalls, everyElement('assistantAudioState'));
+        final input = await AssistantAudioService.preferredInputDevice(
+          forWake: true,
+        );
+        expect(input?.id, '77');
+        expect(input?.label, 'KIA MOTORS');
+        expect(
+          nativeCalls,
+          ['assistantAudioState', 'preferredAssistantInputDevice'],
+        );
       },
     );
 

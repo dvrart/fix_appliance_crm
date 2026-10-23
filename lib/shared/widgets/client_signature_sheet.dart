@@ -4,6 +4,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:signature/signature.dart';
 
+import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import 'confirm_action_sheet.dart';
 
@@ -32,19 +33,19 @@ class ClientSignatureSheet {
                 children: [
                   Text(
                     'Подпись клиента'.tr,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 18,
-                      color: Color(0xFF1A1A1A),
+                      color: AppColors.ink,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     'Печатается на PDF счёта'.tr,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontWeight: FontWeight.w600,
                       fontSize: 14,
-                      color: Color(0xFF3D3D3D),
+                      color: AppColors.inkMuted,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -52,7 +53,7 @@ class ClientSignatureSheet {
                     'Клиент расписывается на этом телефоне. Для оплаты по SMS не нужна — можно Без подписи.'.tr,
                     style: TextStyle(
                       fontSize: 13,
-                      color: Colors.grey.shade700,
+                      color: AppColors.inkMuted,
                     ),
                   ),
                   const SizedBox(height: 12),

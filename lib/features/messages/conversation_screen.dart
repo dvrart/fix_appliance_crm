@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
@@ -10,9 +11,12 @@ import '../../core/sms_text.dart';
 import '../../core/utils/app_date_picker.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/utils/thumb_image.dart';
+import '../../models/document_settings.dart';
 import '../../services/ai_service.dart';
+import '../../services/app_time_service.dart';
 import '../../services/client_service.dart';
 import '../../services/email_service.dart';
+import '../../services/firestore_service.dart';
 import '../../services/job_service.dart';
 import '../../services/message_translate_service.dart';
 import '../../services/outbound_media_service.dart';
@@ -20,11 +24,14 @@ import '../../services/scheduled_message_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/sms_service.dart';
 import '../../models/client.dart';
+import '../../models/job.dart';
 import '../calls/call_screen.dart';
 import '../clients/client_details_screen.dart';
 import '../clients/edit_client_sheet.dart';
+import '../settings/pages/message_templates_page.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/app_nav.dart';
+import '../../shared/widgets/job_link_button.dart';
 import '../../shared/widgets/linked_text.dart';
 import '../../shared/widgets/selection_action_bar.dart';
 import '../../services/error_log_service.dart';
@@ -200,82 +207,299 @@ class ConversationPeer {
     this.email = '',
   });
 
-  String get displayName => name.trim().isEmpty ? label : name.trim();
+  String get displayName {
+    final cleaned = SmsText.stripClientWord(name, phone);
+    return cleaned.isEmpty ? label : cleaned;
+  }
 
-  bool get hasPhone => SmsService.normalizePhone(phone).length >= 10;
+  String get normalizedPhone => SmsService.normalizePhone(phone);
 
-  bool get hasEmail => email.trim().contains('@');
+  String get normalizedEmail => email.trim().toLowerCase();
+
+  bool get hasPhone => normalizedPhone.length >= 10;
+
+  bool get hasEmail => normalizedEmail.contains('@');
 
   bool get hasChannel => hasPhone || hasEmail;
 
+  bool get isOwner =>
+      id == 'owner' || id == 'client' || label == 'Хозяин'.tr;
+
+  String get subtitleLine => [
+    label,
+    if (hasPhone) phone.trim(),
+    if (hasEmail) email.trim(),
+  ].join(' · ');
+
+  static Future<ConversationPeer?> pick(
+    BuildContext context,
+    List<ConversationPeer> peers, {
+    String? title,
+    bool phoneOnly = false,
+  }) async {
+    final available = [
+      for (final peer in peers)
+        if (phoneOnly ? peer.hasPhone : peer.hasChannel) peer,
+    ];
+    if (available.isEmpty) return null;
+    if (available.length == 1) return available.first;
+    return showModalBottomSheet<ConversationPeer>(
+      context: context,
+      useRootNavigator: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  title ?? 'Кому написать?'.tr,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ),
+              for (final peer in available)
+                ListTile(
+                  leading: Icon(
+                    peer.isOwner ? Icons.person : Icons.location_on,
+                    color: AppColors.primary,
+                  ),
+                  title: Text(peer.displayName),
+                  subtitle: Text(peer.subtitleLine),
+                  onTap: () => Navigator.pop(sheetContext, peer),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   /// Хозяин и люди на объекте (арендатор) для переключения нити.
   static Future<List<ConversationPeer>> loadForClient({
-    required String clientId,
+    String clientId = '',
+    String? jobId,
     String name = '',
     String phone = '',
     String email = '',
   }) async {
     final peers = <ConversationPeer>[];
-    final seen = <String>{};
+    final seenPhones = <String>{};
+    final seenEmails = <String>{};
 
     void add(ConversationPeer peer) {
       if (!peer.hasChannel) return;
-      final keys = <String>[
-        if (peer.hasPhone) SmsService.normalizePhone(peer.phone),
-        if (peer.hasEmail) peer.email.trim().toLowerCase(),
-      ];
-      if (keys.any(seen.contains)) return;
-      seen.addAll(keys);
-      peers.add(peer);
+      final normPhone = peer.normalizedPhone;
+      final normEmail = peer.normalizedEmail;
+      final newPhone = peer.hasPhone && !seenPhones.contains(normPhone);
+      final newEmail = peer.hasEmail && !seenEmails.contains(normEmail);
+      if (!newPhone && !newEmail) return;
+      if (newPhone) seenPhones.add(normPhone);
+      if (newEmail) seenEmails.add(normEmail);
+      peers.add(
+        ConversationPeer(
+          id: peer.id,
+          label: peer.label,
+          name: peer.name,
+          phone: newPhone ? peer.phone.trim() : '',
+          email: newEmail ? peer.email.trim() : '',
+        ),
+      );
     }
 
     try {
-      final client = clientId.trim().isEmpty
+      final trimmedJobId = (jobId ?? '').trim();
+      final job = trimmedJobId.isEmpty
           ? null
-          : await ClientService.getById(clientId);
+          : await JobService.getById(trimmedJobId);
+      var resolvedClientId = clientId.trim();
+      if (resolvedClientId.isEmpty &&
+          job != null &&
+          job.clientId.trim().isNotEmpty) {
+        resolvedClientId = job.clientId.trim();
+      }
+      var client = resolvedClientId.isEmpty
+          ? null
+          : await ClientService.getById(resolvedClientId);
+      if (client == null && phone.trim().isNotEmpty) {
+        client = await ClientService.findByPhone(phone);
+      }
+      if (client == null && email.trim().contains('@')) {
+        client = await ClientService.findByEmail(email);
+      }
+      if (client != null && resolvedClientId.isEmpty) {
+        resolvedClientId = client.id;
+      }
+
+      final jobs = <Job>[];
+      if (resolvedClientId.isNotEmpty) {
+        final snap = await FirestoreService.jobsRef
+            .where('clientId', isEqualTo: resolvedClientId)
+            .get();
+        for (final doc in snap.docs) {
+          final parsed = Job.fromMap(
+            doc.data() as Map<String, dynamic>,
+            doc.id,
+          );
+          if (!parsed.isDeleted) jobs.add(parsed);
+        }
+      }
+      if (job != null && !jobs.any((item) => item.id == job.id)) {
+        jobs.insert(0, job);
+      }
+
+      final String ownerName;
+      final String ownerPhone;
+      final String ownerEmail;
+      if (client != null) {
+        ownerName = client.fullName.trim().isNotEmpty
+            ? client.fullName.trim()
+            : ((job?.clientName ?? '').trim().isNotEmpty
+                ? job!.clientName.trim()
+                : name.trim());
+        ownerPhone = client.phone.trim().isNotEmpty
+            ? client.phone.trim()
+            : (job?.clientPhone ?? '').trim();
+        ownerEmail = (client.email ?? '').trim().isNotEmpty
+            ? client.email!.trim()
+            : (job?.clientEmail ?? '').trim();
+      } else if (job != null) {
+        ownerName = job.clientName.trim().isNotEmpty
+            ? job.clientName.trim()
+            : name.trim();
+        ownerPhone = job.clientPhone.trim().isNotEmpty
+            ? job.clientPhone.trim()
+            : phone.trim();
+        ownerEmail = (job.clientEmail ?? '').trim().isNotEmpty
+            ? job.clientEmail!.trim()
+            : email.trim();
+      } else {
+        ownerName = name.trim();
+        ownerPhone = phone.trim();
+        ownerEmail = email.trim();
+      }
+
       add(
         ConversationPeer(
           id: 'owner',
           label: 'Хозяин'.tr,
-          name: name.trim().isNotEmpty ? name.trim() : (client?.fullName ?? ''),
-          phone: phone.trim().isNotEmpty ? phone.trim() : (client?.phone ?? ''),
-          email: email.trim().isNotEmpty
-              ? email.trim()
-              : (client?.email ?? ''),
+          name: ownerName.isEmpty ? 'Хозяин'.tr : ownerName,
+          phone: ownerPhone,
+          email: ownerEmail,
         ),
       );
+
+      if (job != null &&
+          (job.hasJobSite ||
+              (job.jobSitePhone ?? '').trim().isNotEmpty ||
+              (job.jobSiteEmail ?? '').trim().isNotEmpty)) {
+        final sName = (job.jobSiteName ?? '').trim();
+        add(
+          ConversationPeer(
+            id: 'job-${job.id}',
+            label: 'Арендатор'.tr,
+            name: sName.isEmpty ? 'Арендатор'.tr : sName,
+            phone: job.jobSitePhone ?? '',
+            email: job.jobSiteEmail ?? '',
+          ),
+        );
+      }
+
       if (client != null) {
+        var fallbackSiteName = (job?.jobSiteName ?? '').trim();
+        if (fallbackSiteName.isEmpty) {
+          for (final item in jobs) {
+            final jn = (item.jobSiteName ?? '').trim();
+            if (jn.isNotEmpty) {
+              fallbackSiteName = jn;
+              break;
+            }
+          }
+        }
         for (final location in client.locations) {
           for (final contact in location.contacts) {
+            final isFirstOwner = peers.isEmpty && contact.role == 'owner';
+            final label = isFirstOwner
+                ? 'Хозяин'.tr
+                : (contact.role == 'manager'
+                    ? contact.roleLabel
+                    : 'Арендатор'.tr);
+            final cName = contact.name.trim().isNotEmpty
+                ? contact.name.trim()
+                : (fallbackSiteName.isNotEmpty ? fallbackSiteName : label);
             add(
               ConversationPeer(
                 id: 'loc-${contact.id.isEmpty ? contact.phone : contact.id}',
-                label: contact.role == 'owner'
-                    ? 'Хозяин'.tr
-                    : contact.roleLabel,
-                name: contact.name,
+                label: label,
+                name: cName,
                 phone: contact.phone,
               ),
             );
           }
         }
       }
-      if (clientId.trim().isNotEmpty) {
-        final jobs = await JobService.streamByClient(clientId).first;
-        for (final job in jobs) {
-          if (!job.hasJobSite) continue;
-          add(
-            ConversationPeer(
-              id: 'job-${job.id}',
-              label: 'Арендатор'.tr,
-              name: (job.jobSiteName ?? '').trim().isEmpty
-                  ? 'Арендатор'.tr
-                  : job.jobSiteName!.trim(),
-              phone: job.jobSitePhone ?? '',
-              email: job.jobSiteEmail ?? '',
-            ),
-          );
+
+      for (final item in jobs) {
+        if (!item.hasJobSite &&
+            (item.jobSitePhone ?? '').trim().isEmpty &&
+            (item.jobSiteEmail ?? '').trim().isEmpty) {
+          continue;
         }
+        final sName = (item.jobSiteName ?? '').trim();
+        add(
+          ConversationPeer(
+            id: 'job-${item.id}',
+            label: 'Арендатор'.tr,
+            name: sName.isEmpty ? 'Арендатор'.tr : sName,
+            phone: item.jobSitePhone ?? '',
+            email: item.jobSiteEmail ?? '',
+          ),
+        );
+      }
+
+      for (final item in jobs) {
+        final callId = (item.sourceCallId ?? '').trim();
+        if (callId.isEmpty) continue;
+        final callDoc = await FirestoreService.callsRef.doc(callId).get();
+        if (!callDoc.exists) continue;
+        final callData = (callDoc.data() as Map<String, dynamic>?) ?? const {};
+        final ex = (callData['extractedData'] is Map)
+            ? Map<String, dynamic>.from(callData['extractedData'] as Map)
+            : const <String, dynamic>{};
+        final cPhone = (ex['contact_on_site_phone'] ?? '').toString().trim();
+        if (cPhone.isEmpty) continue;
+        final cName = (ex['contact_on_site_name'] ?? item.jobSiteName ?? '')
+            .toString()
+            .trim();
+        add(
+          ConversationPeer(
+            id: 'call-$callId',
+            label: 'Арендатор'.tr,
+            name: cName.isEmpty ? 'Арендатор'.tr : cName,
+            phone: cPhone,
+          ),
+        );
+      }
+
+      if (phone.trim().isNotEmpty || email.trim().contains('@')) {
+        final isFirst = peers.isEmpty;
+        final fallbackLabel = isFirst ? 'Хозяин'.tr : 'Арендатор'.tr;
+        add(
+          ConversationPeer(
+            id: isFirst ? 'owner' : 'site',
+            label: fallbackLabel,
+            name: name.trim().isNotEmpty ? name.trim() : fallbackLabel,
+            phone: phone,
+            email: email,
+          ),
+        );
       }
     } catch (_) {}
     return peers;
@@ -291,9 +515,15 @@ class ConversationScreen extends StatefulWidget {
   final String? jobId;
   final List<String> extraPhones;
   final List<ConversationPeer> recipients;
+  final ValueChanged<ConversationPeer>? onRecipientChanged;
   final bool embedded;
   final ConversationChannel? initialChannel;
   final bool websiteInbox;
+
+  /// Сообщение, о котором было уведомление: лента подводит к нему и на
+  /// пару секунд подсвечивает. Иначе в длинной переписке непонятно, что
+  /// именно пришло.
+  final String? highlightMessageId;
 
   const ConversationScreen({
     super.key,
@@ -304,9 +534,11 @@ class ConversationScreen extends StatefulWidget {
     this.jobId,
     this.extraPhones = const [],
     this.recipients = const [],
+    this.onRecipientChanged,
     this.embedded = false,
     this.initialChannel,
     this.websiteInbox = false,
+    this.highlightMessageId,
   });
 
   static Future<void> open(
@@ -319,6 +551,8 @@ class ConversationScreen extends StatefulWidget {
     ConversationChannel? initialChannel,
     bool websiteInbox = false,
     bool rootNavigator = false,
+    bool askRecipient = false,
+    String? highlightMessageId,
   }) async {
     AppFeedback.pleasant();
     var resolvedName = (contactName ?? '').trim();
@@ -327,31 +561,40 @@ class ConversationScreen extends StatefulWidget {
         (email ?? '').trim().contains('@')) {
       resolvedName = await SettingsService.loadWatchedSenderName(email!);
     }
-    final recipients = (!websiteInbox &&
-            clientId != null &&
-            clientId.trim().isNotEmpty)
+    final recipients = !websiteInbox
         ? await ConversationPeer.loadForClient(
-            clientId: clientId,
+            clientId: clientId ?? '',
+            jobId: jobId,
             name: resolvedName.isNotEmpty ? resolvedName : (contactName ?? ''),
             phone: phoneNumber,
             email: email ?? '',
           )
         : const <ConversationPeer>[];
     if (!context.mounted) return;
+    var targetPhone = phoneNumber;
+    var targetEmail = email;
+    var targetName = websiteInbox
+        ? kWebsiteInboxTitle
+        : (resolvedName.isNotEmpty ? resolvedName : contactName);
+    if (!websiteInbox && askRecipient && recipients.length > 1) {
+      final chosen = await ConversationPeer.pick(context, recipients);
+      if (chosen == null || !context.mounted) return;
+      targetPhone = chosen.phone;
+      targetEmail = chosen.hasEmail ? chosen.email : null;
+      targetName = chosen.displayName;
+    }
     await AppNav.openCard<void>(
       context,
       rootNavigator: rootNavigator,
       key: AppNav.chatKey(
-        phone: phoneNumber,
-        email: email,
+        phone: targetPhone,
+        email: targetEmail,
         websiteInbox: websiteInbox,
       ),
       builder: (_) => ConversationScreen(
-        phoneNumber: phoneNumber,
-        email: email,
-        contactName: websiteInbox
-            ? kWebsiteInboxTitle
-            : (resolvedName.isNotEmpty ? resolvedName : contactName),
+        phoneNumber: targetPhone,
+        email: targetEmail,
+        contactName: targetName,
         clientId: websiteInbox ? null : clientId,
         jobId: jobId,
         recipients: recipients,
@@ -359,6 +602,7 @@ class ConversationScreen extends StatefulWidget {
             ? ConversationChannel.email
             : initialChannel,
         websiteInbox: websiteInbox,
+        highlightMessageId: highlightMessageId,
       ),
     );
   }
@@ -390,6 +634,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final Set<String> _decidingIds = {};
   List<String> _visibleIds = const [];
   Timer? _translateDebounce;
+
+  /// Сообщение из уведомления: подсвечиваем и подводим к нему ленту.
+  String? _highlightId;
+  final GlobalKey _highlightKey = GlobalKey();
+  bool _highlightShown = false;
+  Timer? _highlightTimer;
 
   bool get _selecting => _selectedIds.isNotEmpty;
 
@@ -433,8 +683,33 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _clearSelection();
   }
 
-  List<ConversationPeer> get _peers =>
-      widget.recipients.where((peer) => peer.hasChannel).toList();
+  List<ConversationPeer> _loadedPeers = const [];
+
+  List<ConversationPeer> get _peers {
+    final result = <ConversationPeer>[];
+    final seenPhones = <String>{};
+    final seenEmails = <String>{};
+    for (final peer in [...widget.recipients, ..._loadedPeers]) {
+      if (!peer.hasChannel) continue;
+      final normPhone = peer.normalizedPhone;
+      final normEmail = peer.normalizedEmail;
+      final newPhone = peer.hasPhone && !seenPhones.contains(normPhone);
+      final newEmail = peer.hasEmail && !seenEmails.contains(normEmail);
+      if (!newPhone && !newEmail) continue;
+      if (newPhone) seenPhones.add(normPhone);
+      if (newEmail) seenEmails.add(normEmail);
+      result.add(
+        ConversationPeer(
+          id: peer.id,
+          label: peer.label,
+          name: peer.name,
+          phone: newPhone ? peer.phone.trim() : '',
+          email: newEmail ? peer.email.trim() : '',
+        ),
+      );
+    }
+    return result;
+  }
 
   bool get _hasPhone => SmsService.normalizePhone(_phone).length >= 10;
   bool get _hasEmail => _email.contains('@');
@@ -452,7 +727,76 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 : ConversationChannel.sms);
     _bindStreams();
     _textController.addListener(_onDraftChanged);
+    final highlight = (widget.highlightMessageId ?? '').trim();
+    _highlightId = highlight.isEmpty ? null : highlight;
     _markRead();
+    unawaited(_loadPeersIfNeeded());
+  }
+
+  /// Подвести ленту к сообщению из уведомления и снять подсветку.
+  ///
+  /// Лента перевёрнута и строится лениво: сообщение, о котором пришло
+  /// уведомление, почти всегда последнее и уже на экране. Если его пузырь
+  /// ещё не построен, прокрутки не будет — подсветка просто погаснет, и
+  /// переписка останется там, где открылась.
+  void _revealHighlight() {
+    if (_highlightId == null || _highlightShown) return;
+    _highlightShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final target = _highlightKey.currentContext;
+      if (target != null) {
+        unawaited(
+          Scrollable.ensureVisible(
+            target,
+            alignment: 0.5,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          ),
+        );
+      }
+    });
+    _highlightTimer?.cancel();
+    _highlightTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      setState(() => _highlightId = null);
+    });
+  }
+
+  /// Пузырь сообщения из уведомления: ключ для прокрутки и мягкая рамка.
+  Widget _highlightWrap(SmsMessage message, Widget bubble) {
+    if (_highlightId == null || message.id != _highlightId) return bubble;
+    return Container(
+      key: _highlightKey,
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3C4),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: bubble,
+    );
+  }
+
+  Future<void> _loadPeersIfNeeded() async {
+    if (widget.websiteInbox) return;
+    final cid = (widget.clientId ?? '').trim();
+    final jid = (widget.jobId ?? '').trim();
+    if (cid.isEmpty && jid.isEmpty) return;
+    final loaded = await ConversationPeer.loadForClient(
+      clientId: cid,
+      jobId: jid.isEmpty ? null : jid,
+      name: _contactName.isNotEmpty ? _contactName : (widget.contactName ?? ''),
+      phone: _phone,
+      email: _email,
+    );
+    if (!mounted || loaded.isEmpty) return;
+    setState(() {
+      _loadedPeers = loaded;
+      if (_peerId.isEmpty || !_peers.any((p) => p.id == _peerId)) {
+        final match = _findMatchingPeer(_phone, _email);
+        if (match != null) _peerId = match.id;
+      }
+    });
   }
 
   @override
@@ -461,6 +805,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final phoneChanged = oldWidget.phoneNumber != widget.phoneNumber;
     final emailChanged = oldWidget.email != widget.email;
     final inboxChanged = oldWidget.websiteInbox != widget.websiteInbox;
+    final clientChanged = oldWidget.clientId != widget.clientId ||
+        oldWidget.jobId != widget.jobId;
     if (phoneChanged || emailChanged || inboxChanged) {
       _applyPeerFromWidget();
       if (widget.websiteInbox || (!_hasPhone && _hasEmail)) {
@@ -469,6 +815,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _channel = ConversationChannel.sms;
       }
       _markRead();
+    } else if (oldWidget.recipients.length != widget.recipients.length) {
+      final match = _findMatchingPeer(_phone, _email);
+      if (match != null) _peerId = match.id;
+    }
+    if (clientChanged) {
+      unawaited(_loadPeersIfNeeded());
     }
     if (phoneChanged || emailChanged || inboxChanged ||
         oldWidget.extraPhones != widget.extraPhones ||
@@ -493,20 +845,30 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _selectedIds.clear();
   }
 
+  ConversationPeer? _findMatchingPeer(String phone, String email) {
+    final normPhone = SmsService.normalizePhone(phone);
+    final normEmail = email.trim().toLowerCase();
+    final peers = _peers;
+    for (final peer in peers) {
+      if (peer.hasPhone &&
+          normPhone.length >= 10 &&
+          peer.normalizedPhone == normPhone) {
+        return peer;
+      }
+      if (peer.hasEmail &&
+          normEmail.contains('@') &&
+          peer.normalizedEmail == normEmail) {
+        return peer;
+      }
+    }
+    return peers.isEmpty ? null : peers.first;
+  }
+
   void _applyPeerFromWidget() {
     _phone = widget.phoneNumber;
     _email = (widget.email ?? '').trim();
     _contactName = (widget.contactName ?? '').trim();
-    final match = _peers.cast<ConversationPeer?>().firstWhere(
-      (peer) =>
-          peer != null &&
-          ((peer.hasPhone &&
-                  SmsService.normalizePhone(peer.phone) ==
-                      SmsService.normalizePhone(_phone)) ||
-              (peer.hasEmail &&
-                  peer.email.trim().toLowerCase() == _email.toLowerCase())),
-      orElse: () => _peers.isEmpty ? null : _peers.first,
-    );
+    final match = _findMatchingPeer(_phone, _email);
     _peerId = match?.id ?? '';
     if (match != null) {
       _phone = match.phone;
@@ -528,6 +890,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       }
       _bindStreams();
     });
+    widget.onRecipientChanged?.call(peer);
     _markRead();
   }
 
@@ -565,6 +928,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   void dispose() {
     _translateDebounce?.cancel();
+    _highlightTimer?.cancel();
     _textController.removeListener(_onDraftChanged);
     _textController.dispose();
     _scrollController.dispose();
@@ -940,7 +1304,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         useRootNavigator: true,
         isDismissible: false,
         enableDrag: false,
-        backgroundColor: Colors.white,
+        backgroundColor: AppColors.card,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
@@ -1008,7 +1372,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   /// буквальное «{review}» вместо ссылки на отзыв.
   Future<String> _resolveTemplate(String body) async {
     var text = body;
-    if (text.contains('{name}')) {
+    if (SmsText.hasPlaceholder(text, 'name')) {
       // «Клиент +14165550101» — это подпись карточки, а не имя: такое уходило
       // клиенту в SMS. Нет имени — нет и обращения.
       text = SmsText.fillName(
@@ -1016,64 +1380,176 @@ class _ConversationScreenState extends State<ConversationScreen> {
         _contactName.isNotEmpty ? _contactName : (widget.contactName ?? ''),
       );
     }
-    if (text.contains('{review}')) {
+    if (SmsText.hasPlaceholder(text, 'review')) {
       final config = await SettingsService.loadConfig();
-      text = text.replaceAll(
-        '{review}',
+      text = SmsText.replacePlaceholder(
+        text,
+        'review',
         SettingsService.readGoogleReviewUrl(config),
       );
+    }
+    if (SmsText.hasPlaceholder(text, 'company') ||
+        SmsText.hasPlaceholder(text, 'phone') ||
+        SmsText.hasPlaceholder(text, 'email') ||
+        SmsText.hasPlaceholder(text, 'hst') ||
+        SmsText.hasPlaceholder(text, 'valid_days')) {
+      final docs = await SettingsService.loadDocumentSettings();
+      text = SmsText.replacePlaceholder(text, 'company', docs.companyName);
+      text = SmsText.replacePlaceholder(text, 'phone', docs.companyPhone);
+      text = SmsText.replacePlaceholder(text, 'email', docs.companyEmail);
+      text = SmsText.replacePlaceholder(text, 'hst', docs.hstNumber);
+      text = SmsText.replacePlaceholder(
+        text,
+        'valid_days',
+        '${docs.estimateValidDays}',
+      );
+    }
+
+    final needsJobContext = SmsText.hasPlaceholder(text, 'date') ||
+        SmsText.hasPlaceholder(text, 'time') ||
+        SmsText.hasPlaceholder(text, 'address') ||
+        SmsText.hasPlaceholder(text, 'total') ||
+        SmsText.hasPlaceholder(text, 'due') ||
+        SmsText.hasPlaceholder(text, 'paid') ||
+        SmsText.hasPlaceholder(text, 'amount') ||
+        SmsText.hasPlaceholder(text, 'items') ||
+        SmsText.hasPlaceholder(text, 'url');
+
+    if (needsJobContext) {
+      Job? job;
+      Client? client;
+      try {
+        final jid = (widget.jobId ?? '').trim();
+        if (jid.isNotEmpty) {
+          job = await JobService.getById(jid);
+        }
+        var cid = (widget.clientId ?? '').trim();
+        if (cid.isEmpty && job != null && job.clientId.trim().isNotEmpty) {
+          cid = job.clientId.trim();
+        }
+        if (cid.isNotEmpty) {
+          client = await ClientService.getById(cid);
+        } else if (_phone.trim().isNotEmpty) {
+          client = await ClientService.findByPhone(_phone);
+          if (client != null) cid = client.id;
+        }
+        if (job == null && cid.isNotEmpty) {
+          final snap = await FirestoreService.jobsRef
+              .where('clientId', isEqualTo: cid)
+              .get();
+          final jobs = <Job>[];
+          for (final doc in snap.docs) {
+            final parsed = Job.fromMap(
+              doc.data() as Map<String, dynamic>,
+              doc.id,
+            );
+            if (!parsed.isDeleted) jobs.add(parsed);
+          }
+          if (jobs.isNotEmpty) {
+            jobs.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            job = jobs.firstWhere(
+              (j) => j.activeVisits.isNotEmpty,
+              orElse: () => jobs.first,
+            );
+          }
+        }
+      } catch (_) {}
+
+      final visit = job?.nextActiveVisit() ?? job?.latestVisit;
+      if (visit != null) {
+        final clock = AppTimeService.bookingWallClock(visit.startAt);
+        final dateStr = DateFormat('MMMM d', 'en_US').format(clock);
+        final timeStr = DateFormat('HH:mm').format(clock);
+        text = SmsText.replacePlaceholder(text, 'date', dateStr);
+        text = SmsText.replacePlaceholder(text, 'time', timeStr);
+      }
+      final addr = (job?.workAddress ?? '').trim().isNotEmpty
+          ? job!.workAddress.trim()
+          : (client?.address ?? '').trim();
+      if (addr.isNotEmpty) {
+        text = SmsText.replacePlaceholder(text, 'address', addr);
+      }
+
+      if (job != null && job.documents.isNotEmpty) {
+        Map<String, dynamic>? activeDoc;
+        for (final doc in job.documents.reversed) {
+          if (!Job.isDocumentTrashed(doc)) {
+            activeDoc = doc;
+            break;
+          }
+        }
+        if (activeDoc != null) {
+          final total = Job.documentTotal(activeDoc);
+          final paid = Job.documentPaid(activeDoc);
+          final due = (total - paid) > 0 ? (total - paid) : 0.0;
+          final amount = due > 0 ? due : total;
+          final items = DocumentSettings.formatItems(
+            activeDoc['items'] is List
+                ? activeDoc['items'] as List
+                : const [],
+          );
+          text = SmsText.replacePlaceholder(
+            text,
+            'total',
+            Formatters.formatCurrency(total),
+          );
+          text = SmsText.replacePlaceholder(
+            text,
+            'due',
+            Formatters.formatCurrency(due),
+          );
+          text = SmsText.replacePlaceholder(
+            text,
+            'paid',
+            Formatters.formatCurrency(paid),
+          );
+          text = SmsText.replacePlaceholder(
+            text,
+            'amount',
+            Formatters.formatCurrency(amount),
+          );
+          text = SmsText.replacePlaceholder(text, 'items', items);
+
+          var docUrl = '';
+          final stripe = activeDoc['stripe'];
+          if (stripe is Map) {
+            docUrl = (stripe['shortUrl'] ?? stripe['url'] ?? '')
+                .toString()
+                .trim();
+          }
+          if (docUrl.isEmpty) {
+            docUrl = (activeDoc['pdfShortUrl'] ??
+                    activeDoc['pdfUrl'] ??
+                    activeDoc['confirmShortUrl'] ??
+                    activeDoc['confirmLongUrl'] ??
+                    '')
+                .toString()
+                .trim();
+          }
+          if (docUrl.isNotEmpty) {
+            text = SmsText.replacePlaceholder(text, 'url', docUrl);
+          }
+        }
+      }
     }
     return text.trim();
   }
 
   Future<void> _showSmsTemplates({ValueChanged<String>? onSelect}) async {
-    final templates = await SettingsService.loadSmsTemplates();
-    final custom = await SettingsService.loadChatCustomTemplates();
+    final results = await Future.wait([
+      SettingsService.loadSmsTemplates(),
+      SettingsService.loadSmsTemplateTitles(),
+      SettingsService.loadChatCustomTemplates(),
+    ]);
+    var templates = results[0] as Map<String, String>;
+    var titles = results[1] as Map<String, String>;
+    var custom = results[2] as List<Map<String, String>>;
     if (!mounted) return;
 
-    const builtins = <({String key, String title, IconData icon, Color color})>[
-      (
-        key: 'on_way',
-        title: 'Я в пути',
-        icon: Icons.directions_car,
-        color: Colors.green,
-      ),
-      (
-        key: 'part_ordered',
-        title: 'Запчасть заказана',
-        icon: Icons.inventory,
-        color: Colors.orange,
-      ),
-      (
-        key: 'job_done',
-        title: 'Работа завершена',
-        icon: Icons.check_circle,
-        color: Colors.blue,
-      ),
-      (
-        key: 'booking_confirm',
-        title: 'Подтверждение визита',
-        icon: Icons.event_available,
-        color: Colors.indigo,
-      ),
-      (
-        key: 'day_before',
-        title: 'Напоминание о визите',
-        icon: Icons.notifications,
-        color: Colors.deepPurple,
-      ),
-      (
-        key: 'reschedule_ask',
-        title: 'Перенос визита',
-        icon: Icons.event_repeat,
-        color: Colors.teal,
-      ),
-      (
-        key: 'cancel_save',
-        title: 'Отмена визита',
-        icon: Icons.cancel_outlined,
-        color: Colors.red,
-      ),
+    const sections = <String>[
+      'В пути и работа',
+      'Визиты',
+      'Документы и оплата',
     ];
 
     await showModalBottomSheet<void>(
@@ -1083,103 +1559,190 @@ class _ConversationScreenState extends State<ConversationScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (sheetContext) {
-        return SafeArea(
-          child: DraggableScrollableSheet(
-            expand: false,
-            initialChildSize: 0.62,
-            minChildSize: 0.4,
-            maxChildSize: 0.92,
-            builder: (context, scrollController) {
-              return Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            context.tr('Выбрать шаблон', 'Choose template'),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: ListView(
-                      controller: scrollController,
-                      children: [
-                        for (final item in builtins)
-                          ListTile(
-                            leading: Icon(item.icon, color: item.color),
-                            title: Text(item.title.tr),
-                            subtitle: Text(
-                              templates[item.key] ?? '',
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            onTap: () async {
-                              Navigator.pop(sheetContext);
-                              final text = await _resolveTemplate(
-                                templates[item.key] ?? '',
-                              );
-                              if (onSelect != null) {
-                                onSelect(text);
-                              } else {
-                                if (!mounted) return;
-                                setState(() => _textController.text = text);
-                              }
-                            },
-                          ),
-                        if (custom.isNotEmpty) ...[
-                          const Divider(height: 20),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                            child: Text(
-                              'Мои шаблоны'.tr,
-                              style: TextStyle(
-                                fontWeight: FontWeight.w800,
-                                color: Colors.grey.shade700,
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            Future<void> reloadSheet() async {
+              final next = await Future.wait([
+                SettingsService.loadSmsTemplates(),
+                SettingsService.loadSmsTemplateTitles(),
+                SettingsService.loadChatCustomTemplates(),
+              ]);
+              if (!sheetContext.mounted) return;
+              setSheetState(() {
+                templates = next[0] as Map<String, String>;
+                titles = next[1] as Map<String, String>;
+                custom = next[2] as List<Map<String, String>>;
+              });
+            }
+
+            String titleFor(
+              ({
+                String key,
+                String section,
+                String defaultTitle,
+                IconData icon,
+                Color color,
+              }) spec,
+            ) {
+              final customTitle = (titles[spec.key] ?? '').trim();
+              return customTitle.isNotEmpty ? customTitle : spec.defaultTitle.tr;
+            }
+
+            return SafeArea(
+              child: DraggableScrollableSheet(
+                expand: false,
+                initialChildSize: 0.72,
+                minChildSize: 0.4,
+                maxChildSize: 0.94,
+                builder: (context, scrollController) {
+                  return Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 8, 6),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                context.tr('Выбрать шаблон', 'Choose template'),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 18,
+                                ),
                               ),
                             ),
-                          ),
-                        ],
-                        for (final item in custom)
-                          ListTile(
-                            leading: Icon(
-                              Icons.chat_bubble_outline,
-                              color: AppColors.primary,
+                            TextButton.icon(
+                              onPressed: () async {
+                                await Navigator.push<void>(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        const MessageTemplatesPage(),
+                                  ),
+                                );
+                                await reloadSheet();
+                              },
+                              icon: const Icon(Icons.edit_outlined, size: 18),
+                              label: Text('Настроить'.tr),
                             ),
-                            title: Text(item['title'] ?? ''),
-                            subtitle: Text(
-                              item['body'] ?? '',
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            onTap: () async {
-                              Navigator.pop(sheetContext);
-                              final text = await _resolveTemplate(
-                                item['body'] ?? '',
-                              );
-                              if (onSelect != null) {
-                                onSelect(text);
-                              } else {
-                                if (!mounted) return;
-                                setState(() => _textController.text = text);
-                              }
-                            },
-                          ),
-                        const SizedBox(height: 12),
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
+                          ],
+                        ),
+                      ),
+                      const Divider(height: 1),
+                      Expanded(
+                        child: ListView(
+                          controller: scrollController,
+                          children: [
+                            if (custom.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  12,
+                                  16,
+                                  4,
+                                ),
+                                child: Text(
+                                  'Мои шаблоны'.tr,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.inkMuted,
+                                  ),
+                                ),
+                              ),
+                              for (final item in custom)
+                                ListTile(
+                                  leading: Icon(
+                                    Icons.chat_bubble_outline,
+                                    color: AppColors.primaryOnCard,
+                                  ),
+                                  title: Text(
+                                    item['title'] ?? '',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    item['body'] ?? '',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  onTap: () async {
+                                    Navigator.pop(sheetContext);
+                                    final text = await _resolveTemplate(
+                                      item['body'] ?? '',
+                                    );
+                                    if (onSelect != null) {
+                                      onSelect(text);
+                                    } else {
+                                      if (!mounted) return;
+                                      setState(
+                                        () => _textController.text = text,
+                                      );
+                                    }
+                                  },
+                                ),
+                              const Divider(height: 16),
+                            ],
+                            for (var s = 0; s < sections.length; s++) ...[
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  10,
+                                  16,
+                                  4,
+                                ),
+                                child: Text(
+                                  sections[s].tr,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.inkMuted,
+                                  ),
+                                ),
+                              ),
+                              for (final item
+                                  in SettingsService.builtinSmsSpecs.where(
+                                    (spec) => spec.section == sections[s],
+                                  ))
+                                ListTile(
+                                  leading: Icon(item.icon, color: item.color),
+                                  title: Text(
+                                    titleFor(item),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    templates[item.key] ?? '',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  onTap: () async {
+                                    Navigator.pop(sheetContext);
+                                    final text = await _resolveTemplate(
+                                      templates[item.key] ?? '',
+                                    );
+                                    if (onSelect != null) {
+                                      onSelect(text);
+                                    } else {
+                                      if (!mounted) return;
+                                      setState(
+                                        () => _textController.text = text,
+                                      );
+                                    }
+                                  },
+                                ),
+                              if (s < sections.length - 1)
+                                const Divider(height: 16),
+                            ],
+                            const SizedBox(height: 12),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            );
+          },
         );
       },
     );
@@ -1220,6 +1783,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
               }
 
               _visibleIds = [for (final message in messages) message.id];
+              if (_highlightId != null && _visibleIds.contains(_highlightId)) {
+                _revealHighlight();
+              }
 
               // Лента перевёрнута: offset 0 — это низ, последнее сообщение.
               // Так низ держится сам, и прокрутку к нему звать не надо.
@@ -1235,8 +1801,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 reverse: true,
                 padding: const EdgeInsets.all(16),
                 itemCount: messages.length,
-                itemBuilder: (context, index) =>
-                    _buildBubble(messages[messages.length - 1 - index]),
+                itemBuilder: (context, index) {
+                  final message = messages[messages.length - 1 - index];
+                  return _highlightWrap(message, _buildBubble(message));
+                },
               );
             },
           ),
@@ -1260,7 +1828,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
 
     if (widget.embedded) {
-      return ColoredBox(color: Colors.grey.shade100, child: thread);
+      return ColoredBox(color: AppColors.surface, child: thread);
     }
 
     return PopScope(
@@ -1269,7 +1837,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (!didPop && _selecting) _clearSelection();
       },
       child: Scaffold(
-        backgroundColor: Colors.grey.shade100,
+        backgroundColor: AppColors.surface,
         appBar: _selecting
             ? AppBar(
                 backgroundColor: AppColors.primary,
@@ -1281,31 +1849,70 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 title: Text('${_selectedIds.length}'),
               )
             : AppBar(
-                title: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      widget.websiteInbox
-                          ? kWebsiteInboxTitle.tr
-                          : (_contactName.isNotEmpty
-                              ? _contactName
-                              : (widget.contactName ??
-                                  (_hasPhone ? _phone : _email))),
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                    ),
-                    if (!widget.websiteInbox &&
-                        (_contactName.isNotEmpty || widget.contactName != null))
-                      Text(
-                        [
-                          if (_hasPhone) _phone,
-                          if (_hasEmail) _email,
-                        ].join(' · '),
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.normal),
-                      ),
-                  ],
+                title: ValueListenableBuilder<int>(
+                  valueListenable: ClientService.regularRevision,
+                  builder: (context, _, _) {
+                    final isRegular =
+                        !widget.websiteInbox &&
+                        ClientService.isRegularClient(
+                          clientId: widget.clientId,
+                          phone: _phone,
+                          email: _email,
+                        );
+                    final rawTitle = _contactName.isNotEmpty
+                        ? _contactName
+                        : (widget.contactName ?? '');
+                    final titleText = widget.websiteInbox
+                        ? kWebsiteInboxTitle.tr
+                        : SmsText.stripClientWord(
+                            rawTitle,
+                            _hasPhone ? _phone : _email,
+                          );
+                    final subParts = [
+                      if (_hasPhone &&
+                          SmsService.normalizePhone(titleText) !=
+                              SmsService.normalizePhone(_phone))
+                        _phone,
+                      if (_hasEmail &&
+                          titleText.toLowerCase() != _email.toLowerCase())
+                        _email,
+                    ];
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                titleText,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 18,
+                                ),
+                              ),
+                            ),
+                            if (isRegular)
+                              const RegularClientStar(size: 18, onDark: true),
+                          ],
+                        ),
+                        if (!widget.websiteInbox && subParts.isNotEmpty)
+                          Text(
+                            subParts.join(' · '),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.normal,
+                            ),
+                          ),
+                      ],
+                    );
+                  },
                 ),
                 backgroundColor: AppColors.primary,
                 foregroundColor: Colors.white,
+                actions: _quickActions(),
               ),
         body: thread,
       ),
@@ -1344,12 +1951,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
         decoration: BoxDecoration(
           color: selected
-              ? (onDark ? const Color(0xFF0D47A1) : const Color(0xFFE3F2FD))
+              ? (onDark ? const Color(0xFF0D47A1) : AppColors.selectedCard)
               : waiting
-                  ? const Color(0xFFFFF8E1)
+                  ? AppColors.tint(AppColors.accent, 0.16)
                   : refused
-                      ? const Color(0xFFF1F1F1)
-                      : (isOutbound ? AppColors.primary : Colors.white),
+                      ? AppColors.cardMuted
+                      : (isOutbound ? AppColors.primary : AppColors.card),
           border: waiting
               ? Border.all(color: Colors.orange.shade300, width: 1.5)
               : null,
@@ -1399,8 +2006,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       color: onDark
                           ? Colors.white70
                           : waiting
-                              ? Colors.orange.shade900
-                              : Colors.grey.shade600,
+                              ? (AppColors.isDark
+                                  ? const Color(0xFFFFCA28)
+                                  : Colors.orange.shade900)
+                              : AppColors.inkMuted,
                       fontSize: 11,
                       fontWeight: waiting ? FontWeight.w800 : FontWeight.w600,
                     ),
@@ -1413,7 +2022,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               Text(
                 message.subject.trim(),
                 style: TextStyle(
-                  color: onDark ? Colors.white : Colors.black87,
+                  color: onDark ? Colors.white : AppColors.ink,
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
                 ),
@@ -1441,7 +2050,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   height: 120,
                   width: double.infinity,
                   decoration: BoxDecoration(
-                    color: Colors.grey.shade200,
+                    color: AppColors.cardMuted,
                     borderRadius: BorderRadius.circular(8),
                   ),
                   alignment: Alignment.center,
@@ -1459,7 +2068,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         ),
                       Text(
                         message.aiStatus == 'processing' ? 'Загружается фото…'.tr : 'Фото'.tr,
-                        style: TextStyle(color: Colors.grey.shade700),
+                        style: TextStyle(color: AppColors.inkMuted),
                       ),
                     ],
                   ),
@@ -1486,7 +2095,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     if (message.jobId != null) 'Добавлено в заявку'.tr,
                   ].join(' · '),
                   style: TextStyle(
-                    color: onDark ? Colors.white70 : AppColors.primary,
+                    color: onDark ? Colors.white70 : AppColors.primaryOnCard,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                   ),
@@ -1527,15 +2136,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
               ),
             ],
             const SizedBox(height: 4),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Text(
-                Formatters.messageStamp(message.createdAt),
-                style: TextStyle(
-                  color: onDark ? Colors.white70 : Colors.grey.shade500,
-                  fontSize: 11,
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              mainAxisSize: MainAxisSize.max,
+              children: [
+                Text(
+                  Formatters.messageStamp(message.createdAt),
+                  style: TextStyle(
+                    color: onDark ? Colors.white70 : Colors.grey.shade500,
+                    fontSize: 11,
+                  ),
                 ),
-              ),
+                _deliveryMark(message, onDark),
+              ],
             ),
           ],
         ),
@@ -1549,6 +2162,55 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ],
       ),
     ),
+    );
+  }
+
+  /// Галочка доставки под исходящим SMS: отправлено → доставлено → прочитано.
+  ///
+  /// Статус приносит Twilio (`smsStatusCallback`). «Прочитано» обычные SMS не
+  /// отдают — такую квитанцию дают только RCS и WhatsApp, поэтому у телефонов
+  /// почти всегда потолок «Доставлено». Недоставленное рисует красная плашка
+  /// выше, здесь его не дублируем. У писем галочек нет: там этих статусов нет.
+  Widget _deliveryMark(SmsMessage message, bool onDark) {
+    if (message.isEmail) return const SizedBox.shrink();
+    final state = message.delivery;
+    if (state == SmsDelivery.none || state == SmsDelivery.failed) {
+      return const SizedBox.shrink();
+    }
+    // Подписи через context.tr: в словаре en_ui «Отправлено» уже занято
+    // статусом доставки запчасти («Shipped»), а здесь нужно «Sent».
+    final (IconData icon, String label) = switch (state) {
+      SmsDelivery.queued => (
+          Icons.schedule_rounded,
+          context.tr('Отправляется', 'Sending'),
+        ),
+      SmsDelivery.sent => (Icons.done_rounded, context.tr('Отправлено', 'Sent')),
+      SmsDelivery.delivered => (
+          Icons.done_all_rounded,
+          context.tr('Доставлено', 'Delivered'),
+        ),
+      SmsDelivery.read => (
+          Icons.done_all_rounded,
+          context.tr('Прочитано', 'Read'),
+        ),
+      _ => (Icons.done_rounded, ''),
+    };
+    final color = state == SmsDelivery.read
+        ? (onDark ? const Color(0xFF8BE9FD) : Colors.lightBlue.shade700)
+        : (onDark ? Colors.white70 : Colors.grey.shade600);
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(width: 3),
+          Icon(icon, size: 13, color: color),
+        ],
+      ),
     );
   }
 
@@ -1682,7 +2344,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       context: context,
       isScrollControlled: true,
       useRootNavigator: true,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
@@ -1707,50 +2369,108 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Widget _buildRecipientBar() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-      color: Colors.grey.shade100,
-      child: Row(
-        children: [
-          Text(
-            'Кому'.tr,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              color: Colors.black54,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                isExpanded: true,
-                value: _peers.any((peer) => peer.id == _peerId)
-                    ? _peerId
-                    : _peers.first.id,
-                items: [
-                  for (final peer in _peers)
-                    DropdownMenuItem(
-                      value: peer.id,
-                      child: Text(
-                        '${peer.label} — ${peer.displayName}',
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                ],
-                onChanged: (id) {
-                  if (id == null) return;
-                  final peer = _peers.cast<ConversationPeer?>().firstWhere(
-                    (item) => item?.id == id,
-                    orElse: () => null,
-                  );
-                  if (peer != null) _selectPeer(peer);
-                },
+    final peers = _peers;
+    final activeId = peers.any((peer) => peer.id == _peerId)
+        ? _peerId
+        : peers.first.id;
+
+    Widget buildChip(ConversationPeer peer) {
+      final selected = peer.id == activeId;
+      final title = peer.displayName == peer.label
+          ? peer.label
+          : '${peer.label} · ${peer.displayName}';
+      final contact = peer.hasPhone ? peer.phone.trim() : peer.email.trim();
+      return Material(
+        color: selected ? AppColors.primary : AppColors.card,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => _selectPeer(peer),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: selected
+                    ? AppColors.primary
+                    : AppColors.primary.withValues(alpha: 0.25),
               ),
             ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  peer.isOwner ? Icons.person : Icons.location_on,
+                  size: 18,
+                  color: selected ? Colors.white : AppColors.primaryOnCard,
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: selected ? Colors.white : AppColors.ink,
+                        ),
+                      ),
+                      if (contact.isNotEmpty)
+                        Text(
+                          contact,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: selected ? Colors.white70 : AppColors.inkMuted,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
-        ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        border: Border(bottom: BorderSide(color: AppColors.border)),
       ),
+      child: peers.length <= 2
+          ? Row(
+              children: [
+                for (var i = 0; i < peers.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 8),
+                  Expanded(child: buildChip(peers[i])),
+                ],
+              ],
+            )
+          : SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (var i = 0; i < peers.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 8),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 220),
+                      child: buildChip(peers[i]),
+                    ),
+                  ],
+                ],
+              ),
+            ),
     );
   }
 
@@ -1767,7 +2487,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           width: double.infinity,
           margin: const EdgeInsets.fromLTRB(8, 0, 8, 4),
           decoration: BoxDecoration(
-            color: const Color(0xFFFFF8E1),
+            color: AppColors.tint(const Color(0xFFFFCC02), 0.14),
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: const Color(0xFFFFCC02), width: 1),
           ),
@@ -1778,14 +2498,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
                 child: Row(
                   children: [
-                    const Icon(Icons.schedule, size: 16, color: Color(0xFF856404)),
+                    Icon(
+                      Icons.schedule,
+                      size: 16,
+                      color: AppColors.isDark
+                          ? const Color(0xFFFFCA28)
+                          : const Color(0xFF856404),
+                    ),
                     const SizedBox(width: 6),
                     Text(
                       'Запланировано: ${items.length}'.tr,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w700,
-                        color: Color(0xFF856404),
+                        color: AppColors.isDark
+                            ? const Color(0xFFFFCA28)
+                            : const Color(0xFF856404),
                       ),
                     ),
                   ],
@@ -1856,93 +2584,168 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   List<Widget> _quickActions() {
-    final color = AppColors.primary;
     return [
       IconButton(
-        icon: Icon(Icons.person_outline, color: color),
+        visualDensity: VisualDensity.compact,
+        icon: const Icon(Icons.person_outline, color: Colors.white, size: 22),
         tooltip: 'Карточка клиента'.tr,
         onPressed: _openClientCard,
       ),
+      // По какой заявке идёт переписка. Почта с сайта ни к кому не
+      // привязана — там показывать нечего.
+      if (!widget.websiteInbox)
+        JobLinkButton(
+          jobId: widget.jobId,
+          clientId: widget.clientId,
+          phone: _phone,
+        ),
       IconButton(
+        visualDensity: VisualDensity.compact,
         icon: _extracting
             ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
               )
-            : Icon(Icons.auto_fix_high, color: color),
+            : const Icon(Icons.auto_fix_high, color: Colors.white, size: 20),
         tooltip: 'Сохранить имя и адрес в карточку'.tr,
         onPressed: _extracting ? null : _extractAndApplyToClient,
       ),
       if (_hasPhone)
-        IconButton.filled(
-          icon: const Icon(Icons.call),
-          tooltip: 'Позвонить'.tr,
-          style: IconButton.styleFrom(
-            backgroundColor: const Color(0xFF22C55E),
-            foregroundColor: Colors.white,
+        Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: IconButton.filled(
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            padding: EdgeInsets.zero,
+            icon: const Icon(Icons.call, size: 18),
+            tooltip: 'Позвонить'.tr,
+            style: IconButton.styleFrom(
+              backgroundColor: const Color(0xFF22C55E),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: _call,
           ),
-          onPressed: _call,
         ),
     ];
   }
 
+  Widget _buildChannelSwitch() {
+    final isEmail = _channel == ConversationChannel.email;
+    final canSwitch = _hasPhone && _hasEmail;
+
+    Widget segment({
+      required ConversationChannel value,
+      required IconData icon,
+      required bool enabled,
+      required String tooltip,
+    }) {
+      final active = _channel == value;
+      final activeColor = value == ConversationChannel.email
+          ? const Color(0xFFEA4335)
+          : AppColors.primary;
+      return Tooltip(
+        message: tooltip,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: !enabled || active
+              ? null
+              : () {
+                  AppFeedback.pleasant();
+                  setState(() {
+                    _channel = value;
+                    _bindStreams();
+                  });
+                  _markRead();
+                },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: active ? activeColor : Colors.transparent,
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: Icon(
+              icon,
+              size: 16,
+              color: active
+                  ? Colors.white
+                  : (enabled ? Colors.grey.shade700 : Colors.grey.shade400),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (!canSwitch) {
+      return Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: (isEmail ? const Color(0xFFEA4335) : AppColors.primary)
+              .withValues(alpha: 0.12),
+          shape: BoxShape.circle,
+        ),
+        alignment: Alignment.center,
+        child: Icon(
+          isEmail ? Icons.email_rounded : Icons.sms_rounded,
+          size: 18,
+          color: isEmail ? const Color(0xFFEA4335) : AppColors.primary,
+        ),
+      );
+    }
+
+    return Container(
+      height: 36,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade200,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          segment(
+            value: ConversationChannel.sms,
+            icon: Icons.sms_rounded,
+            enabled: _hasPhone,
+            tooltip: 'SMS'.tr,
+          ),
+          segment(
+            value: ConversationChannel.email,
+            icon: Icons.email_rounded,
+            enabled: _hasEmail,
+            tooltip: 'Email'.tr,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildInputBar() {
+    final isEmail = _channel == ConversationChannel.email;
     return Container(
       padding: EdgeInsets.only(
         left: 8,
-        right: 12,
-        top: 8,
-        bottom: 8 + (widget.embedded ? 0 : MediaQuery.of(context).padding.bottom),
+        right: 8,
+        top: 6,
+        bottom: 6 + (widget.embedded ? 0 : MediaQuery.of(context).padding.bottom),
       ),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, -2))],
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, -1))],
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            children: [
-              SegmentedButton<ConversationChannel>(
-              showSelectedIcon: false,
-              style: const ButtonStyle(
-                visualDensity: VisualDensity.compact,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-              segments: [
-                ButtonSegment(
-                  value: ConversationChannel.sms,
-                  enabled: _hasPhone,
-                  icon: const Icon(Icons.sms, size: 16),
-                  label: Text('SMS'.tr),
-                ),
-                ButtonSegment(
-                  value: ConversationChannel.email,
-                  enabled: _hasEmail,
-                  icon: const Icon(Icons.email, size: 16),
-                  label: Text('Email'.tr),
-                ),
-              ],
-              selected: {_channel},
-              onSelectionChanged: (value) {
-                setState(() {
-                  _channel = value.first;
-                  _bindStreams();
-                });
-                _markRead();
-              },
-            ),
-              const Spacer(),
-              // Карточка, «имя и адрес в карточку» и звонок — здесь, у
-              // большого пальца, а не в верхней панели.
-              if (!widget.embedded) ..._quickActions(),
-            ],
-          ),
-          const SizedBox(height: 8),
           if (_attachments.isNotEmpty)
             SizedBox(
-              height: 72,
+              height: 64,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 itemCount: _attachments.length,
@@ -1952,12 +2755,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   return Stack(
                     children: [
                       Container(
-                        width: 72,
-                        height: 72,
+                        width: 64,
+                        height: 64,
                         decoration: BoxDecoration(
-                          color: Colors.grey.shade100,
+                          color: AppColors.cardMuted,
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.grey.shade300),
+                          border: Border.all(color: AppColors.border),
                         ),
                         clipBehavior: Clip.antiAlias,
                         child: file.isImage
@@ -1970,7 +2773,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                             : Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Icon(Icons.insert_drive_file, color: AppColors.primary),
+                                  Icon(Icons.insert_drive_file, color: AppColors.primaryOnCard, size: 20),
                                   Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 4),
                                     child: Text(
@@ -2000,54 +2803,77 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 },
               ),
             ),
-          if (_attachments.isNotEmpty) const SizedBox(height: 8),
+          if (_attachments.isNotEmpty) const SizedBox(height: 6),
           Row(
             children: [
-              IconButton(
-                icon: const Icon(Icons.attach_file),
-                color: AppColors.primary,
-                tooltip: 'Прикрепить'.tr,
-                onPressed: _isSending ? null : _pickAttachment,
-              ),
-              IconButton(
-                icon: const Icon(Icons.library_books),
-                color: AppColors.primary,
-                tooltip: context.tr('Выбрать шаблон', 'Choose template'),
-                onPressed: _showSmsTemplates,
-              ),
+              _buildChannelSwitch(),
+              const SizedBox(width: 6),
               Expanded(
                 child: Material(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(22),
+                  color: AppColors.cardMuted,
+                  borderRadius: BorderRadius.circular(20),
                   child: InkWell(
-                    borderRadius: BorderRadius.circular(22),
+                    borderRadius: BorderRadius.circular(20),
                     onTap: _isSending ? null : _openComposeSheet,
                     child: Container(
-                      height: 40,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        _textController.text.trim().isEmpty
-                            ? 'Пишите по-русски — клиенту уйдёт на английском'.tr
-                            : _textController.text.trim(),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 15,
-                          color: _textController.text.trim().isEmpty
-                              ? Colors.grey.shade600
-                              : const Color(0xFF1A1A1A),
-                        ),
+                      height: 38,
+                      padding: const EdgeInsets.only(left: 12, right: 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _textController.text.trim().isEmpty
+                                  ? 'Пишите по-русски — клиенту уйдёт на английском'.tr
+                                  : _textController.text.trim(),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: _textController.text.trim().isEmpty
+                                    ? AppColors.inkMuted
+                                    : AppColors.ink,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            constraints: const BoxConstraints(
+                              minWidth: 32,
+                              minHeight: 32,
+                            ),
+                            padding: EdgeInsets.zero,
+                            icon: const Icon(Icons.library_books_outlined, size: 18),
+                            color: AppColors.inkMuted,
+                            tooltip: context.tr('Выбрать шаблон', 'Choose template'),
+                            onPressed: _showSmsTemplates,
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            constraints: const BoxConstraints(
+                              minWidth: 32,
+                              minHeight: 32,
+                            ),
+                            padding: EdgeInsets.zero,
+                            icon: const Icon(Icons.attach_file, size: 18),
+                            color: AppColors.inkMuted,
+                            tooltip: 'Прикрепить'.tr,
+                            onPressed: _isSending ? null : _pickAttachment,
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               _isSending
-                  ? const Padding(
-                      padding: EdgeInsets.all(12),
-                      child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                  ? const SizedBox(
+                      width: 38,
+                      height: 38,
+                      child: Padding(
+                        padding: EdgeInsets.all(9),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
                     )
                   : GestureDetector(
                       onLongPress: () async {
@@ -2056,16 +2882,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         final dt = await _pickScheduleTime();
                         if (dt != null) await _scheduleMessage(dt);
                       },
-                      child: IconButton(
-                        onPressed: _send,
-                        icon: Icon(_channel == ConversationChannel.email ? Icons.email : Icons.send),
-                        tooltip: 'Отправить (удержать — запланировать)'.tr,
-                        style: IconButton.styleFrom(
-                          backgroundColor: _channel == ConversationChannel.email
-                              ? const Color(0xFFEA4335)
-                              : AppColors.primary,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 38,
+                        height: 38,
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          onPressed: _send,
+                          icon: Icon(
+                            isEmail ? Icons.email_rounded : Icons.send_rounded,
+                            size: 18,
+                          ),
+                          tooltip: 'Отправить (удержать — запланировать)'.tr,
+                          style: IconButton.styleFrom(
+                            backgroundColor: isEmail
+                                ? const Color(0xFFEA4335)
+                                : AppColors.primary,
+                            foregroundColor: Colors.white,
+                          ),
                         ),
                       ),
                     ),
@@ -2217,7 +3050,7 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: Colors.grey.shade300,
+                  color: AppColors.border,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -2225,10 +3058,10 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
             const SizedBox(height: 12),
             Text(
               'Сообщение'.tr,
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.w800,
                 fontSize: 18,
-                color: Color(0xFF1A1A1A),
+                color: AppColors.ink,
               ),
             ),
             const SizedBox(height: 8),
@@ -2245,7 +3078,7 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
                 decoration: InputDecoration(
                   hintText: 'Пишите по-русски — клиенту уйдёт на английском'.tr,
                   filled: true,
-                  fillColor: Colors.grey.shade100,
+                  fillColor: AppColors.cardMuted,
                   contentPadding: const EdgeInsets.all(16),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
@@ -2254,79 +3087,87 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
                 ),
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Row(
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    key: _polishKey,
-                    onPressed: _polishing ? null : () => _polish(),
-                    onLongPress: _polishing ? null : _openPolishMenu,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        if (_polishing)
-                          const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        else
-                          const Icon(Icons.auto_fix_high, size: 20),
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Text(
-                            _showPolishMenu
-                                ? 'Ещё вариант'.tr
-                                : 'Оформить и эмодзи'.tr,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                OutlinedButton(
+                  key: _polishKey,
+                  onPressed: _polishing ? null : () => _polish(),
+                  onLongPress: _polishing ? null : _openPolishMenu,
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    minimumSize: const Size(0, 40),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_polishing)
+                        const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      else
+                        const Icon(Icons.auto_fix_high, size: 18),
+                      const SizedBox(width: 6),
+                      Text(
+                        _showPolishMenu
+                            ? 'Ещё'.tr
+                            : 'Оформить'.tr,
+                      ),
+                      const SizedBox(width: 2),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _polishing ? null : _openPolishMenu,
+                        child: const Padding(
+                          padding: EdgeInsets.only(left: 4),
+                          child: Icon(Icons.expand_less, size: 18),
                         ),
-                        IconButton(
-                          visualDensity: VisualDensity.compact,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(
-                            minWidth: 32,
-                            minHeight: 32,
-                          ),
-                          onPressed: _polishing ? null : _openPolishMenu,
-                          icon: const Icon(Icons.expand_less, size: 22),
-                          tooltip: 'Больше / меньше эмодзи'.tr,
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 10),
-                if (widget.onSchedule != null)
+                const Spacer(),
+                if (widget.onSchedule != null) ...[
                   Tooltip(
                     message: 'Запланировать'.tr,
-                    child: OutlinedButton(
-                      onPressed: widget.sending ? null : _scheduleFromSheet,
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size(44, 44),
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
-                        side: BorderSide(color: AppColors.primary),
-                        foregroundColor: AppColors.primary,
+                    child: SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: OutlinedButton(
+                        onPressed: widget.sending ? null : _scheduleFromSheet,
+                        style: OutlinedButton.styleFrom(
+                          padding: EdgeInsets.zero,
+                          shape: const CircleBorder(),
+                          side: BorderSide(color: AppColors.primary.withValues(alpha: 0.35)),
+                          foregroundColor: AppColors.primary,
+                        ),
+                        child: const Icon(Icons.schedule, size: 20),
                       ),
-                      child: const Icon(Icons.schedule, size: 22),
                     ),
                   ),
-                const SizedBox(width: 6),
-                FilledButton.icon(
-                  onPressed: widget.sending ? null : widget.onSend,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: widget.channel == ConversationChannel.email
-                        ? const Color(0xFFEA4335)
-                        : AppColors.primary,
-                    foregroundColor: Colors.white,
+                  const SizedBox(width: 8),
+                ],
+                SizedBox(
+                  width: 42,
+                  height: 42,
+                  child: IconButton.filled(
+                    onPressed: widget.sending ? null : widget.onSend,
+                    tooltip: 'Отправить'.tr,
+                    style: IconButton.styleFrom(
+                      backgroundColor: widget.channel == ConversationChannel.email
+                          ? const Color(0xFFEA4335)
+                          : AppColors.primary,
+                      foregroundColor: Colors.white,
+                    ),
+                    icon: Icon(
+                      widget.channel == ConversationChannel.email
+                          ? Icons.email_rounded
+                          : Icons.send_rounded,
+                      size: 20,
+                    ),
                   ),
-                  icon: Icon(
-                    widget.channel == ConversationChannel.email
-                        ? Icons.email
-                        : Icons.send,
-                  ),
-                  label: Text('Отправить'.tr),
                 ),
               ],
             ),

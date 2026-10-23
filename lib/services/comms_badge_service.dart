@@ -3,7 +3,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/utils/formatters.dart';
+import '../models/client.dart';
 import 'auth_service.dart';
+import 'client_service.dart';
 import 'sms_service.dart';
 import 'twilio_service.dart';
 
@@ -32,11 +35,33 @@ class CommsBadgeService {
   /// Сумма для самой вкладки «Связь».
   static final ValueNotifier<int> total = ValueNotifier<int>(0);
 
+  /// Кто именно звонил и кто именно написал — последний по времени.
+  ///
+  /// Одной цифры мало: она говорит «что-то пришло», но не говорит, от кого,
+  /// и за этим всё равно приходится лезть в список. Имя берём у клиента,
+  /// если он заведён; иначе — то, что назвал ИИ или отправитель письма;
+  /// в последнюю очередь — номер.
+  static final ValueNotifier<String> newCallFrom = ValueNotifier<String>('');
+  static final ValueNotifier<String> unreadFrom = ValueNotifier<String>('');
+
+  /// Граница «новизны» для подсветки строк в списке звонков.
+  ///
+  /// Это **предыдущий** заход в список, а не текущий: пока мастер смотрит
+  /// на список, пометка должна оставаться на месте, иначе она исчезает в тот
+  /// же миг, когда он её увидел. Сдвигается только при следующем открытии —
+  /// тогда вчерашние новости перестают быть новостями, а пришедшее за это
+  /// время подсвечивается.
+  static final ValueNotifier<DateTime> callsNewSince =
+      ValueNotifier<DateTime>(DateTime.now());
+
   static bool _started = false;
   static int _generation = 0;
   static Timer? _retry;
   static final List<StreamSubscription<dynamic>> _subscriptions = [];
   static List<CallRecord> _calls = const [];
+  static List<SmsMessage> _unread = const [];
+  static Map<String, String> _phoneNames = const {};
+  static Map<String, String> _emailNames = const {};
 
   /// Когда список звонков смотрели в последний раз.
   ///
@@ -57,6 +82,7 @@ class CommsBadgeService {
       final stored = prefs.getString(_callsSeenKey);
       final parsed = stored == null ? null : DateTime.tryParse(stored);
       _callsSeenAt = parsed ?? DateTime.now();
+      callsNewSince.value = _callsSeenAt;
       if (parsed == null) {
         await prefs.setString(_callsSeenKey, _callsSeenAt.toIso8601String());
       }
@@ -69,8 +95,16 @@ class CommsBadgeService {
         }, onError: _onError),
         SmsService.streamUnreadInbound().listen((messages) {
           if (generation != _generation) return;
-          unreadMessages.value = messages.length;
-          _sum();
+          _unread = messages;
+          _recountMessages();
+        }, onError: _onError),
+        // Справочник имён. Без него подпись у иконки показывала бы номер
+        // даже тем клиентам, которых мастер давно завёл.
+        ClientService.streamAll().listen((clients) {
+          if (generation != _generation) return;
+          _rebuildNames(clients);
+          _recountCalls();
+          _recountMessages();
         }, onError: _onError),
       ]);
     } catch (error) {
@@ -80,6 +114,7 @@ class CommsBadgeService {
 
   /// Мастер открыл список звонков — всё, что в нём лежит, он увидел.
   static void markCallsSeen() {
+    callsNewSince.value = _callsSeenAt;
     _callsSeenAt = DateTime.now();
     _recountCalls();
     unawaited(
@@ -92,10 +127,120 @@ class CommsBadgeService {
     );
   }
 
+  static void _rebuildNames(List<Client> clients) {
+    final phones = <String, String>{};
+    final emails = <String, String>{};
+    void addPhone(String phone, String name) {
+      final key = ClientService.normalizePhone(phone);
+      final cleaned = Client.stripClientWord(name);
+      if (key.length >= 7 &&
+          cleaned.isNotEmpty &&
+          !Client.isPlaceholderName(cleaned)) {
+        phones[key] = cleaned;
+      }
+    }
+
+    for (final client in clients) {
+      addPhone(client.phone, client.fullName);
+      final email = SmsService.normalizeEmail(client.email ?? '');
+      final cleaned = Client.stripClientWord(client.fullName);
+      if (email.contains('@') &&
+          cleaned.isNotEmpty &&
+          !Client.isPlaceholderName(cleaned)) {
+        emails[email] = cleaned;
+      }
+      for (final location in client.locations) {
+        for (final contact in location.contacts) {
+          addPhone(
+            contact.phone,
+            contact.name.trim().isNotEmpty ? contact.name : client.fullName,
+          );
+        }
+      }
+    }
+    _phoneNames = phones;
+    _emailNames = emails;
+  }
+
+  /// Имя из заявки ИИ: клиент мог позвонить с незнакомого номера, но себя
+  /// назвать.
+  static String _extractedName(Map<String, dynamic>? data) {
+    if (data == null) return '';
+    for (final key in const [
+      'client_name',
+      'clientName',
+      'name',
+      'caller_name',
+    ]) {
+      final cleaned = Client.stripClientWord(data[key]?.toString());
+      if (cleaned.isNotEmpty && !Client.isPlaceholderName(cleaned)) {
+        return cleaned;
+      }
+    }
+    return '';
+  }
+
+  static String _callLabel(CallRecord call) {
+    final phone = call.fromNumber;
+    final known = _phoneNames[ClientService.normalizePhone(phone)];
+    if (known != null) return known;
+    final extracted = <String, dynamic>{
+      ...?call.extractedData,
+      if (call.aiReception?['extracted'] is Map)
+        ...Map<String, dynamic>.from(call.aiReception!['extracted'] as Map),
+    };
+    final guessed = _extractedName(extracted);
+    if (guessed.isNotEmpty) return guessed;
+    return phone.trim().isEmpty ? '' : Formatters.formatPhone(phone);
+  }
+
+  static String _messageLabel(SmsMessage message) {
+    if (message.isEmail) {
+      final email = SmsService.normalizeEmail(message.counterpartEmail);
+      final known = _emailNames[email];
+      if (known != null) return known;
+      final fromName = Client.stripClientWord(message.fromName);
+      if (fromName.isNotEmpty && !Client.isPlaceholderName(fromName)) {
+        return fromName;
+      }
+      final guessed = _extractedName(message.extractedData);
+      if (guessed.isNotEmpty) return guessed;
+      return email;
+    }
+    final phone = message.from;
+    final known = _phoneNames[ClientService.normalizePhone(phone)];
+    if (known != null) return known;
+    final guessed = _extractedName(message.extractedData);
+    if (guessed.isNotEmpty) return guessed;
+    return phone.trim().isEmpty ? '' : Formatters.formatPhone(phone);
+  }
+
   static void _recountCalls() {
-    newCalls.value = _calls
+    final fresh = _calls
         .where((call) => (call.startTime ?? DateTime(0)).isAfter(_callsSeenAt))
-        .length;
+        .toList();
+    newCalls.value = fresh.length;
+    CallRecord? latest;
+    for (final call in fresh) {
+      final at = call.startTime ?? DateTime(0);
+      if (latest == null || at.isAfter(latest.startTime ?? DateTime(0))) {
+        latest = call;
+      }
+    }
+    newCallFrom.value = latest == null ? '' : _callLabel(latest);
+    _sum();
+  }
+
+  static void _recountMessages() {
+    unreadMessages.value = _unread.length;
+    SmsMessage? latest;
+    for (final message in _unread) {
+      final at = message.createdAt ?? DateTime(0);
+      if (latest == null || at.isAfter(latest.createdAt ?? DateTime(0))) {
+        latest = message;
+      }
+    }
+    unreadFrom.value = latest == null ? '' : _messageLabel(latest);
     _sum();
   }
 
@@ -112,9 +257,14 @@ class CommsBadgeService {
     }
     _subscriptions.clear();
     _calls = const [];
+    _unread = const [];
+    _phoneNames = const {};
+    _emailNames = const {};
     newCalls.value = 0;
     unreadMessages.value = 0;
     total.value = 0;
+    newCallFrom.value = '';
+    unreadFrom.value = '';
   }
 
   /// Сеть моргнула — цифры не выдумываем, но и не бросаем насовсем:

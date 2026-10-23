@@ -199,9 +199,9 @@ class _BackupSettingsPageState extends State<BackupSettingsPage> {
                         'Храним последние ${BackupService.keepCount}',
                         'We keep the last ${BackupService.keepCount}',
                       ),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: Colors.black87,
+                        color: AppColors.ink,
                       ),
                     ),
                   ),
@@ -246,9 +246,9 @@ class _BackupSettingsPageState extends State<BackupSettingsPage> {
                     padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
                     child: SelectableText(
                       _folder,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 11,
-                        color: Colors.black38,
+                        color: AppColors.inkMuted,
                         height: 1.25,
                       ),
                     ),
@@ -266,18 +266,18 @@ class _BackupSettingsPageState extends State<BackupSettingsPage> {
         children: [
           Text(
             title,
-            style: const TextStyle(
+            style: TextStyle(
               fontWeight: FontWeight.bold,
               fontSize: 16,
-              color: Colors.black87,
+              color: AppColors.ink,
             ),
           ),
           const SizedBox(height: 2),
           Text(
             hint,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
-              color: Colors.black54,
+              color: AppColors.inkMuted,
               height: 1.3,
             ),
           ),
