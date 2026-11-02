@@ -303,10 +303,6 @@ void main() {
       expect(JobVisit.fromMap(visit.toMap()).smsBooking, metadata);
       expect(visit.copyWith(note: 'Updated note').smsBooking, metadata);
       expect(visit.copyWith(clearSmsDialog: true).smsBooking, metadata);
-      expect(
-        visit.withManualConfirm(JobVisit.confirmConfirmed).smsBooking,
-        metadata,
-      );
 
       final replacement = {...visit.smsBooking, 'state': 'sent'};
       final updated = visit.copyWith(smsBooking: replacement);

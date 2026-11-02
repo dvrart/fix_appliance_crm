@@ -106,7 +106,8 @@ class VoiceFirebaseMessagingService : FirebaseMessagingService() {
             Log.d(TAG, "Message type: " + (remoteMessage.data["type"] ?: "voice"))
             val handled = TwilioVoiceFcm.handleMessage(applicationContext, remoteMessage.data)
             if (!handled) {
-                if (!showCrmShade(remoteMessage)) {
+                // call_connected — это только вибрация; запасная шторка ему не нужна.
+                if (!showCrmShade(remoteMessage) && remoteMessage.data["type"] != "call_connected") {
                     showSmsNotification(remoteMessage)
                 }
             }

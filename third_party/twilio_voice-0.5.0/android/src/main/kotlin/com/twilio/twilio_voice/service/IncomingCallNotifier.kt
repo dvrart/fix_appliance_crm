@@ -42,7 +42,12 @@ object IncomingCallNotifier {
 
     private const val TAG = "IncomingCallNotifier"
     private const val NOTIFICATION_ID = TVConnectionService.FOREGROUND_NOTIFICATION_ID
-    private const val CHANNEL_ID_SUFFIX = "_incoming_voice"
+    // Канал без звука и вибрации: звонит только startRinging. Старый канал
+    // `_incoming_voice` играл рингтон сам (FLAG_INSISTENT), и вместе с
+    // startRinging выходило два рингтона разом. Звук канала после создания
+    // не меняется, поэтому новый id, а старый канал удаляем.
+    private const val CHANNEL_ID_SUFFIX = "_incoming_voice_silent"
+    private const val LEGACY_CHANNEL_ID_SUFFIX = "_incoming_voice"
     // Match the longest AI pickup delay (60s) plus a small buffer. Shorter
     // than this would hang up while Twilio is still ringing the master.
     private const val RING_TIMEOUT_MS = 75_000L
@@ -58,13 +63,17 @@ object IncomingCallNotifier {
     private var activeCallSid: String? = null
     private var ringtone: Ringtone? = null
     private var ringingSid: String? = null
+    private var screenWakeLock: PowerManager.WakeLock? = null
     var currentNotification: Notification? = null
         private set
 
+    fun isTestCall(): Boolean = activeCallSid?.startsWith("test_call_") == true
+
     fun show(context: Context, callerName: String, callSid: String) {
-        startRinging(context, callSid)
-        if (activeCallSid == callSid && currentNotification != null) return
         val appContext = context.applicationContext
+        wakeUpScreen(appContext)
+        prepareHostActivityForCall(appContext)
+        startRinging(appContext, callSid)
         ensureChannel(appContext)
 
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -80,6 +89,10 @@ object IncomingCallNotifier {
             )
             putExtra(EXTRA_INCOMING_CALL, true)
         }
+        if (activeCallSid == callSid && currentNotification != null) {
+            openCallScreen(appContext, launchIntent, callSid)
+            return
+        }
         val contentIntent = PendingIntent.getActivity(appContext, 0, launchIntent, flags)
 
         val answerIntent = Intent(appContext, TVConnectionService::class.java).apply {
@@ -94,7 +107,8 @@ object IncomingCallNotifier {
         val declinePending = PendingIntent.getForegroundService(appContext, 2, declineIntent, flags)
 
         val title = appContext.getString(R.string.incoming_call_title)
-        val ringtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        val planLabel = carePlanLabel(appContext, callerName)
+        val shownCaller = if (planLabel.isBlank()) callerName else "$callerName · $planLabel"
 
         // Полный экран при входящем звонке требует USE_FULL_SCREEN_INTENT.
         // На Android 14+ разрешение может быть отозвано — логируем это.
@@ -113,23 +127,22 @@ object IncomingCallNotifier {
         // Ресурсы лежат в приложении — грузим по имени через getIdentifier.
         val expandedView = buildCustomCallView(
             appContext, "notification_incoming_call",
-            callerName, answerPending, declinePending,
+            shownCaller, answerPending, declinePending,
         )
         val collapsedView = buildCustomCallView(
             appContext, "notification_incoming_call_collapsed",
-            callerName, answerPending, declinePending,
+            shownCaller, answerPending, declinePending,
         )
 
         val builder = NotificationCompat.Builder(appContext, channelId(appContext))
             .setSmallIcon(R.drawable.ic_microphone)
             .setContentTitle(title)
-            .setContentText(callerName)
+            .setContentText(shownCaller)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setSound(ringtone)
             .setContentIntent(contentIntent)
             .setFullScreenIntent(contentIntent, true)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
@@ -157,7 +170,6 @@ object IncomingCallNotifier {
         }
 
         val notification = builder.build()
-        notification.flags = notification.flags or Notification.FLAG_INSISTENT
         activeCallSid = callSid
         currentNotification = notification
 
@@ -168,10 +180,22 @@ object IncomingCallNotifier {
             Log.w(TAG, "Cannot show incoming call notification: ${error.message}")
         }
 
-        openCallScreenIfUnlocked(appContext, launchIntent)
+        openCallScreen(appContext, launchIntent, callSid)
 
         val generation = ++timeoutGeneration
         handler.removeCallbacksAndMessages(null)
+        if (!isPowerInteractive(appContext) || isKeyguardLocked(appContext)) {
+            handler.postDelayed({
+                if (generation != timeoutGeneration || activeCallSid != callSid) return@postDelayed
+                wakeUpScreen(appContext)
+                prepareHostActivityForCall(appContext)
+                try {
+                    appContext.startActivity(Intent(launchIntent))
+                } catch (error: Exception) {
+                    Log.w(TAG, "openCallScreen retry: ${error.message}")
+                }
+            }, 300L)
+        }
         handler.postDelayed({
             if (generation != timeoutGeneration) return@postDelayed
             Log.w(TAG, "incoming UI timed out for $callSid — dropping stale ring")
@@ -193,31 +217,67 @@ object IncomingCallNotifier {
     }
 
     /**
-     * Телефон в руках и разблокирован — открываем экран звонка сразу.
-     *
-     * Full-screen intent система разворачивает **только на заблокированном
-     * экране**; на разблокированном она показывает плашку сверху, и до
-     * экрана звонка надо ещё дотянуться пальцем. Поэтому активность
-     * запускаем сами.
-     *
-     * На заблокированном экране не трогаем: там свою работу делает
-     * `setFullScreenIntent`, а `MainActivity.maybeShowOverLockscreen`
-     * поднимает окно поверх замка.
-     *
-     * Фоновый старт активности Android разрешает не всегда: приложение
-     * должно, например, остаться в «недавних». Если старт запрещён,
-     * `startActivity` молча ничего не сделает — останется та же плашка с
-     * кнопками «Ответить» / «Отклонить», то есть хуже, чем было, не станет.
+     * Зажигает экран и открывает окно входящего звонка поверх блокировки
+     * и других приложений.
      */
-    private fun openCallScreenIfUnlocked(context: Context, launch: Intent) {
+    private fun openCallScreen(context: Context, launch: Intent, callSid: String) {
         try {
-            val power = context.getSystemService(PowerManager::class.java)
-            if (power?.isInteractive == false) return
-            val keyguard = context.getSystemService(KeyguardManager::class.java)
-            if (keyguard?.isKeyguardLocked != false) return
+            wakeUpScreen(context)
+            prepareHostActivityForCall(context)
             context.startActivity(Intent(launch))
         } catch (error: Exception) {
-            Log.w(TAG, "openCallScreenIfUnlocked: ${error.message}")
+            Log.w(TAG, "openCallScreen($callSid): ${error.message}")
+        }
+    }
+
+    private fun isPowerInteractive(context: Context): Boolean {
+        val power = context.getSystemService(PowerManager::class.java)
+        return power?.isInteractive != false
+    }
+
+    private fun isKeyguardLocked(context: Context): Boolean {
+        val keyguard = context.getSystemService(KeyguardManager::class.java)
+        return keyguard?.isKeyguardLocked == true
+    }
+
+    @Suppress("DEPRECATION")
+    private fun wakeUpScreen(context: Context) {
+        try {
+            val pm = context.getSystemService(PowerManager::class.java) ?: return
+            val existing = screenWakeLock
+            if (existing != null && existing.isHeld) {
+                existing.acquire(30_000L)
+                return
+            }
+            screenWakeLock = pm.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+                "fixappliance:incoming_call_screen",
+            ).apply {
+                setReferenceCounted(false)
+                acquire(30_000L)
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "wakeUpScreen: ${error.message}")
+        }
+    }
+
+    private fun releaseScreenWakeLock() {
+        val wl = screenWakeLock ?: return
+        screenWakeLock = null
+        try {
+            if (wl.isHeld) wl.release()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun prepareHostActivityForCall(context: Context) {
+        try {
+            Class.forName("${context.packageName}.MainActivity")
+                .getMethod("prepareForIncomingCall")
+                .invoke(null)
+        } catch (_: Throwable) {
         }
     }
 
@@ -326,6 +386,7 @@ object IncomingCallNotifier {
         if (callSid != null && ringingSid != null && callSid != ringingSid) return
         ringingSid = null
         ringHandler.removeCallbacksAndMessages(null)
+        releaseScreenWakeLock()
         try {
             ringtone?.stop()
         } catch (_: Exception) {
@@ -392,17 +453,37 @@ object IncomingCallNotifier {
         }
     }
 
+    /**
+     * Звонит клиент на Care Plan — подписываем шторку («· CARE PLAN»), чтобы
+     * мастер видел гарантийный вызов ещё до ответа. Номера ведёт приложение
+     * (`CarePlanService`, ключ `care_plan_callers` в FlutterSharedPreferences):
+     * сеть здесь не нужна, а любая ошибка — просто звонок без подписи.
+     */
+    private fun carePlanLabel(context: Context, caller: String): String {
+        return try {
+            val digits = caller.filter { it.isDigit() }
+            if (digits.length < 10) return ""
+            val raw = context
+                .getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                .getString("flutter.care_plan_callers", null)
+                ?: return ""
+            org.json.JSONObject(raw).optString(digits.takeLast(10), "")
+        } catch (error: Exception) {
+            Log.w(TAG, "carePlanLabel: ${error.message}")
+            ""
+        }
+    }
+
     private fun channelId(context: Context) = "${context.packageName}$CHANNEL_ID_SUFFIX"
 
     private fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         val id = channelId(context)
-        val ringtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-        val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
+        val legacy = "${context.packageName}$LEGACY_CHANNEL_ID_SUFFIX"
+        if (manager.getNotificationChannel(legacy) != null) {
+            manager.deleteNotificationChannel(legacy)
+        }
         val existing = manager.getNotificationChannel(id)
         if (existing != null) return
         manager.createNotificationChannel(
@@ -413,8 +494,8 @@ object IncomingCallNotifier {
             ).apply {
                 description = context.getString(R.string.incoming_call_channel_name)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                enableVibration(true)
-                setSound(ringtone, audioAttributes)
+                enableVibration(false)
+                setSound(null, null)
             }
         )
     }

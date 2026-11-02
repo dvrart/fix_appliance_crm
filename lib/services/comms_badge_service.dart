@@ -12,11 +12,11 @@ import 'twilio_service.dart';
 
 /// Счётчики для нижнего меню: сколько нового на «Связи».
 ///
-/// Раньше про новый звонок и непрочитанное сообщение сообщал колокольчик, и
-/// он же считал заявки и сбои — цифра на нём значила «что-то произошло» и
-/// поэтому не значила ничего. Теперь событие видно там, где его разбирают:
-/// на вкладке «Связь» и на её подвкладках, а колокольчик остался счётчиком
-/// решений.
+/// Раньше про новый звонок, непрочитанное сообщение и недоставку SMS
+/// сообщал колокольчик — его удалили (решение FIX), и теперь события
+/// видны только там, где их разбирают: на вкладке «Связь» и на её
+/// подвкладках. Недоставленное SMS гаснет, когда мастер открывает сам
+/// диалог, — отдельной кнопки «убрать» для него больше нет.
 ///
 /// Подписки живут в одном месте и ровно в одном экземпляре: и нижняя
 /// панель, и подвкладки читают эти [ValueNotifier]. У notifier'а всегда
@@ -31,6 +31,13 @@ class CommsBadgeService {
 
   /// Непрочитанные входящие SMS и письма.
   static final ValueNotifier<int> unreadMessages = ValueNotifier<int>(0);
+
+  /// Исходящие сообщения, которые оператор не доставил.
+  static final ValueNotifier<int> failedSms = ValueNotifier<int>(0);
+
+  /// Непрочитанные плюс недоставленные — цифра на подвкладке сообщений,
+  /// чтобы она не расходилась с цифрой на самой «Связи».
+  static final ValueNotifier<int> messagesTotal = ValueNotifier<int>(0);
 
   /// Сумма для самой вкладки «Связь».
   static final ValueNotifier<int> total = ValueNotifier<int>(0);
@@ -60,6 +67,7 @@ class CommsBadgeService {
   static final List<StreamSubscription<dynamic>> _subscriptions = [];
   static List<CallRecord> _calls = const [];
   static List<SmsMessage> _unread = const [];
+  static List<SmsMessage> _failed = const [];
   static Map<String, String> _phoneNames = const {};
   static Map<String, String> _emailNames = const {};
 
@@ -97,6 +105,11 @@ class CommsBadgeService {
           if (generation != _generation) return;
           _unread = messages;
           _recountMessages();
+        }, onError: _onError),
+        SmsService.streamFailedOutbound().listen((messages) {
+          if (generation != _generation) return;
+          _failed = messages;
+          _recountFailed();
         }, onError: _onError),
         // Справочник имён. Без него подпись у иконки показывала бы номер
         // даже тем клиентам, которых мастер давно завёл.
@@ -241,11 +254,22 @@ class CommsBadgeService {
       }
     }
     unreadFrom.value = latest == null ? '' : _messageLabel(latest);
+    _sumMessages();
     _sum();
   }
 
+  static void _recountFailed() {
+    failedSms.value = _failed.length;
+    _sumMessages();
+    _sum();
+  }
+
+  static void _sumMessages() {
+    messagesTotal.value = unreadMessages.value + failedSms.value;
+  }
+
   static void _sum() {
-    total.value = newCalls.value + unreadMessages.value;
+    total.value = newCalls.value + messagesTotal.value;
   }
 
   static void stop() {
@@ -258,10 +282,13 @@ class CommsBadgeService {
     _subscriptions.clear();
     _calls = const [];
     _unread = const [];
+    _failed = const [];
     _phoneNames = const {};
     _emailNames = const {};
     newCalls.value = 0;
     unreadMessages.value = 0;
+    failedSms.value = 0;
+    messagesTotal.value = 0;
     total.value = 0;
     newCallFrom.value = '';
     unreadFrom.value = '';

@@ -12,11 +12,13 @@ import '../../../../core/utils/formatters.dart';
 import '../../../../core/utils/number_input.dart';
 import '../../../../models/document_settings.dart';
 import '../../../../models/job.dart';
+import '../../../../models/labour_discount.dart';
 import '../../../../models/warehouse_item.dart';
 import '../../../../services/services.dart';
 import '../../../../shared/widgets/app_bar_save.dart';
 import '../../../../shared/widgets/client_signature_sheet.dart';
 import '../../../../shared/widgets/confirm_action_sheet.dart';
+import '../../../../shared/widgets/dispose_on_close.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
 import '../../../../shared/widgets/unsaved_changes_dialog.dart';
 import '../job_details_controller.dart';
@@ -265,7 +267,13 @@ class _FinanceTabState extends State<FinanceTab> {
     final doc = {
       'type': ctrl.builderDocType,
       'number': number,
-      'items': List.from(ctrl.builderItems),
+      // Скидка на работу пересчитывается по текущей работе в счёте. На
+      // технике со стикером работа по плану покрывается целиком.
+      'items': _coveredIfPlan(
+        LabourDiscount.refresh(
+          List<Map<String, dynamic>>.from(ctrl.builderItems),
+        ),
+      ),
       'taxRate': ctrl.builderTaxRate,
       'payments': <Map<String, dynamic>>[],
       'createdAt': DateTime.now().toIso8601String(),
@@ -986,8 +994,189 @@ class _FinanceTabState extends State<FinanceTab> {
     return '${'Stripe: ожидает оплаты'.tr}$cDate';
   }
 
+  /// Техника заявки на плане и с наклейкой: ремонт по ней бесплатный.
+  bool get _coveredByPlan {
+    final ids = ctrl.jobData['applianceIds'];
+    if (ids is! List) return false;
+    for (final id in ids) {
+      final appliance = CarePlanService.applianceById(id.toString());
+      if (appliance != null &&
+          appliance.planId.isNotEmpty &&
+          appliance.stickerPrintedAt != null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  List<Map<String, dynamic>> _coveredIfPlan(List<Map<String, dynamic>> items) =>
+      _coveredByPlan ? LabourDiscount.coverLabour(items) : items;
+
+  /// Скидка только на работу (Care Plan или любая другая): строка счёта
+  /// с отрицательной ценой, база — позиции с меткой «работа».
+  ///
+  /// [items] — позиции конструктора или уже сохранённого счёта. null из
+  /// диалога — отмена, не «убрать скидку».
+  Future<double?> _askLabourDiscount(List<Map<String, dynamic>> items) async {
+    String pctText(double v) =>
+        v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+    final base = LabourDiscount.labourBase(items);
+    final plan = CarePlanService.memberPlanFor(
+      clientId: ctrl.clientId,
+      phone: (ctrl.jobData['clientPhone'] ?? '').toString(),
+    );
+    final double? planPct =
+        plan != null && plan.repairBenefitsActive(DateTime.now())
+        ? plan.discountPercent
+        : null;
+    final current = LabourDiscount.percentOf(items);
+    final input = TextEditingController(
+      text: pctText(current ?? planPct ?? 0),
+    );
+    final result = await showDialog<double>(
+      context: context,
+      builder: (dialogContext) => DisposeOnClose(
+        disposables: [input],
+        child: AlertDialog(
+          title: Text(context.tr('Скидка на работу', 'Labour discount')),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${context.tr('Работа в счёте', 'Labour in this invoice')}: \$${base.toStringAsFixed(2)}',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              Text(
+                context.tr('Запчасти не скидываются.', 'Parts are not discounted.'),
+                style: TextStyle(color: AppColors.inkMuted, fontSize: 12),
+              ),
+              if (planPct != null)
+                Text(
+                  planPct >= 100
+                      ? 'Care Plan: ${'ремонт бесплатно'.tr}'
+                      : 'Care Plan: −${pctText(planPct)}%',
+                  style: const TextStyle(
+                    color: Color(0xFF2E7D32),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: input,
+                autofocus: true,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                  labelText: '%',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            if (current != null)
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, 0.0),
+                child: Text(context.tr('Убрать', 'Remove')),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(context.tr('Отмена', 'Cancel')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(
+                dialogContext,
+                double.tryParse(input.text.replaceAll(',', '.').trim()) ?? 0,
+              ),
+              child: Text(context.tr('Применить', 'Apply')),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == null || !mounted) return null;
+    if (result > 0 && base <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            context.tr(
+              'В счёте нет позиций с меткой «работа»',
+              'No labour lines in this invoice',
+            ),
+          ),
+        ),
+      );
+      return null;
+    }
+    return result;
+  }
+
+  Future<void> _labourDiscountDialog() async {
+    final items = List<Map<String, dynamic>>.from(ctrl.builderItems);
+    final result = await _askLabourDiscount(items);
+    if (result == null || !mounted) return;
+    final plan = CarePlanService.memberPlanFor(
+      clientId: ctrl.clientId,
+      phone: (ctrl.jobData['clientPhone'] ?? '').toString(),
+    );
+    final planPct = plan != null && plan.repairBenefitsActive(DateTime.now())
+        ? plan.discountPercent
+        : null;
+    setState(() {
+      final next = LabourDiscount.apply(
+        items,
+        result,
+        carePlan: planPct != null && result == planPct,
+      );
+      ctrl.builderItems
+        ..clear()
+        ..addAll(next);
+    });
+  }
+
+  /// Та же скидка на уже сохранённом счёте. Оплаты и склад не трогаем:
+  /// строка скидки — услуга, запчасти со склада не списывает.
+  Future<void> _discountSavedDocument(int docIndex) async {
+    if (_busy) return;
+    if (docIndex < 0 || docIndex >= ctrl.documents.length) return;
+    final doc = Map<String, dynamic>.from(ctrl.documents[docIndex]);
+    final items = [
+      for (final item in doc['items'] as List? ?? [])
+        if (item is Map) Map<String, dynamic>.from(item),
+    ];
+    final result = await _askLabourDiscount(items);
+    if (result == null || !mounted) return;
+    final plan = CarePlanService.memberPlanFor(
+      clientId: ctrl.clientId,
+      phone: (ctrl.jobData['clientPhone'] ?? '').toString(),
+    );
+    final planPct = plan != null && plan.repairBenefitsActive(DateTime.now())
+        ? plan.discountPercent
+        : null;
+    final next = LabourDiscount.refresh(
+      LabourDiscount.apply(
+        items,
+        result,
+        carePlan: planPct != null && result == planPct,
+      ),
+    );
+    setState(() => _busy = true);
+    try {
+      await ctrl.updateDocument(docIndex, {...doc, 'items': next});
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Widget _buildDocumentBuilder() {
-    final subtotal = ctrl.calcSubtotal(ctrl.builderItems);
+    // Строка скидки на работу всегда считается от текущей работы в счёте.
+    final shownItems = _coveredIfPlan(
+      LabourDiscount.refresh(
+        List<Map<String, dynamic>>.from(ctrl.builderItems),
+      ),
+    );
+    final discountPct = LabourDiscount.percentOf(shownItems);
+    final subtotal = ctrl.calcSubtotal(shownItems);
     final tax = ctrl.calcTax(subtotal, ctrl.builderTaxRate);
     final total = ctrl.calcTotal(subtotal, tax);
     final canSave = ctrl.builderItems.isNotEmpty;
@@ -1016,7 +1205,12 @@ class _FinanceTabState extends State<FinanceTab> {
                 ? Center(
                     child: InkWell(
                       borderRadius: BorderRadius.circular(10),
-                      onTap: _showAddItemDialog,
+                      onTap: () async {
+                        final created = await _showAddItemDialog();
+                        if (created == null || !mounted) return;
+                        setState(() => ctrl.builderItems.add(created));
+                        ctrl.notifyBuilderChanged();
+                      },
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 20,
@@ -1057,9 +1251,9 @@ class _FinanceTabState extends State<FinanceTab> {
                             horizontal: 12,
                             vertical: 4,
                           ),
-                          itemCount: ctrl.builderItems.length,
+                          itemCount: shownItems.length,
                           itemBuilder: (context, index) {
-                            final item = ctrl.builderItems[index];
+                            final item = shownItems[index];
                             final qty = _money(item['qty'], 1);
                             final price = _money(item['price']);
                             return Container(
@@ -1265,14 +1459,32 @@ class _FinanceTabState extends State<FinanceTab> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: canSave ? _labourDiscountDialog : null,
+                      icon: const Icon(Icons.percent, size: 18),
+                      label: Text(
+                        discountPct == null
+                            ? context.tr('Скидка на работу', 'Labour discount')
+                            : '${context.tr('Скидка на работу', 'Labour discount')}: '
+                                  '${discountPct == discountPct.roundToDouble() ? discountPct.toStringAsFixed(0) : discountPct.toStringAsFixed(1)}%',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ),
                   Row(
                     children: [
                       Expanded(
                         child: SizedBox(
                           height: 38,
                           child: ElevatedButton.icon(
-                            onPressed: _showAddItemDialog,
+                            onPressed: () async {
+                              final created = await _showAddItemDialog();
+                              if (created == null || !mounted) return;
+                              setState(() => ctrl.builderItems.add(created));
+                              ctrl.notifyBuilderChanged();
+                            },
                             icon: const Icon(Icons.add_rounded, size: 19),
                             label: Text(
                               context.tr('Позиция', 'Add item'),
@@ -1441,7 +1653,38 @@ class _FinanceTabState extends State<FinanceTab> {
     );
   }
 
-  Future<void> _showAddItemDialog() async {
+  /// Позиция в уже сохранённый счёт или смету — та же карточка, что при
+  /// создании. Склад доводим до нового состава, иначе добавленная со склада
+  /// деталь не спишется.
+  Future<void> _addDocumentItem(int docIndex) async {
+    if (_busy) return;
+    if (docIndex < 0 || docIndex >= ctrl.documents.length) return;
+    final doc = Map<String, dynamic>.from(ctrl.documents[docIndex]);
+    final created = await _showAddItemDialog();
+    if (created == null || !mounted) return;
+    if (docIndex >= ctrl.documents.length) return;
+    final items = [
+      for (final item in doc['items'] as List? ?? [])
+        if (item is Map) Map<String, dynamic>.from(item),
+    ];
+    final nextItems = [...items, created];
+    final refreshed = _coveredIfPlan(LabourDiscount.refresh(nextItems));
+
+    setState(() => _busy = true);
+    try {
+      await WarehouseService.applyDocumentStockChange(
+        {...doc, 'items': items},
+        {...doc, 'items': refreshed},
+      );
+      await ctrl.updateDocument(docIndex, {...doc, 'items': refreshed});
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Возвращает собранную позицию. Черновик дописывает её сам, а открытый
+  /// счёт сохраняет в документ — так одна карточка работает в обоих местах.
+  Future<Map<String, dynamic>?> _showAddItemDialog() async {
     final nameCtrl = TextEditingController();
     final priceCtrl = TextEditingController();
     final qtyCtrl = TextEditingController(text: '1');
@@ -1456,7 +1699,7 @@ class _FinanceTabState extends State<FinanceTab> {
       serviceCall = SettingsService.readServiceCallFee(config);
       hourly = SettingsService.readHourlyRate(config);
     } catch (_) {}
-    if (!mounted) return;
+    if (!mounted) return null;
     WarehouseItem? picked;
     // Работа или запчасть — это выбирает мастер, а не угадывают отчёты.
     // По умолчанию работа: выезд и диагностика добавляются чаще всего.
@@ -1471,6 +1714,7 @@ class _FinanceTabState extends State<FinanceTab> {
     var priceFresh = true;
     var qtyFresh = true;
 
+    Map<String, dynamic>? created;
     var aiForPart = '';
     var aiBusy = false;
     var aiWhy = <String, String>{};
@@ -1480,401 +1724,397 @@ class _FinanceTabState extends State<FinanceTab> {
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialog) {
-            final raw = nameCtrl.text.trim();
-            final query = raw.toLowerCase();
-            final wantedPart = WarehouseItem.normalizePart(raw);
-            final matches = query.length < 2
-                ? const <WarehouseItem>[]
-                : warehouse.where((item) {
-                    // По номеру ищем так же, как на складе: с «заменяет
-                    // номера» и без оглядки на дефисы в артикуле.
-                    return item.name.toLowerCase().contains(query) ||
-                        WarehouseItem.numberMatches(raw, item.searchNumbers);
-                  }).take(6).toList();
+        return DisposeOnClose(
+          disposables: [nameCtrl, priceCtrl, qtyCtrl, costCtrl],
+          child: StatefulBuilder(
+            builder: (context, setDialog) {
+              final raw = nameCtrl.text.trim();
+              final query = raw.toLowerCase();
+              final wantedPart = WarehouseItem.normalizePart(raw);
+              final matches = query.length < 2
+                  ? const <WarehouseItem>[]
+                  : warehouse.where((item) {
+                      // По номеру ищем так же, как на складе: с «заменяет
+                      // номера» и без оглядки на дефисы в артикуле.
+                      return item.name.toLowerCase().contains(query) ||
+                          WarehouseItem.numberMatches(raw, item.searchNumbers);
+                    }).take(6).toList();
 
-            final matchIds = {for (final item in matches) item.id};
+              final matchIds = {for (final item in matches) item.id};
 
-            // Номер похож на артикул и в наличии его нет — тогда ищем замену.
-            final looksLikePart =
-                wantedPart.length >= 4 && RegExp(r'\d').hasMatch(wantedPart);
-            final inStock = warehouse.any(
-              (item) =>
-                  item.quantity > 0 &&
-                  WarehouseItem.normalizePart(item.partNumber) == wantedPart,
-            );
-            final needSubstitute = looksLikePart && !inStock;
+              // Номер похож на артикул и в наличии его нет — тогда ищем замену.
+              final looksLikePart =
+                  wantedPart.length >= 4 && RegExp(r'\d').hasMatch(wantedPart);
+              final inStock = warehouse.any(
+                (item) =>
+                    item.quantity > 0 &&
+                    WarehouseItem.normalizePart(item.partNumber) == wantedPart,
+              );
+              final needSubstitute = looksLikePart && !inStock;
 
-            final saved = needSubstitute
-                ? warehouse
-                      .where(
-                        (item) =>
-                            !matchIds.contains(item.id) && item.replaces(raw),
-                      )
-                      .take(6)
-                      .toList()
-                : const <WarehouseItem>[];
+              final saved = needSubstitute
+                  ? warehouse
+                        .where(
+                          (item) =>
+                              !matchIds.contains(item.id) && item.replaces(raw),
+                        )
+                        .take(6)
+                        .toList()
+                  : const <WarehouseItem>[];
 
-            final fromAi = needSubstitute && aiForPart == wantedPart
-                ? warehouse
-                      .where(
-                        (item) =>
-                            aiWhy.containsKey(item.id) &&
-                            !matchIds.contains(item.id) &&
-                            !saved.any((other) => other.id == item.id),
-                      )
-                      .toList()
-                : const <WarehouseItem>[];
+              final fromAi = needSubstitute && aiForPart == wantedPart
+                  ? warehouse
+                        .where(
+                          (item) =>
+                              aiWhy.containsKey(item.id) &&
+                              !matchIds.contains(item.id) &&
+                              !saved.any((other) => other.id == item.id),
+                        )
+                        .toList()
+                  : const <WarehouseItem>[];
 
-            // Что лежит на полке — ставим сегодня. Чего нет — надо заказать,
-            // но знать про это тоже нужно, поэтому идёт вторым блоком.
-            final swapsInStock = [
-              ...saved.where((item) => item.quantity > 0),
-              ...fromAi.where((item) => item.quantity > 0),
-            ];
-            final swapsToOrder = [
-              ...saved.where((item) => item.quantity <= 0),
-              ...fromAi.where((item) => item.quantity <= 0),
-            ];
-            String swapNoteFor(WarehouseItem item) {
-              final why = aiWhy[item.id];
-              if (why != null) {
-                return why.isNotEmpty
-                    ? why
-                    : context.tr('подсказал ИИ', 'AI suggestion');
-              }
-              return context.tr('ваша пометка', 'your note');
-            }
-
-            // Спрашиваем ИИ только когда человек перестал печатать: иначе
-            // запрос уходил бы на каждую букву.
-            void maybeAskAi() {
-              if (!needSubstitute || saved.isNotEmpty) return;
-              if (aiAsked.contains(wantedPart) || aiBusy) return;
-              aiDebounce?.cancel();
-              aiDebounce = Timer(const Duration(milliseconds: 900), () async {
-                if (WarehouseItem.normalizePart(nameCtrl.text.trim()) !=
-                    wantedPart) {
-                  return;
+              // Что лежит на полке — ставим сегодня. Чего нет — надо заказать,
+              // но знать про это тоже нужно, поэтому идёт вторым блоком.
+              final swapsInStock = [
+                ...saved.where((item) => item.quantity > 0),
+                ...fromAi.where((item) => item.quantity > 0),
+              ];
+              final swapsToOrder = [
+                ...saved.where((item) => item.quantity <= 0),
+                ...fromAi.where((item) => item.quantity <= 0),
+              ];
+              String swapNoteFor(WarehouseItem item) {
+                final why = aiWhy[item.id];
+                if (why != null) {
+                  return why.isNotEmpty
+                      ? why
+                      : context.tr('подсказал ИИ', 'AI suggestion');
                 }
-                aiAsked.add(wantedPart);
-                setDialog(() => aiBusy = true);
-                // Сначала то, что на полке: если список упрётся в лимит,
-                // обрежется хвост из того, чего всё равно нет.
-                final pool = warehouse
-                    .where((item) => item.partNumber.trim().isNotEmpty)
-                    .toList()
-                  ..sort((a, b) => b.quantity.compareTo(a.quantity));
-                final stock = pool
-                    .take(70)
-                    .map(
-                      (item) => {
-                        'id': item.id,
-                        'partNumber': item.partNumber,
-                        'name': item.name,
-                        'modelNumber': item.modelNumber ?? '',
-                      },
-                    )
-                    .toList();
-                final result = await AiService.findInterchangeableParts(
-                  wantedPart: raw,
-                  stock: stock,
-                );
-                if (!dialogContext.mounted) return;
-                setDialog(() {
-                  aiBusy = false;
-                  aiForPart = wantedPart;
-                  aiWhy = result;
-                });
-              });
-            }
-
-            maybeAskAi();
-
-            void choose(WarehouseItem item, {String? remember}) {
-              picked = item;
-              nameCtrl.text = item.name;
-              final cost = item.costPrice;
-              final price = cost != null && markup > 0
-                  ? double.parse(
-                      (cost * (1 + markup / 100)).toStringAsFixed(2),
-                    )
-                  : item.price;
-              priceCtrl.text = price.toStringAsFixed(2);
-              priceFresh = true;
-              // Со склада — всегда запчасть, себестоимость уже известна.
-              isPart = true;
-              kindTouched = true;
-              if (cost != null) costCtrl.text = cost.toStringAsFixed(2);
-              // Взяли замену — запоминаем её в карточке, чтобы в следующий раз
-              // она нашлась сразу и без интернета.
-              if (remember != null && !item.replaces(remember)) {
-                final next = [...item.interchange, remember.toUpperCase()];
-                unawaited(
-                  WarehouseService.update(item.id, {'interchange': next}),
-                );
+                return context.tr('ваша пометка', 'your note');
               }
-              setDialog(() {});
-            }
 
-            // Быстрые кнопки из «Настройки → Прайс», чтобы не набирать руками.
-            void fill(String name, double price) {
-              picked = null;
-              nameCtrl.text = name;
-              priceCtrl.text = price.toStringAsFixed(2);
-              priceFresh = true;
-              isPart = false;
-              kindTouched = true;
-              costCtrl.clear();
-              setDialog(() {});
-            }
+              // Спрашиваем ИИ только когда человек перестал печатать: иначе
+              // запрос уходил бы на каждую букву.
+              void maybeAskAi() {
+                if (!needSubstitute || saved.isNotEmpty) return;
+                if (aiAsked.contains(wantedPart) || aiBusy) return;
+                aiDebounce?.cancel();
+                aiDebounce = Timer(const Duration(milliseconds: 900), () async {
+                  if (WarehouseItem.normalizePart(nameCtrl.text.trim()) !=
+                      wantedPart) {
+                    return;
+                  }
+                  aiAsked.add(wantedPart);
+                  setDialog(() => aiBusy = true);
+                  // Сначала то, что на полке: если список упрётся в лимит,
+                  // обрежется хвост из того, чего всё равно нет.
+                  final pool = warehouse
+                      .where((item) => item.partNumber.trim().isNotEmpty)
+                      .toList()
+                    ..sort((a, b) => b.quantity.compareTo(a.quantity));
+                  final stock = pool
+                      .take(70)
+                      .map(
+                        (item) => {
+                          'id': item.id,
+                          'partNumber': item.partNumber,
+                          'name': item.name,
+                          'modelNumber': item.modelNumber ?? '',
+                        },
+                      )
+                      .toList();
+                  final result = await AiService.findInterchangeableParts(
+                    wantedPart: raw,
+                    stock: stock,
+                  );
+                  if (!dialogContext.mounted) return;
+                  setDialog(() {
+                    aiBusy = false;
+                    aiForPart = wantedPart;
+                    aiWhy = result;
+                  });
+                });
+              }
 
-            return AlertDialog(
-              title: const Text('Add item'),
-              scrollable: true,
-              content: SizedBox(
-                width: 360,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (serviceCall > 0 || hourly > 0) ...[
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Wrap(
-                          spacing: 8,
-                          children: [
-                            if (serviceCall > 0)
-                              ActionChip(
-                                avatar: const Icon(
-                                  Icons.directions_car,
-                                  size: 18,
-                                  color: Colors.orange,
+              maybeAskAi();
+
+              void choose(WarehouseItem item, {String? remember}) {
+                picked = item;
+                nameCtrl.text = item.name;
+                final cost = item.costPrice;
+                final price = cost != null && markup > 0
+                    ? double.parse(
+                        (cost * (1 + markup / 100)).toStringAsFixed(2),
+                      )
+                    : item.price;
+                priceCtrl.text = price.toStringAsFixed(2);
+                priceFresh = true;
+                // Со склада — всегда запчасть, себестоимость уже известна.
+                isPart = true;
+                kindTouched = true;
+                if (cost != null) costCtrl.text = cost.toStringAsFixed(2);
+                // Взяли замену — запоминаем её в карточке, чтобы в следующий раз
+                // она нашлась сразу и без интернета.
+                if (remember != null && !item.replaces(remember)) {
+                  final next = [...item.interchange, remember.toUpperCase()];
+                  unawaited(
+                    WarehouseService.update(item.id, {'interchange': next}),
+                  );
+                }
+                setDialog(() {});
+              }
+
+              // Быстрые кнопки из «Настройки → Прайс», чтобы не набирать руками.
+              void fill(String name, double price) {
+                picked = null;
+                nameCtrl.text = name;
+                priceCtrl.text = price.toStringAsFixed(2);
+                priceFresh = true;
+                isPart = false;
+                kindTouched = true;
+                costCtrl.clear();
+                setDialog(() {});
+              }
+
+              return AlertDialog(
+                title: const Text('Add item'),
+                scrollable: true,
+                content: SizedBox(
+                  width: 360,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (serviceCall > 0 || hourly > 0) ...[
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Wrap(
+                            spacing: 8,
+                            children: [
+                              if (serviceCall > 0)
+                                ActionChip(
+                                  avatar: const Icon(
+                                    Icons.directions_car,
+                                    size: 18,
+                                    color: Colors.orange,
+                                  ),
+                                  label: Text(
+                                    '${'Вызов'.tr} '
+                                    '${SettingsService.formatMoney(serviceCall)}',
+                                  ),
+                                  onPressed: () =>
+                                      fill('Service call', serviceCall),
                                 ),
-                                label: Text(
-                                  '${'Вызов'.tr} '
-                                  '${SettingsService.formatMoney(serviceCall)}',
+                              if (hourly > 0)
+                                ActionChip(
+                                  avatar: const Icon(
+                                    Icons.schedule,
+                                    size: 18,
+                                    color: Colors.indigo,
+                                  ),
+                                  label: Text(
+                                    '${'Час'.tr} '
+                                    '${SettingsService.formatMoney(hourly)}',
+                                  ),
+                                  onPressed: () => fill('Labour', hourly),
                                 ),
-                                onPressed: () =>
-                                    fill('Service call', serviceCall),
-                              ),
-                            if (hourly > 0)
-                              ActionChip(
-                                avatar: const Icon(
-                                  Icons.schedule,
-                                  size: 18,
-                                  color: Colors.indigo,
-                                ),
-                                label: Text(
-                                  '${'Час'.tr} '
-                                  '${SettingsService.formatMoney(hourly)}',
-                                ),
-                                onPressed: () => fill('Labour', hourly),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
+                        const SizedBox(height: 12),
+                      ],
+                      TextField(
+                        controller: nameCtrl,
+                        onChanged: (_) {
+                          if (picked != null &&
+                              nameCtrl.text.trim() != picked!.name) {
+                            picked = null;
+                          }
+                          if (!kindTouched && picked == null) {
+                            isPart = guessIsPart({'name': nameCtrl.text});
+                          }
+                          setDialog(() {});
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Name',
+                          hintText: 'Start typing — search warehouse',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      if (matches.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        ...matches.map(
+                          (item) => _warehouseRow(
+                            item: item,
+                            selected: picked?.id == item.id,
+                            onTap: () => choose(item),
+                          ),
+                        ),
+                      ],
+                      if (saved.isNotEmpty || fromAi.isNotEmpty || aiBusy) ...[
+                        if (aiBusy) ...[
+                          const SizedBox(height: 10),
+                          _swapHeader(
+                            context.tr('Ищу замену…', 'Looking for a substitute…'),
+                          ),
+                          const Padding(
+                            padding: EdgeInsets.only(top: 6),
+                            child: LinearProgressIndicator(minHeight: 2),
+                          ),
+                        ],
+                        if (swapsInStock.isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          _swapHeader(
+                            context.tr(
+                              'Нет на складе — можно заменить',
+                              'Not in stock — can be replaced by',
+                            ),
+                          ),
+                          ...swapsInStock.map(
+                            (item) => _warehouseRow(
+                              item: item,
+                              selected: picked?.id == item.id,
+                              swapNote: swapNoteFor(item),
+                              byAi: aiWhy.containsKey(item.id),
+                              onTap: () => choose(item, remember: raw),
+                            ),
+                          ),
+                        ],
+                        if (swapsToOrder.isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          _swapHeader(
+                            context.tr(
+                              'Подойдёт, но тоже кончилось — заказать',
+                              'Would fit, also out of stock — order it',
+                            ),
+                            color: const Color(0xFFB3261E),
+                          ),
+                          ...swapsToOrder.map(
+                            (item) => _warehouseRow(
+                              item: item,
+                              selected: picked?.id == item.id,
+                              swapNote: swapNoteFor(item),
+                              byAi: aiWhy.containsKey(item.id),
+                              outOfStock: true,
+                              onTap: () => choose(item, remember: raw),
+                            ),
+                          ),
+                        ],
+                        if (!aiBusy && saved.isEmpty && fromAi.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              context.tr(
+                                'Замены не нашёл.',
+                                'No substitute found.',
+                              ),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black45,
+                              ),
+                            ),
+                          ),
+                      ],
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            flex: 2,
+                            child: TextField(
+                              controller: priceCtrl,
+                              keyboardType: TextInputType.number,
+                              onTap: () {
+                                if (!priceFresh) return;
+                                priceFresh = false;
+                                clearAutoNumber(priceCtrl);
+                              },
+                              onChanged: (_) {
+                                priceFresh = false;
+                                setDialog(() {});
+                              },
+                              decoration: InputDecoration(
+                                labelText: context.tr(
+                                  'Цена для клиента',
+                                  'Price for client',
+                                ),
+                                prefixText: '\$ ',
+                                border: const OutlineInputBorder(),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextField(
+                              controller: qtyCtrl,
+                              keyboardType: TextInputType.number,
+                              onTap: () {
+                                if (!qtyFresh) return;
+                                qtyFresh = false;
+                                clearAutoNumber(qtyCtrl);
+                              },
+                              onChanged: (_) {
+                                qtyFresh = false;
+                                setDialog(() {});
+                              },
+                              decoration: const InputDecoration(
+                                labelText: 'Qty',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 12),
-                    ],
-                    TextField(
-                      controller: nameCtrl,
-                      onChanged: (_) {
-                        if (picked != null &&
-                            nameCtrl.text.trim() != picked!.name) {
-                          picked = null;
-                        }
-                        if (!kindTouched && picked == null) {
-                          isPart = guessIsPart({'name': nameCtrl.text});
-                        }
-                        setDialog(() {});
-                      },
-                      decoration: const InputDecoration(
-                        labelText: 'Name',
-                        hintText: 'Start typing — search warehouse',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    if (matches.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      ...matches.map(
-                        (item) => _warehouseRow(
-                          item: item,
-                          selected: picked?.id == item.id,
-                          onTap: () => choose(item),
-                        ),
+                      _itemKindField(
+                        isPart: isPart,
+                        costCtrl: costCtrl,
+                        clientUnitPrice: double.tryParse(priceCtrl.text) ?? 0,
+                        qty: (int.tryParse(qtyCtrl.text) ?? 1).toDouble(),
+                        fromWarehouse: picked != null,
+                        onChanged: (next) {
+                          kindTouched = true;
+                          setDialog(() => isPart = next);
+                        },
+                        onCostChanged: () => setDialog(() {}),
                       ),
                     ],
-                    if (saved.isNotEmpty || fromAi.isNotEmpty || aiBusy) ...[
-                      if (aiBusy) ...[
-                        const SizedBox(height: 10),
-                        _swapHeader(
-                          context.tr('Ищу замену…', 'Looking for a substitute…'),
-                        ),
-                        const Padding(
-                          padding: EdgeInsets.only(top: 6),
-                          child: LinearProgressIndicator(minHeight: 2),
-                        ),
-                      ],
-                      if (swapsInStock.isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        _swapHeader(
-                          context.tr(
-                            'Нет на складе — можно заменить',
-                            'Not in stock — can be replaced by',
-                          ),
-                        ),
-                        ...swapsInStock.map(
-                          (item) => _warehouseRow(
-                            item: item,
-                            selected: picked?.id == item.id,
-                            swapNote: swapNoteFor(item),
-                            byAi: aiWhy.containsKey(item.id),
-                            onTap: () => choose(item, remember: raw),
-                          ),
-                        ),
-                      ],
-                      if (swapsToOrder.isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        _swapHeader(
-                          context.tr(
-                            'Подойдёт, но тоже кончилось — заказать',
-                            'Would fit, also out of stock — order it',
-                          ),
-                          color: const Color(0xFFB3261E),
-                        ),
-                        ...swapsToOrder.map(
-                          (item) => _warehouseRow(
-                            item: item,
-                            selected: picked?.id == item.id,
-                            swapNote: swapNoteFor(item),
-                            byAi: aiWhy.containsKey(item.id),
-                            outOfStock: true,
-                            onTap: () => choose(item, remember: raw),
-                          ),
-                        ),
-                      ],
-                      if (!aiBusy && saved.isEmpty && fromAi.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: Text(
-                            context.tr(
-                              'Замены не нашёл.',
-                              'No substitute found.',
-                            ),
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.black45,
-                            ),
-                          ),
-                        ),
-                    ],
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          flex: 2,
-                          child: TextField(
-                            controller: priceCtrl,
-                            keyboardType: TextInputType.number,
-                            onTap: () {
-                              if (!priceFresh) return;
-                              priceFresh = false;
-                              clearAutoNumber(priceCtrl);
-                            },
-                            onChanged: (_) {
-                              priceFresh = false;
-                              setDialog(() {});
-                            },
-                            decoration: InputDecoration(
-                              labelText: context.tr(
-                                'Цена для клиента',
-                                'Price for client',
-                              ),
-                              prefixText: '\$ ',
-                              border: const OutlineInputBorder(),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: TextField(
-                            controller: qtyCtrl,
-                            keyboardType: TextInputType.number,
-                            onTap: () {
-                              if (!qtyFresh) return;
-                              qtyFresh = false;
-                              clearAutoNumber(qtyCtrl);
-                            },
-                            onChanged: (_) {
-                              qtyFresh = false;
-                              setDialog(() {});
-                            },
-                            decoration: const InputDecoration(
-                              labelText: 'Qty',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    _itemKindField(
-                      isPart: isPart,
-                      costCtrl: costCtrl,
-                      clientUnitPrice: double.tryParse(priceCtrl.text) ?? 0,
-                      qty: (int.tryParse(qtyCtrl.text) ?? 1).toDouble(),
-                      fromWarehouse: picked != null,
-                      onChanged: (next) {
-                        kindTouched = true;
-                        setDialog(() => isPart = next);
-                      },
-                      onCostChanged: () => setDialog(() {}),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: Text('Отмена'.tr),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    if (nameCtrl.text.trim().isEmpty) return;
-                    final selected = picked;
-                    final cost = double.tryParse(
-                      costCtrl.text.trim().replaceAll(',', '.'),
-                    );
-                    setState(() {
-                      ctrl.builderItems.add({
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: Text('Отмена'.tr),
+                  ),
+                  ElevatedButton(
+                    onPressed: () {
+                      if (nameCtrl.text.trim().isEmpty) return;
+                      final selected = picked;
+                      final cost = double.tryParse(
+                        costCtrl.text.trim().replaceAll(',', '.'),
+                      );
+                      created = {
                         'name': nameCtrl.text.trim(),
                         'price': double.tryParse(priceCtrl.text) ?? 0,
                         'qty': int.tryParse(qtyCtrl.text) ?? 1,
                         'type': isPart ? 'Part' : 'Service',
-                        if (selected != null)
-                          'warehouseItemId': selected.id,
+                        if (selected != null) 'warehouseItemId': selected.id,
                         if (isPart && cost != null)
                           'costPrice': cost
                         else if (isPart && selected?.costPrice != null)
                           'costPrice': selected!.costPrice,
-                      });
-                    });
-                    ctrl.notifyBuilderChanged();
-                    Navigator.pop(dialogContext);
-                  },
-                  child: const Text('Add'),
-                ),
-              ],
-            );
-          },
+                      };
+                      Navigator.pop(dialogContext);
+                    },
+                    child: const Text('Add'),
+                  ),
+                ],
+              );
+            },
+          ),
         );
       },
     );
     aiDebounce?.cancel();
-    nameCtrl.dispose();
-    priceCtrl.dispose();
-    qtyCtrl.dispose();
-    costCtrl.dispose();
+    return created;
   }
 
   /// Переключатель «Работа / Запчасть» и себестоимость под ним.
@@ -2030,144 +2270,143 @@ class _FinanceTabState extends State<FinanceTab> {
     final edited = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialog) => AlertDialog(
-            title: Text(
-              kindOnly
-                  ? context.tr('Работа или запчасть', 'Service or part')
-                  : 'Edit item',
-            ),
-            scrollable: true,
-            content: SizedBox(
-              width: 360,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (kindOnly) ...[
-                    Text(
-                      (item['name'] ?? 'Item').toString(),
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      context.tr(
-                        'Счёт оплачен, поэтому имя, цену и количество менять нельзя. Метка и закупочная цена на сумму для клиента не влияют — они нужны отчётам.',
-                        'The invoice is paid, so name, price and qty are locked. Label and purchase cost do not change the client total — reports use them.',
+        return DisposeOnClose(
+          disposables: [nameCtrl, priceCtrl, qtyCtrl, costCtrl],
+          child: StatefulBuilder(
+            builder: (context, setDialog) => AlertDialog(
+              title: Text(
+                kindOnly
+                    ? context.tr('Работа или запчасть', 'Service or part')
+                    : 'Edit item',
+              ),
+              scrollable: true,
+              content: SizedBox(
+                width: 360,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (kindOnly) ...[
+                      Text(
+                        (item['name'] ?? 'Item').toString(),
+                        style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.inkMuted,
-                        height: 1.35,
+                      const SizedBox(height: 4),
+                      Text(
+                        context.tr(
+                          'Счёт оплачен, поэтому имя, цену и количество менять нельзя. Метка и закупочная цена на сумму для клиента не влияют — они нужны отчётам.',
+                          'The invoice is paid, so name, price and qty are locked. Label and purchase cost do not change the client total — reports use them.',
+                        ),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.inkMuted,
+                          height: 1.35,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                  ] else ...[
-                    TextField(
-                      controller: nameCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Name',
-                        border: OutlineInputBorder(),
+                      const SizedBox(height: 12),
+                    ] else ...[
+                      TextField(
+                        controller: nameCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Name',
+                          border: OutlineInputBorder(),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          flex: 2,
-                          child: TextField(
-                            controller: priceCtrl,
-                            keyboardType: TextInputType.number,
-                            onTap: () {
-                              if (!priceFresh) return;
-                              priceFresh = false;
-                              clearAutoNumber(priceCtrl);
-                            },
-                            onChanged: (_) => setDialog(() {}),
-                            decoration: InputDecoration(
-                              labelText: context.tr(
-                                'Цена для клиента',
-                                'Price for client',
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            flex: 2,
+                            child: TextField(
+                              controller: priceCtrl,
+                              keyboardType: TextInputType.number,
+                              onTap: () {
+                                if (!priceFresh) return;
+                                priceFresh = false;
+                                clearAutoNumber(priceCtrl);
+                              },
+                              onChanged: (_) => setDialog(() {}),
+                              decoration: InputDecoration(
+                                labelText: context.tr(
+                                  'Цена для клиента',
+                                  'Price for client',
+                                ),
+                                prefixText: '\$ ',
+                                border: const OutlineInputBorder(),
                               ),
-                              prefixText: '\$ ',
-                              border: const OutlineInputBorder(),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: TextField(
-                            controller: qtyCtrl,
-                            keyboardType: TextInputType.number,
-                            onTap: () {
-                              if (!qtyFresh) return;
-                              qtyFresh = false;
-                              clearAutoNumber(qtyCtrl);
-                            },
-                            onChanged: (_) => setDialog(() {}),
-                            decoration: const InputDecoration(
-                              labelText: 'Qty',
-                              border: OutlineInputBorder(),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextField(
+                              controller: qtyCtrl,
+                              keyboardType: TextInputType.number,
+                              onTap: () {
+                                if (!qtyFresh) return;
+                                qtyFresh = false;
+                                clearAutoNumber(qtyCtrl);
+                              },
+                              onChanged: (_) => setDialog(() {}),
+                              decoration: const InputDecoration(
+                                labelText: 'Qty',
+                                border: OutlineInputBorder(),
+                              ),
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    _itemKindField(
+                      isPart: isPart,
+                      costCtrl: costCtrl,
+                      clientUnitPrice: double.tryParse(priceCtrl.text) ?? 0,
+                      qty: (int.tryParse(qtyCtrl.text) ?? 1).toDouble(),
+                      fromWarehouse: fromWarehouse,
+                      onChanged: (next) => setDialog(() => isPart = next),
+                      onCostChanged: () => setDialog(() {}),
                     ),
-                    const SizedBox(height: 12),
                   ],
-                  _itemKindField(
-                    isPart: isPart,
-                    costCtrl: costCtrl,
-                    clientUnitPrice: double.tryParse(priceCtrl.text) ?? 0,
-                    qty: (int.tryParse(qtyCtrl.text) ?? 1).toDouble(),
-                    fromWarehouse: fromWarehouse,
-                    onChanged: (next) => setDialog(() => isPart = next),
-                    onCostChanged: () => setDialog(() {}),
-                  ),
-                ],
+                ),
               ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: Text('Отмена'.tr),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    final name = nameCtrl.text.trim();
+                    if (name.isEmpty) return;
+                    final cost = double.tryParse(
+                      costCtrl.text.trim().replaceAll(',', '.'),
+                    );
+                    final next = {
+                      ...item,
+                      'type': isPart ? 'Part' : 'Service',
+                    };
+                    if (!kindOnly) {
+                      next['name'] = name;
+                      next['price'] = double.tryParse(priceCtrl.text) ?? 0;
+                      next['qty'] = int.tryParse(qtyCtrl.text) ?? 1;
+                    }
+                    if (isPart && cost != null) {
+                      next['costPrice'] = cost;
+                    } else if (!isPart) {
+                      // Работе себестоимость не нужна: иначе она утянет
+                      // позицию обратно в запчасти при следующем чтении.
+                      next.remove('costPrice');
+                    }
+                    Navigator.pop(dialogContext, next);
+                  },
+                  child: Text('Сохранить'.tr),
+                ),
+              ],
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: Text('Отмена'.tr),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  final name = nameCtrl.text.trim();
-                  if (name.isEmpty) return;
-                  final cost = double.tryParse(
-                    costCtrl.text.trim().replaceAll(',', '.'),
-                  );
-                  final next = {
-                    ...item,
-                    'type': isPart ? 'Part' : 'Service',
-                  };
-                  if (!kindOnly) {
-                    next['name'] = name;
-                    next['price'] = double.tryParse(priceCtrl.text) ?? 0;
-                    next['qty'] = int.tryParse(qtyCtrl.text) ?? 1;
-                  }
-                  if (isPart && cost != null) {
-                    next['costPrice'] = cost;
-                  } else if (!isPart) {
-                    // Работе себестоимость не нужна: иначе она утянет
-                    // позицию обратно в запчасти при следующем чтении.
-                    next.remove('costPrice');
-                  }
-                  Navigator.pop(dialogContext, next);
-                },
-                child: Text('Сохранить'.tr),
-              ),
-            ],
           ),
         );
       },
     );
-    nameCtrl.dispose();
-    priceCtrl.dispose();
-    qtyCtrl.dispose();
-    costCtrl.dispose();
     return edited;
   }
 
@@ -2205,16 +2444,17 @@ class _FinanceTabState extends State<FinanceTab> {
     if (edited == null || !mounted) return;
     final nextItems = [...items];
     nextItems[itemIndex] = edited;
+    final refreshed = _coveredIfPlan(LabourDiscount.refresh(nextItems));
 
     setState(() => _busy = true);
     try {
       if (!kindOnly) {
         await WarehouseService.applyDocumentStockChange(
           {...doc, 'items': items},
-          {...doc, 'items': nextItems},
+          {...doc, 'items': refreshed},
         );
       }
-      await ctrl.updateDocument(docIndex, {...doc, 'items': nextItems});
+      await ctrl.updateDocument(docIndex, {...doc, 'items': refreshed});
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -2260,6 +2500,7 @@ class _FinanceTabState extends State<FinanceTab> {
     // которой уже сделан счёт: правка не доедет до него.
     final itemsEditable =
         !isCancelled && payments.isEmpty && !_estimateConverted(doc);
+    final discountPct = LabourDiscount.percentOf(items);
 
     final docTitle =
         '${isEstimate ? 'ESTIMATE' : 'INVOICE'} #${doc['number'] ?? (docIndex + 1)}';
@@ -2481,6 +2722,53 @@ class _FinanceTabState extends State<FinanceTab> {
                                   color: AppColors.border,
                                 ),
                               ),
+                              if (itemsEditable)
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Wrap(
+                                    spacing: 4,
+                                    children: [
+                                      TextButton.icon(
+                                        onPressed: _busy
+                                            ? null
+                                            : () => _addDocumentItem(docIndex),
+                                        icon: const Icon(
+                                          Icons.add_rounded,
+                                          size: 18,
+                                        ),
+                                        label: Text(
+                                          context.tr('Позиция', 'Add item'),
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                      TextButton.icon(
+                                        onPressed: _busy
+                                            ? null
+                                            : () => _discountSavedDocument(
+                                                  docIndex,
+                                                ),
+                                        icon: const Icon(
+                                          Icons.percent,
+                                          size: 18,
+                                        ),
+                                        label: Text(
+                                          discountPct == null
+                                              ? context.tr(
+                                                  'Скидка на работу',
+                                                  'Labour discount',
+                                                )
+                                              : '${context.tr('Скидка на работу', 'Labour discount')}: '
+                                                    '${discountPct == discountPct.roundToDouble() ? discountPct.toStringAsFixed(0) : discountPct.toStringAsFixed(1)}%',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               _buildTotalRow('Subtotal', subtotal),
                               _buildTotalRow(
                                 'Tax (${(taxRate * 100).round()}%)',
@@ -3092,91 +3380,94 @@ class _FinanceTabState extends State<FinanceTab> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
       builder: (context) {
-        return Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.viewInsetsOf(context).bottom,
-          ),
-          child: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: AppColors.border,
-                      borderRadius: BorderRadius.circular(4),
+        return DisposeOnClose(
+          disposables: [amountCtrl],
+          child: Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.viewInsetsOf(context).bottom,
+            ),
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: AppColors.border,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Вернуть средства?'.tr,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      color: AppColors.primaryOnCard,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Stripe вернёт деньги на карту. Наличные отметьте сами из кассы. Полный возврат переведёт работу в «Отмена».'
-                        .tr,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: AppColors.inkMuted,
-                      height: 1.35,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: amountCtrl,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    decoration: InputDecoration(
-                      labelText: 'Сумма возврата'.tr,
-                      border: const OutlineInputBorder(),
-                      suffixText: 'CAD',
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '${'Максимум'.tr}: ${Formatters.formatCurrency(maxAmount)}',
+                    const SizedBox(height: 16),
+                    Text(
+                      'Вернуть средства?'.tr,
+                      textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: AppColors.inkMuted,
-                        fontSize: 13,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.primaryOnCard,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () => Navigator.pop(context, false),
-                          child: Text('Отмена'.tr),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Stripe вернёт деньги на карту. Наличные отметьте сами из кассы. Полный возврат переведёт работу в «Отмена».'
+                          .tr,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: AppColors.inkMuted,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: amountCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration: InputDecoration(
+                        labelText: 'Сумма возврата'.tr,
+                        border: const OutlineInputBorder(),
+                        suffixText: 'CAD',
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        '${'Максимум'.tr}: ${Formatters.formatCurrency(maxAmount)}',
+                        style: TextStyle(
+                          color: AppColors.inkMuted,
+                          fontSize: 13,
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: () => Navigator.pop(context, true),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red.shade600,
-                            foregroundColor: Colors.white,
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: Text('Отмена'.tr),
                           ),
-                          child: Text('Вернуть'.tr),
                         ),
-                      ),
-                    ],
-                  ),
-                ],
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red.shade600,
+                              foregroundColor: Colors.white,
+                            ),
+                            child: Text('Вернуть'.tr),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -3185,7 +3476,6 @@ class _FinanceTabState extends State<FinanceTab> {
     );
 
     final raw = amountCtrl.text.trim().replaceAll(',', '.');
-    amountCtrl.dispose();
     if (confirmed != true) return;
 
     final amount = double.tryParse(raw) ?? 0;

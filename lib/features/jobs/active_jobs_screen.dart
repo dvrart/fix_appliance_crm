@@ -135,6 +135,11 @@ class AllVisitsScreen extends StatefulWidget {
   /// своим `context`, поэтому навигация после [onLeave] идёт по нему.
   final BuildContext? hostContext;
 
+  /// Зовётся, когда карточку, открытую отсюда, закрыли кнопкой «Назад»:
+  /// шторка возвращается на место, а не оставляет пользователя на вкладке,
+  /// которая лежала под ней.
+  final VoidCallback? onReturn;
+
   const AllVisitsScreen({
     super.key,
     this.jobsStream,
@@ -145,6 +150,7 @@ class AllVisitsScreen extends StatefulWidget {
     this.showStatusFilters = true,
     this.onLeave,
     this.hostContext,
+    this.onReturn,
   });
 
   @override
@@ -152,7 +158,15 @@ class AllVisitsScreen extends StatefulWidget {
 }
 
 class _AllVisitsScreenState extends State<AllVisitsScreen> {
-  final ScrollController _scrollController = ScrollController();
+  /// Шторку пересобирают при каждом открытии (так устроен `DrawerController`),
+  /// поэтому место в списке помнит сам экран: вернувшись из карточки, видишь
+  /// ту же строку, а не начало списка. Только для шторки — обычный маршрут и
+  /// тесты открываются с нуля.
+  static double _shadeOffset = 0;
+
+  late final ScrollController _scrollController = ScrollController(
+    initialScrollOffset: widget.onLeave == null ? 0 : _shadeOffset,
+  );
   final GlobalKey _todayKey = GlobalKey();
   String _selectedFilter = SettingsService.listAllFilter;
   late final Stream<List<Job>> _jobsStream =
@@ -168,7 +182,16 @@ class _AllVisitsScreenState extends State<AllVisitsScreen> {
   void initState() {
     super.initState();
     ErrorLogService.markScreen('Все визиты');
+    if (widget.onLeave != null) {
+      _scrollController.addListener(_rememberOffset);
+    }
     _bindMessageStreams();
+  }
+
+  /// Запоминать место в `dispose` поздно: список размонтируется раньше
+  /// экрана, и контроллер к этому моменту уже отцеплен.
+  void _rememberOffset() {
+    if (_scrollController.hasClients) _shadeOffset = _scrollController.offset;
   }
 
   void _bindMessageStreams() {
@@ -251,14 +274,18 @@ class _AllVisitsScreenState extends State<AllVisitsScreen> {
     AppFeedback.pleasant();
     final host = await _leaveHost();
     if (host == null) return;
-    await AppNav.openCard(
-      host,
-      key: AppNav.jobKey(job.id),
-      builder: (_) => JobDetailsScreen(
-        jobId: job.id,
-        clientId: job.clientId,
-        jobData: job.toMap(),
+    await PanelReturn.open(
+      AppNav.navigatorOf(host),
+      push: () => AppNav.openCard(
+        host,
+        key: AppNav.jobKey(job.id),
+        builder: (_) => JobDetailsScreen(
+          jobId: job.id,
+          clientId: job.clientId,
+          jobData: job.toMap(),
+        ),
       ),
+      back: widget.onReturn,
     );
   }
 
@@ -411,12 +438,12 @@ class _AllVisitsScreenState extends State<AllVisitsScreen> {
                         unscheduledCount++;
                         continue;
                       }
-                      for (final visit in job.coalescedVisits) {
-                        final day = _dayOfVisit(visit.startAt);
-                        byDay
-                            .putIfAbsent(day, () => <_VisitAgendaEntry>[])
-                            .add(_VisitAgendaEntry(job: job, visit: visit));
-                      }
+                      final visit = job.latestVisit;
+                      if (visit == null) continue;
+                      final day = _dayOfVisit(visit.startAt);
+                      byDay
+                          .putIfAbsent(day, () => <_VisitAgendaEntry>[])
+                          .add(_VisitAgendaEntry(job: job, visit: visit));
                     }
 
                     for (final list in byDay.values) {
@@ -505,11 +532,17 @@ class _AllVisitsScreenState extends State<AllVisitsScreen> {
           onTap: () async {
             final host = await _leaveHost();
             if (host == null) return;
-            await Navigator.push(
-              host,
-              MaterialPageRoute(
-                builder: (_) => const UnscheduledJobsScreen(),
+            // Через навигатор вкладки, как и карточка: по корневому экран
+            // накрывал бы нижнюю панель, и возвращать шторку было бы некуда.
+            final navigator = AppNav.navigatorOf(host);
+            await PanelReturn.open(
+              navigator,
+              push: () => navigator.push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const UnscheduledJobsScreen(),
+                ),
               ),
+              back: widget.onReturn,
             );
           },
           child: Padding(
@@ -658,13 +691,19 @@ class _AllVisitsScreenState extends State<AllVisitsScreen> {
     final now = _now;
     var nowShown = !isToday;
     final rows = <Widget>[];
-    for (var i = 0; i < entries.length; i++) {
+    // Идём сверху вниз от самых поздних визитов к самым ранним —
+    // так шкала времени читается снизу вверх: раннее время внизу,
+    // позднее наверху. Линия «сейчас» встаёт на границе между
+    // будущими (выше) и прошедшими (ниже) визитами.
+    for (var i = entries.length - 1; i >= 0; i--) {
       final entry = entries[i];
-      if (!nowShown && entry.visit.startAt.isAfter(now)) {
+      if (!nowShown && !entry.visit.startAt.isAfter(now)) {
+        // Переход от будущих (выше) к прошедшим (ниже) — линия «сейчас»
+        // встаёт над первым уже начавшимся визитом.
         rows.add(_nowRow(now));
         nowShown = true;
       }
-      rows.add(_timelineEntry(entry, isLast: i == entries.length - 1));
+      rows.add(_timelineEntry(entry, isLast: i == 0));
     }
     if (!nowShown) rows.add(_nowRow(now));
     return rows;

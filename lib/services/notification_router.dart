@@ -192,6 +192,16 @@ class NotificationRouter {
       );
     }
 
+    // Care Plan (пора ТО, платёж не прошёл) — в карточку клиента, где план,
+    // оплата и паспорта техники.
+    if (type == 'care_plan' && (clientId.isNotEmpty || peer.isNotEmpty)) {
+      return NotificationTarget(
+        NotificationTargetKind.client,
+        clientId: clientId,
+        peer: peer,
+      );
+    }
+
     if (jobId.isNotEmpty) {
       return NotificationTarget(
         NotificationTargetKind.job,

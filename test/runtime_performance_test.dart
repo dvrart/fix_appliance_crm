@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_core/firebase_core.dart';
-import 'package:fix_appliance_crm/features/ai/assistant/review_bell_button.dart';
+import 'package:fix_appliance_crm/features/calendar/calendar_top_icons.dart';
 import 'package:fix_appliance_crm/features/field/field_assistant_host.dart';
 import 'package:fix_appliance_crm/features/finance/documents_list_screen.dart';
 import 'package:fix_appliance_crm/features/warehouse/warehouse_screen.dart';
@@ -210,7 +210,7 @@ void main() {
   );
 
   testWidgets(
-    'inbox has no unused parts subscription and keeps streams on rebuild',
+    'calendar top icons keep their jobs stream on rebuild',
     (tester) async {
       late StateSetter rebuild;
       await tester.pumpWidget(
@@ -218,18 +218,17 @@ void main() {
           home: StatefulBuilder(
             builder: (context, setState) {
               rebuild = setState;
-              return const Scaffold(body: ReviewBellButton());
+              return const Scaffold(
+                body: CalendarTopIcons(color: Colors.white),
+              );
             },
           ),
         ),
       );
-      // 4 подписки: заявки на проверку, звонки на разбор, непрочитанные
-      // сообщения и недоставленные SMS. Секции «Ждёт решения» больше нет
-      // (решение FIX, 21.10.2026): колокольчик не предлагает завести
-      // заявку и не держит подтверждение визита, поэтому потоки
-      // SMS-заявок и сообщений «ждёт отправки» отсюда ушли вместе с ней.
+      // Одна подписка — все заявки: из неё считаются и «ждём запчасть»,
+      // и «без даты визита».
       await tester.pump();
-      expect(backend.paths.length, 4);
+      expect(backend.paths.length, 1);
       final ids = backend.paths.keys.toList();
       for (final id in ids) {
         backend.emit(id);
@@ -237,41 +236,12 @@ void main() {
       }
       rebuild(() {});
       await tester.pump();
-      expect(backend.paths.length, 4);
+      expect(backend.paths.length, 1);
       await tester.pumpWidget(const SizedBox());
       await tester.pump();
       expect(backend.active, isEmpty);
     },
   );
-
-  testWidgets('empty inbox tells where calls and messages went', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Builder(
-          builder: (context) => Scaffold(
-            body: ReviewInboxPanel(
-              hostContext: context,
-              sheetContext: context,
-            ),
-          ),
-        ),
-      ),
-    );
-    await tester.pump();
-    for (final id in backend.paths.keys.toList()) {
-      backend.emit(id);
-    }
-    await tester.pump();
-    expect(find.text('Решений не ждут'), findsOneWidget);
-    // Пустой колокольчик обязан сказать, где теперь смотреть события —
-    // иначе переезд выглядит как пропажа.
-    expect(find.textContaining('Связь'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox());
-    await tester.pump();
-    expect(backend.active, isEmpty);
-  });
 
   testWidgets('typing a message does not resubscribe to the entire inbox', (
     tester,

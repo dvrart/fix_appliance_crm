@@ -70,7 +70,6 @@ class AssistantTools {
               'start': visit.startAt.toUtc().toIso8601String(),
               'is_upcoming': upcomingVisitIds.contains(visit.id),
               'outcome': visit.outcome,
-              'confirm': visit.smsConfirmStatus,
               'note': visit.note,
             },
           )
@@ -422,17 +421,9 @@ class AssistantTools {
       (visit) => visit.isScheduled && !visit.startAt.isBefore(now),
     );
     if (idx >= 0) {
-      visits[idx] = visits[idx].copyWith(
-        startAt: next,
-        smsConfirmStatus: JobVisit.confirmPending,
-        smsDialog: '',
-      );
+      visits[idx] = visits[idx].copyWith(startAt: next, smsDialog: '');
     } else if (visits.isNotEmpty) {
-      visits[0] = visits[0].copyWith(
-        startAt: next,
-        smsConfirmStatus: JobVisit.confirmPending,
-        smsDialog: '',
-      );
+      visits[0] = visits[0].copyWith(startAt: next, smsDialog: '');
     } else {
       visits.add(JobVisit.create(startAt: next));
     }

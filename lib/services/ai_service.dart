@@ -11,6 +11,7 @@ class ExtractedJobData {
   final String? clientPhone;
   final String? clientEmail;
   final String? address;
+  final String? unit;
   final String? city;
   final String? postalCode;
   final String? applianceType;
@@ -29,6 +30,7 @@ class ExtractedJobData {
     this.clientPhone,
     this.clientEmail,
     this.address,
+    this.unit,
     this.city,
     this.postalCode,
     this.applianceType,
@@ -49,6 +51,7 @@ class ExtractedJobData {
       clientPhone: _clean(json['client_phone']),
       clientEmail: _clean(json['client_email']),
       address: _clean(json['address']),
+      unit: _clean(json['unit'] ?? json['apt'] ?? json['door']),
       city: _clean(json['city']),
       postalCode: _clean(json['postal_code']),
       applianceType: _clean(json['appliance_type']),
@@ -77,6 +80,7 @@ class ExtractedJobData {
       'client_phone': clientPhone,
       'client_email': clientEmail,
       'address': address,
+      'unit': unit,
       'city': city,
       'postal_code': postalCode,
       'appliance_type': applianceType,
@@ -137,6 +141,28 @@ class PartStickerScan {
     if (n.toLowerCase().contains(b.toLowerCase())) return n;
     return '$b $n';
   }
+}
+
+/// Что ИИ прочитал на шильдике техники (паспорт Care Plan).
+class NameplateScan {
+  final String? type;
+  final String? brand;
+  final String? model;
+  final String? serialNumber;
+  final String? manufactureDate;
+
+  const NameplateScan({
+    this.type,
+    this.brand,
+    this.model,
+    this.serialNumber,
+    this.manufactureDate,
+  });
+
+  bool get isEmpty =>
+      (brand ?? '').isEmpty &&
+      (model ?? '').isEmpty &&
+      (serialNumber ?? '').isEmpty;
 }
 
 /// Сервис для работы с Gemini AI
@@ -212,26 +238,34 @@ class AiService {
       throw Exception('Gemini API Key не настроен. Замените YOUR_GEMINI_API_KEY в lib/core/api_keys.dart');
     }
 
+    final now = DateTime.now();
+    final today =
+        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+
     final prompt = '''
 Ты — ассистент для сервиса по ремонту бытовой техники в Канаде.
-Извлеки информацию из описания разговора с клиентом и верни JSON.
+Сегодняшняя дата: $today.
+Извлеки информацию из переписки или разговора мастера с клиентом и верни JSON.
 
 Правила:
+- Учитывай ОБЕ стороны диалога (и реплики мастера, и ответы клиента). Если мастер назвал или переспросил адрес, дату, время или технику, а клиент подтвердил («Yes», «Да», «you have my address», «sounds good» и т. п.), бери эти данные из реплики мастера.
+- Если клиент уточнил деталь к адресу мастера (например, номер двери / квартиры / unit: «door number is 128», «unit 5»), не заменяй весь адрес одним числом: улицу, город и индекс оставь из адреса мастера, а номер квартиры/двери положи в поле unit.
 - Телефон форматируй как 10 цифр без пробелов (например: 4165551234)
-- Дату форматируй как YYYY-MM-DD
-- Время форматируй как HH:MM (24-часовой формат)
+- Дату форматируй как YYYY-MM-DD (относительно даты сообщений или сегодняшней даты $today: например, «tomorrow» / «завтра» — это следующий день)
+- Время форматируй как HH:MM (24-часовой формат, например «11 am» → «11:00», «2 pm» → «14:00»)
 - Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
 - Если клиент — владелец, а техника находится у арендатора, установи has_job_site: true
 - Если что-то не упомянуто, поставь null
-- Адрес, улицу, город и индекс оставляй как сказал клиент, по-английски. Не переводи на русский (King Street, не Кинг-стрит).
-- Имя клиента оставляй по-английски, как сказано.
-- problem_description — только поломка и модель, не весь разговор.
+- Адрес, улицу, город и индекс оставляй по-английски, как в переписке. Не переводи на русский (King Street, не Кинг-стрит).
+- Имя клиента пиши по-английски с заглавной буквы (например: Rehan). Не путай имя мастера (Artem / Artyom) с именем клиента.
+- problem_description — кратко на русском только поломка и модель, не весь разговор.
 
 Формат JSON:
 {
   "client_name": "Имя клиента (владельца)",
   "client_phone": "Телефон клиента",
   "address": "Улица и номер дома",
+  "unit": "Квартира / unit / door (если есть)",
   "city": "Город",
   "postal_code": "Почтовый индекс",
   "appliance_type": "Тип техники",
@@ -313,6 +347,50 @@ $conversationText
       return parsed.map((e) => e.toString()).toList();
     } catch (e) {
       return [];
+    }
+  }
+
+  /// Черновик отчёта для паспорта техники: что нашли и что сделали, по-русски.
+  /// Мастер его проверяет перед записью, сам на страницу по QR не уходит.
+  /// Пустая строка — не из чего собрать или ИИ не ответил.
+  static Future<String> draftServiceReport({
+    required String problem,
+    List<String> invoiceItems = const [],
+  }) async {
+    if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
+      return '';
+    }
+    final complaint = problem.trim();
+    final parts = invoiceItems
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .take(8)
+        .toList();
+    if ((complaint.isEmpty || complaint == 'Нет описания') && parts.isEmpty) {
+      return '';
+    }
+    final prompt = '''
+Ты мастер по ремонту бытовой техники. Составь короткий отчёт о визите —
+одно или два предложения, по-русски, для сервисной книжки этой техники.
+
+Жалоба клиента: ${complaint.isEmpty ? 'не указана' : complaint}
+Позиции счёта: ${parts.isEmpty ? 'нет' : parts.join(', ')}
+
+Правила:
+- Только то, что следует из жалобы и счёта. Не выдумывай причину, деталь и результат.
+- Если в счёте есть деталь, напиши, что её заменили. Позиции вроде «выезд», «service call», «диагностика», «скидка», «HST» — это не ремонт, их не упоминай.
+- Если деталей в счёте нет, опиши только жалобу и что техника осмотрена.
+- Без приветствий, цен и имён.
+
+Верни только текст отчёта.
+''';
+    try {
+      final response = await model
+          .generateContent([Content.text(prompt)])
+          .timeout(const Duration(seconds: 20));
+      return (response.text ?? '').trim();
+    } catch (_) {
+      return '';
     }
   }
 
@@ -456,6 +534,91 @@ Rules:
         category: category,
         purpose: str('purpose'),
         interchange: interchange,
+      );
+      return scan.isEmpty ? null : scan;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Разобрать фото шильдика (rating plate) бытовой техники для паспорта:
+  /// тип, бренд, модель, серийный номер и дата выпуска. null — ИИ не ответил
+  /// или на фото ничего не разобрать; тогда мастер вводит руками.
+  static Future<NameplateScan?> readNameplate({
+    required Uint8List imageBytes,
+    required List<String> types,
+    String mime = 'image/jpeg',
+  }) async {
+    if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
+      return null;
+    }
+    if (imageBytes.isEmpty) return null;
+
+    final prompt =
+        '''
+You are an appliance repair technician in Canada. The photo shows the rating
+plate / nameplate / serial tag of a household appliance (or the appliance with
+its label visible).
+
+Read the label and return ONLY JSON, no prose:
+{
+  "type": "exactly one line from the list below, copied character for character, or null",
+  "brand": "manufacturer brand as printed (Whirlpool, LG, Samsung, GE, Frigidaire, Bosch, Maytag, Kenmore, ...), or null",
+  "model_number": "model number as printed (MODEL / MOD / M/N), or null",
+  "serial_number": "serial number as printed (SERIAL / SER / S/N), or null",
+  "manufacture_date": "YYYY-MM or YYYY when the manufacture date is printed, or when you can decode it from the serial number with certainty for this brand; otherwise null"
+}
+
+Type list:
+${types.join('\n')}
+
+Rules:
+- Copy model and serial character for character. Never invent them.
+- The model number is not the serial number, not a part number, not a voltage.
+- Kenmore: the brand is Kenmore even if another maker is printed.
+- Unknown fields are null. Do not add fields.
+''';
+
+    try {
+      final text = await _generate(
+        Content.multi([TextPart(prompt), DataPart(mime, imageBytes)]),
+        timeout: const Duration(seconds: 45),
+      );
+      final start = text.indexOf('{');
+      final end = text.lastIndexOf('}');
+      if (start < 0 || end <= start) return null;
+      final decoded = json.decode(text.substring(start, end + 1));
+      if (decoded is! Map) return null;
+
+      String? str(String key) {
+        final raw = decoded[key];
+        if (raw == null) return null;
+        final value = raw.toString().trim();
+        if (value.isEmpty || value.toLowerCase() == 'null') return null;
+        return value;
+      }
+
+      String? code(String key) => str(key)
+          ?.toUpperCase()
+          .replaceAll(RegExp(r'[^A-Z0-9\-/.]'), '');
+
+      final typeRaw = str('type');
+      String? type;
+      if (typeRaw != null) {
+        for (final t in types) {
+          if (t.toLowerCase() == typeRaw.toLowerCase()) type = t;
+        }
+      }
+      final date = str('manufacture_date');
+      final scan = NameplateScan(
+        type: type,
+        brand: str('brand'),
+        model: code('model_number'),
+        serialNumber: code('serial_number'),
+        manufactureDate: date != null &&
+                RegExp(r'^(19|20)\d{2}(-(0[1-9]|1[0-2]))?$').hasMatch(date)
+            ? date
+            : null,
       );
       return scan.isEmpty ? null : scan;
     } catch (_) {

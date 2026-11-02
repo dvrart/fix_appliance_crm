@@ -25,6 +25,17 @@ function document(path) {
     },
     set: async (data, options) => store.set(path, { ...(options?.merge ? store.get(path) : {}), ...data }),
     delete: async () => { removed.push(path); store.delete(path); },
+    where: (field, op, value) => ({
+      get: async () => {
+        const docs = [...store.keys()]
+          .filter((key) => key.startsWith(`${path}/`) && !key.slice(path.length + 1).includes('/'))
+          .map(snapshot)
+          .filter((doc) => (op === 'array-contains'
+            ? (doc.data()[field] || []).includes(value)
+            : doc.data()[field] === value));
+        return { docs, empty: !docs.length };
+      },
+    }),
   };
 }
 
@@ -176,4 +187,18 @@ test('FCM reserved data keys remain filtered', () => {
   assert.deepEqual(sanitizeFcmData({ from: '+14165550101', googleKey: 'x', gcmKey: 'x', notification: 'x', type: 'sms' }), {
     type: 'sms', peer: '+14165550101',
   });
+});
+
+test('a call or SMS from a Care Plan member is labelled in the shade title; others are not', async () => {
+  require('./care_plan_lookup').clearCache();
+  store.set(`${COMPANY}/care_plans/p1`, { clientId: 'c1', phones: ['4165550199'], status: 'active' });
+  await notifyMaster('Пропущенный звонок', '', { type: 'call', callSid: 'CA-plan', from: '+14165550199' });
+  await notifyMaster('Новое SMS', '', { type: 'sms', messageId: 'SM-plan', from: '+1 (416) 555-0199' });
+  await notifyMaster('Пропущенный звонок', '', { type: 'call', callSid: 'CA-other', from: '+14165550101' });
+  await notifyMaster('Care Plan: пора ТО', '', { type: 'care_plan', clientId: 'c1' });
+  assert.equal(sent[0].data.title, 'Care Plan · Пропущенный звонок');
+  assert.equal(sent[1].data.title, 'Care Plan · Новое SMS');
+  assert.equal(sent[2].data.title, 'Пропущенный звонок');
+  assert.equal(sent[3].data.title, 'Care Plan: пора ТО');
+  assert.equal(sent[3].data.channelId, 'visit_soon');
 });

@@ -63,6 +63,12 @@ class _RouteMapViewState extends State<RouteMapView> {
     _loadRoute();
   }
 
+  @override
+  void dispose() {
+    _mapController?.dispose();
+    super.dispose();
+  }
+
   void _notifyChrome() {
     final callback = widget.onChromeChanged;
     if (callback == null) return;

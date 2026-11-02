@@ -24,6 +24,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.WindowManager
 import kotlin.math.max
 import kotlin.math.sin
 import com.twilio.twilio_voice.service.IncomingCallNotifier
@@ -36,6 +37,21 @@ import io.flutter.plugin.common.MethodChannel
 // FlutterFragmentActivity, а не FlutterActivity: androidx BiometricPrompt
 // (замок на вход по отпечатку) работает только внутри FragmentActivity.
 class MainActivity : FlutterFragmentActivity() {
+    companion object {
+        @Volatile
+        private var currentInstance: MainActivity? = null
+
+        @JvmStatic
+        fun prepareForIncomingCall() {
+            val activity = currentInstance ?: return
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                activity.enableLockscreenFlags()
+            } else {
+                activity.runOnUiThread { activity.enableLockscreenFlags() }
+            }
+        }
+    }
+
     private var deviceChannel: MethodChannel? = null
     private var notificationEventsReady = false
     private var pendingNotificationTap: Map<String, String>? = null
@@ -262,9 +278,21 @@ class MainActivity : FlutterFragmentActivity() {
                         releaseWakeCarAudio(immediate = false)
                         result.success(true)
                     }
+                    "vibrateCallConnected" -> {
+                        CallConnectedBuzz.vibrate(this)
+                        result.success(true)
+                    }
+                    "placeCellularCall" -> {
+                        val args = call.arguments as? Map<*, *>
+                        result.success(placeCellularCall(args?.get("number")?.toString().orEmpty()))
+                    }
                     else -> result.notImplemented()
                 }
             }
+        // Принтер наклеек паспорта техники (Phomemo M250 по BLE).
+        val stickerPrinter = StickerPrinterBle(applicationContext)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fix_appliance/sticker_printer")
+            .setMethodCallHandler { call, result -> stickerPrinter.handle(call, result) }
         stopAudioStateObservation()
         audioStateChannel?.setStreamHandler(null)
         audioStateChannel = EventChannel(
@@ -673,9 +701,11 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     private fun notifyResumeActiveCall() {
-        val want = intent?.getBooleanExtra("resume_active_call", false) == true
-        if (!want) return
+        val wantResume = intent?.getBooleanExtra("resume_active_call", false) == true
+        val wantIncoming = intent?.getBooleanExtra("twilio_incoming_call", false) == true
+        if (!wantResume && !wantIncoming) return
         intent?.removeExtra("resume_active_call")
+        intent?.removeExtra("twilio_incoming_call")
         pendingResumeActiveCall = true
         deliverPendingDeviceEvents()
     }
@@ -761,11 +791,33 @@ class MainActivity : FlutterFragmentActivity() {
         ringbackThread = null
     }
 
+    /**
+     * Звонок клиенту через SIM: телефон сам набирает номер мастерской обычной
+     * сотовой связью, а сервер соединяет с клиентом. Без разрешения на звонки
+     * хотя бы открываем набор с этим номером.
+     */
+    private fun placeCellularCall(number: String): Boolean {
+        if (number.isBlank()) return false
+        val canCall = checkSelfPermission(Manifest.permission.CALL_PHONE) ==
+            PackageManager.PERMISSION_GRANTED
+        val intent = Intent(
+            if (canCall) Intent.ACTION_CALL else Intent.ACTION_DIAL,
+            Uri.fromParts("tel", number, null),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            startActivity(intent)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun bluetoothAdapter(): BluetoothAdapter? {
         return getSystemService(BluetoothManager::class.java)?.adapter
     }
 
     override fun onDestroy() {
+        if (currentInstance === this) currentInstance = null
         stopAudioStateObservation()
         audioStateChannel?.setStreamHandler(null)
         audioStateChannel = null
@@ -786,6 +838,7 @@ class MainActivity : FlutterFragmentActivity() {
             finish()
             return
         }
+        currentInstance = this
         super.onCreate(savedInstanceState)
         AppNotificationChannels.ensure(this)
         // Снимаем мьют звонка, если его оставила прежняя сборка (см.
@@ -794,6 +847,7 @@ class MainActivity : FlutterFragmentActivity() {
         requestPostNotifications()
         CrmBackgroundGuardService.start(this)
         maybeShowOverLockscreen(intent)
+        notifyResumeActiveCall()
         notifyNotificationTap(intent)
     }
 
@@ -978,16 +1032,23 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onResume() {
         super.onResume()
+        currentInstance = this
         notifyResumeActiveCall()
-        if (TVConnectionService.getIncomingCallHandle() == null) {
+        if (TVConnectionService.getIncomingCallHandle() == null &&
+            !IncomingCallNotifier.isTestCall()
+        ) {
             IncomingCallNotifier.cancel(this)
+        }
+        if (hasCallForLockscreen()) {
+            enableLockscreenFlags()
+        } else {
             clearLockscreenFlags()
         }
     }
 
     override fun onPause() {
         super.onPause()
-        if (TVConnectionService.getIncomingCallHandle() == null) {
+        if (!hasCallForLockscreen()) {
             clearLockscreenFlags()
         }
     }
@@ -1000,25 +1061,49 @@ class MainActivity : FlutterFragmentActivity() {
         notifyNotificationTap(intent)
     }
 
+    private fun hasCallForLockscreen(): Boolean {
+        return TVConnectionService.getIncomingCallHandle() != null ||
+            TVConnectionService.hasActiveCalls() ||
+            IncomingCallNotifier.currentNotification != null
+    }
+
+    private fun enableLockscreenFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+        @Suppress("DEPRECATION")
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+        )
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        if (keyguard != null && !keyguard.isDeviceSecure) {
+            keyguard.requestDismissKeyguard(this, null)
+        }
+    }
+
     private fun clearLockscreenFlags() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(false)
             setTurnScreenOn(false)
         }
+        @Suppress("DEPRECATION")
+        window.clearFlags(
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+        )
     }
 
     private fun maybeShowOverLockscreen(intent: Intent?) {
-        if (intent?.getBooleanExtra("twilio_incoming_call", false) != true) {
-            if (TVConnectionService.getIncomingCallHandle() == null) {
-                clearLockscreenFlags()
-            }
-            return
+        if (intent?.getBooleanExtra("twilio_incoming_call", false) == true ||
+            hasCallForLockscreen()
+        ) {
+            enableLockscreenFlags()
+        } else {
+            clearLockscreenFlags()
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        }
-        val keyguard = getSystemService(KeyguardManager::class.java)
-        keyguard?.requestDismissKeyguard(this, null)
     }
 }

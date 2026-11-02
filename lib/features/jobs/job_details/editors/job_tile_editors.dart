@@ -939,22 +939,22 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
-                width: 34,
-                height: 34,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
                   color: AppColors.primary.withValues(alpha: 0.12),
                   shape: BoxShape.circle,
                 ),
-                child: Icon(icon, size: 19, color: AppColors.primary),
+                child: Icon(icon, size: 26, color: AppColors.primary),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 8),
               Text(
                 caption,
                 textAlign: TextAlign.center,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: 14,
                   height: 1.15,
                   fontWeight: FontWeight.bold,
                   color: highlightCaption
@@ -969,7 +969,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: 13,
+                  fontSize: 16,
                   height: 1.2,
                   fontWeight: FontWeight.w800,
                   color: empty ? Colors.grey : AppColors.ink,
@@ -1022,7 +1022,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                   ),
                   icon: const Icon(
                     Icons.tune,
-                    size: 18,
+                    size: 22,
                     color: Color(0xFF1976D2),
                   ),
                   label: Text(
@@ -1033,7 +1033,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 12,
+                      fontSize: 14,
                       fontWeight: FontWeight.w800,
                       color: Color(0xFF1976D2),
                     ),
@@ -1043,7 +1043,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                     side: BorderSide(color: const Color(0xFF1976D2).withValues(alpha: 0.45)),
                     padding: const EdgeInsets.symmetric(
                       horizontal: 10,
-                      vertical: 10,
+                      vertical: 14,
                     ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -1063,7 +1063,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                   ),
                   icon: const Icon(
                     Icons.error_outline,
-                    size: 18,
+                    size: 22,
                     color: Color(0xFFD32F2F),
                   ),
                   label: Text(
@@ -1071,7 +1071,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 12,
+                      fontSize: 14,
                       fontWeight: FontWeight.w800,
                       color: Color(0xFFD32F2F),
                     ),
@@ -1081,7 +1081,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                     side: BorderSide(color: const Color(0xFFD32F2F).withValues(alpha: 0.45)),
                     padding: const EdgeInsets.symmetric(
                       horizontal: 10,
-                      vertical: 10,
+                      vertical: 14,
                     ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -1183,7 +1183,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                         ),
                         tabs: [
                           Tab(text: 'Описание проблемы'.tr),
-                          Tab(text: 'Решение проблемы'.tr),
+                          Tab(text: 'Отчет'.tr),
                         ],
                       ),
                     );
@@ -1547,6 +1547,7 @@ class _PhotosEditorPage extends StatefulWidget {
 class _PhotosEditorPageState extends State<_PhotosEditorPage> {
   late List<Map<String, dynamic>> _items;
   bool _picking = false;
+  int _nameSeq = 0;
 
   @override
   void initState() {
@@ -1614,13 +1615,15 @@ class _PhotosEditorPageState extends State<_PhotosEditorPage> {
   }
 
   void _append(String localPath) {
+    final now = DateTime.now();
+    _nameSeq += 1;
     setState(() {
       _items.add({
         'url': '',
         'localPath': localPath,
-        'name': '${DateTime.now().millisecondsSinceEpoch}.jpg',
+        'name': '${now.microsecondsSinceEpoch}_$_nameSeq.jpg',
         'pendingUpload': true,
-        'uploadedAt': DateTime.now().toIso8601String(),
+        'uploadedAt': now.toIso8601String(),
       });
     });
     _notify();

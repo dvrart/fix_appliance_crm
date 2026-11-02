@@ -5,6 +5,7 @@ import '../../../core/l10n/app_locale.dart';
 import '../../../core/sms_text.dart';
 import '../../../services/settings_service.dart';
 import '../../../shared/widgets/confirm_action_sheet.dart';
+import '../../../shared/widgets/dispose_on_close.dart';
 import '../widgets/settings_ui.dart';
 
 class MessageTemplatesPage extends StatefulWidget {
@@ -279,43 +280,45 @@ class _MessageTemplatesPageState extends State<MessageTemplatesPage> {
     final ctrl = TextEditingController(text: _reviewUrl);
     final saved = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Ссылка на Google-отзыв'.tr),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Эта ссылка автоматически подставляется вместо фразы {review} в шаблонах сообщений.'
-                  .tr,
-              style: TextStyle(fontSize: 13, color: AppColors.inkMuted),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ctrl,
-              keyboardType: TextInputType.url,
-              decoration: InputDecoration(
-                labelText: 'URL отзыва Google'.tr,
-                hintText: 'https://g.page/r/...',
-                border: const OutlineInputBorder(),
+      builder: (ctx) => DisposeOnClose(
+        disposables: [ctrl],
+        child: AlertDialog(
+          title: Text('Ссылка на Google-отзыв'.tr),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Эта ссылка автоматически подставляется вместо фразы {review} в шаблонах сообщений.'
+                    .tr,
+                style: TextStyle(fontSize: 13, color: AppColors.inkMuted),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctrl,
+                keyboardType: TextInputType.url,
+                decoration: InputDecoration(
+                  labelText: 'URL отзыва Google'.tr,
+                  hintText: 'https://g.page/r/...',
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text('Отмена'.tr),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text('Сохранить'.tr),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text('Отмена'.tr),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text('Сохранить'.tr),
-          ),
-        ],
       ),
     );
     final nextUrl = ctrl.text.trim();
-    ctrl.dispose();
     if (saved != true || !mounted) return;
     await SettingsService.updateConfig('googleReviewUrl', nextUrl);
     if (!mounted) return;

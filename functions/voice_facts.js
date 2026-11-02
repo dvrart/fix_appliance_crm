@@ -1242,6 +1242,44 @@ function addressesLookDifferent(a, b) {
   return shorter.length / Math.max(longer.length, 1) < 0.72;
 }
 
+const UNIT_ONLY_RE = /^(?:(unit|apt\.?|apartment|suite|ste\.?|room|rm\.?|кв\.?|квартира|офис)\s*#?\s*|#\s*)([a-zа-я]?\d{1,5}[a-zа-я]?(?:-\d{1,4})?)\.?$/i;
+const UNIT_IN_ADDRESS_RE = /(?:^|,)\s*(?:unit|apt\.?|apartment|suite|ste\.?|room|rm\.?|кв\.?|квартира|офис|#)\s*#?\s*[a-zа-я]?\d{1,5}[a-zа-я]?(?:-\d{1,4})?\s*(?=,|$)/i;
+
+/**
+ * «Unit 23», «Apt 5B», «#12», «кв. 7» — клиент прислал только номер квартиры
+ * к уже названному адресу. Возвращает подпись вида «Unit 23» или ''.
+ */
+function unitOnlyAddress(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const match = text.match(UNIT_ONLY_RE);
+  if (!match) return '';
+  const word = String(match[1] || '').toLowerCase().replace(/\.$/, '');
+  const number = match[2].toUpperCase();
+  if (!word) return `#${number}`;
+  const label = {
+    unit: 'Unit', apt: 'Apt', apartment: 'Apt', suite: 'Suite', ste: 'Suite',
+    room: 'Room', rm: 'Room', 'кв': 'Unit', 'квартира': 'Unit', 'офис': 'Suite',
+  }[word] || 'Unit';
+  return `${label} ${number}`;
+}
+
+/**
+ * Номер квартиры в полный адрес: сразу после улицы, как пишет приложение
+ * (`joinAddress`): «190 Argyle Street, Unit 23, Simcoe». Старый номер
+ * квартиры заменяется новым.
+ */
+function addressWithUnit(address, unitLabel) {
+  const unit = String(unitLabel || '').trim();
+  const parts = String(address || '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !UNIT_IN_ADDRESS_RE.test(part));
+  if (!unit) return parts.join(', ');
+  if (!parts.length) return unit;
+  return [parts[0], unit, ...parts.slice(1)].join(', ');
+}
+
 function detectMoved(text) {
   return /\b(i(?:'?ve| have)? moved|we moved|that'?s my new (home|address)|i live (here|there) now|я переехал|мы переехали)\b/i.test(
     String(text || '')
@@ -1461,6 +1499,8 @@ module.exports = {
   detectJobSite,
   detectMoved,
   addressesLookDifferent,
+  unitOnlyAddress,
+  addressWithUnit,
   onSiteContactFrom,
   EXTRACT_CARD_RULES,
   VOICE_LIVE_FLOW,

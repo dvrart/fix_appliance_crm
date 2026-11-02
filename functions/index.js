@@ -23,7 +23,8 @@ const visitSms = require('./visit_sms');
 const schedule = require('./schedule');
 const serviceArea = require('./service_area');
 const jobDedupe = require('./job_dedupe');
-const { notifyMaster, registerDeviceToken } = require('./notify');
+const { notifyMaster, pingMaster, registerDeviceToken } = require('./notify');
+const callRoute = require('./call_route');
 const { requireAppUser, requireTwilioSignature } = require('./auth_guard');
 const { createRecordingStore, isTwilioMediaUrl, appendCallRecording } = require('./recording_store');
 const { createCallTranscriber } = require('./call_transcribe');
@@ -1199,7 +1200,9 @@ exports.twilioAccessToken = functions.https.onRequest(async (req, res) => {
     });
     token.addGrant(voiceGrant);
 
-    res.json({ token: token.toJwt(), identity });
+    // Номер мастерской нужен приложению, чтобы звонить клиенту через SIM:
+    // телефон набирает мастерскую, сервер соединяет с клиентом.
+    res.json({ token: token.toJwt(), identity, shopNumber: TWILIO_PHONE_NUMBER || '' });
   } catch (error) {
     console.error('Error generating token:', error);
     res.status(500).json({ error: error.message });
@@ -1963,18 +1966,28 @@ async function getCompanyDisplayName() {
 
 function twimlDialPstn(req, toNumber) {
   const twiml = new twilio.twiml.VoiceResponse();
+  // Запись на весь звонок, а не только на кусок `<Dial>`. Иначе у исходящего
+  // из приложения Twilio отдаёт 1–7 секунд, хотя разговор шёл дольше: клиент
+  // слышит расшифровку, а плеера нет. Дорожки те же — две, по сторонам.
+  appendCallRecording(twiml, recordingUrl(req));
   const dial = twiml.dial({
     callerId: TWILIO_PHONE_NUMBER,
     timeout: 25,
     answerOnBridge: false,
-    // Каждая сторона в своей дорожке: расшифровка потом не гадает, кто
-    // говорил, а читает это прямо из записи (см. call_transcribe.js).
-    record: 'record-from-answer-dual',
-    recordingStatusCallback: recordingUrl(req),
-    recordingStatusCallbackEvent: 'completed',
     action: dialActionUrl(req),
   });
-  dial.number(toNumber);
+  // «Клиент ответил» приходит отдельным событием: телефон мастера вибрирует
+  // в момент соединения с клиентом, а не когда поднялся канал до Twilio.
+  dial.number(
+    {
+      statusCallbackEvent: 'answered',
+      statusCallback: callRoute.withQuery(dialActionUrl(req), {
+        stage: 'peer',
+        parent: String(req.body.CallSid || '').trim(),
+      }),
+    },
+    toNumber
+  );
   return twiml;
 }
 
@@ -2000,6 +2013,30 @@ function twimlDialMaster(req, fromNumber, timeoutSeconds) {
     clientNode.parameter({ name: 'parentCallSid', value: parentSid });
   }
   return twiml;
+}
+
+async function getCallRouting() {
+  try {
+    const snap = await db.collection('companies').doc(COMPANY_ID).collection('settings').doc('config').get();
+    return callRoute.readCallRouting(snap.exists ? snap.data() || {} : {});
+  } catch (error) {
+    console.warn('getCallRouting:', error.message);
+    return callRoute.readCallRouting({});
+  }
+}
+
+// Переведённый из приложения звонок мастер ждёт сам — даём телефону время.
+const CELL_MOVE_RING_SECONDS = 20;
+
+function twimlDialMasterCell(req, fromNumber, routing, parentSid, timeoutSeconds) {
+  return callRoute.twimlDialCell({
+    callerId: formatPstn(fromNumber) || TWILIO_PHONE_NUMBER,
+    cell: routing.cell,
+    timeoutSeconds,
+    actionUrl: callRoute.withQuery(dialActionUrl(req), { leg: 'cell' }),
+    screenUrl: callRoute.withQuery(dialActionUrl(req), { stage: 'screen', parent: parentSid }),
+    recordingUrl: recordingUrl(req),
+  });
 }
 
 async function logCall(callSid, data) {
@@ -2078,13 +2115,17 @@ async function handleOutboundFromApp(req, res, source) {
   sendTwiml(res, twimlDialPstn(req, dest));
 }
 
-async function handleInboundToMaster(req, res, source) {
+async function handleInboundToMaster(req, res, source, knownRouting = null) {
   const fromNumber = req.body.From || 'Unknown';
   const toNumber = req.body.To || TWILIO_PHONE_NUMBER || '';
   const callSid = req.body.CallSid;
-  const aiSettings = await getAiAnswerSettings();
+  const [aiSettings, routing] = await Promise.all([
+    getAiAnswerSettings(),
+    knownRouting || getCallRouting(),
+  ]);
+  const toCell = callRoute.inboundGoesToCell(routing, fromNumber);
   console.log(
-    `${source}: inbound from=${fromNumber} to=${toNumber} aiTimeout=${aiSettings.timeoutSeconds} ai=${aiSettings.enabled}`
+    `${source}: inbound from=${fromNumber} to=${toNumber} aiTimeout=${aiSettings.timeoutSeconds} ai=${aiSettings.enabled} route=${routing.mode}${toCell ? ' -> cell' : ''}`
   );
   await logCall(callSid, {
     fromNumber,
@@ -2092,13 +2133,78 @@ async function handleInboundToMaster(req, res, source) {
     direction: 'inbound',
     status: 'ringing',
     twilioTime: req.body.Timestamp || req.body.StartTime,
+    ...(toCell ? { ringVia: 'cell' } : {}),
   });
   if (aiSettings.enabled && Number(aiSettings.timeoutSeconds) === 0) {
     console.log(`${source}: AI answers immediately, skip master ring`);
     await startAiReception(req, res, callSid);
     return;
   }
+  if (toCell) {
+    sendTwiml(res, twimlDialMasterCell(req, fromNumber, routing, callSid, aiSettings.timeoutSeconds));
+    return;
+  }
   sendTwiml(res, twimlDialMaster(req, fromNumber, aiSettings.timeoutSeconds));
+}
+
+// Мастер уже набрал мастерскую с SIM, а запись «кому звонить» из приложения
+// ещё в пути (плохой интернет): ждём её по секунде, не дольше четырёх раз.
+const CELL_BRIDGE_WAITS = 4;
+
+async function takePendingCellCall(callSid) {
+  const ref = db.collection('companies').doc(COMPANY_ID).collection('settings').doc('pending_cell_call');
+  try {
+    return await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const data = snap.data() || {};
+      const phone = callRoute.pendingCellDestination(data, Date.now());
+      if (!phone) return null;
+      tx.set(ref, {
+        consumedAt: admin.firestore.FieldValue.serverTimestamp(),
+        consumedBy: String(callSid || ''),
+      }, { merge: true });
+      return { phone, jobId: String(data.jobId || '').trim() };
+    });
+  } catch (error) {
+    console.warn('takePendingCellCall:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Исходящий клиенту через сотовую: телефон мастера набрал номер мастерской,
+ * приложение заранее записало, кому звонить. Клиент видит номер мастерской,
+ * разговор пишется так же, как исходящий из приложения.
+ */
+async function handleCellBridge(req, res, routing) {
+  if (!routing.cell || !callRoute.sameNumber(req.body.From, routing.cell)) return false;
+  const callSid = req.body.CallSid;
+  const pending = await takePendingCellCall(callSid);
+  if (!pending) {
+    const attempt = Number(req.query && req.query.cellWait) || 0;
+    if (attempt < CELL_BRIDGE_WAITS) {
+      sendTwiml(res, callRoute.twimlWaitForPending(
+        callRoute.withQuery(functionUrl(req, 'incomingCall'), { cellWait: attempt + 1 })
+      ));
+      return true;
+    }
+    console.warn(`cellBridge ${callSid}: master cell called, no pending destination`);
+    sendTwiml(res, callRoute.twimlCellBridgeLost());
+    return true;
+  }
+  console.log(`cellBridge ${callSid}: master cell -> ${pending.phone}${pending.jobId ? ` job=${pending.jobId}` : ''}`);
+  await logCall(callSid, {
+    fromNumber: TWILIO_PHONE_NUMBER || '',
+    toNumber: pending.phone,
+    direction: 'outbound',
+    via: 'cell',
+    status: 'in-progress',
+    twilioTime: req.body.Timestamp || req.body.StartTime,
+    ...(pending.jobId ? { jobId: pending.jobId } : {}),
+  });
+  sendTwiml(res, twimlDialPstn(req, pending.phone));
+  return true;
 }
 
 // ============================================================================
@@ -2114,7 +2220,9 @@ exports.incomingCall = functions.https.onRequest(voiceEntryRuntime, async (req, 
     await handleOutboundFromApp(req, res, 'incomingCall');
     return;
   }
-  await handleInboundToMaster(req, res, 'incomingCall');
+  const routing = await getCallRouting();
+  if (await handleCellBridge(req, res, routing)) return;
+  await handleInboundToMaster(req, res, 'incomingCall', routing);
 });
 
 // ============================================================================
@@ -3130,12 +3238,143 @@ Return STRICT JSON, no markdown:
 }
 
 // Dial finished: master answered, or timeout → AI receptionist.
+async function pingCallConnected(callSid) {
+  try {
+    await pingMaster({ type: 'call_connected', callSid: String(callSid || '') });
+  } catch (error) {
+    console.warn('pingCallConnected:', error.message);
+  }
+}
+
+async function markCellScreen(parentSid, accepted, legSid) {
+  if (!parentSid) return;
+  try {
+    await callsRef.doc(parentSid).set(accepted
+      ? {
+        cellAcceptedAt: admin.firestore.FieldValue.serverTimestamp(),
+        answeredVia: 'cell',
+        masterCellLegSid: String(legSid || ''),
+      }
+      : { cellDeclinedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+  } catch (error) {
+    console.warn('markCellScreen:', error.message);
+  }
+}
+
+async function markPeerAnswered(parentSid) {
+  if (!parentSid) return;
+  try {
+    const ref = callsRef.doc(parentSid);
+    await ref.set({ peerAnsweredAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    const snap = await ref.get();
+    // У звонка из приложения вибрирует само приложение по этой отметке.
+    // У звонка через SIM приложение не на экране — шлём сигнал.
+    if (snap.exists && (snap.data() || {}).via === 'cell') await pingCallConnected(parentSid);
+  } catch (error) {
+    console.warn('markPeerAnswered:', error.message);
+  }
+}
+
+async function handleCallStage(stage, req, res) {
+  const parent = String((req.query && req.query.parent) || req.body.ParentCallSid || '').trim();
+  if (stage === 'screen') {
+    sendTwiml(res, callRoute.twimlCellScreen({
+      acceptUrl: callRoute.withQuery(dialActionUrl(req), { stage: 'accept', parent }),
+    }));
+    return;
+  }
+  if (stage === 'accept') {
+    const accepted = String(req.body.Digits || '').trim() === '1';
+    console.log(`dialAction accept ${parent || '?'} digits=${req.body.Digits || '-'} accepted=${accepted}`);
+    await Promise.all([
+      markCellScreen(parent, accepted, req.body.CallSid),
+      accepted ? pingCallConnected(parent) : Promise.resolve(),
+    ]);
+    sendTwiml(res, callRoute.twimlCellAccepted(accepted));
+    return;
+  }
+  if (stage === 'peer') await markPeerAnswered(parent);
+  res.type('text/xml');
+  res.send('<Response></Response>');
+}
+
+/**
+ * Перевести живой входящий на SIM мастера. Сначала ставим отметку в
+ * транзакции, чтобы dialAction и этот запрос не набрали SIM дважды. Если
+ * Twilio перенаправить не дал, отметку снимаем: перевод сделает dialAction,
+ * когда закончится гудок в приложение.
+ */
+async function moveLiveCallToCell(req, callSid) {
+  const routing = await getCallRouting();
+  if (!routing.cell) return { moved: false, reason: 'no-cell' };
+  if (!client) return { moved: false, reason: 'no-twilio' };
+  const ref = callsRef.doc(callSid);
+  const data = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const current = snap.exists ? snap.data() || {} : {};
+    if (current.direction && current.direction !== 'inbound') return null;
+    if (current.movedToCellAt) return null;
+    tx.set(ref, {
+      moveToCellRequested: true,
+      movedToCellAt: admin.firestore.FieldValue.serverTimestamp(),
+      movedToCellBy: 'rest',
+    }, { merge: true });
+    return current;
+  });
+  if (!data) return { moved: false, reason: 'already' };
+  try {
+    await client.calls(callSid).update({
+      twiml: twimlDialMasterCell(req, data.fromNumber, routing, callSid, CELL_MOVE_RING_SECONDS).toString(),
+    });
+    return { moved: true };
+  } catch (error) {
+    await ref.set({
+      movedToCellAt: admin.firestore.FieldValue.delete(),
+      movedToCellBy: admin.firestore.FieldValue.delete(),
+      moveToCellError: String((error && error.message) || error).slice(0, 300),
+    }, { merge: true });
+    return { moved: false, reason: 'twilio' };
+  }
+}
+
+// ============================================================================
+// VOICE: перевести входящий на SIM мастера — звук в приложении не поднялся
+// ============================================================================
+
+exports.moveCallToCell = functions.https.onRequest(async (req, res) => {
+  if (handleOptions(req, res)) return;
+  setCors(res);
+  if (!(await requireAppUser(req, res))) return;
+  const callSid = String((req.body && req.body.callSid) || '').trim();
+  if (!/^CA[0-9a-fA-F]{32}$/.test(callSid)) {
+    res.status(400).json({ error: 'callSid required' });
+    return;
+  }
+  try {
+    const result = await moveLiveCallToCell(req, callSid);
+    console.log(`moveCallToCell ${callSid}: ${JSON.stringify(result)}`);
+    res.json(result);
+  } catch (error) {
+    console.error('moveCallToCell:', error.message);
+    res.status(500).json({ error: 'move failed' });
+  }
+});
+
 exports.dialAction = functions.https.onRequest(voiceDialRuntime, async (req, res) => {
   if (!requireTwilioSignature(req, res)) return;
+  // Шаги звонка через SIM («нажмите 1», «клиент ответил») живут здесь же:
+  // у dialAction есть тёплый экземпляр, а холодный старт в этих местах — это
+  // секунды тишины в трубке у мастера или у клиента.
+  const stage = String((req.query && req.query.stage) || '');
+  if (stage) {
+    await handleCallStage(stage, req, res);
+    return;
+  }
   const callSid = req.body.CallSid;
   const dialStatus = req.body.DialCallStatus || req.body.CallStatus || '';
   const duration = parseInt(req.body.DialCallDuration || req.body.CallDuration, 10) || null;
-  console.log(`dialAction ${callSid} DialCallStatus=${dialStatus}`);
+  const cellLeg = String((req.query && req.query.leg) || '') === 'cell';
+  console.log(`dialAction ${callSid} DialCallStatus=${dialStatus}${cellLeg ? ' leg=cell' : ''}`);
 
   try {
     if (callSid) {
@@ -3145,11 +3384,32 @@ exports.dialAction = functions.https.onRequest(voiceDialRuntime, async (req, res
     const snap = callSid ? await callsRef.doc(callSid).get() : null;
     const data = snap && snap.exists ? snap.data() || {} : {};
     const inbound = data.direction === 'inbound';
+    const callerGone = dialStatus === 'canceled';
+
+    // Звук в приложении не поднялся, и мастер (или само приложение в режиме
+    // «авто») попросил перевести этот звонок на SIM. Сюда попадаем, когда
+    // гудок в приложение закончился раньше, чем сработал перевод через REST.
+    if (inbound && !cellLeg && !callerGone && data.moveToCellRequested === true) {
+      const routing = await getCallRouting();
+      if (routing.cell) {
+        await callsRef.doc(callSid).set({
+          movedToCellAt: data.movedToCellAt || admin.firestore.FieldValue.serverTimestamp(),
+          movedToCellBy: data.movedToCellBy || 'dialAction',
+        }, { merge: true });
+        console.log(`dialAction ${callSid}: moving to master cell`);
+        sendTwiml(res, twimlDialMasterCell(req, data.fromNumber, routing, callSid, CELL_MOVE_RING_SECONDS));
+        return;
+      }
+    }
+
     const declined = data.declineNoAi === true;
     const handoff = data.handoffToAi === true;
-    const missed =
-      dialStatus === 'no-answer' || dialStatus === 'busy' || dialStatus === 'failed';
-    const callerGone = dialStatus === 'canceled';
+    // На SIM звонок считается снятым, даже если трубку взял автоответчик или
+    // мастер не нажал 1. Настоящий ответ — только нажатая 1.
+    const cellAnswered = cellLeg && Boolean(data.cellAcceptedAt);
+    const missed = cellLeg
+      ? !cellAnswered && !callerGone
+      : dialStatus === 'no-answer' || dialStatus === 'busy' || dialStatus === 'failed';
     const aiSettings = inbound && !declined && !callerGone ? await getAiAnswerSettings() : { enabled: false };
     const takeAi =
       inbound &&
@@ -5464,6 +5724,7 @@ async function processIncomingSmsData(docRef, data) {
 exports.onJobWritten = visitSms.onJobWritten;
 exports.sendVisitReminders = visitSms.sendVisitReminders;
 exports.sendOwnerReminders = visitSms.sendOwnerReminders;
+exports.onJobNonCashMonth = require('./noncash_alert').onJobNonCashMonth;
 
 
 // ============================================================================
@@ -5864,6 +6125,59 @@ async function applyInboundEmailToClient(clientId, rawEmail) {
   );
 }
 
+/** «Где работа» заявки — как `Job.workAddress` в приложении. */
+function jobWorkAddress(job) {
+  const site = String((job && job.jobSiteAddress) || '').trim();
+  if (job && job.hasJobSite && site) return site;
+  return String((job && job.clientAddress) || '').trim();
+}
+
+/**
+ * Номер квартиры из SMS дописывается к адресу, который уже есть: в заявке
+ * (её «Где работа»), а если это адрес самого клиента — и в его карточке.
+ */
+async function applyInboundUnit({ clientId, client, existingFull, job, unitLabel }) {
+  const jobUsesSite = Boolean(job && job.hasJobSite && String(job.jobSiteAddress || '').trim());
+  const jobBase = job ? jobWorkAddress(job) : '';
+  const base = jobBase || existingFull;
+  if (!base) return { mode: null, full: '' };
+  const merged = voiceFacts.addressWithUnit(base, unitLabel);
+
+  if (job && job.id && merged !== jobBase) {
+    await jobsRef.doc(job.id).set(
+      {
+        [jobUsesSite ? 'jobSiteAddress' : 'clientAddress']: merged,
+        clientId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+  const ownAddress =
+    !jobUsesSite &&
+    existingFull &&
+    !voiceFacts.addressesLookDifferent(
+      voiceFacts.addressWithUnit(existingFull, ''),
+      voiceFacts.addressWithUnit(base, '')
+    );
+  if (ownAddress) {
+    const locations = Array.isArray(client.locations)
+      ? client.locations.map((loc) => ({ ...(loc || {}) }))
+      : [];
+    if (locations.length) locations[0] = { ...locations[0], unit: unitLabel };
+    await clientsRef.doc(clientId).set(
+      {
+        address: voiceFacts.addressWithUnit(existingFull, unitLabel),
+        ...(locations.length ? { locations } : {}),
+        lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+  console.log(`SMS unit ${unitLabel} added to ${jobUsesSite ? 'job site' : 'address'} for client ${clientId} job ${job && job.id}`);
+  return { mode: jobUsesSite ? 'jobsite' : 'primary', full: merged };
+}
+
 async function applyInboundAddressToClient({ clientId, extracted, job }) {
   if (!clientId || !extractedHasAddress(extracted)) {
     return { mode: null, full: '' };
@@ -5877,9 +6191,17 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
   const nextFull = buildFullAddress(extracted, null);
   if (!nextFull) return { mode: null, full: '' };
 
-  const alreadyHas = clientHasStoredAddress(client);
   const existingFull =
     String(client.address || '').trim() || voiceFacts.clientAddressFrom(client) || '';
+  // «Unit 23» вслед за адресом — это квартира того же дома, а не другое место
+  // работы. Раньше такая SMS становилась «Где работа: Unit 23» (Sue Rathbone,
+  // 25.10.2026), и мастер вписывал адрес в заявку руками.
+  const unitLabel = voiceFacts.unitOnlyAddress(street);
+  if (unitLabel) {
+    return applyInboundUnit({ clientId, client, existingFull, job, unitLabel });
+  }
+
+  const alreadyHas = clientHasStoredAddress(client);
   const different =
     alreadyHas &&
     existingFull &&
@@ -5938,7 +6260,21 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
     return { mode: 'primary', full: nextFull };
   }
 
-  if (!different) return { mode: null, full: nextFull };
+  if (!different) {
+    // Адрес тот же, что в карточке клиента, а в заявке места работы нет —
+    // кладём его и в заявку: «Где работа» читает адрес заявки, не карточки.
+    if (job && job.id && !jobWorkAddress(job)) {
+      await jobsRef.doc(job.id).set(
+        {
+          clientAddress: existingFull.length >= nextFull.length ? existingFull : nextFull,
+          clientId,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+    return { mode: null, full: nextFull };
+  }
 
   const ownerLabel = voiceFacts.stripClientPrefix(
     client.fullName || client.name || '',
@@ -6656,6 +6992,10 @@ exports.completeTerminalPayment = stripeHandlers.completeTerminalPayment;
 exports.stripeWebhook = stripeHandlers.stripeWebhook;
 exports.stripePaymentComplete = stripeHandlers.stripePaymentComplete;
 exports.checkStripePayment = stripeHandlers.checkStripePayment;
+// Care Plan: подписка $10/мес (Stripe Checkout) и ежедневное напоминание о ТО.
+exports.createCarePlanCheckout = stripeHandlers.createCarePlanCheckout;
+exports.syncCarePlanSubscription = stripeHandlers.syncCarePlanSubscription;
+exports.carePlanReminders = require('./care_plan').carePlanReminders;
 exports.estimateConfirm = require('./estimate_confirm').estimateConfirm;
 const shortLinks = require('./short_links');
 exports.shortenLink = shortLinks.shortenLink;

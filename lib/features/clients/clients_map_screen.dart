@@ -51,6 +51,12 @@ class _ClientsMapScreenState extends State<ClientsMapScreen> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _map?.dispose();
+    super.dispose();
+  }
+
   Future<void> _load() async {
     final clients = await ClientService.loadAllOnce();
     if (!mounted) return;

@@ -87,8 +87,16 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
     _emailController = TextEditingController(
       text: data.clientEmail ?? widget.fallbackEmail ?? '',
     );
-    _addressController = TextEditingController(text: data.address ?? '');
-    _unitController = TextEditingController();
+    final peeled = peelUnit(data.address ?? '');
+    final initialUnit = (data.unit ?? '').trim().isNotEmpty
+        ? data.unit!.trim()
+        : peeled.unit;
+    _addressController = TextEditingController(
+      text: (data.unit ?? '').trim().isNotEmpty
+          ? (data.address ?? '')
+          : peeled.street,
+    );
+    _unitController = TextEditingController(text: initialUnit);
     _cityController = TextEditingController(text: data.city ?? '');
     _postalController = TextEditingController(text: data.postalCode ?? '');
     _applianceController = TextEditingController(text: data.applianceType ?? '');
@@ -268,7 +276,11 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         clientPhone: phone,
         clientAddress: fullAddress,
         hasJobSite: _hasJobSite,
-        jobSiteName: _hasJobSite ? _contactNameController.text.trim() : null,
+        // Номер телефона в имя на месте не пишем — оно берётся из карточки.
+        jobSiteName: _hasJobSite &&
+                !Client.isPlaceholderName(_contactNameController.text.trim())
+            ? _contactNameController.text.trim()
+            : null,
         jobSitePhone: _hasJobSite ? _contactPhoneController.text.trim() : null,
         jobSiteAddress: _hasJobSite ? fullAddress : null,
         appliances: [
@@ -513,11 +525,12 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
                           child: Text(
                             _addressController.text.isEmpty && _cityController.text.isEmpty
                                 ? 'Нажмите для поиска адреса...'.tr
-                                : [
+                                : joinAddress(
                                     _addressController.text,
                                     _cityController.text,
                                     _postalController.text,
-                                  ].where((s) => s.isNotEmpty).join(', '),
+                                    _unitController.text,
+                                  ),
                             style: TextStyle(
                               color: _addressController.text.isEmpty &&
                                       _cityController.text.isEmpty

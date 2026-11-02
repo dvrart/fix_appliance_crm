@@ -520,8 +520,9 @@ class SmsService {
     });
   }
 
-  /// Исходящие, которые оператор не доставил. Колокольчик показывает их,
-  /// пока мастер не уберёт: раньше провал был виден только в логах Twilio.
+  /// Исходящие, которые оператор не доставил. Бейдж «Связи» считает их,
+  /// пока мастер не откроет сам диалог: раньше провал был виден только в
+  /// логах Twilio.
   static Stream<List<SmsMessage>> streamFailedOutbound() {
     return _ref
         .where('deliveryFailed', isEqualTo: true)
@@ -1078,9 +1079,33 @@ class SmsService {
               normalizeEmail(to) == emailKey);
       if (clientMatch || phoneMatch || emailMatch) {
         // `emailBellPending` гасится здесь же: иначе прочитанное письмо
-        // уходило из переписки, но продолжало висеть в колокольчике и
-        // держать его счётчик — два независимых «прочитано» на один факт.
+        // уходило из переписки, но продолжало висеть в уведомлениях и
+        // держать счётчик — два независимых «прочитано» на один факт.
         batch.update(doc.reference, {'read': true, 'emailBellPending': false});
+        hasUpdates = true;
+      }
+    }
+    // Недоставленные исходящие гасятся вместе с открытием диалога: мастер
+    // видит «Не доставлено» в самой переписке, отдельного уведомления
+    // про провал (бейдж «Связи») после этого уже не стоит.
+    final failedSnapshot = await _ref
+        .where('deliveryFailed', isEqualTo: true)
+        .get();
+    for (final doc in failedSnapshot.docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      if (data['failureDismissed'] == true) continue;
+      final to = (data['to'] ?? '').toString();
+      final toEmail = (data['toEmail'] ?? '').toString();
+      final docClientId = (data['clientId'] ?? '').toString();
+      final clientMatch =
+          clientId != null && clientId.isNotEmpty && docClientId == clientId;
+      final phoneMatch =
+          normalized.length >= 10 && normalizePhone(to) == normalized;
+      final emailMatch = emailKey.contains('@') &&
+          (normalizeEmail(toEmail) == emailKey ||
+              normalizeEmail(to) == emailKey);
+      if (clientMatch || phoneMatch || emailMatch) {
+        batch.update(doc.reference, {'failureDismissed': true});
         hasUpdates = true;
       }
     }

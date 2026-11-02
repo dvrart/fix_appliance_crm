@@ -27,6 +27,7 @@ class _CompanySettingsPageState extends State<CompanySettingsPage> {
   String _phone = '';
   String _email = '';
   String _address = '';
+  String _technician = '';
   String _logoUrl = '';
   File? _pendingLogo;
 
@@ -38,6 +39,7 @@ class _CompanySettingsPageState extends State<CompanySettingsPage> {
         _phone != saved.companyPhone ||
         _email != saved.companyEmail ||
         _address != saved.companyAddress ||
+        _technician != saved.technicianName ||
         _logoUrl != saved.logoUrl;
   }
 
@@ -56,6 +58,7 @@ class _CompanySettingsPageState extends State<CompanySettingsPage> {
       _phone = docs.companyPhone;
       _email = docs.companyEmail;
       _address = docs.companyAddress;
+      _technician = docs.technicianName;
       _logoUrl = docs.logoUrl;
       _pendingLogo = null;
       _loading = false;
@@ -96,6 +99,18 @@ class _CompanySettingsPageState extends State<CompanySettingsPage> {
     );
     if (next == null || !mounted) return;
     setState(() => _address = next);
+  }
+
+  Future<void> _editTechnician() async {
+    final next = await showSettingsTextDialog(
+      context: context,
+      title: 'Имя мастера'.tr,
+      label: 'Как подписывать работы в паспорте техники'.tr,
+      initialValue: _technician,
+      capitalization: TextCapitalization.words,
+    );
+    if (next == null || !mounted) return;
+    setState(() => _technician = next.trim());
   }
 
   Future<void> _changeLogo() async {
@@ -145,6 +160,7 @@ class _CompanySettingsPageState extends State<CompanySettingsPage> {
       companyPhone: _phone.trim(),
       companyEmail: _email.trim(),
       companyAddress: _address.trim(),
+      technicianName: _technician.trim(),
       logoUrl: logoUrl,
     );
     await SettingsService.saveDocumentSettings(next);
@@ -155,6 +171,7 @@ class _CompanySettingsPageState extends State<CompanySettingsPage> {
       _phone = next.companyPhone;
       _email = next.companyEmail;
       _address = next.companyAddress;
+      _technician = next.technicianName;
       _logoUrl = next.logoUrl;
       _pendingLogo = null;
       _uploading = false;
@@ -234,6 +251,13 @@ class _CompanySettingsPageState extends State<CompanySettingsPage> {
                       icon: Icons.email_outlined,
                       color: Colors.indigo,
                       onTap: _editEmail,
+                    ),
+                    SettingsHubTile(
+                      title: 'Имя мастера'.tr,
+                      subtitle: _technician.isEmpty ? 'Не указано'.tr : _technician,
+                      icon: Icons.person_outline,
+                      color: Colors.green,
+                      onTap: _editTechnician,
                     ),
                     SettingsHubTile(
                       title: 'Адрес'.tr,

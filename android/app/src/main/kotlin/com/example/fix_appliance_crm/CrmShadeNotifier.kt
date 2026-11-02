@@ -60,6 +60,11 @@ object CrmShadeNotifier {
     @JvmStatic
     @Synchronized
     fun show(context: Context, data: Map<String, String>): Boolean {
+        // «Клиент на линии» у звонка через SIM: только вибрация, без шторки.
+        if (data["type"] == "call_connected") {
+            CallConnectedBuzz.vibrate(context)
+            return true
+        }
         val app = context.applicationContext
         val manager = NotificationManagerCompat.from(app)
         if (!manager.areNotificationsEnabled()) return true

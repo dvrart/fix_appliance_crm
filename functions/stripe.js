@@ -529,8 +529,10 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
 
       for (const item of totals.items) {
         const qty = Number(item.qty) || 1;
-        const unit = toCents(item.price);
-        if (unit <= 0 || qty <= 0) continue;
+        // Со знаком: строка «Labour discount» (скидка на работу) отрицательная,
+        // и без неё счёт Stripe вышел бы больше, чем в CRM.
+        const unit = Math.round((Number(item.price) || 0) * 100);
+        if (unit === 0 || qty <= 0) continue;
         await stripe.invoiceItems.create({
           customer: customer.id,
           invoice: invoice.id,
@@ -1005,6 +1007,8 @@ function isCompletedJobStatus(status) {
 }
 
 const DEPOSIT_JOB_STATUS = 'Депозит';
+// Id статуса «Готово» в приложении (`JobStatuses.completed`).
+const COMPLETED_JOB_STATUS = 'Завершено';
 
 function isCancelledJobStatus(status) {
   const n = String(status || '').trim().toLowerCase();
@@ -1222,6 +1226,7 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
   let recorded = false;
   let duplicate = false;
   let shouldSuggestComplete = false;
+  let autoCompleted = false;
   let isDeposit = false;
   let clientName = '';
 
@@ -1278,6 +1283,16 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
       updates.suggestComplete = true;
       updates.suggestCompleteAt = admin.firestore.FieldValue.serverTimestamp();
       shouldSuggestComplete = true;
+      // Счёт оплачен целиком → «Готово» сразу (просьба FIX 24.10.2026), как
+      // делает приложение при оплате наличными. Отменённую заявку не поднимаем.
+      if (!isCancelledJobStatus(job.status)) {
+        updates.status = COMPLETED_JOB_STATUS;
+        updates.completedAt = admin.firestore.FieldValue.serverTimestamp();
+        updates.needsReview = false;
+        const visits = markJobVisitsDone(job);
+        if (visits) updates.visits = visits;
+        autoCompleted = true;
+      }
     } else if (isInvoiceDepositTaken(doc) && shouldMarkDepositStatus(job.status)) {
       updates.status = DEPOSIT_JOB_STATUS;
       isDeposit = true;
@@ -1294,7 +1309,7 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
       if (shouldSuggestComplete) {
         await notifyMaster(
           `Счёт оплачен: $${dollars}`,
-          `Счёт полностью оплачен${clientName ? ` (${clientName})` : ''}. Пометить заявку как завершённую?`,
+          `Счёт полностью оплачен${clientName ? ` (${clientName})` : ''}.${autoCompleted ? ' Заявка переведена в «Готово».' : ' Пометить заявку как завершённую?'}`,
           { type: 'job', jobId }
         );
       } else if (isDeposit) {
@@ -1318,6 +1333,10 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
 }
 
 async function handleCheckoutCompleted(session) {
+  // Подписка Care Plan — своя ветка: это не счёт заявки.
+  if (session && (session.metadata || {}).kind === CARE_PLAN_KIND) {
+    return handleCarePlanCheckoutCompleted(session);
+  }
   if (!sessionIsPaid(session)) return false;
   const metadata = session.metadata || {};
   const jobId = metadata.jobId || session.client_reference_id;
@@ -1586,6 +1605,364 @@ async function handleInvoicePaid(invoice) {
   });
 }
 
+// ============================================================================
+// Care Plan: подписка $10/мес (+HST) через Stripe Checkout (mode=subscription)
+// ============================================================================
+//
+// Ссылку создаёт мастер в карточке клиента (QR на экране или SMS по нажатию).
+// Оплата первого месяца → план «active». Дальше Stripe списывает сам, а
+// вебхук ведёт статус: invoice.paid / invoice.payment_failed /
+// customer.subscription.updated|deleted. Эти события должны быть включены у
+// вебхука в кабинете Stripe. Если вебхук не дошёл — `syncCarePlanSubscription`
+// сверяет подписку напрямую.
+
+const CARE_PLAN_KIND = 'care_plan';
+const carePlansRef = db.collection('companies').doc(COMPANY_ID).collection('care_plans');
+const configDocRef = db.collection('companies').doc(COMPANY_ID).collection('settings').doc('config');
+const PLAN_STATUS_FROM_STRIPE = {
+  active: 'active',
+  trialing: 'active',
+  past_due: 'past_due',
+  unpaid: 'past_due',
+  canceled: 'cancelled',
+  incomplete_expired: 'cancelled',
+  incomplete: 'pending',
+  paused: 'paused',
+};
+
+/** Как `SettingsService.readDefaultTaxRate` в приложении. */
+function carePlanTaxRate(config) {
+  const tax = String((config && config.defaultTax) || '');
+  if (tax === 'gst') return 0.05;
+  if (tax === 'none') return 0;
+  if (tax !== 'hst' && config && config.applyHST === false) return 0;
+  return 0.13;
+}
+
+function carePlanAmounts(plan, config) {
+  const price = Number(plan.monthlyPrice) > 0
+    ? Number(plan.monthlyPrice)
+    : Number(config.carePlanPrice) > 0 ? Number(config.carePlanPrice) : 10;
+  const rate = carePlanTaxRate(config);
+  const priceCents = toCents(price);
+  const taxCents = Math.round(priceCents * rate);
+  return { priceCents, taxCents, rate, totalCents: priceCents + taxCents };
+}
+
+function idOf(value) {
+  if (!value) return '';
+  return typeof value === 'string' ? value : String(value.id || '');
+}
+
+/** У счёта подписки id и метаданные лежат по-разному в разных версиях API. */
+function invoiceSubscriptionId(invoice) {
+  return idOf(invoice.subscription) ||
+    idOf(invoice.parent && invoice.parent.subscription_details && invoice.parent.subscription_details.subscription) ||
+    idOf(invoice.subscription_details && invoice.subscription_details.subscription);
+}
+
+function invoiceSubscriptionMeta(invoice) {
+  return (invoice.parent && invoice.parent.subscription_details && invoice.parent.subscription_details.metadata) ||
+    (invoice.subscription_details && invoice.subscription_details.metadata) ||
+    invoice.metadata ||
+    {};
+}
+
+async function findCarePlan({ planId, subscriptionId } = {}) {
+  if (planId) {
+    const snap = await carePlansRef.doc(String(planId)).get();
+    if (snap.exists) return { ref: snap.ref || carePlansRef.doc(String(planId)), id: String(planId), data: snap.data() || {} };
+  }
+  if (subscriptionId) {
+    const snap = await carePlansRef.where('stripe.subscriptionId', '==', subscriptionId).limit(1).get();
+    const doc = (snap.docs || []).find((d) => ((d.data() || {}).stripe || {}).subscriptionId === subscriptionId);
+    if (doc) return { ref: doc.ref, id: doc.id, data: doc.data() || {} };
+  }
+  return null;
+}
+
+function planName(plan) {
+  return String(plan.clientName || '').trim() || 'Клиент';
+}
+
+async function handleCarePlanCheckoutCompleted(session) {
+  const metadata = session.metadata || {};
+  if (metadata.kind !== CARE_PLAN_KIND) return false;
+  const found = await findCarePlan({ planId: metadata.carePlanId || session.client_reference_id });
+  if (!found) return true;
+  const complete = session.status === 'complete' || sessionIsPaid(session);
+  if (!complete || !sessionIsPaid(session)) return true;
+  const plan = found.data;
+  const stripeInfo = plan.stripe || {};
+  const wasActive = plan.status === 'active' && stripeInfo.subscriptionId;
+  const amount = fromCents(session.amount_total);
+  await found.ref.set({
+    status: plan.status === 'cancelled' ? 'cancelled' : 'active',
+    stripe: {
+      subscriptionId: idOf(session.subscription) || stripeInfo.subscriptionId || '',
+      customerId: idOf(session.customer) || stripeInfo.customerId || '',
+      status: 'active',
+      activatedAt: stripeInfo.activatedAt || new Date().toISOString(),
+      lastPaymentAt: new Date().toISOString(),
+      lastPaymentAmount: amount,
+    },
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  if (!wasActive) {
+    await notifyMaster(
+      'Care Plan оплачен',
+      `${planName(plan)}: подписка $${amount.toFixed(2)}/мес активна.`,
+      { type: 'care_plan', clientId: plan.clientId || '', planId: found.id, eventId: `care_plan:${found.id}:activated` }
+    );
+  }
+  return true;
+}
+
+/** Ежемесячный счёт подписки: оплачен ([paid]) или не прошёл. */
+async function handleCarePlanInvoice(invoice, paid) {
+  const metadata = invoiceSubscriptionMeta(invoice);
+  const subscriptionId = invoiceSubscriptionId(invoice);
+  const ours = metadata.kind === CARE_PLAN_KIND;
+  if (!ours && !subscriptionId) return false;
+  const found = await findCarePlan({ planId: metadata.carePlanId, subscriptionId });
+  if (!found) return ours;
+  const plan = found.data;
+  const stripeInfo = plan.stripe || {};
+  if (paid) {
+    if (stripeInfo.lastInvoiceId === invoice.id) return true;
+    await found.ref.set({
+      ...(['past_due', 'pending'].includes(plan.status) ? { status: 'active' } : {}),
+      stripe: {
+        ...(subscriptionId ? { subscriptionId } : {}),
+        status: 'active',
+        lastPaymentAt: new Date().toISOString(),
+        lastPaymentAmount: fromCents(invoice.amount_paid),
+        lastInvoiceId: invoice.id || '',
+      },
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return true;
+  }
+  if (stripeInfo.failedInvoiceId === invoice.id) return true;
+  await found.ref.set({
+    ...(plan.status !== 'cancelled' ? { status: 'past_due' } : {}),
+    stripe: {
+      status: 'past_due',
+      failedAt: new Date().toISOString(),
+      failedInvoiceId: invoice.id || '',
+    },
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  const amount = fromCents(invoice.amount_due || invoice.total || 0);
+  await notifyMaster(
+    'Care Plan: платёж не прошёл',
+    `${planName(plan)}: банк отклонил ежемесячный платёж${amount > 0 ? ` $${amount.toFixed(2)}` : ''}. Stripe попробует ещё раз; можно отправить ссылку на новую карту.`,
+    { type: 'care_plan', clientId: plan.clientId || '', planId: found.id, eventId: `care_plan:${found.id}:failed:${invoice.id || ''}` }
+  );
+  return true;
+}
+
+/** Изменилась или удалена подписка: статус плана — по Stripe. */
+async function handleCarePlanSubscription(subscription, deleted) {
+  const metadata = subscription.metadata || {};
+  const found = await findCarePlan({ planId: metadata.carePlanId, subscriptionId: subscription.id });
+  if (!found) return metadata.kind === CARE_PLAN_KIND;
+  const plan = found.data;
+  const mapped = deleted ? 'cancelled' : PLAN_STATUS_FROM_STRIPE[subscription.status] || '';
+  const periodEnd = subscription.current_period_end ||
+    (subscription.items && subscription.items.data && subscription.items.data[0] && subscription.items.data[0].current_period_end) ||
+    null;
+  const updates = {
+    stripe: {
+      subscriptionId: subscription.id,
+      status: deleted ? 'canceled' : String(subscription.status || ''),
+      cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
+      ...(periodEnd ? { currentPeriodEnd: new Date(periodEnd * 1000).toISOString() } : {}),
+    },
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  const cancelledNow = mapped === 'cancelled' && plan.status !== 'cancelled';
+  if (cancelledNow) {
+    updates.status = 'cancelled';
+    updates.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+    updates.cancelReason = 'stripe';
+  } else if (mapped && mapped !== 'cancelled' && !['paused', 'cancelled'].includes(plan.status)) {
+    updates.status = mapped;
+  }
+  await found.ref.set(updates, { merge: true });
+  if (cancelledNow) {
+    await notifyMaster(
+      'Care Plan отменён',
+      `${planName(plan)}: подписка в Stripe отменена. Проверьте минимальный срок по договору.`,
+      { type: 'care_plan', clientId: plan.clientId || '', planId: found.id, eventId: `care_plan:${found.id}:cancelled` }
+    );
+  }
+  return true;
+}
+
+exports.createCarePlanCheckout = functions.https.onRequest(async (req, res) => {
+  if (handleOptions(req, res)) return;
+  setCors(res);
+  if (!(await requireAppUser(req, res))) return;
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'POST only' });
+    return;
+  }
+  if (requireStripe(res)) return;
+  const stripe = getStripe();
+  const { planId, sendSms = false, to } = req.body || {};
+  if (!planId) {
+    res.status(400).json({ error: 'Нужен planId' });
+    return;
+  }
+  try {
+    const found = await findCarePlan({ planId });
+    if (!found) {
+      res.status(404).json({ error: 'План не найден' });
+      return;
+    }
+    const plan = found.data;
+    if (plan.status === 'cancelled') {
+      res.status(400).json({ error: 'План отменён' });
+      return;
+    }
+    const configSnap = await configDocRef.get();
+    const amounts = carePlanAmounts(plan, configSnap.exists ? configSnap.data() || {} : {});
+    const stripeInfo = plan.stripe || {};
+    let url = '';
+    let sessionId = '';
+    // Открытую ссылку не плодим: та же, что уже на экране или в SMS.
+    if (stripeInfo.checkoutSessionId && stripeInfo.monthlyTotalCents === amounts.totalCents) {
+      try {
+        const open = await stripe.checkout.sessions.retrieve(stripeInfo.checkoutSessionId);
+        if (open && open.status === 'open' && open.url) {
+          url = open.url;
+          sessionId = open.id;
+        }
+      } catch (error) {
+        console.warn('care plan checkout reuse:', error.message);
+      }
+    }
+    if (!url) {
+      const customer = await getOrCreateStripeCustomer({
+        clientId: plan.clientId || '',
+        name: plan.clientName || '',
+        phone: to || (Array.isArray(plan.phones) ? plan.phones[0] : '') || '',
+      });
+      const metadata = {
+        kind: CARE_PLAN_KIND,
+        carePlanId: found.id,
+        clientId: plan.clientId || '',
+        companyId: COMPANY_ID,
+      };
+      const lineItems = [{
+        quantity: 1,
+        price_data: {
+          currency: CURRENCY,
+          unit_amount: amounts.priceCents,
+          recurring: { interval: 'month' },
+          product_data: { name: 'FIX Care Plan', description: 'Appliance maintenance plan, billed monthly' },
+        },
+      }];
+      if (amounts.taxCents > 0) {
+        lineItems.push({
+          quantity: 1,
+          price_data: {
+            currency: CURRENCY,
+            unit_amount: amounts.taxCents,
+            recurring: { interval: 'month' },
+            product_data: { name: `HST ${Math.round(amounts.rate * 100)}%` },
+          },
+        });
+      }
+      const base = publicBaseUrl(req);
+      const session = await stripe.checkout.sessions.create({
+        mode: 'subscription',
+        customer: customer.id,
+        client_reference_id: found.id,
+        metadata,
+        subscription_data: {
+          metadata,
+          description: `FIX Care Plan${plan.contractNumber ? ` #${plan.contractNumber}` : ''}`,
+        },
+        locale: 'en',
+        success_url: `${base}/stripePaymentComplete?status=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${base}/stripePaymentComplete?status=cancel&session_id={CHECKOUT_SESSION_ID}`,
+        line_items: lineItems,
+      });
+      url = session.url;
+      sessionId = session.id;
+      await found.ref.set({
+        stripe: {
+          customerId: customer.id,
+          checkoutSessionId: session.id,
+          checkoutUrl: session.url,
+          checkoutCreatedAt: new Date().toISOString(),
+          monthlyTotalCents: amounts.totalCents,
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+    if (!url) {
+      res.status(500).json({ error: 'Stripe не вернул ссылку' });
+      return;
+    }
+    const monthlyTotal = fromCents(amounts.totalCents);
+    let sms = { sent: false };
+    if (sendSms) {
+      sms = await sendPaymentSms({
+        to: to || (Array.isArray(plan.phones) ? plan.phones[0] : ''),
+        body: `Thank you for choosing FIX-Appliance CA.\n\nTo start your Care Plan ($${monthlyTotal.toFixed(2)}/month incl. tax), open this secure page and add your card:\n${url}`,
+        clientId: plan.clientId,
+      });
+    }
+    res.json({
+      success: true,
+      url,
+      checkoutSessionId: sessionId,
+      monthlyTotal,
+      smsSent: sms.sent === true,
+      smsError: sms.sent ? null : sms.reason || null,
+    });
+  } catch (error) {
+    console.error('createCarePlanCheckout error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+exports.syncCarePlanSubscription = functions.https.onRequest(async (req, res) => {
+  if (handleOptions(req, res)) return;
+  setCors(res);
+  if (!(await requireAppUser(req, res))) return;
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'POST only' });
+    return;
+  }
+  if (requireStripe(res)) return;
+  const stripe = getStripe();
+  const { planId } = req.body || {};
+  try {
+    const found = await findCarePlan({ planId });
+    if (!found) {
+      res.status(404).json({ error: 'План не найден' });
+      return;
+    }
+    const stripeInfo = found.data.stripe || {};
+    if (stripeInfo.subscriptionId) {
+      const subscription = await stripe.subscriptions.retrieve(stripeInfo.subscriptionId);
+      await handleCarePlanSubscription(subscription, subscription.status === 'canceled');
+    } else if (stripeInfo.checkoutSessionId) {
+      const session = await stripe.checkout.sessions.retrieve(stripeInfo.checkoutSessionId);
+      await handleCarePlanCheckoutCompleted(session);
+    }
+    const fresh = await carePlansRef.doc(found.id).get();
+    res.json({ success: true, status: (fresh.data() || {}).status || found.data.status || '' });
+  } catch (error) {
+    console.error('syncCarePlanSubscription error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
   if (req.method !== 'POST') {
     res.status(405).send('Method Not Allowed');
@@ -1619,7 +1996,19 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
         break;
       }
       case 'invoice.paid':
+        // Счёт подписки Care Plan — не счёт заявки.
+        if (await handleCarePlanInvoice(event.data.object, true)) break;
         await handleInvoicePaid(event.data.object);
+        break;
+      case 'invoice.payment_failed':
+        await handleCarePlanInvoice(event.data.object, false);
+        break;
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated':
+        await handleCarePlanSubscription(event.data.object, false);
+        break;
+      case 'customer.subscription.deleted':
+        await handleCarePlanSubscription(event.data.object, true);
         break;
       case 'payment_intent.succeeded':
         await handlePaymentIntentSucceeded(event.data.object);

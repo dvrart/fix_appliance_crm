@@ -20,7 +20,7 @@ class Contact {
     final phone = (map['phone'] ?? '').toString();
     return Contact(
       id: docId ?? map['id'] ?? '',
-      name: SmsText.stripClientWord((map['name'] ?? '').toString(), phone),
+      name: SmsText.stripClientWord((map['name'] ?? '').toString()),
       phone: phone,
       role: map['role'] ?? 'owner',
       isPrimary: map['isPrimary'] ?? false,

@@ -269,6 +269,59 @@ test('an SMS fills the client card with the name and address it carries', async 
   assert.equal(store.get(path).extractedData.client_name, 'John Smith');
 });
 
+async function receiveSms(id, body, extracted) {
+  geminiReply = JSON.stringify({ relevant: false, ...extracted });
+  const path = `${COMPANY}/messages/${id}`;
+  store.set(path, {
+    from: '+19054837515', to: '+14165550102', body,
+    direction: 'inbound', status: 'received', channel: 'sms', processingVersion: 2,
+    smsProcessingRequestId: id, twilioMedia: [], read: false,
+  });
+  await api.processIncomingSms({ data: { before: { exists: false }, after: snapshot(path) } });
+}
+
+test('an address and then «Unit 23» by SMS land in the job «Где работа», not as a second job site', async () => {
+  // Sue Rathbone, 25.10.2026: заявка с сайта без адреса, адрес пришёл SMS,
+  // следом «Unit 23». Карточка клиента адрес получила, а «Где работа» в
+  // заявке стала «Unit 23», и мастер вписывал адрес руками.
+  store.set(`${COMPANY}/clients/sue`, { fullName: 'Sue Rathbone', phone: '9054837515' });
+  store.set(`${COMPANY}/jobs/site-job`, {
+    clientId: 'sue', clientName: 'Sue Rathbone', clientPhone: '9054837515', clientAddress: '',
+    status: 'Вызов', source: 'website', createdAt: new Date(),
+  });
+
+  await receiveSms('sms-address', '190 Argyle Street, Simcoe', { address: '190 Argyle Street', city: 'Simcoe' });
+  assert.equal(store.get(`${COMPANY}/jobs/site-job`).clientAddress, '190 Argyle Street, Simcoe');
+
+  await receiveSms('sms-unit', 'Unit 23', { address: 'Unit 23' });
+  const job = store.get(`${COMPANY}/jobs/site-job`);
+  assert.equal(job.clientAddress, '190 Argyle Street, Unit 23, Simcoe');
+  assert.ok(!job.hasJobSite);
+  assert.ok(!job.jobSiteAddress);
+  const client = store.get(`${COMPANY}/clients/sue`);
+  assert.equal(client.address, '190 Argyle Street, Unit 23, Simcoe');
+  assert.equal(client.locations.length, 1);
+  assert.equal(client.locations[0].unit, 'Unit 23');
+  assert.equal(client.locations[0].street, '190 Argyle Street');
+});
+
+test('the address already on the client card still fills an empty job «Где работа»', async () => {
+  store.set(`${COMPANY}/clients/sue`, {
+    fullName: 'Sue Rathbone', phone: '9054837515', address: '12 King Street, Brantford, N3T 5L4',
+    locations: [{ id: 'primary', street: '12 King Street', city: 'Brantford', postalCode: 'N3T 5L4' }],
+  });
+  store.set(`${COMPANY}/jobs/site-job`, {
+    clientId: 'sue', clientName: 'Sue Rathbone', clientPhone: '9054837515', clientAddress: '',
+    status: 'Вызов', source: 'website', createdAt: new Date(),
+  });
+
+  await receiveSms('sms-same', '12 King St, Brantford', { address: '12 King Street', city: 'Brantford' });
+  const job = store.get(`${COMPANY}/jobs/site-job`);
+  assert.equal(job.clientAddress, '12 King Street, Brantford, N3T 5L4');
+  assert.ok(!job.hasJobSite);
+  assert.equal(store.get(`${COMPANY}/clients/sue`).locations.length, 1);
+});
+
 test('an out-of-order Twilio callback cannot downgrade the delivery tick', async () => {
   // Галочка в переписке читается из status, а колбэки Twilio приходят не по
   // порядку: «sent» после «delivered» — обычное дело.

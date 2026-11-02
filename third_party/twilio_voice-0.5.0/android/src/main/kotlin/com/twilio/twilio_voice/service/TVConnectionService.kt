@@ -259,8 +259,9 @@ class TVConnectionService : ConnectionService() {
         }
 
         fun getIncomingCallHandle(): String? {
-            if (!hasActiveCalls()) return null
+            if (!hasActiveCalls() && pendingCallInvites.isEmpty()) return null
             return activeConnections.entries.firstOrNull { it.value.state == Connection.STATE_RINGING }?.key
+                ?: pendingCallInvites.keys.firstOrNull()
         }
 
         fun getConnection(callSid: String): TVCallConnection? {
@@ -342,24 +343,27 @@ class TVConnectionService : ConnectionService() {
                 }
 
                 ACTION_INCOMING_CALL -> {
-                    tryStartForegroundService()
+                    fun abortIncoming() {
+                        tryStartForegroundService()
+                        onConnectionEnded(null)
+                    }
 
                     // Load CallInvite class loader & get callInvite
                     val callInvite = it.getParcelableExtraSafe<CallInvite>(EXTRA_INCOMING_CALL_INVITE) ?: run {
                         Log.e(TAG, "onStartCommand: 'ACTION_INCOMING_CALL' is missing parcelable 'EXTRA_INCOMING_CALL_INVITE'")
-                        onConnectionEnded(null)
+                        abortIncoming()
                         return@let
                     }
 
                     if (hasCallHandle(callInvite.callSid)) {
-                        onConnectionEnded(null)
+                        abortIncoming()
                         return@let
                     }
                     val telecomManager = getSystemService(TELECOM_SERVICE) as TelecomManager
                     if (!telecomManager.canReadPhoneState(applicationContext)) {
                         Log.e(TAG, "onCallInvite: Permission to read phone state not granted or requested.")
                         callInvite.reject(applicationContext)
-                        onConnectionEnded(null)
+                        abortIncoming()
                         return@let
                     }
 
@@ -367,12 +371,12 @@ class TVConnectionService : ConnectionService() {
                     val phoneAccount = telecomManager.getPhoneAccount(phoneAccountHandle)
                     if(phoneAccount == null) {
                         Log.e(TAG, "onStartCommand: PhoneAccount is null, make sure to register one with `registerPhoneAccount()`")
-                        onConnectionEnded(null)
+                        abortIncoming()
                         return@let
                     }
                     if(!phoneAccount.isEnabled) {
                         Log.e(TAG, "onStartCommand: PhoneAccount is not enabled, prompt the user to enable the phone account by opening settings with `openPhoneAccountSettings()`")
-                        onConnectionEnded(null)
+                        abortIncoming()
                         return@let
                     }
 
@@ -386,11 +390,16 @@ class TVConnectionService : ConnectionService() {
                                     "- Have you activated the Calling Account?"
                         )
                         callInvite.reject(applicationContext)
-                        onConnectionEnded(null)
+                        abortIncoming()
                         return@let
                     }
 
                     pendingCallInvites[callInvite.callSid] = callInvite
+                    val caller = TVCallInviteParametersImpl(StorageImpl(applicationContext), callInvite)
+                        .from
+                        .ifBlank { "Клиент" }
+                    IncomingCallNotifier.show(applicationContext, caller, callInvite.callSid)
+                    tryStartForegroundService()
                     val myBundle: Bundle = Bundle().apply {
                         putString(EXTRA_INCOMING_CALL_SID, callInvite.callSid)
                     }
@@ -677,10 +686,11 @@ class TVConnectionService : ConnectionService() {
         attachCallEventListeners(connection, ci.callSid)
         applyParameters(connection, callParams)
         connection.setRinging()
-        // Звук входящего: у self-managed звонка система рингтон не играет, а
-        // onShowIncomingCallUi приходит не на всех прошивках. Здесь он точно
-        // прозвучит, как только Telecom создал входящий.
-        IncomingCallNotifier.startRinging(applicationContext, callSid)
+        // Звук и полный экран входящего: у self-managed звонка система
+        // телефонный UI и рингтон не поднимает, а onShowIncomingCallUi
+        // приходит не на всех прошивках.
+        val caller = callParams.from.ifBlank { "Клиент" }
+        IncomingCallNotifier.show(applicationContext, caller, callSid)
 
         tryStartForegroundService()
         return connection

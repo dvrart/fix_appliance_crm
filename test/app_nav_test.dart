@@ -1,8 +1,10 @@
 import 'package:fix_appliance_crm/core/app_commands.dart';
+import 'package:fix_appliance_crm/features/calls/call_screen.dart';
 import 'package:fix_appliance_crm/features/jobs/active_jobs_screen.dart';
 import 'package:fix_appliance_crm/models/job.dart';
 import 'package:fix_appliance_crm/services/sms_service.dart';
 import 'package:fix_appliance_crm/services/status_service.dart';
+import 'package:fix_appliance_crm/services/twilio_service.dart';
 import 'package:fix_appliance_crm/shared/app_nav.dart';
 import 'package:fix_appliance_crm/shared/unsaved_navigation_gate.dart';
 import 'package:fix_appliance_crm/shared/widgets/appliance_picture.dart';
@@ -135,6 +137,73 @@ void main() {
     AppNav.resetToRoot(nav.currentState!);
     await tester.pumpAndSettle();
 
+    expect(find.text('job a'), findsOneWidget);
+  });
+
+  // Панели (левое меню, шторка «Все визиты», колокольчик, поиск) в стеке
+  // маршрутов не лежат: вернуть их может только `PanelReturn`.
+  Future<void> openFromPanel(
+    WidgetTester tester,
+    VoidCallback back, {
+    String title = 'screen',
+  }) async {
+    PanelReturn.open<void>(
+      nav.currentState!,
+      push: () => nav.currentState!.push(
+        MaterialPageRoute<void>(builder: (_) => Text(title)),
+      ),
+      back: back,
+    );
+    await tester.pumpAndSettle();
+  }
+
+  // Возврат отложен на 140 мс после закрытия экрана.
+  Future<void> settleReturn(WidgetTester tester) async {
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 200));
+  }
+
+  testWidgets('«Назад» с открытого экрана возвращает панель', (tester) async {
+    await boot(tester);
+    var returned = 0;
+    await openFromPanel(tester, () => returned++);
+    expect(find.text('screen'), findsOneWidget);
+
+    nav.currentState!.pop();
+    await settleReturn(tester);
+
+    expect(returned, 1);
+    expect(find.text('home'), findsOneWidget);
+  });
+
+  testWidgets('отменённый возврат панель не открывает', (tester) async {
+    await boot(tester);
+    var returned = 0;
+    await openFromPanel(tester, () => returned++);
+
+    // Смена вкладки или выход на главную: пользователь уже не там, откуда
+    // открывал панель.
+    PanelReturn.cancel();
+    nav.currentState!.pop();
+    await settleReturn(tester);
+
+    expect(returned, 0);
+  });
+
+  testWidgets('экран, снятый из середины стека, панель не возвращает', (
+    tester,
+  ) async {
+    await boot(tester);
+    var returned = 0;
+    await openFromPanel(tester, () => returned++);
+    await openJob(tester, 'a');
+
+    // Так карточку снимает лимит стека: её future завершается, но вернулись
+    // не на страницу под панелью, а в чужой экран.
+    nav.currentState!.removeRoute(AppNav.pagesOf(nav.currentState!)[1]);
+    await settleReturn(tester);
+
+    expect(returned, 0);
     expect(find.text('job a'), findsOneWidget);
   });
 
@@ -340,6 +409,54 @@ void main() {
 
       expect(find.text('inner-screen'), findsOneWidget);
       expect(find.text('bottom-dock'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'экран входящего звонка открывается на весь экран поверх нижней панели',
+    (tester) async {
+      final tabNav = GlobalKey<NavigatorState>();
+      AppNav.bindTabNavigator(() => tabNav.currentState);
+      final prevStatus = TwilioService.callStatus;
+      TwilioService.callStatus = 'ringing';
+      addTearDown(() {
+        AppNav.bindTabNavigator(null);
+        TwilioService.callStatus = prevStatus;
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: rootNavigatorKey,
+          navigatorObservers: [AppNav.rootObserver],
+          home: Column(
+            children: [
+              Expanded(
+                child: Navigator(
+                  key: tabNav,
+                  observers: [AppNavObserver()],
+                  onGenerateRoute: (_) =>
+                      MaterialPageRoute(builder: (_) => const Text('tab-root')),
+                ),
+              ),
+              const Text('bottom-dock'),
+            ],
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      CallScreen.open<void>(
+        rootNavigatorKey.currentContext!,
+        phoneNumber: '+1 (416) 555-0199',
+        contactName: 'Amelia',
+        isIncoming: true,
+        resumeExisting: true,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(CallScreen), findsOneWidget);
+      expect(find.text('Amelia'), findsOneWidget);
+      expect(find.text('bottom-dock'), findsNothing);
     },
   );
 }

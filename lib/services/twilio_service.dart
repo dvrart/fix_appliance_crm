@@ -5,10 +5,12 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:twilio_voice/twilio_voice.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/app_commands.dart';
 import '../core/api_keys.dart';
+import 'call_routing.dart';
 import 'firestore_service.dart';
 import 'auth_service.dart';
 import 'network_status_service.dart';
@@ -230,7 +232,10 @@ class TwilioService {
       StreamController<CallEvent>.broadcast();
   static Stream<CallEvent> get callEventStream => _callEventController.stream;
 
-  /// Упрощённый текстовый статус для UI: calling / ringing / connected / ended / failed.
+  /// Упрощённый текстовый статус для UI: connecting / calling / ringing /
+  /// answering (нажал «Ответить», звук ещё не поднялся) / connected (звук
+  /// есть) / reconnecting / audioFailed / movingToCell / movedToCell /
+  /// cell (звоним через SIM) / ended / failed.
   static final StreamController<String> _callStatusController =
       StreamController<String>.broadcast();
   static Stream<String> get callStatusStream => _callStatusController.stream;
@@ -245,6 +250,32 @@ class TwilioService {
   /// Заявка, с которой мастер набрал номер — ИИ кладёт запись в эту карточку.
   static String? pendingJobId;
 
+  /// Как звонить: приложение / SIM / авто (Настройки → Телефон → Звонки).
+  static CallRouting routing = const CallRouting();
+  static bool _routingLoaded = false;
+  static StreamSubscription<DocumentSnapshot>? _routingSub;
+
+  /// Номер мастерской: телефон набирает его через SIM, сервер соединяет с
+  /// клиентом. Приходит вместе с токеном Twilio и хранится на телефоне —
+  /// звонок через SIM нужен как раз тогда, когда интернета почти нет.
+  static String? _shopNumber;
+  static const _shopNumberPrefsKey = 'twilio_shop_number';
+
+  /// Что показать на экране звонка: предупреждения Twilio о связи, «клиент
+  /// ответил» у исходящего и пояснение к переходу на SIM.
+  static final qualityWarnings =
+      ValueNotifier<Set<CallQualityWarning>>(const <CallQualityWarning>{});
+  static final peerAnswered = ValueNotifier<bool>(false);
+  static String? handoverNote;
+
+  static Timer? _audioWatch;
+  static Timer? _outboundWatch;
+  static StreamSubscription<DocumentSnapshot>? _peerSub;
+  static bool _movingToCell = false;
+  static bool _switchingOutbound = false;
+  static String? _outboundPhone;
+  static String? _outboundJobId;
+
   /// Коллекция звонков в Firestore (пишется в основном Firebase Functions).
   static CollectionReference get _callsRef => FirestoreService.callsRef;
 
@@ -256,6 +287,7 @@ class TwilioService {
   /// и начинает слушать события звонков. Безопасно вызывать многократно.
   static Future<void> initialize() {
     _attachCallEvents();
+    if (AuthService.signedIn) _watchRouting();
     if (_isInitialized || !AuthService.signedIn) return Future.value();
     return _initializing ??= _initialize().whenComplete(
       () => _initializing = null,
@@ -266,6 +298,10 @@ class TwilioService {
     if (_eventsAttached) return;
     _eventsAttached = true;
     TwilioVoicePlatform.instance.callEventsListener.listen(_handleCallEvent);
+    TwilioVoicePlatform.instance.call.qualityWarnings.listen(
+      (event) => qualityWarnings.value = event.current,
+      onError: (Object error) => debugPrint('TwilioService: quality: $error'),
+    );
     TwilioVoicePlatform.instance.setOnDeviceTokenChanged((token) {
       unawaited(NotificationService.refreshRegistration(token: token));
       unawaited(refreshRegistration(deviceToken: token));
@@ -374,6 +410,7 @@ class TwilioService {
           .timeout(const Duration(seconds: 15));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
+        _rememberShopNumber(data['shopNumber']?.toString());
         return data['token'];
       }
       debugPrint('TwilioService: сервер вернул ${response.statusCode}');
@@ -405,29 +442,367 @@ class TwilioService {
       case CallEvent.ringing:
         _activeCall = TwilioVoicePlatform.instance.call.activeCall;
         _activeCallController.add(_activeCall);
+        if (_activeCall?.callDirection == CallDirection.incoming) {
+          qualityWarnings.value = const <CallQualityWarning>{};
+        }
         _setCallStatus(
           _activeCall?.callDirection == CallDirection.incoming
               ? 'ringing'
               : 'calling',
         );
         break;
-      case CallEvent.connected:
       case CallEvent.answer:
-      case CallEvent.reconnected:
         _activeCall = TwilioVoicePlatform.instance.call.activeCall;
         _activeCallController.add(_activeCall);
-        _setCallStatus('connected');
+        // «Ответить» нажато, но звук ещё не поднялся — клиент мастера пока не
+        // слышит. Раньше здесь сразу ставилось connected и шёл таймер: мастер
+        // видел разговор и слушал тишину (разбор 26.10.2026).
+        if (callStatus != 'connected' && callStatus != 'reconnecting') {
+          _setCallStatus('answering');
+          _startAudioWatch();
+        }
+        break;
+      case CallEvent.connected:
+      case CallEvent.reconnected:
+        {
+          _activeCall = TwilioVoicePlatform.instance.call.activeCall;
+          _activeCallController.add(_activeCall);
+          final firstAudio =
+              callStatus != 'connected' && callStatus != 'reconnecting';
+          _cancelAudioWatch();
+          _cancelOutboundWatch();
+          _setCallStatus('connected');
+          if (firstAudio && event == CallEvent.connected) _onAudioConnected();
+        }
+        break;
+      case CallEvent.reconnecting:
+        _setCallStatus('reconnecting');
         break;
       case CallEvent.callEnded:
       case CallEvent.declined:
       case CallEvent.missedCall:
-        placingOutgoing = false;
-        _activeCall = null;
-        _activeCallController.add(null);
-        _setCallStatus('ended');
+        _onCallFinished(event);
         break;
       default:
         break;
+    }
+  }
+
+  static void _onAudioConnected() {
+    if (_activeCall?.callDirection == CallDirection.incoming) {
+      // Входящий: клиент уже на линии, значит соединились именно с ним.
+      unawaited(buzzConnected());
+      return;
+    }
+    // Исходящий: поднялся канал до Twilio, а клиент ещё слушает гудки.
+    // Вибрация будет, когда сервер отметит «клиент ответил».
+    unawaited(_watchPeerAnswer(_outboundPhone ?? _activeCall?.to ?? ''));
+  }
+
+  static const _handoverStatuses = {'cell', 'movingToCell', 'movedToCell'};
+
+  static void _onCallFinished(CallEvent event) {
+    _cancelAudioWatch();
+    _cancelOutboundWatch();
+    final wasAnswering = callStatus == 'answering' || callStatus == 'audioFailed';
+    final outboundNoAudio = placingOutgoing &&
+        const {'connecting', 'calling', 'ringing'}.contains(callStatus);
+    if (_movingToCell ||
+        _switchingOutbound ||
+        _handoverStatuses.contains(callStatus)) {
+      // Звонок уже уходит на SIM — экран сам скажет, что делать дальше.
+      _activeCall = null;
+      _activeCallController.add(null);
+      return;
+    }
+    if (event == CallEvent.callEnded && routing.autoFallback) {
+      if (outboundNoAudio) {
+        // Канал до Twilio так и не поднялся: звоним этому клиенту через SIM.
+        unawaited(_fallbackOutboundToCell());
+        return;
+      }
+      if (wasAnswering && parentCallSid() != null) {
+        unawaited(moveIncomingToCell());
+        return;
+      }
+    }
+    placingOutgoing = false;
+    _activeCall = null;
+    _activeCallController.add(null);
+    _resetCallSignals();
+    if (event == CallEvent.callEnded && (wasAnswering || outboundNoAudio)) {
+      lastPlaceError = 'Звук не соединился: слабый интернет. Клиент вас не слышал.';
+      _setCallStatus('failed');
+      return;
+    }
+    _setCallStatus('ended');
+  }
+
+  static void _resetCallSignals() {
+    qualityWarnings.value = const <CallQualityWarning>{};
+    peerAnswered.value = false;
+    unawaited(_peerSub?.cancel());
+    _peerSub = null;
+    _outboundPhone = null;
+    _outboundJobId = null;
+  }
+
+  static void _startAudioWatch() {
+    _audioWatch?.cancel();
+    _audioWatch = Timer(CallRouting.audioTimeout, () {
+      if (callStatus != 'answering') return;
+      if (routing.autoFallback) {
+        unawaited(moveIncomingToCell());
+      } else {
+        _setCallStatus('audioFailed');
+      }
+    });
+  }
+
+  static void _cancelAudioWatch() {
+    _audioWatch?.cancel();
+    _audioWatch = null;
+  }
+
+  static void _startOutboundWatch() {
+    _outboundWatch?.cancel();
+    _outboundWatch = Timer(CallRouting.audioTimeout, () {
+      if (!placingOutgoing) return;
+      if (callStatus == 'connected' || callStatus == 'reconnecting') return;
+      unawaited(_fallbackOutboundToCell());
+    });
+  }
+
+  static void _cancelOutboundWatch() {
+    _outboundWatch?.cancel();
+    _outboundWatch = null;
+  }
+
+  static void _watchRouting() {
+    if (_routingSub != null) return;
+    _routingSub = FirestoreService.configRef.snapshots().listen(
+      (doc) {
+        routing = CallRouting.fromConfig(
+          (doc.data() as Map<String, dynamic>?) ?? const <String, dynamic>{},
+        );
+        _routingLoaded = true;
+      },
+      onError: (Object error) => debugPrint('TwilioService: routing: $error'),
+    );
+  }
+
+  static Future<CallRouting> _currentRouting() async {
+    if (_routingLoaded) return routing;
+    try {
+      final doc = await FirestoreService.configRef.get().timeout(
+            const Duration(seconds: 2),
+          );
+      routing = CallRouting.fromConfig(
+        (doc.data() as Map<String, dynamic>?) ?? const <String, dynamic>{},
+      );
+    } catch (e) {
+      debugPrint('TwilioService: routing read: $e');
+    }
+    return routing;
+  }
+
+  static void _rememberShopNumber(String? value) {
+    final number = CallRouting.normalizePhone(value ?? '');
+    if (number.isEmpty || number == _shopNumber) return;
+    _shopNumber = number;
+    unawaited(
+      SharedPreferences.getInstance()
+          .then((prefs) => prefs.setString(_shopNumberPrefsKey, number))
+          .catchError((Object _) => false),
+    );
+  }
+
+  static Future<String?> _shopNumberOrNull() async {
+    if (_shopNumber != null) return _shopNumber;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_shopNumberPrefsKey);
+      if (saved != null && saved.isNotEmpty) return _shopNumber = saved;
+    } catch (e) {
+      debugPrint('TwilioService: shop number prefs: $e');
+    }
+    await _fetchAccessToken();
+    return _shopNumber;
+  }
+
+  /// Двойная вибрация «клиент на линии».
+  static Future<void> buzzConnected() async {
+    if (!_isAndroid) return;
+    try {
+      await _deviceChannel.invokeMethod('vibrateCallConnected');
+    } catch (e) {
+      debugPrint('TwilioService: vibrate: $e');
+    }
+  }
+
+  /// Исходящий из приложения: ждём от сервера отметку «клиент ответил» —
+  /// она приходит, когда клиент снял трубку, а не когда поднялся канал.
+  static Future<void> _watchPeerAnswer(String phone) async {
+    await _peerSub?.cancel();
+    _peerSub = null;
+    final want = _digits(phone);
+    for (var i = 0; i < 10 && placingOutgoing; i++) {
+      try {
+        final snapshot = await _callsRef
+            .orderBy('startTime', descending: true)
+            .limit(6)
+            .get();
+        for (final doc in snapshot.docs) {
+          final data = doc.data() as Map<String, dynamic>;
+          if (data['direction'] != 'outbound') continue;
+          final to = _digits((data['toNumber'] ?? '').toString());
+          if (want.length >= 10 && to != want) continue;
+          final started = CallRecord.parseStamp(data['startTime']);
+          if (started != null &&
+              DateTime.now().difference(started) > const Duration(minutes: 3)) {
+            continue;
+          }
+          if (!placingOutgoing) return;
+          _peerSub = doc.reference.snapshots().listen((snap) {
+            final map = snap.data() as Map<String, dynamic>?;
+            if (map == null || map['peerAnsweredAt'] == null) return;
+            if (peerAnswered.value) return;
+            peerAnswered.value = true;
+            unawaited(buzzConnected());
+          }, onError: (Object error) => debugPrint('TwilioService: peer: $error'));
+          return;
+        }
+      } catch (e) {
+        debugPrint('TwilioService: peer lookup: $e');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+    }
+  }
+
+  /// Перевести текущий входящий на SIM: звук в приложении не поднялся.
+  /// Сервер перенаправит звонок, и телефон зазвонит обычным звонком.
+  static Future<bool> moveIncomingToCell() async {
+    final sid = parentCallSid();
+    if (sid == null || !routing.hasCell || _movingToCell) return false;
+    _cancelAudioWatch();
+    _movingToCell = true;
+    _setCallStatus('movingToCell');
+    try {
+      await settleWrite(
+        _callsRef.doc(sid).set({
+          'moveToCellRequested': true,
+          'moveToCellAskedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true)),
+      );
+    } catch (e) {
+      debugPrint('TwilioService: move flag: $e');
+    }
+    final moved = _requestMoveToCell(sid);
+    try {
+      await TwilioVoicePlatform.instance.call.hangUp();
+    } catch (e) {
+      debugPrint('TwilioService: move hangUp: $e');
+    }
+    final ok = await moved;
+    _movingToCell = false;
+    placingOutgoing = false;
+    _activeCall = null;
+    _activeCallController.add(null);
+    _resetCallSignals();
+    _setCallStatus('movedToCell');
+    return ok;
+  }
+
+  static Future<bool> _requestMoveToCell(String callSid) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$kFirebaseFunctionsUrl/moveCallToCell'),
+            headers: await AuthService.headers(),
+            body: json.encode({'callSid': callSid}),
+          )
+          .timeout(const Duration(seconds: 12));
+      if (response.statusCode != 200) return false;
+      final data = json.decode(response.body);
+      return data is Map &&
+          (data['moved'] == true || data['reason'] == 'already');
+    } catch (e) {
+      debugPrint('TwilioService: moveCallToCell: $e');
+      return false;
+    }
+  }
+
+  /// Позвонить клиенту через обычную сотовую связь: телефон набирает номер
+  /// мастерской, сервер соединяет с клиентом. Клиент видит номер мастерской,
+  /// разговор пишется и расшифровывается как обычно.
+  static Future<bool> placeViaCell(
+    String phoneNumber, {
+    String? jobId,
+    String? note,
+  }) async {
+    lastPlaceError = null;
+    final shop = await _shopNumberOrNull();
+    if (shop == null) {
+      lastPlaceError =
+          'Не знаю номер мастерской — откройте приложение с интернетом и повторите.';
+      _setCallStatus('failed');
+      return false;
+    }
+    handoverNote = note;
+    _setCallStatus('cell');
+    try {
+      await settleWrite(
+        FirestoreService.settingsRef.doc('pending_cell_call').set({
+          'phone': _formatNumber(phoneNumber),
+          'jobId': jobId ?? '',
+          'at': FieldValue.serverTimestamp(),
+        }),
+      );
+    } catch (e) {
+      debugPrint('TwilioService: pending cell call: $e');
+    }
+    var placed = false;
+    if (_isAndroid) {
+      try {
+        placed = await _deviceChannel.invokeMethod<bool>(
+              'placeCellularCall',
+              {'number': shop},
+            ) ??
+            false;
+      } catch (e) {
+        debugPrint('TwilioService: placeCellularCall: $e');
+      }
+    }
+    if (!placed) {
+      lastPlaceError = 'Телефон не дал позвонить через SIM.';
+      _setCallStatus('failed');
+      return false;
+    }
+    return true;
+  }
+
+  static Future<bool> _fallbackOutboundToCell() async {
+    final phone = _outboundPhone;
+    final jobId = _outboundJobId;
+    if (phone == null || phone.isEmpty || _switchingOutbound) return false;
+    _cancelOutboundWatch();
+    _switchingOutbound = true;
+    try {
+      try {
+        await TwilioVoicePlatform.instance.call.hangUp();
+      } catch (e) {
+        debugPrint('TwilioService: fallback hangUp: $e');
+      }
+      placingOutgoing = false;
+      _activeCall = null;
+      _activeCallController.add(null);
+      return await placeViaCell(
+        phone,
+        jobId: jobId,
+        note: 'Слабый интернет — звоню через сотовую связь',
+      );
+    } finally {
+      _switchingOutbound = false;
     }
   }
 
@@ -501,6 +876,12 @@ class TwilioService {
   /// Совершить исходящий звонок на номер клиента.
   static Future<bool> makeCall(String phoneNumber, {String? jobId}) async {
     lastPlaceError = null;
+    handoverNote = null;
+    _resetCallSignals();
+    final route = await _currentRouting();
+    if (route.outboundViaCell) {
+      return placeViaCell(phoneNumber, jobId: jobId);
+    }
     _setCallStatus('connecting');
     if (!_isInitialized) {
       await initialize();
@@ -537,6 +918,8 @@ class TwilioService {
       await _writePendingOutbound(phoneNumber, pendingJobId!);
     }
 
+    _outboundPhone = phoneNumber;
+    _outboundJobId = jobId;
     placingOutgoing = true;
     _setCallStatus('calling');
     try {
@@ -547,16 +930,22 @@ class TwilioService {
       if (result != true) {
         placingOutgoing = false;
         lastPlaceError ??= 'Телефон не принял вызов.';
+        if (route.autoFallback) return _fallbackOutboundToCell();
         _setCallStatus('failed');
-      } else if (pendingJobId != null) {
-        unawaited(_tagLatestOutboundWithJob(phoneNumber, pendingJobId!));
+      } else {
+        if (pendingJobId != null) {
+          unawaited(_tagLatestOutboundWithJob(phoneNumber, pendingJobId!));
+        }
+        // «Авто»: не поднялся канал за 7 секунд — звоним через SIM.
+        if (route.autoFallback) _startOutboundWatch();
       }
       return result == true;
     } catch (e) {
       placingOutgoing = false;
       lastPlaceError = e.toString();
-      _setCallStatus('failed');
       debugPrint('TwilioService: ошибка исходящего звонка: $e');
+      if (route.autoFallback) return _fallbackOutboundToCell();
+      _setCallStatus('failed');
       return false;
     }
   }
@@ -684,6 +1073,8 @@ class TwilioService {
 
   static Future<void> hangUp() async {
     placingOutgoing = false;
+    _cancelAudioWatch();
+    _cancelOutboundWatch();
     final jobId = pendingJobId;
     final phone = _activeCall?.to ?? _activeCall?.toFormatted ?? '';
     try {
@@ -693,6 +1084,7 @@ class TwilioService {
     }
     _activeCall = null;
     _activeCallController.add(null);
+    _resetCallSignals();
     _setCallStatus('ended');
     if (jobId != null && jobId.isNotEmpty) {
       unawaited(_tagLatestOutboundWithJob(phone, jobId));

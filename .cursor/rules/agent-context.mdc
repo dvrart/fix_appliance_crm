@@ -7,6 +7,12 @@ alwaysApply: true
 
 Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: `44c25486` — `adb devices -l` 05.10.2026 отдаёт `model:26077PC53G device:songyuan` (Xiaomi/HyperOS), а не OPPO F9, как было записано раньше; replaced Samsung `R5CW421KFXH` on 03.10.2026. Samsung-specific notes below (One UI shade, battery dialogs, mic click) need re-verification on this phone. package `com.example.fix_appliance_crm`. PowerShell: no `&&`; use `;`. Do not commit unless asked. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
 
+## Как отвечать владельцу (FIX)
+
+- **В ответе не должно быть кода.** Никаких блоков кода, сниппетов, имён функций в кавычках как куска кода, путей к файлам с номерами строк в виде фрагмента программы. Не вставляй diff.
+- **Где и какая строка — словами, коротко.** Если важно, где правка: назови экран или файл обычным языком и скажи, что было на этом месте и что стало. Не копируй саму строку.
+- **Только суть, без воды.** Формат: что было → что сделано. Без вступлений, без «давай посмотрим», без пересказа всего экрана и без советов, о которых не спрашивали.
+
 ## Главное правило правок: менять только то, о чём просят, и не ломать остальное
 
 - **Точечные, изолированные правки.** Делай **ровно то**, что попросил владелец (FIX), и **не трогай ничего другого**. Например, если нужно добавить кнопку на экране — занимайся только этой кнопкой и не меняй соседние элементы.
@@ -437,6 +443,80 @@ onMessageReceived()` (05:39:56.061) прошло **0,36 с**. Версия пр�
 подсвечиваются никогда. В списке переписок непрочитанное получило такую же жёлтую подложку
 рядом с уже бывшей цифрой.
 
+## Мастер не слышит клиента: звук Twilio не поднимается (26.10.2026)
+
+FIX: «поднимаю трубку — не слышу клиента, перезваниваю — опять не слышу, раз было в машине».
+Разобрано по записям, Telecom и AppOps телефона: беда на стороне телефона мастера, не клиента.
+В коде приложения ничего не менялось — что чинить, решает FIX.
+
+- **Записи в две дорожки** (с 07.10): дорожка мастера — цифровой ноль, даже без шума комнаты,
+  дорожка клиента — речь («Hello?»). С 07.10 по 26.10 так в ~17 из 71 отвеченного звонка,
+  22–26.10 — 8 из 26. Проверка: `node tools/call_audio_scan.js scan [дней]`, один звонок —
+  `inspect <CallSid ноги приложения>`. Не путать с 12.10 («молчал на входящие»): там звонка
+  не было вовсе, здесь звонок есть, а звука нет.
+- **`dumpsys telecom`**, звонки `TVConnectionService`: исходящие кончаются
+  `ERROR / Media connection failed` (53405) и `Request Timeout`; входящие, где мастер нажал
+  «Ответить», Twilio записал как `no-answer` — ответ до сервера не дошёл.
+- **`dumpsys appops --package com.example.fix_appliance_crm --include-discrete 100000`** —
+  история RECORD_AUDIO примерно за сутки. В удачном звонке микрофон открывается ровно в момент
+  `setActive`, в неудачном не открывается вообще: медиаканал не поднялся. Reject в эти минуты
+  нет — разрешение микрофона ни при чём.
+- **Сеть.** 26.10 сбои шли на мобильном интернете Rogers (домашний Wi-Fi PURYSH отключился в
+  10:25, вернулся в 18:12): сигнализация до Twilio шла 14 с вместо ~1, ICE в удачном звонке —
+  8 с. Сбои идут кучками по часу (23.10 13:40–14:27, 26.10 10:34–11:31), между ними всё
+  работает, звонки с SIM (VoLTE) в те же минуты проходят. Похоже на места со слабым мобильным
+  интернетом. Twilio Voice Insights (Summary/Events/Metrics) на аккаунте отдаёт 404.
+- **Экран звонка путает мастера.** `CallEvent.answer` в `TwilioService._handleCallEvent` сразу
+  ставит `connected` и запускает таймер, хотя звук ещё не соединён, поэтому `_answerWatch` в
+  `call_screen.dart` не срабатывает никогда. У исходящего локальные гудки играют до
+  `connected`: клиент уже ответил и говорит «алло», а мастер слышит гудки.
+- Логи телефона живут недолго: Telecom держит ~80 последних звонков, discrete AppOps — сутки,
+  logcat — часы. Снимать сразу после жалобы.
+
+## Звонки через SIM: «приложение / сотовая / авто» (27.10.2026, просьба FIX)
+
+Настройки → Телефон → Звонки → «Как звонить» + «Номер SIM». Поля `settings/config`:
+`callRoute` (`app` | `cell` | `auto`, по умолчанию `app`) и `masterCellNumber` (E.164). Без
+номера SIM любой режим = `app`. Чистая логика: `functions/call_route.js` и
+`lib/services/call_routing.dart` (одинаковая нормализация номера), тесты `call_route.test.js`,
+`call_flow.test.js` (сквозные), `test/call_routing_test.dart`.
+
+- **Входящий в `cell`:** `<Dial answerOnBridge record-from-answer-dual action=dialAction?leg=cell>`
+  `<Number url=dialAction?stage=screen&parent=…>`. Мастер слышит «Звонок в мастерскую. Нажмите 1»
+  (решение FIX — защита от автоответчика оператора): `stage=accept` с `Digits=1` ставит
+  `cellAcceptedAt`/`answeredVia: 'cell'`, играет короткий тон и шлёт пуш `call_connected`
+  (только вибрация, `notify.pingMaster`). Тишина/другая цифра → его нога кладётся, `leg=cell`
+  без `cellAcceptedAt` = пропущенный → Сара. Гудков на SIM не меньше 15 с (`cellRingSeconds`).
+- **`auto`:** сервер звонит в приложение, как раньше. Если после «Ответить» звук не поднялся за
+  7 с (`CallRouting.audioTimeout`) или звонок оборвался ошибкой, приложение ставит
+  `moveToCellRequested` на звонке, зовёт `moveCallToCell` (REST-редирект живого звонка) и кладёт
+  ногу SDK. Запасной путь — `dialAction` видит флаг, когда гудок в приложение закончился.
+  Двойного набора нет: `movedToCellAt` ставится в транзакции. На SIM уходит **только этот звонок**
+  (решение FIX), следующий снова через приложение. В `app` при сбое экран показывает
+  «Звук не соединился» и кнопку «Перевести на обычный телефон».
+- **Исходящий через SIM:** приложение пишет `settings/pending_cell_call` {phone, jobId, at} и
+  набирает номер мастерской обычным звонком (`placeCellularCall`, ACTION_CALL). `incomingCall`
+  узнаёт `From == masterCellNumber`, берёт свежую (≤ 2 мин) заявку и соединяет с клиентом с
+  номера мастерской (`twimlDialPstn`, запись как у исходящего, документ `direction: outbound`,
+  `via: 'cell'`). Заявки ещё нет — ждёт 4 × 1 с (`<Pause>`+`<Redirect>`), потом говорит «Номер
+  клиента не дошёл». Поэтому позвонить Саре со своей SIM при указанном номере нельзя — только с
+  другого телефона. Номер мастерской приложение берёт из ответа `twilioAccessToken`
+  (`shopNumber`) и хранит в SharedPreferences: `kTwilioPhoneNumber` в `api_keys.dart` — заглушка.
+  В `auto` исходящий через приложение, не поднявший канал за 7 с, сам переходит на SIM.
+- **«Клиент ответил»:** у `<Number>` исходящего `statusCallback=dialAction?stage=peer` ставит
+  `peerAnsweredAt`; приложение слушает документ и вибрирует, для `via: 'cell'` летит пуш.
+  Входящий из приложения вибрирует, когда поднялся звук. Вибрация — `CallConnectedBuzz.kt`
+  (канал `vibrateCallConnected`; пуш перехватывает `CrmShadeNotifier.show`).
+- **Честный экран:** `CallEvent.answer` → статус `answering` («Соединяю звук…», таймер стоит),
+  `connected` — только когда поднялся звук. Ещё `reconnecting`, `audioFailed`, `movingToCell`,
+  `movedToCell`, `cell`; плашки «клиент вас не слышит», «слабый интернет» (предупреждения
+  Twilio), «Клиент на линии». `constant-audio-output-level` не показываем: при молчащем
+  клиенте он срабатывает ложно. Сторож `_answerWatch` теперь кладёт только мёртвый инвайт
+  (статус так и остался `ringing`).
+- Все шаги звонка через SIM висят на `dialAction` (`?stage=`): у него тёплый экземпляр, холодный
+  старт там — тишина в трубке. Деплой: `incomingCall,outgoingCall,dialAction,twilioAccessToken,
+  moveCallToCell` (`--force` из-за minInstances).
+
 ## Четыре просьбы FIX (13.10.2026)
 
 **1. Напоминание больше не просит подтверждения.** «Утром перед визитом опять просит
@@ -642,6 +722,42 @@ Do **not** set `android:showWhenLocked` / `turnScreenOn` on `MainActivity` in th
   читается, белый текст на белом — нет. Не пытайтесь сделать это одной заменой
   по репозиторию.
 
+## Возврат на панель (25.10.2026, просьба FIX)
+
+Панели в стеке маршрутов не лежат, поэтому «Назад» с открытого ими экрана
+возвращал не панель, а то, что лежало под ней: список визитов, меню или
+колокольчик приходилось открывать заново. Общий механизм — **`PanelReturn` в
+`lib/shared/app_nav.dart`**, по одному вызову на каждую панель:
+
+- **левое меню** — `CustomDrawer._open` / `_openSearch`, `back` =
+  `MainScreen._returnToMenu` (Склад, Отчёты, Расходы, Счета, Статистика,
+  Диагностика, Настройки, Корзина, Запчасти, Поиск, плашки «Сегодня» и
+  «Активные»);
+- **правая шторка «Все визиты»** — `_openJob` и плашка «N без даты визита»,
+  `back` = `MainScreen._returnToVisits`;
+- **колокольчик** — `ReviewInboxPanelState._closeInboxThen` (один узел на все
+  строки), `back` = `ReviewBellButton.showInbox`;
+- **поиск** — `_GlobalSearchPageState._openRoute` возвращает оверлей **с тем же
+  запросом** (`GlobalSearchOverlay.open(..., query:)`); при непустом запросе
+  экран не поднимает клавиатуру — нужен список, а не ввод заново.
+
+Как это держится и что нельзя ломать:
+
+- `PanelReturn.open` запоминает **страницу под открываемым экраном** и
+  возвращает панель, только если стек вернулся **ровно на неё**. Экран могли
+  снять и без «Назад» — лимитом `AppNav.maxCards` или `resetToRoot` покинутой
+  вкладки, и тогда панель выехала бы поверх чужого экрана.
+- `PanelReturn.cancel()` гасит все ожидающие возвраты; его зовут `_selectTab` и
+  `_goDefaultHome` в `main_screen.dart`. **Любой новый «уход в другое место»
+  обязан его звать**, иначе панель всплывёт через полсекунды после ухода.
+- Пауза 140 мс перед возвратом: панели во весь экран, без неё их выезд
+  накладывается на ещё непрозрачный уходящий экран.
+- Плашка «N без даты визита» теперь открывается через `AppNav.navigatorOf`, а
+  не `Navigator.push(host)`: по корневому навигатору экран накрывал нижнюю
+  панель, и возвращать шторку было некуда.
+- Тесты — `test/app_nav_test.dart`: возврат после «Назад», молчание после
+  `cancel()` и после снятия экрана из середины стека.
+
 ## Bell / notifications
 
 ### Переезд колокольчика и шторки (21.10.2026, просьба FIX)
@@ -662,6 +778,12 @@ Do **not** set `android:showWhenLocked` / `turnScreenOn` on `MainActivity` in th
   закрывает шторку, ждёт 280 мс и отдаёт **контекст хозяина** — свой к этому
   моменту мёртв. Любая новая навигация с этого экрана обязана идти через него,
   иначе карточка откроется под шторкой или упадёт на размонтированном контексте.
+- **«Назад» возвращает ту панель, с которой ушли** (25.10.2026, просьба FIX) —
+  см. раздел «Возврат на панель» ниже. Место в списке шторки тоже переживает
+  уход в карточку: шторку пересобирают при каждом открытии, поэтому смещение
+  хранит `_AllVisitsScreenState._shadeOffset` (пишется слушателем контроллера —
+  в `dispose` уже поздно, список размонтируется раньше экрана) и только когда
+  задан `onLeave`, чтобы тесты и обычный маршрут открывались с нуля.
 - В колокольчик добавлена секция **«Визиты и доставка»**: заявки **без даты
   визита** (плашка «N без даты визита» из шапки календаря убрана), **ожидание
   запчасти** (бывшая машинка) и **«Скоро визит»** — активные визиты в ближайшие
@@ -811,8 +933,25 @@ Do **not** set `android:showWhenLocked` / `turnScreenOn` on `MainActivity` in th
   полдня и была убрана той же просьбой FIX — съедала верх экрана. Ищет заявку
   по порядку: прямая привязка (`createdJobId` / `jobId`), заявки клиента,
   заявки по номеру телефона; из нескольких берёт живую и самую свежую. Заявки
-  нет — кнопки нет **вообще** (в звонке на этот случай «Создать заявку на
-  ремонт» в теле экрана).
+  нет — кнопки нет (в звонке на этот случай «Создать заявку на ремонт» в теле
+  экрана). **В переписке** (25.10.2026) вместо пустоты кнопка
+  `add_task` «Создать заявку» (параметр `onCreateJob`): FIX не мог завести
+  карточку клиента с неизвестного номера. Она **сначала разбирает весь диалог
+  через `AiService.extractJobData`**: и `_createJob`, и `_extractAndApplyToClient`
+  строят текст через `_buildConversationTranscript` — **обе стороны** (`Мастер:`
+  и `Клиент:`) с датой-временем сообщений `[yyyy-MM-dd HH:mm]`. Без реплик
+  мастера вопрос в 21:47 «Do we need to come to this address: 461 Blackburn Dr,
+  Brantford, ON N3T 0W9?» терялся, и из ответа клиента «you have my address door
+  number is 128» ИИ доставал только «128». В `ExtractedJobData` добавлено поле
+  `unit` (подставляется в `_unitController` на `JobPreviewScreen`), а промпт
+  `extractJobData` знает сегодняшнюю дату (для «tomorrow») и не затирает адрес
+  мастера уточнением квартиры/двери. Что ИИ не разобрал, добирается из
+  SMS-заявки `smsOfferPending` (её `extractedData`, гашение через
+  `acceptSmsOffer`) и из нити (телефон/email). Пока ИИ думает, кнопка крутит
+  индикатор (`busy` → `_creatingJob`); при ошибке ИИ форма всё равно открывается
+  с телефоном. После создания `JobLinkButton` пересоздаётся ключом
+  (`_jobLinkRevision`), чтобы найти новую заявку по номеру. У «Карточки клиента»
+  при отсутствии карточки подсказка с действием «Создать заявку».
 - **`reviewed` не годится как «видел список»:** у звонков, на которые FIX ответил
   сам, он остаётся false навсегда, и бейдж показал бы всю историю. Счётчик
   звонков сравнивает `startTime` с локальной отметкой `comms_calls_seen_at`
@@ -1007,15 +1146,28 @@ Twilio**. Он кладёт готовый текст (с шапкой) в `mess
   «1» остаётся непрочитанным сообщением — счётчик «Связь», список и переписка. Тест:
   `visit_sms.test.js` — «a confirmed visit does not wake the owner, a cancellation still
   does». Деплой: `firebase deploy --only functions:processIncomingSms,functions:estimateConfirm`.
-- **Входящий звонок на разблокированном телефоне открывается сразу на весь экран.**
-  `setFullScreenIntent` система разворачивает **только на замке**, иначе показывает плашку.
-  `IncomingCallNotifier.openCallScreenIfUnlocked` сам зовёт `startActivity`, когда экран
-  включён и не заблокирован; дальше `GlobalCallListener._onAppResumed` открывает `CallScreen`.
-  Чтобы фоновый старт работал и когда приложение смахнули из «недавних», в манифесте
-  объявлено `SYSTEM_ALERT_WINDOW`, при старте один раз зовётся `_askCallOverlayOnce()`
-  (`MainActivity.requestCallOverlayPermission` + проверка `canOverlayCalls`: `Settings.canDrawOverlays`
-  и на Xiaomi/HyperOS AppOp `10021` «Открывать новые окна в фоне» через `miui.intent.action.APP_PERM_EDITOR`),
-  а в **Настройки → Связь → Уведомления** добавлена плитка **«Звонок на весь экран»**.
+- **Входящий звонок зажигает экран и открывается на весь экран (27.10.2026, просьба FIX).**
+  Раньше на выключенном/заблокированном экране телефон звонил в темноте, а внутри приложения
+  `CallScreen.open` шёл через `AppNav.navigatorOf` во вкладку (с верхней шапкой и нижним меню):
+  - `TVConnectionService` в `ACTION_INCOMING_CALL` и `onCreateIncomingConnection` зовёт
+    `IncomingCallNotifier.show` **до** `tryStartForegroundService()` (раньше первым шло тихое
+    уведомление `"Разговор"` с тем же `id=100`, и обновление не стреляло `fullScreenIntent`), а
+    `getIncomingCallHandle` учитывает `pendingCallInvites`.
+  - `IncomingCallNotifier` берёт `SCREEN_BRIGHT_WAKE_LOCK | ACQUIRE_CAUSES_WAKEUP | ON_AFTER_RELEASE`
+    (`wakeUpScreen`), заранее поднимает флаги замка на живой `MainActivity.prepareForIncomingCall`
+    и зовёт `startActivity` и на разблокированном, и на заблокированном/погашенном экране (с
+    повтором через 300 мс после пробуждения дисплея).
+  - У `MainActivity` в манифесте `showWhenLocked="true"` / `turnScreenOn="true"` (снимаются в
+    `clearLockscreenFlags`, когда звонка нет), `requestDismissKeyguard` не зовётся при
+    `isDeviceSecure`, чтобы поверх звонка не выскакивал ввод PIN телефона.
+  - `CallScreen.open` открывается в корневом `rootNavigatorKey` поверх верхней шапки, нижнего
+    меню и замка приложения; `GlobalCallListener` не ждёт ` paused` и сетевой
+    `dropStaleIncomingIfNeeded` перед показом экрана звонка.
+  - Чтобы фоновый старт работал и когда приложение смахнули из «недавних», в манифесте
+    объявлено `SYSTEM_ALERT_WINDOW`, при старте один раз зовётся `_askCallOverlayOnce()`
+    (`MainActivity.requestCallOverlayPermission` + проверка `canOverlayCalls`: `Settings.canDrawOverlays`
+    и на Xiaomi/HyperOS AppOp `10021` «Открывать новые окна в фоне» через `miui.intent.action.APP_PERM_EDITOR`),
+    а в **Настройки → Связь → Уведомления** добавлена плитка **«Звонок на весь экран»**.
 - **Проверять тапы на телефоне можно без push**: PendingIntent шторки — это обычный
   `am start`. `adb -s 44c25486 shell "am start -n com.example.fix_appliance_crm/.MainActivity
   -a com.example.fix_appliance_crm.NOTIFICATION -f 0x24000000 --es type call --es callSid CAxxx
@@ -2190,3 +2342,302 @@ always present. Drawer **Сегодня** now opens `ActiveJobsScreen.today()`.
   `selectionColor: 0x66E53935`, ползунки `0xFFE53935`) — просьба FIX, синяя по умолчанию
   терялась на синих пузырях. Material раздаёт это через `DefaultSelectionStyle`, поэтому
   красным стало выделение везде, включая поля ввода. Цвет курсора не трогали.
+
+## Подтверждение визита убрано совсем (27.10.2026, просьба FIX)
+
+Дословно: «убери вообще подтверждение визита». Раньше клиенту предлагали ответить
+`1 / 0 / 5`, а в карточке, календаре и списках висел значок «Заказ принят / не
+принят». Этого больше нет. **Не возвращайте.**
+
+- Плашки нет нигде: `VisitConfirmBadge` удалён. В карточке заявки справа от техники
+  остался только статус. В календаре нет галочки и «sms_failed». В списках нет
+  штампа слева и значка в компактной строке.
+- SMS о визите сообщает только дату, время и адрес (`See you then!`). Меню ответа
+  снимает `SmsText.stripConfirmAsk` в приложении и `stripConfirmAsk` на сервере —
+  даже если в сохранённом шаблоне `booking_confirm` меню ещё лежит. Старый текст
+  с меню заменяется на новый при старте (`ensureEnglishClientCopy`); свой текст
+  без меню не трогается.
+- Сервер больше не ставит визит в очередь «SMS ждёт отправки» сам и не будит
+  пушем «подтверждение не отправлено». Отправить SMS о визите можно только
+  вручную, галочкой в окне даты. Тумблер «При записи» из настроек SMS убран:
+  он включал именно эту очередь.
+- Голое «1» / «yes» входящим SMS **ничего не подтверждает** и не шлёт «Thanks!
+  See you…». Сообщение остаётся непрочитанным на вкладке «Связь». Отмена по «0»
+  и перенос по просьбе клиента работают как раньше.
+- Поле `smsConfirmStatus` в старых визитах оставлено: его пишет отмена, и
+  стирать его при сохранении нельзя. Нового подтверждения из него не выводится.
+
+Без деплоя `onJobWritten` и `processIncomingSms` сервер продолжит старое
+поведение. Приложение само клиенту меню уже не отправит.
+
+## Три просьбы FIX (24.10.2026)
+
+**1. На входящий играли два рингтона.** Источников было два: `IncomingCallNotifier.startRinging`
+(зацикленный `Ringtone`, добавлен 12.10) и само уведомление входящего — канал
+`com.example.fix_appliance_crm_incoming_voice` был создан со звуком рингтона
+(`dumpsys notification`: `mSound=content://settings/system/ringtone`), а уведомление ещё и
+`FLAG_INSISTENT`. Запись 12.10 «звук канала у foreground-уведомления не срабатывает» была
+сделана, пока громкость звонка стояла 0/15 — после починки громкости зазвучали оба.
+Теперь звонит **только `startRinging`**: канал `<pkg>_incoming_voice_silent` без звука и
+вибрации (`IMPORTANCE_MAX` оставлен ради плашки), `setSound` и `FLAG_INSISTENT` убраны,
+старый канал удаляется в `ensureChannel`. Звук канала после создания Android менять не даёт,
+поэтому только новый id. Не возвращайте звук в канал — будет снова два рингтона.
+
+**2. Полная оплата счёта → «Готово» автоматически**, любым способом. Раньше и приложение, и
+сервер только *предлагали* (`pendingSuggestComplete`, «Пометить заявку как завершённую?»).
+- Приложение: `JobDetailsController.completeAfterInvoicePaid({remoteStatus})` сразу зовёт
+  `updateStatus(JobStatuses.completed, persistNow: true)` (визиты закрываются, `completedAt`),
+  как `markDepositTaken` для депозита. Отменённую и уже готовую заявку не трогает; если
+  «Готово» в том же обновлении поставил сервер — второй раз не пишет.
+- Сервер: `recordStripePayment` (ссылка, вебхук, Tap to Pay, `checkStripePayment`) в той же
+  транзакции ставит `status: 'Завершено'`, `completedAt`, `needsReview: false`, закрывает
+  визиты (`markJobVisitsDone`). `suggestComplete` по-прежнему ставится — по нему история
+  изменений пишет «stripe» / `invoice_fully_paid`; баннер при статусе «Готово» не виден.
+  Отменённая заявка остаётся отменённой и получает старое предложение. Пуш: «Заявка
+  переведена в «Готово»». Отзыв-SMS сам не уходит (серверу нужен `requestReviewSms`).
+- Тест: `stripe.test.js` — «a fully paid invoice closes the job as Готово…».
+
+**3. Безнал за месяц больше $800 → уведомление.** `functions/noncash_alert.js`, отдельный
+триггер `onJobNonCashMonth` на `jobs/{jobId}` (onJobWritten не трогали). Считается всё не
+наличное: Stripe, Tap to Pay, карта, e-Transfer, чек; чаевые безналом считаются, возвраты
+вычитаются, наличные — нет. Способ платежа — как в отчётах (`ReportMetrics.explicitPayMethod`):
+строка «Tip» без способа берёт способ соседнего платежа счёта. Месяц календарный по Торонто;
+время без зоны (так пишет приложение) — уже Торонто. Тяжёлый подсчёт (заявки с
+`updatedAt >= 1-е число`) идёт только если в записанной заявке безнал месяца вырос.
+Уведомление одно на месяц: транзакцией ставится `settings/noncash_alert.notifiedMonth`.
+Порог — константа `NONCASH_MONTH_LIMIT`. Тесты: `noncash_alert.test.js`.
+
+Развёрнуто 25.10.2026 (с `FUNCTIONS_DISCOVERY_TIMEOUT=120`): `completeTerminalPayment`,
+`stripeWebhook`, `stripePaymentComplete`, `checkStripePayment` и новый `onJobNonCashMonth`
+(создался в `northamerica-northeast2`, старт без ошибок). Проверки: 438 Flutter-тестов,
+293 Node-теста, анализатор без предупреждений, release APK.
+
+**Подпись APK.** 24.10 в 23:11 на телефон кто-то поставил сборку с **отладочной** подписью
+(«Android Debug»), и релизный APK (ключ «FIX Appliance CA» из `android/key.properties`)
+поверх не вставал: `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. С согласия FIX приложение удалено и
+поставлено заново — вход и локальные разрешения на телефоне выдаются заново. Ставьте только
+релиз с настоящим ключом (`flutter build apk --release`), не `flutter run`/debug — иначе
+следующий релиз снова потребует удаления. Сверить подпись: `apksigner verify --print-certs`
+(`build-tools\37.0.0\lib\apksigner.jar` через java из `Android Studio1\jbr`).
+
+## Шесть просьб FIX (25.10.2026)
+
+Пункты 2–4 из этого списка частично сделаны в разделе выше (24.10); здесь — что добавлено и
+перепроверено. Порог $800 — **только безнал**, FIX подтвердил это 25.10 (в тексте просьбы
+было «наличными», это оговорка).
+
+**Красный экран в Отчётах (`'_dependents.isEmpty'` / «check that it really is our
+descendant»).** Журнал `app_errors` (полный стек — см. ниже) показал цепочку 24.10 23:25:
+«A TextEditingController was used after being disposed» → `_dependents.isEmpty` → Duplicate
+GlobalKeys. Источник — `reports_screen._openItemSheet` (карточка позиции, поле «Сколько стоила
+мне за 1 шт.»): `costCtrl.dispose()` сразу после `await showModalBottomSheet`, а future
+возвращается в момент `pop`, пока лист ещё уезжает и перестраивается (прячется клавиатура →
+`MediaQuery.viewInsets`). Второй скриншот FIX (13:24, «не помню, на каком экране») — то же
+самое: исключение посреди `updateChild` оставило осиротевшее поддерево, и при следующей
+перестройке темы `CupertinoTheme` наткнулся на «чужого» иждивенца. Воспроизведено виджет-тестом
+(старый порядок даёт ровно эти три ошибки).
+- **Починка — `DisposeOnClose`** (`lib/shared/widgets/dispose_on_close.dart`): оборачиваем то,
+  что возвращает `builder` окна, и **не** зовём `dispose()` после `await` — контроллеры
+  уничтожаются в `State.dispose` обёртки, когда окно реально ушло из дерева. Прочитать `text`
+  сразу после `await` можно. Тест: `test/dispose_on_close_test.dart` (клавиатура прячется,
+  пока лист уезжает). `ModalRoute.of(ctx)` + `route.completed` тоже работает, но вешает
+  зависимость на маршрут и перезапускает `builder` окна — в «Где работа» это обнулило бы
+  `siteError`, поэтому выбрана обёртка.
+- По просьбе FIX (25.10) переведены все такие окна: Отчёты (закупка детали), «Где работа»
+  (`details_tab._editJobSite`), добавление и правка позиции счёта, возврат
+  (`finance_tab`), новая переписка (`messages_screen.startNewConversation`), ссылка на
+  Google-отзыв (`message_templates_page`), SMS со счётом (`document_template_service` — там
+  стояла «заплатка» `Future.delayed(400 мс)`, убрана). Склад уже был правильный
+  (`DirtyLeaveScope.onDispose`). Новое окно с полями — сразу через `DisposeOnClose`.
+- В релизе эти assert'ы молчат — красный экран был виден только потому, что на телефоне с
+  24.10 23:11 стояла debug-сборка (см. «Подпись APK»).
+- Полный стек из `app_errors`: стандартный `tools/read_app_errors.js` печатает только
+  сообщение; поля `stack` и `context` читайте тем же REST-запросом (`documents/.../app_errors`).
+- Отдельно в журнале много «Null check operator used on a null value» из
+  `_AssistantHostState._onFocusChanged` (`assistant_host.dart:139`,
+  `findAncestorWidgetOfExactType` на размонтированном контексте фокуса). Не чинили — не
+  просили.
+
+**«Все визиты» снизу вверх.** Дни уже шли новые сверху; внутри дня правка 24.10 развернула
+порядок, но линию «сейчас» ставила **после** первого прошедшего визита (будущие, прошедший,
+«сейчас», остальные прошедшие). Теперь линия встаёт перед первым уже начавшимся визитом.
+Тест: `test/all_visits_timeline_test.dart`.
+
+**Адрес из SMS → «Где работа» заявки.** Разбор живого случая (Sue Rathbone, заявка с сайта
+`sUFljzsr87Ibd9t6H4xS`): SMS «190 Argyle Street, Simcoe» легла в карточку клиента и в
+`clientAddress` заявки, а следующая SMS «Unit 23» прошла как **другой адрес**
+(`addressesLookDifferent` по номеру 190≠23) → в карточке клиента появилась локация «Unit 23 /
+Job site», а заявка получила `hasJobSite: true, jobSiteAddress: 'Unit 23'` — «Где работа»
+показывала «Unit 23», и FIX вписал адрес руками. Починка в `applyInboundAddressToClient`:
+- `voiceFacts.unitOnlyAddress` («Unit 23», «Apt 5B», «#7», «кв. 23» → «Unit 23») — такая SMS
+  идёт в `applyInboundUnit`: номер дописывается к текущему адресу заявки
+  (`voiceFacts.addressWithUnit` → «190 Argyle Street, Unit 23, Simcoe», старый номер
+  заменяется), а если это адрес самого клиента — и в карточку (`address` + `locations[0].unit`).
+  Новой локации не создаётся.
+- Адрес совпал с карточкой клиента, а у заявки места работы нет (`jobWorkAddress` пусто) —
+  теперь он кладётся в `clientAddress` заявки (раньше эта ветка заявку не трогала).
+- Тесты: `ingress.test.js` («an address and then «Unit 23»…», «the address already on the
+  client card…»), `voice_facts.test.js` («SMS только с номером квартиры…»).
+- Мусорная локация «Unit 23» в карточке Sue Rathbone (`clients/bsFUN1f1lEONfLfJtsN7`,
+  `site_1792949384003`) удалена 25.10 с согласия FIX (PATCH только поля `locations` с
+  проверкой `updateTime`; основной адрес «190 Argyle Street, Simcoe» не тронут).
+- Кнопка-палочка «Сохранить имя и адрес в карточку» в переписке по-прежнему пишет только в
+  карточку клиента; «Где работа» читает `clientAddress` самой заявки, а не карточки.
+
+**Поиск клиентов по фильтрам.** Над полем поиска (внизу экрана «Клиенты») строка фильтров:
+Везде / Город / Имя / Описание / Запчасти. Фильтры — **мультивыбор** (25.10.2026): можно
+включить несколько полей сразу, под каждым появляется своё поле ввода, все условия
+складываются по «И» (пример FIX: город Брэнтфорд + ремонт стиральной машины + замена
+дверного замка). Слова внутри одного запроса тоже ищутся по «И» (слова короче трёх букв
+пропускаются; окончания слов сравниваются по префиксу — «машина» находит «машине»).
+«Везде» сбрасывает выбранные поля — это прежний `ClientService.matchesMap` по карточке.
+Логика — чистая, в `lib/features/clients/client_search_filter.dart`:
+- `ClientJobIndex.build(jobs)` раскладывает заявки по `clientId` и по номеру телефона
+  (заявки без привязки к карточке тоже находятся);
+- Город — города локаций, город из адреса и `Job.displayCity` заявок; при включённом «Город»
+  ниже идут кнопки самых частых городов (`topClientCities`), тап = поиск по городу;
+- Имя — имя, компания, люди на адресах; Описание — описание, решение, техника (тип, марка,
+  модель, поломка) и заметки клиента; Запчасти — позиции счетов/смет (название, описание,
+  `partNumber`, без документов в корзине), «с собой», `trackingPart`. Номер детали
+  сравнивается и без пробелов/дефисов.
+- Комбинация — `ClientSearchCriterion` + `clientMatchesAll` (короткое замыкание по «И»).
+- Заявки читаются (`JobService.streamAll`) только пока включён фильтр, которому они нужны;
+  пока грузятся — `AppLoading`, а не пустой список.
+- Тест: `test/client_search_filter_test.dart`.
+
+Развёрнуто 25.10.2026: `processIncomingSms` (адрес из SMS) и ещё раз
+`completeTerminalPayment`, `stripeWebhook`, `stripePaymentComplete`, `checkStripePayment`.
+Проверки: 445 Flutter-тестов, 296 Node-тестов, анализатор без предупреждений, release APK
+поставлен на `44c25486`. `adb shell input tap` на этом Xiaomi запрещён (нужен «USB debugging
+(Security settings)»), поэтому руками по экранам агент не пройдёт — просите FIX.
+
+## Care Plan и цифровые паспорта техники (25.10.2026, просьба FIX)
+
+Подписка на гарантийное обслуживание: **$10/мес + HST**, бесплатная диагностика, **−30% на
+ремонт**, приоритет, ТО раз в год. Договор — бумажный бланк, заполняется у клиента; в приложении
+план заводится по номеру бланка. Паспорта — **только для новой техники**, старые заявки не трогали
+(бэкфилла нет).
+
+Данные (отдельные коллекции, не поля карточки клиента — правки и слияние карточек их не затирают):
+- `care_plans/{auto}` — `clientId`, `clientName`, `phones` (последние 10 цифр всех номеров
+  клиента; по ним сервер узнаёт звонящего), `address`, `status` (`pending` / `active` /
+  `past_due` / `paused` / `cancelled`), `contractNumber`, `signedAt`, условия на день подписания
+  (`monthlyPrice`, `discountPercent`, `minTermMonths`, `waitingDays`, `coolingOffDays`,
+  `maintenanceMonths`, `firstMaintenanceDays`), `lastMaintenanceAt`, `nextMaintenanceDue`.
+  `stripe.*` и `lastReminderKey` пишет **только сервер** — `CarePlan.toMap()` их не содержит.
+- `appliances/{code}` — id документа = публичный код с наклейки (10 знаков из
+  `23456789abcdefghjkmnpqrstuvwxyz`, `PassportCode`). `clientId`, `planId`, тип/бренд/модель/
+  серийник/дата выпуска, `serviceLog` (записи ТО, `items` по-английски — их видит клиент),
+  `stickerPrintedAt`, `status: retired` для заменённой техники.
+- Заявка: `applianceIds` (паспорта) и `carePlanId` / `carePlanKind` (`maintenance` — плановое ТО,
+  `repair` — ремонт по плану). Отдельно от `appliances`: редактор техники переписывает
+  `appliances` целиком и потерял бы привязку. `JobService.create` сам помечает заявку члена плана
+  «ремонт по плану» и привязывает паспорт, если он по типу ровно один
+  (`CarePlanService.autoTagFields`). `createRepeatFrom` поля переносит. Слияние клиентов
+  (`ClientService.mergeInto`) переносит планы и паспорта (`CarePlanService.reassignClient`).
+- Условия для новых договоров — `settings/config` (`carePlanPrice`, …, `passportBaseUrl`),
+  экран **Настройки → Care Plan** (там же реестр всех планов).
+
+Приложение:
+- `CarePlanService.start()` (из `MainScreen.initState`) — **одна** подписка на `care_plans` и
+  `appliances` на всё приложение; значки читают `CarePlanService.revision`. Поэтому
+  `CalendarTopIcons` по-прежнему держит одну подписку (тест `runtime_performance_test`).
+- Карточка клиента → блок `CarePlanSection`: оформление, оплата (QR со ссылкой Stripe на экране
+  или SMS по нажатию), «Записать на ТО» (заявка без даты визита с паспортами), «ТО выполнено»
+  (`markMaintenanceDone`: дата следующего ТО + запись в историю паспортов), паспорта: фото
+  шильдика → `AiService.readNameplate` → печать наклейки.
+- Заявка → `CarePlanJobBanner` над вкладками: «CARE PLAN · гарантийный вызов», выбор
+  «Ремонт по плану / Плановое ТО / Обычный», привязка паспортов. Своя подписка на документ
+  заявки, только пока планы вообще есть.
+- Звонки: `CarePlanCallBadge` на экране звонка, `CarePlanMark` в истории звонков. Нативная
+  шторка входящего (`IncomingCallNotifier.carePlanLabel`) дописывает «· CARE PLAN» по номеру из
+  `FlutterSharedPreferences` → `flutter.care_plan_callers` (JSON номер→подпись, пишет
+  `CarePlanService`). Сеть не нужна, ошибка — звонок без подписи.
+- Шапка календаря: `CarePlanAttentionButton` (щит с числом) — платёж не прошёл / пора ТО / скоро
+  ТО (`carePlanRemindDays`, по умолчанию 14) / договор без оплаты 2+ дня.
+- Даты плана — календарные (`CarePlan.addDays` / `daysBetween`), **не** `add(Duration(days:))`:
+  через перевод часов 1 ноября срок съезжал на 23:00 предыдущего дня (поймал тест).
+
+Наклейки (Phomemo M250):
+- BLE — свой нативный `StickerPrinterBle.kt` (канал `fix_appliance/sticker_printer`), **без
+  пакетов**: у flutter_blue_plus коммерческая лицензия, а AGP 9 ломает старые плагины. Сервис
+  `ff00`, запись в `ff02`, MTU 247, каждая запись ждёт `onCharacteristicWrite`.
+- Протокол — M-серия phomymo (`PhomemoCommands`): `ESC @` → `ESC 7 07 <нагрев> 02` →
+  `GS | <плотность>` → заголовок `GS v 0` **отдельной записью** → растр → `ESC J <подача>`,
+  паузы 100/30/50/0/300/800 мс. Строка — **ровно 72 байта**, наклейка по центру головы.
+  Проверено чужим живым M250 (phomymo issue #17, FW 1.0.0.A): с шириной 76 принтер
+  получает данные и молча ничего не делает, с 72 (профиль M221/M260) печатает.
+- 27.10.2026 трижды гадали вслепую и сломали это: ставили протокол M110 (`ESC N`,
+  `1F 11 0A`, `1F F0`), ширину по наклейке, канал `49535343-…`, Classic SPP — всё
+  откатено. Урок: буфер logcat на Xiaomi держит минуты, логи печати пропадали —
+  сначала `adb logcat -G 16M` и живой захват, потом нажимать «Печать».
+- Транспорт как у phomymo: перед печатью подписка на `ff03` (CCCD), принтер отвечает
+  `01 01` на запись и `1A <тип> <знач>` на запросы `1F 11 08/11/07` (батарея, бумага,
+  прошивка). `1A 06 88` — нет бумаги, `1A 0B B8` — задание отклонено. Если подписка
+  рвёт связь (так у M110S) — `NotifyDropped`, печать заново без неё. Все шаги и
+  ответы — в лог `StickerPrinterBle` с метками времени.
+- **28.10.2026 печатает на нашем M250** (FW 1.0.0, адрес …:A7:7B, LE, bond есть):
+  сервисы `1800` и `ff00` (`ff01`/read, `ff02`/write+no-rsp, `ff03`/notify), MTU 200,
+  ответы `02 b6 00`, `1a 04 4d` (батарея 77 %), `1a 06 89` (бумага есть),
+  `1a 07 01 00 00`; 17 301 байт за 5,8 с. Обрезка с одного края в тот раз — не тот
+  рулон, не код. Xiaomi не даёт `adb shell input tap` (нужна «Отладка по USB
+  (настройки безопасности)»), поэтому кнопку печати жмёт FIX.
+- Отрисовка `StickerRenderer` (8 точек/мм, QR из пакета `qr`, текст по-английски) — одна и та
+  же для превью и растра. Настройки принтера — на телефоне (SharedPreferences), не в Firestore.
+- **Состав наклейки (28.10.2026, просьба FIX, не возвращать старое).** Широкие (50×30, 60×40,
+  70×40): сверху во всю ширину крупный заголовок `StickerContent.shopName` = «FIX-Appliance.CA»
+  (5 мм; **не** название компании из настроек), под ним QR слева (на 50×30 ≈18 мм, модуль
+  5 точек) и справа: вид техники (`englishType`, без марки), «Model …», а если модели нет —
+  «S/N …», и телефон компании без «Service:». «Appliance Passport» и «Scan for service history ·
+  код» убраны: на 50×30 телефон обрезался многоточием, а в колонке рядом с QR заголовок крупнее
+  не помещался. Узкие (40×30, 50×50): QR, заголовок, вид, телефон.
+
+Сервер:
+- Публичная страница паспорта — ветка в функции `p` (`passport.js`): хостинг уже отдаёт все пути
+  в `p`, так что `https://doc.fix-appliance.ca/a/<код>` работает без правки `firebase.json`. На
+  странице нет имени/адреса/телефона клиента и цен; только латиница; `noindex`.
+- Stripe: `createCarePlanCheckout` (Checkout `mode=subscription`, $10 + отдельная строка HST,
+  открытая ссылка переиспользуется), `syncCarePlanSubscription` (сверка напрямую, если вебхук не
+  дошёл), в `stripeWebhook` ветки `invoice.paid` (счёт подписки — до старого обработчика),
+  `invoice.payment_failed`, `customer.subscription.created|updated|deleted`. Страница «спасибо»
+  (`stripePaymentComplete` → `handleCheckoutCompleted`) включает план сразу. Для продлений и
+  отказов эти события **должны быть включены у вебхука в кабинете Stripe**.
+- `carePlanReminders` — каждый день 9:00 Торонто: «скоро ТО» / «пора ТО» / «не оплачен», каждое
+  один раз (`lastReminderKey`). Пуш `type: care_plan` → канал `visit_soon` → карточка клиента.
+- `notify.js`: пуш о звонке/SMS/заявке от члена плана получает заголовок «Care Plan · …»
+  (`care_plan_lookup.findMemberPlan`, кэш 5 минут, ошибка — старый заголовок).
+- Секретарь: `schedule.loadCallerSchedule` дописывает в бриф строку «CARE PLAN: …» (условия
+  плана, без обещаний времени и цен). Пока планов нет — поведение секретаря не меняется.
+- Тесты: `passport.test.js`, `care_plan.test.js`, care-plan-блок в `stripe.test.js`, заголовок в
+  `notify.test.js`; Dart — `test/care_plan_test.dart`.
+
+Развёрнуто 25.10.2026 (по решению FIX — «всё, со звонками/SMS»; `FUNCTIONS_DISCOVERY_TIMEOUT=120`,
+`--force`): новые `createCarePlanCheckout`, `syncCarePlanSubscription`, `carePlanReminders`;
+обновлены `p`, `stripeWebhook`, `stripePaymentComplete`, `checkStripePayment`, `aiVoiceRelay`,
+`aiVoiceTurn`, `incomingCall`, `dialAction`, `incomingSms`, `processIncomingSms`,
+`callStatusCallback`, `recordingComplete`, `processCallRecording`, `aiRelayComplete`,
+`processQueuedCallRecording`, `retryStuckCallAi`, `recoverStuckCallJobs`. Живая проверка:
+`doc.fix-appliance.ca/a/<неизвестный код>` → 404 «Passport not found», короткие ссылки по-прежнему
+«Link expired», `createCarePlanCheckout` без токена → 401. Проверки: 454 Flutter-теста, 306 Node,
+анализатор без предупреждений, release APK поставлен на `44c25486`.
+**Вебхук Stripe на 25.10 получает только** `checkout.session.completed`,
+`checkout.session.async_payment_succeeded`, `invoice.paid`, `payment_intent.succeeded`,
+`refund.created` — для Care Plan в кабинете Stripe нужно добавить `invoice.payment_failed`,
+`customer.subscription.updated`, `customer.subscription.deleted`. До этого просроченный платёж и
+отмена в Stripe видны только по «Сверить оплату со Stripe» в карточке клиента.
+
+**Stripe и скидка на работу (25.10.2026, просьба FIX «сделай сам всё в Stripe»).**
+- Вебхук `stripeWebhook` в кабинете Stripe дополнен через API (секрет подписи не менялся):
+  теперь ещё `invoice.payment_failed`, `customer.subscription.created|updated|deleted`.
+- Скидка — **только на работу мастера, не на запчасти**, любая (Care Plan −30% или другая).
+  `lib/models/labour_discount.dart`: строка счёта `Labour discount N%[ (Care Plan)]` с
+  отрицательной ценой, `type: Service`, `labourDiscount: true`, `discountPercent`. База — только
+  позиции с явной меткой «работа» (`Job.itemKind == 'service'`); деталь и строка без метки скидку
+  не получают. Итог, HST (на сумму после скидки), оплата и отчёты считаются как раньше, в отчётах
+  уменьшается выручка за работу. Конструктор счёта: кнопка «Скидка на работу» (процент
+  подставляется из Care Plan, если льготы клиента уже действуют), строка пересчитывается при
+  показе и при сохранении (`LabourDiscount.refresh`).
+- `createStripePayment` (режим Stripe Invoice) раньше молча пропускал строки с ценой ≤ 0 —
+  со скидкой счёт Stripe вышел бы больше, чем в CRM. Теперь строки со знаком; задеплоено 25.10.
+- Тесты: `test/labour_discount_test.dart`, «a labour discount line goes to the Stripe invoice…»
+  в `stripe.test.js`. Проверки: 457 Flutter, 307 Node, анализатор без предупреждений.

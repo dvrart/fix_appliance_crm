@@ -57,6 +57,9 @@ lib/core/api_keys.dart
 .firebase/
 .zip
 android/build/
+.gradle_iso/
+.vscode/
+fix_appliance_crm/
 /NUL
 screen*.png
 functions/tmp_*.js

@@ -11,11 +11,14 @@ import '../../shared/widgets/unsaved_changes_dialog.dart';
 import '../../core/motion.dart';
 import '../../core/ui_scale.dart';
 import '../../models/client.dart';
+import '../../models/job.dart';
 import '../../services/catalog_service.dart';
+import '../../services/job_service.dart';
 import '../../shared/widgets/keyboard_safe.dart';
 import '../../shared/widgets/phone_client_matches.dart';
 import '../../widgets/smart_address_picker.dart';
 import 'client_details_screen.dart';
+import 'client_search_filter.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../services/import_export_service.dart';
 import '../../services/client_service.dart';
@@ -37,10 +40,22 @@ class ClientsScreen extends StatefulWidget {
 
 class _ClientsScreenState extends State<ClientsScreen> {
   String _searchQuery = '';
+  final Set<ClientSearchField> _selectedFields = {};
+  final Map<ClientSearchField, TextEditingController> _fieldCtrls = {
+    for (final field in ClientSearchField.values)
+      if (field != ClientSearchField.all) field: TextEditingController(),
+  };
+  final Map<ClientSearchField, String> _fieldQueries = {
+    for (final field in ClientSearchField.values)
+      if (field != ClientSearchField.all) field: '',
+  };
+  ClientJobIndex? _jobIndex;
+  StreamSubscription<List<Job>>? _jobsSub;
   String _sortMethod = 'Имя (А-Я)';
   final ValueNotifier<Set<String>?> _selected = ValueNotifier<Set<String>?>(null);
   List<String> _visibleIds = [];
   List<Map<String, dynamic>> _latestClients = [];
+  List<Map<String, dynamic>> _allClients = [];
 
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _searchCtrl = TextEditingController();
@@ -145,13 +160,54 @@ class _ClientsScreenState extends State<ClientsScreen> {
   @override
   void dispose() {
     AppCommands.removeSelectionGuard(_dismissSelection);
+    _jobsSub?.cancel();
     _selected.dispose();
     _scrollController.dispose();
     _searchCtrl.dispose();
+    for (final ctrl in _fieldCtrls.values) {
+      ctrl.dispose();
+    }
     super.dispose();
   }
 
   void _setSelected(Set<String>? next) => _selected.value = next;
+
+  /// Фильтры включаются и выключаются независимо; «Везде» сбрасывает их все.
+  /// Город, описание и запчасти ищутся по заявкам клиента — заявки читаем,
+  /// только пока включён хотя бы один такой фильтр.
+  void _toggleSearchField(ClientSearchField field) {
+    if (field == ClientSearchField.all) {
+      if (_selectedFields.isEmpty) return;
+      _selectedFields.clear();
+    } else if (!_selectedFields.add(field)) {
+      _selectedFields.remove(field);
+    }
+    AppFeedback.pleasant();
+    setState(() {});
+    _syncJobsSubscription();
+  }
+
+  void _syncJobsSubscription() {
+    final needsJobs = _selectedFields.any((f) => f.needsJobs);
+    if (needsJobs && _jobsSub == null) {
+      _jobsSub = JobService.streamAll().listen((jobs) {
+        if (!mounted) return;
+        setState(() => _jobIndex = ClientJobIndex.build(jobs));
+      }, onError: (_) {});
+    } else if (!needsJobs && _jobsSub != null) {
+      _jobsSub?.cancel();
+      _jobsSub = null;
+      _jobIndex = null;
+    }
+  }
+
+  void _setFieldText(ClientSearchField field, String text) {
+    _fieldCtrls[field]!.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    setState(() => _fieldQueries[field] = text.toLowerCase());
+  }
 
   void _openMap() {
     AppNav.navigatorOf(context).push(
@@ -888,7 +944,248 @@ class _ClientsScreenState extends State<ClientsScreen> {
     );
   }
 
+  String _hintFor(ClientSearchField field) {
+    switch (field) {
+      case ClientSearchField.all:
+        return 'Поиск по любой информации в карточке...'.tr;
+      case ClientSearchField.city:
+        return context.tr('Город...', 'City...');
+      case ClientSearchField.name:
+        return context.tr('Имя клиента...', 'Client name...');
+      case ClientSearchField.description:
+        return context.tr(
+          'Что ремонтировали: техника, поломка...',
+          'What was repaired: appliance, problem...',
+        );
+      case ClientSearchField.parts:
+        return context.tr(
+          'Запчасть или номер детали...',
+          'Part name or number...',
+        );
+    }
+  }
+
+  IconData _fieldIcon(ClientSearchField field) {
+    switch (field) {
+      case ClientSearchField.all:
+        return Icons.manage_search;
+      case ClientSearchField.city:
+        return Icons.location_city_outlined;
+      case ClientSearchField.name:
+        return Icons.person_outline;
+      case ClientSearchField.description:
+        return Icons.handyman_outlined;
+      case ClientSearchField.parts:
+        return Icons.settings_outlined;
+    }
+  }
+
+  Widget _searchFieldChip(ClientSearchField field, IconData icon, String label) {
+    final selected = field == ClientSearchField.all
+        ? _selectedFields.isEmpty
+        : _selectedFields.contains(field);
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Material(
+        color: selected ? AppColors.primary : AppColors.card,
+        borderRadius: BorderRadius.circular(18),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: () => _toggleSearchField(field),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: selected ? AppColors.primary : AppColors.border,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  icon,
+                  size: 16,
+                  color: selected ? Colors.white : AppColors.primaryOnCard,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: selected ? Colors.white : AppColors.primaryOnCard,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Фильтры поиска. Можно включить несколько полей сразу — условия
+  /// складываются по «И»; «Везде» сбрасывает их все.
+  Widget _buildSearchFieldChips() {
+    return SizedBox(
+      height: 42,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+        children: [
+          _searchFieldChip(
+            ClientSearchField.all,
+            Icons.manage_search,
+            context.tr('Везде', 'All'),
+          ),
+          _searchFieldChip(
+            ClientSearchField.city,
+            Icons.location_city_outlined,
+            context.tr('Город', 'City'),
+          ),
+          _searchFieldChip(
+            ClientSearchField.name,
+            Icons.person_outline,
+            context.tr('Имя', 'Name'),
+          ),
+          _searchFieldChip(
+            ClientSearchField.description,
+            Icons.handyman_outlined,
+            context.tr('Описание', 'Description'),
+          ),
+          _searchFieldChip(
+            ClientSearchField.parts,
+            Icons.settings_outlined,
+            context.tr('Запчасти', 'Parts'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Быстрый выбор города: самые частые города клиентов.
+  Widget _buildCityChips() {
+    final cities = topClientCities(
+      _allClients,
+      _jobIndex ?? ClientJobIndex.empty,
+    );
+    if (cities.isEmpty) return const SizedBox.shrink();
+    final cityQuery = _fieldQueries[ClientSearchField.city] ?? '';
+    return SizedBox(
+      height: 36,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+        children: [
+          for (final city in cities)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: ActionChip(
+                label: Text(city),
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                labelStyle: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: cityQuery == city.toLowerCase()
+                      ? Colors.white
+                      : AppColors.primaryOnCard,
+                ),
+                backgroundColor: cityQuery == city.toLowerCase()
+                    ? AppColors.primary
+                    : AppColors.cardMuted,
+                side: BorderSide(color: AppColors.border),
+                onPressed: () => _setFieldText(
+                  ClientSearchField.city,
+                  cityQuery == city.toLowerCase() ? '' : city,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSearchBar() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildSearchFieldChips(),
+        if (_selectedFields.contains(ClientSearchField.city)) _buildCityChips(),
+        if (_selectedFields.isEmpty)
+          _buildSearchRow()
+        else
+          ..._buildFieldSearchRows(),
+      ],
+    );
+  }
+
+  /// По полю поиска на каждый включённый фильтр; все условия — по «И».
+  List<Widget> _buildFieldSearchRows() {
+    final fields = ClientSearchField.values
+        .where((f) => f != ClientSearchField.all && _selectedFields.contains(f))
+        .toList();
+    return [
+      for (var i = 0; i < fields.length; i++)
+        Padding(
+          padding: EdgeInsets.fromLTRB(
+            12,
+            6,
+            12,
+            i == fields.length - 1 ? 10 : 0,
+          ),
+          child: Row(
+            children: [
+              Expanded(child: _buildFieldSearchField(fields[i])),
+              if (i == 0) ...[
+                const SizedBox(width: 10),
+                _buildAddFab(),
+              ],
+            ],
+          ),
+        ),
+    ];
+  }
+
+  Widget _buildFieldSearchField(ClientSearchField field) {
+    final ctrl = _fieldCtrls[field]!;
+    return TextField(
+      controller: ctrl,
+      decoration: InputDecoration(
+        hintText: _hintFor(field),
+        hintMaxLines: 1,
+        prefixIcon: Icon(_fieldIcon(field), color: Colors.grey, size: 20),
+        suffixIcon: ctrl.text.isEmpty
+            ? null
+            : IconButton(
+                tooltip: 'Очистить'.tr,
+                icon: const Icon(Icons.clear, color: Colors.grey, size: 20),
+                onPressed: () => _setFieldText(field, ''),
+              ),
+        filled: true,
+        fillColor: AppColors.card,
+        contentPadding: const EdgeInsets.symmetric(vertical: 0),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: AppColors.border),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: AppColors.border),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: AppColors.primary, width: 1.4),
+        ),
+      ),
+      onChanged: (val) {
+        setState(() => _fieldQueries[field] = val.toLowerCase());
+      },
+    );
+  }
+
+  Widget _buildSearchRow() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
       child: Row(
@@ -897,7 +1194,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
             child: TextField(
               controller: _searchCtrl,
               decoration: InputDecoration(
-                hintText: 'Поиск по любой информации в карточке...'.tr,
+                hintText: _hintFor(ClientSearchField.all),
                 hintMaxLines: 1,
                 prefixIcon: const Icon(Icons.search, color: Colors.grey),
                 filled: true,
@@ -924,19 +1221,23 @@ class _ClientsScreenState extends State<ClientsScreen> {
             ),
           ),
           const SizedBox(width: 10),
-          SizedBox(
-            width: 52,
-            height: 52,
-            child: FloatingActionButton(
-              heroTag: 'clients-add',
-              backgroundColor: AppColors.accent,
-              foregroundColor: AppColors.primary,
-              elevation: 2,
-              onPressed: _showAddClientDialog,
-              child: const Icon(Icons.add, size: 32),
-            ),
-          ),
+          _buildAddFab(),
         ],
+      ),
+    );
+  }
+
+  Widget _buildAddFab() {
+    return SizedBox(
+      width: 52,
+      height: 52,
+      child: FloatingActionButton(
+        heroTag: 'clients-add',
+        backgroundColor: AppColors.accent,
+        foregroundColor: AppColors.primary,
+        elevation: 2,
+        onPressed: _showAddClientDialog,
+        child: const Icon(Icons.add, size: 32),
       ),
     );
   }
@@ -1006,13 +1307,31 @@ class _ClientsScreenState extends State<ClientsScreen> {
                   return data;
                 }).where((data) => data['deletedAt'] == null).toList();
                 ClientService.syncRegularFromMaps(clients);
+                _allClients = clients;
 
-                if (_searchQuery.isNotEmpty) {
+                final criteria = <ClientSearchCriterion>[
+                  if (_selectedFields.isEmpty && _searchQuery.isNotEmpty)
+                    ClientSearchCriterion(ClientSearchField.all, _searchQuery),
+                  for (final field in _selectedFields)
+                    if ((_fieldQueries[field] ?? '').trim().isNotEmpty)
+                      ClientSearchCriterion(field, _fieldQueries[field] ?? ''),
+                ];
+                final hasFilters = criteria.isNotEmpty;
+
+                if (hasFilters) {
+                  // Заявки для фильтра ещё грузятся — не показываем пустой
+                  // список, будто никого не нашли.
+                  if (criteria.any((c) => c.field.needsJobs) &&
+                      _jobIndex == null) {
+                    return const AppLoading();
+                  }
+                  final index = _jobIndex ?? ClientJobIndex.empty;
                   clients = clients.where((data) {
-                    return ClientService.matchesMap(
+                    return clientMatchesAll(
                       data,
                       data['id'] as String,
-                      _searchQuery,
+                      index,
+                      criteria,
                     );
                   }).toList();
                 }
@@ -1049,7 +1368,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 List<String> letters = [];
                 Map<String, int> letterIndexes = {};
 
-                if (_sortMethod == 'Имя (А-Я)' && _searchQuery.isEmpty) {
+                if (_sortMethod == 'Имя (А-Я)' && !hasFilters) {
                   for (int i = 0; i < clients.length; i++) {
                     String name = clients[i]['display_name'];
                     if (name.isNotEmpty && name != 'Без имени') {

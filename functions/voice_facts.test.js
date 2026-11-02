@@ -11,6 +11,30 @@ const ZONE = [
   { lat: 42.7, lng: -81.0 },
 ];
 
+test('SMS только с номером квартиры — это квартира к адресу, а не новый адрес', () => {
+  assert.equal(voiceFacts.unitOnlyAddress('Unit 23'), 'Unit 23');
+  assert.equal(voiceFacts.unitOnlyAddress('unit #23'), 'Unit 23');
+  assert.equal(voiceFacts.unitOnlyAddress('Apt. 5b'), 'Apt 5B');
+  assert.equal(voiceFacts.unitOnlyAddress('apartment 12'), 'Apt 12');
+  assert.equal(voiceFacts.unitOnlyAddress('Suite 200'), 'Suite 200');
+  assert.equal(voiceFacts.unitOnlyAddress('#7'), '#7');
+  assert.equal(voiceFacts.unitOnlyAddress('кв. 23'), 'Unit 23');
+  assert.equal(voiceFacts.unitOnlyAddress('190 Argyle Street'), '');
+  assert.equal(voiceFacts.unitOnlyAddress('Unit 23, 190 Argyle Street'), '');
+  assert.equal(voiceFacts.unitOnlyAddress(''), '');
+
+  assert.equal(
+    voiceFacts.addressWithUnit('190 Argyle Street, Simcoe', 'Unit 23'),
+    '190 Argyle Street, Unit 23, Simcoe'
+  );
+  assert.equal(
+    voiceFacts.addressWithUnit('190 Argyle Street, Unit 4, Simcoe, N3Y 1V7', 'Unit 23'),
+    '190 Argyle Street, Unit 23, Simcoe, N3Y 1V7'
+  );
+  assert.equal(voiceFacts.addressWithUnit('190 Argyle Street', 'Apt 5'), '190 Argyle Street, Apt 5');
+  assert.equal(voiceFacts.addressWithUnit('190 Argyle Street, #9, Simcoe', ''), '190 Argyle Street, Simcoe');
+});
+
 test('секретарь не назначает визит: промпт и прощание обещают звонок мастера', () => {
   for (const flow of [voiceFacts.VOICE_CALL_FLOW, voiceFacts.VOICE_LIVE_FLOW]) {
     assert.match(flow, /You do NOT book visits/);

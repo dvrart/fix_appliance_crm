@@ -16,8 +16,9 @@ import '../app_nav.dart';
 /// над лентой, но она съедала верх экрана — по просьбе FIX (21.10.2026) она
 /// стала значком в правом верхнем углу, рядом с кнопкой контакта.
 ///
-/// Заявки нет — кнопки нет вообще: в карточке звонка на этот случай стоит
-/// «Создать заявку на ремонт».
+/// Заявки нет — кнопки нет. Если передан [onCreateJob], вместо пустоты
+/// показывается кнопка «Создать заявку»: в переписке с неизвестным номером
+/// это единственный путь завести карточку клиента и заявку.
 class JobLinkButton extends StatefulWidget {
   /// Заявка, привязанная напрямую (`call.createdJobId`, `message.jobId`).
   final String? jobId;
@@ -26,11 +27,20 @@ class JobLinkButton extends StatefulWidget {
   final String? clientId;
   final String phone;
 
+  /// Что делать, когда заявки не нашлось. Пусто — кнопка не рисуется вовсе.
+  final VoidCallback? onCreateJob;
+
+  /// Кнопка занята: ИИ разбирает переписку перед созданием заявки.
+  /// Вместо значка показывается индикатор.
+  final bool busy;
+
   const JobLinkButton({
     super.key,
     this.jobId,
     this.clientId,
     this.phone = '',
+    this.onCreateJob,
+    this.busy = false,
   });
 
   /// Заявка, к которой относится разговор: сперва прямая привязка, потом
@@ -136,7 +146,33 @@ class _JobLinkButtonState extends State<JobLinkButton> {
   @override
   Widget build(BuildContext context) {
     final job = _job;
-    if (job == null) return const SizedBox.shrink();
+    if (job == null) {
+      final create = widget.onCreateJob;
+      if (create == null) return const SizedBox.shrink();
+      // Заметная кнопка, как у звонка в шапке: в переписке с незнакомым
+      // номером мастер ищет именно её — «как завести заявку». Пока ИИ
+      // разбирает переписку, горит индикатор; повторные нажатия гасит
+      // сам обработчик.
+      return IconButton.filled(
+        visualDensity: VisualDensity.compact,
+        icon: widget.busy
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.black,
+                ),
+              )
+            : const Icon(Icons.add_task, size: 20),
+        tooltip: context.tr('Создать заявку', 'Create job'),
+        style: IconButton.styleFrom(
+          backgroundColor: AppColors.accent,
+          foregroundColor: Colors.black,
+        ),
+        onPressed: create,
+      );
+    }
     final appliance =
         (job.primaryAppliance?.displayName ?? job.applianceType).trim();
     return IconButton(

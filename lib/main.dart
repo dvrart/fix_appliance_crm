@@ -42,6 +42,11 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Кэш картинок по умолчанию — 100 МБ. На этом телефоне приложение и так
+  // держит 300–500 МБ, и сверху кэш добивает его до закрытия системой.
+  // 40 МБ хватает на миниатюры; лишнее Flutter выбрасывает сам.
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 40 << 20;
+  PaintingBinding.instance.imageCache.maximumSize = 80;
   await SystemChrome.setPreferredOrientations(const [
     DeviceOrientation.portraitUp,
   ]);
@@ -90,6 +95,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
       await initializeDateFormatting('en', null);
       // Всё, что стучится в сеть. Без интернета не держим заставку: эти
       // настройки подтянутся сами, когда связь появится.
+      await AuthService.ensureSignedIn();
       await AppTimeService.ensureInitialized();
       for (final initialize in [
         SettingsService.ensureAiVoiceSettings,

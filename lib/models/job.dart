@@ -145,21 +145,6 @@ class JobVisit {
     return state == 'approved' || state == 'sending';
   }
 
-  /// pending / confirmed / reschedule / cancelled.
-  String get effectiveConfirmStatus {
-    if (smsConfirmStatus == confirmConfirmed ||
-        smsConfirmStatus == confirmReschedule ||
-        smsConfirmStatus == confirmCancelled) {
-      return smsConfirmStatus;
-    }
-    if (smsConfirmStatus == confirmPending ||
-        smsBookingSentAt != null ||
-        smsReminderSentAt != null) {
-      return confirmPending;
-    }
-    return '';
-  }
-
   factory JobVisit.create({
     required DateTime startAt,
     int durationMinutes = kDefaultVisitMinutes,
@@ -306,23 +291,6 @@ class JobVisit {
           ? false
           : (smsBookingSentEmail ?? this.smsBookingSentEmail),
       smsBookingVia: clearSms ? '' : (smsBookingVia ?? this.smsBookingVia),
-    );
-  }
-
-  JobVisit withManualConfirm(String status) {
-    final next = status.trim().isEmpty ? confirmPending : status;
-    var nextOutcome = outcome;
-    if (outcome != done) {
-      if (next == confirmCancelled) {
-        nextOutcome = cancelled;
-      } else if (outcome == cancelled) {
-        nextOutcome = scheduled;
-      }
-    }
-    return copyWith(
-      smsConfirmStatus: next,
-      outcome: nextOutcome,
-      clearSmsDialog: true,
     );
   }
 
@@ -533,6 +501,20 @@ class Job {
   final bool duplicateDismissed;
   final DateTime? deletedAt;
 
+  /// Паспорта техники клиента (коды с наклеек), к которым относится заявка.
+  /// Отдельным полем, а не внутри `appliances`: редактор техники переписывает
+  /// `appliances` целиком и потерял бы привязку.
+  final List<String> applianceIds;
+
+  /// Care Plan, по которому идёт заявка, и вид вызова: `maintenance`
+  /// (плановое ТО) или `repair` (ремонт по плану). Пусто — обычный вызов.
+  final String carePlanId;
+  final String carePlanKind;
+
+  /// День, к которому клиенту обещали запчасть. Не слот календаря: визит
+  /// ставится отдельно, когда запчасть уже есть.
+  final DateTime? promisedPartAt;
+
   Job({
     required this.id,
     required this.clientId,
@@ -580,6 +562,10 @@ class Job {
     this.possibleDuplicateOfJobId = '',
     this.duplicateDismissed = false,
     this.deletedAt,
+    this.applianceIds = const [],
+    this.carePlanId = '',
+    this.carePlanKind = '',
+    this.promisedPartAt,
   });
 
   /// Закрытый дубляж: его данные уже переехали в другую заявку.
@@ -716,11 +702,19 @@ class Job {
     return '';
   }
 
-  /// Контактное имя на месте
+  /// Контактное имя на месте. Телефон сюда не подставляется: пустое имя — это
+  /// сам клиент, а не его номер.
   String get contactName {
-    final site = SmsText.stripClientWord(jobSiteName, jobSitePhone);
+    final site = SmsText.stripClientWord(jobSiteName);
+    if (hasJobSite &&
+        site.isNotEmpty &&
+        !SmsText.isPlaceholderName(site)) {
+      return site;
+    }
+    final owner = SmsText.stripClientWord(clientName);
+    if (owner.isNotEmpty && !SmsText.isPlaceholderName(owner)) return owner;
     if (hasJobSite && site.isNotEmpty) return site;
-    return SmsText.stripClientWord(clientName, contactPhone);
+    return owner;
   }
 
   /// Контактный телефон на месте
@@ -1246,7 +1240,6 @@ class Job {
       clientId: map['clientId'] ?? '',
       clientName: SmsText.stripClientWord(
         (map['clientName'] ?? map['name'] ?? '').toString(),
-        clientPhone,
       ),
       clientPhone: clientPhone,
       clientAddress: map['clientAddress'] ?? '',
@@ -1258,7 +1251,7 @@ class Job {
       hasJobSite: map['hasJobSite'] ?? false,
       jobSiteName: rawSiteName == null
           ? null
-          : SmsText.stripClientWord(rawSiteName, rawSitePhone ?? clientPhone),
+          : SmsText.stripClientWord(rawSiteName),
       jobSitePhone: rawSitePhone,
       jobSiteAddress: map['jobSiteAddress'],
       jobSiteEmail: (map['jobSiteEmail'] ?? '').toString().trim().isEmpty
@@ -1307,6 +1300,16 @@ class Job {
           .trim(),
       duplicateDismissed: map['duplicateDismissed'] == true,
       deletedAt: parseDate(map['deletedAt']),
+      applianceIds: (map['applianceIds'] is List)
+          ? (map['applianceIds'] as List)
+                .map((id) => id.toString().trim())
+                .where((id) => id.isNotEmpty)
+                .toList()
+          : const [],
+      carePlanId: (map['carePlanId'] ?? '').toString().trim(),
+      carePlanKind: (map['carePlanKind'] ?? '').toString().trim(),
+      promisedPartAt:
+          parseDate(map['promisedPartAt']) ?? parseDate(map['agreedReturnAt']),
     );
   }
 
@@ -1357,6 +1360,10 @@ class Job {
       'mergedFromJobIds': mergedFromJobIds,
       'possibleDuplicateOfJobId': possibleDuplicateOfJobId,
       'duplicateDismissed': duplicateDismissed,
+      if (applianceIds.isNotEmpty) 'applianceIds': applianceIds,
+      if (carePlanId.isNotEmpty) 'carePlanId': carePlanId,
+      if (carePlanKind.isNotEmpty) 'carePlanKind': carePlanKind,
+      'promisedPartAt': promisedPartAt,
       'updatedAt': FieldValue.serverTimestamp(),
       ...JobVisit.syncFields(
         coalescedVisits,
@@ -1412,6 +1419,11 @@ class Job {
     String? possibleDuplicateOfJobId,
     bool? duplicateDismissed,
     DateTime? deletedAt,
+    List<String>? applianceIds,
+    String? carePlanId,
+    String? carePlanKind,
+    DateTime? promisedPartAt,
+    bool clearPromisedPartAt = false,
   }) {
     return Job(
       id: id ?? this.id,
@@ -1461,6 +1473,11 @@ class Job {
           possibleDuplicateOfJobId ?? this.possibleDuplicateOfJobId,
       duplicateDismissed: duplicateDismissed ?? this.duplicateDismissed,
       deletedAt: deletedAt ?? this.deletedAt,
+      applianceIds: applianceIds ?? this.applianceIds,
+      carePlanId: carePlanId ?? this.carePlanId,
+      carePlanKind: carePlanKind ?? this.carePlanKind,
+      promisedPartAt:
+          clearPromisedPartAt ? null : (promisedPartAt ?? this.promisedPartAt),
     );
   }
 }

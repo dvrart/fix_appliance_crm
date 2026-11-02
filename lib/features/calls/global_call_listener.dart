@@ -60,8 +60,8 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
     unawaited(TwilioService.refreshRegistration());
     // Вернулись в приложение — сверяем шторку: разобранному в ней не место.
     unawaited(InboxPushMirror.sweep());
-    final dropped = await TwilioService.dropStaleIncomingIfNeeded();
-    if (!mounted || dropped) return;
+    unawaited(TwilioService.dropStaleIncomingIfNeeded());
+    if (!mounted) return;
     await _openActiveCallScreen(resume: true);
   }
 
@@ -85,7 +85,11 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
     return status == 'connected' ||
         status == 'calling' ||
         status == 'connecting' ||
-        status == 'ringing';
+        status == 'ringing' ||
+        status == 'answering' ||
+        status == 'reconnecting' ||
+        status == 'audioFailed' ||
+        status == 'movingToCell';
   }
 
   void _onCallStatus(String status) {
@@ -124,7 +128,7 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
 
     if (isIncomingRing) {
       _incomingDebounce?.cancel();
-      _incomingDebounce = Timer(const Duration(milliseconds: 400), () {
+      _incomingDebounce = Timer(const Duration(milliseconds: 50), () {
         unawaited(_openActiveCallScreen());
       });
       return;
@@ -143,13 +147,12 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
       return;
     }
     final lifecycle = WidgetsBinding.instance.lifecycleState;
-    if (lifecycle == AppLifecycleState.paused ||
-        lifecycle == AppLifecycleState.detached) {
+    if (lifecycle == AppLifecycleState.detached) {
       return;
     }
     _callScreenShown = true;
     try {
-      if (await TwilioService.dropStaleIncomingIfNeeded()) return;
+      unawaited(TwilioService.dropStaleIncomingIfNeeded());
       if (!mounted || !_isLive(TwilioService.callStatus)) return;
       final activeCall =
           TwilioService.activeCall ??
@@ -183,9 +186,15 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
     if (isIncoming &&
         phone.replaceAll(RegExp(r'\D'), '').length < 10 &&
         sid != null) {
-      phone = await _inboundCaller(sid) ?? phone;
+      phone =
+          await _inboundCaller(
+            sid,
+          ).timeout(const Duration(milliseconds: 200), onTimeout: () => null) ??
+          phone;
     }
-    final name = await _resolveContactName(phone);
+    final name = await _resolveContactName(
+      phone,
+    ).timeout(const Duration(milliseconds: 200), onTimeout: () => null);
     if (!mounted || !navigator.mounted || !_isLive(TwilioService.callStatus)) {
       return;
     }

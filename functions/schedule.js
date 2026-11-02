@@ -4,6 +4,7 @@
  */
 const admin = require('firebase-admin');
 const voiceFacts = require('./voice_facts');
+const carePlanLookup = require('./care_plan_lookup');
 
 const COMPANY_ID = 'fix_appliance_ca';
 const BOOKING_MINUTES = 120;
@@ -554,11 +555,19 @@ async function loadCallerSchedule(caller) {
   const jobs = snapshot.docs.map((doc) => ({ ...doc.data(), id: doc.id }))
     .filter((job) => belongsToCaller(job, caller));
   const now = Date.now();
+  // Звонит клиент на Care Plan — секретарь знает, что это вызов по плану.
+  let planLine = '';
+  try {
+    const plan = await carePlanLookup.findMemberPlan({ phone: caller.phone, clientId: caller.clientId });
+    planLine = carePlanLookup.secretaryBriefLine(plan);
+  } catch (_) {
+    planLine = '';
+  }
   return {
     ok: true,
     checkedAt: new Date(now).toISOString(),
     appointments: callerAppointments(jobs, now),
-    brief: describeCallerJobs(jobs, now),
+    brief: [describeCallerJobs(jobs, now), planLine].filter(Boolean).join(' '),
   };
 }
 

@@ -42,10 +42,21 @@ class PartsQueueScreen extends StatelessWidget {
               ),
             );
           }
-          jobs.sort(
-            (a, b) => (a.scheduledAt ?? a.createdAt)
-                .compareTo(b.scheduledAt ?? b.createdAt),
-          );
+          final today = DateTime.now();
+          final startOfToday = DateTime(today.year, today.month, today.day);
+          // 0 — срок прошёл, 1 — срок ещё впереди, 2 — день не обещан.
+          int rank(Job job) {
+            final promised = job.promisedPartAt;
+            if (promised == null) return 2;
+            return promised.isBefore(startOfToday) ? 0 : 1;
+          }
+
+          jobs.sort((a, b) {
+            final byRank = rank(a).compareTo(rank(b));
+            if (byRank != 0) return byRank;
+            return (a.promisedPartAt ?? a.createdAt)
+                .compareTo(b.promisedPartAt ?? b.createdAt);
+          });
           return ListView.separated(
             padding: const EdgeInsets.all(16),
             itemCount: jobs.length,
@@ -56,6 +67,9 @@ class PartsQueueScreen extends StatelessWidget {
               final partLabel = parts.isEmpty
                   ? 'Запчасть не указана'.tr
                   : parts.join(', ');
+              final promised = job.promisedPartAt;
+              final overdue =
+                  promised != null && promised.isBefore(startOfToday);
               return Card(
                 elevation: 0,
                 shape: RoundedRectangleBorder(
@@ -81,10 +95,14 @@ class PartsQueueScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         CircleAvatar(
-                          backgroundColor: AppColors.accent.withValues(alpha: 0.25),
+                          backgroundColor: overdue
+                              ? const Color(0xFFD32F2F).withValues(alpha: 0.15)
+                              : AppColors.accent.withValues(alpha: 0.25),
                           child: Icon(
                             Icons.local_shipping,
-                            color: AppColors.primary,
+                            color: overdue
+                                ? const Color(0xFFD32F2F)
+                                : AppColors.primary,
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -131,6 +149,19 @@ class PartsQueueScreen extends StatelessWidget {
                                   job.workAddress,
                                   style: TextStyle(
                                     color: Colors.grey.shade600,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              if (promised != null)
+                                Text(
+                                  overdue
+                                      ? '${'Обещал к'.tr} ${DateFormat('d MMM', AppLocale.instance.dateLocale).format(promised)} — ${'срок прошёл'.tr}'
+                                      : '${'Обещал к'.tr} ${DateFormat('d MMM', AppLocale.instance.dateLocale).format(promised)}',
+                                  style: TextStyle(
+                                    color: overdue
+                                        ? const Color(0xFFC62828)
+                                        : AppColors.primary,
+                                    fontWeight: FontWeight.w700,
                                     fontSize: 13,
                                   ),
                                 ),

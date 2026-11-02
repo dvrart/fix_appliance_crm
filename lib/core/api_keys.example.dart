@@ -18,3 +18,7 @@ const String kFirebaseFunctionsUrl =
 /// 2nd-gen call recording proxy (Cloud Run).
 const String kCallRecordingAudioUrl =
     'https://callrecordingaudio-wmdrqa3n7q-uc.a.run.app';
+
+/// Built-in owner sign-in (Firebase Auth)
+const String kOwnerEmail = '';
+const String kOwnerPassword = '';

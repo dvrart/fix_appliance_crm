@@ -16,6 +16,8 @@ let transactionTail;
 let geminiScript;
 let geminiCalls;
 let downloads;
+let pings;
+let twilioUpdates;
 
 class FakeTimestamp extends Date {
   toDate() { return new Date(this); }
@@ -104,7 +106,10 @@ class FakeGemini {
 
 const handler = (...args) => args.at(-1);
 const fakeTwilio = Object.assign(() => ({
-  calls: Object.assign(() => ({ fetch: async () => ({ status: 'completed' }) }), { list: async () => [] }),
+  calls: Object.assign((sid) => ({
+    fetch: async () => ({ status: 'completed' }),
+    update: async (params) => { twilioUpdates.push({ sid, ...params }); return {}; },
+  }), { list: async () => [] }),
   recordings: { list: async () => [] },
   messages: { create: async () => ({ sid: 'SM-synthetic', status: 'queued' }) },
 }), realTwilio);
@@ -116,7 +121,11 @@ Module._load = function (name) {
   if (name === 'firebase-functions/v2/firestore') return { onDocumentWritten: handler };
   if (name === 'firebase-functions/v2/scheduler') return { onSchedule: handler };
   if (name === './auth_guard') return { requireTwilioSignature: () => true, requireAppUser: async () => ({ uid: 'owner' }), verifyAppUser: async () => ({ uid: 'owner' }) };
-  if (name === './notify') return { notifyMaster: async (title, body, data) => notifications.push({ title, body, data }), registerDeviceToken: async () => {} };
+  if (name === './notify') return {
+    notifyMaster: async (title, body, data) => notifications.push({ title, body, data }),
+    pingMaster: async (data) => pings.push(data),
+    registerDeviceToken: async () => {},
+  };
   if (name === '@google/generative-ai') return { ...realGemini, GoogleGenerativeAI: FakeGemini };
   if (name === './recording_store') return {
     ...realRecordingStore,
@@ -197,6 +206,8 @@ beforeEach(() => {
   geminiScript = washer();
   geminiCalls = [];
   downloads = [];
+  pings = [];
+  twilioUpdates = [];
   generated = 0;
 });
 
@@ -370,5 +381,124 @@ test('a shorter Russian translation is kept over a longer English live transcrip
   assert.match(done.transcriptionRu, /Стиралка не сливает/);
   assert.doesNotMatch(done.transcriptionRu, /How can I help you today/);
   assert.match(done.transcription, /Стиралка не сливает/);
+});
+
+// Звонок через SIM мастера (27.10.2026): режимы «приложение / сотовая / авто»,
+// «нажмите 1» на SIM, перевод живого звонка из приложения на SIM и исходящий
+// клиенту через сотовую.
+const MASTER_CELL = '+15195550123';
+async function webhookQ(fn, body, query) {
+  const res = response();
+  const req = request(body);
+  req.query = query;
+  await fn(req, res);
+  assert.equal(res.statusCode, 200);
+  return res.body;
+}
+function routeMode(mode) {
+  apply(`${COMPANY}/settings/config`, { callRoute: mode, masterCellNumber: '519-555-0123' });
+}
+
+test('cell mode: the client rings the master SIM, the master presses 1 and the phone buzzes', async () => {
+  routeMode('cell');
+  const sid = `CA${'1'.repeat(32)}`;
+  const ring = await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });
+  assert.match(ring, /<Number url="[^"]*stage=screen[^"]*">\+15195550123<\/Number>/);
+  assert.doesNotMatch(ring, /<Client>/);
+  assert.equal(call(sid).ringVia, 'cell');
+  const screen = await webhookQ(api.dialAction, { CallSid: 'CAleg' }, { stage: 'screen', parent: sid });
+  assert.match(screen, /Нажмите 1/);
+  const accepted = await webhookQ(api.dialAction, { CallSid: 'CAleg', Digits: '1' }, { stage: 'accept', parent: sid });
+  assert.match(accepted, /<Play digits="9"\/>/);
+  assert.equal(call(sid).answeredVia, 'cell');
+  assert.ok(call(sid).cellAcceptedAt);
+  assert.deepEqual(pings.map((ping) => ping.type), ['call_connected']);
+  const end = await webhookQ(api.dialAction, { CallSid: sid, DialCallStatus: 'completed', DialCallDuration: '40' }, { leg: 'cell' });
+  assert.doesNotMatch(end, /<Stream|<Gather/);
+  assert.notEqual(call(sid).answeredBy, 'ai');
+});
+
+test('cell mode: voicemail or another digit on the SIM hands the client to Sarah', async () => {
+  routeMode('cell');
+  const sid = `CA${'2'.repeat(32)}`;
+  await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });
+  const declined = await webhookQ(api.dialAction, { CallSid: 'CAleg', Digits: '2' }, { stage: 'accept', parent: sid });
+  assert.match(declined, /<Hangup\/>/);
+  assert.equal(pings.length, 0);
+  const live = await webhookQ(api.dialAction, { CallSid: sid, DialCallStatus: 'completed' }, { leg: 'cell' });
+  assert.match(live, /<Stream[^>]*url="wss:\/\/relay\.test\/stream"/);
+  assert.equal(call(sid).answeredBy, 'ai');
+});
+
+test('app and auto modes still ring the app first', async () => {
+  for (const [mode, digit] of [['app', '3'], ['auto', '4']]) {
+    routeMode(mode);
+    const sid = `CA${digit.repeat(32)}`;
+    const ring = await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });
+    assert.match(ring, /<Client>/);
+    assert.doesNotMatch(ring, /<Number/);
+  }
+});
+
+test('when the app could not bring up audio, the call moves to the SIM instead of ending', async () => {
+  routeMode('auto');
+  const sid = `CA${'5'.repeat(32)}`;
+  await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });
+  apply(`${COMPANY}/calls/${sid}`, { moveToCellRequested: true });
+  const moved = await webhook(api.dialAction, { CallSid: sid, DialCallStatus: 'completed', DialCallDuration: '6' });
+  assert.match(moved, /<Number url="[^"]*stage=screen[^"]*">\+15195550123<\/Number>/);
+  assert.match(moved, /<Dial[^>]*callerId="\+14165550101"/);
+  assert.equal(call(sid).movedToCellBy, 'dialAction');
+});
+
+test('the app asks the server to move a live call: Twilio is redirected once', async () => {
+  routeMode('auto');
+  const sid = `CA${'6'.repeat(32)}`;
+  await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });
+  const first = response();
+  await api.moveCallToCell(request({ callSid: sid }), first);
+  assert.deepEqual(first.body, { moved: true });
+  assert.equal(twilioUpdates.length, 1);
+  assert.equal(twilioUpdates[0].sid, sid);
+  assert.match(twilioUpdates[0].twiml, /<Number url="[^"]*stage=screen[^"]*">\+15195550123<\/Number>/);
+  const again = response();
+  await api.moveCallToCell(request({ callSid: sid }), again);
+  assert.deepEqual(again.body, { moved: false, reason: 'already' });
+  assert.equal(twilioUpdates.length, 1);
+});
+
+test('a call from the master SIM to the shop number is bridged to the client the app asked for', async () => {
+  routeMode('app');
+  const sid = `CA${'7'.repeat(32)}`;
+  apply(`${COMPANY}/settings/pending_cell_call`, { phone: '4165550101', jobId: 'job-1', at: new Date() });
+  const twiml = await webhook(api.incomingCall, { CallSid: sid, From: MASTER_CELL, To: '+14165550100' });
+  assert.match(twiml, /<Dial[^>]*callerId="\+14165550100"/);
+  assert.match(twiml, /<Number[^>]*statusCallback="[^"]*stage=peer[^"]*"[^>]*>\+14165550101<\/Number>/);
+  assert.equal(call(sid).direction, 'outbound');
+  assert.equal(call(sid).via, 'cell');
+  assert.equal(call(sid).jobId, 'job-1');
+  assert.ok(store.get(`${COMPANY}/settings/pending_cell_call`).consumedAt);
+  await webhookQ(api.dialAction, { CallSid: 'CAchild', CallStatus: 'in-progress' }, { stage: 'peer', parent: sid });
+  assert.ok(call(sid).peerAnsweredAt);
+  assert.deepEqual(pings.map((ping) => ping.type), ['call_connected']);
+});
+
+test('without the app request the master SIM call waits briefly, then says the number did not arrive', async () => {
+  routeMode('app');
+  const sid = `CA${'8'.repeat(32)}`;
+  const first = await webhook(api.incomingCall, { CallSid: sid, From: MASTER_CELL, To: '+14165550100' });
+  assert.match(first, /<Pause length="1"\/><Redirect method="POST">[^<]*cellWait=1<\/Redirect>/);
+  const last = await webhookQ(api.incomingCall, { CallSid: sid, From: MASTER_CELL, To: '+14165550100' }, { cellWait: '4' });
+  assert.match(last, /Номер клиента не дошёл/);
+  assert.equal(call(sid), undefined);
+});
+
+test('the client answering an app call is marked for the app, without a push', async () => {
+  const sid = `CA${'9'.repeat(32)}`;
+  const twiml = await webhook(api.incomingCall, { CallSid: sid, From: 'client:master', To: '', phone: '+14165550101' });
+  assert.match(twiml, /stage=peer/);
+  await webhookQ(api.dialAction, { CallSid: 'CAchild' }, { stage: 'peer', parent: sid });
+  assert.ok(call(sid).peerAnsweredAt);
+  assert.equal(pings.length, 0);
 });
 

@@ -12,6 +12,7 @@ import '../../services/settings_service.dart';
 import '../../services/sms_service.dart';
 import 'conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../shared/widgets/dispose_on_close.dart';
 import '../../shared/widgets/email_field.dart';
 import '../../shared/widgets/selection_action_bar.dart';
 
@@ -459,11 +460,19 @@ class _MessagesScreenState extends State<MessagesScreen>
                   // строкой не влезает в узкую колонку справа.
                   Text(
                     Formatters.messageDay(last.createdAt),
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                    ),
                   ),
                   Text(
                     Formatters.formatTime(last.createdAt),
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                    ),
                   ),
                   if (hasUnread) ...[
                     const SizedBox(height: 4),
@@ -507,76 +516,78 @@ class _MessagesScreenState extends State<MessagesScreen>
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
       builder: (context) {
-        return Padding(
-          padding: EdgeInsets.fromLTRB(
-            20,
-            12,
-            20,
-            16 + MediaQuery.viewInsetsOf(context).bottom,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.border,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                wantEmail ? 'Email'.tr : 'SMS'.tr,
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.primaryOnCard,
-                ),
-              ),
-              const SizedBox(height: 16),
-              if (wantEmail)
-                EmailAutocompleteField(
-                  controller: ctrl,
-                  autofocus: true,
-                  textInputAction: TextInputAction.done,
-                  onFieldSubmitted: (value) => Navigator.pop(context, value.trim()),
-                  decoration: InputDecoration(
-                    labelText: 'Email'.tr,
-                    prefixIcon: const Icon(Icons.mail_outline, color: Color(0xFFEA4335)),
-                  ),
-                )
-              else
-                TextField(
-                  controller: ctrl,
-                  autofocus: true,
-                  keyboardType: TextInputType.phone,
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (value) => Navigator.pop(context, value.trim()),
-                  decoration: InputDecoration(
-                    labelText: 'Телефон'.tr,
-                    prefixIcon: const Icon(Icons.sms_outlined, color: Color(0xFF1E88E5)),
+        return DisposeOnClose(
+          disposables: [ctrl],
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              20,
+              12,
+              20,
+              16 + MediaQuery.viewInsetsOf(context).bottom,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppColors.border,
+                    borderRadius: BorderRadius.circular(4),
                   ),
                 ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF14557F),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
+                const SizedBox(height: 16),
+                Text(
+                  wantEmail ? 'Email'.tr : 'SMS'.tr,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.primaryOnCard,
                   ),
-                  child: Text('Далее'.tr),
                 ),
-              ),
-            ],
+                const SizedBox(height: 16),
+                if (wantEmail)
+                  EmailAutocompleteField(
+                    controller: ctrl,
+                    autofocus: true,
+                    textInputAction: TextInputAction.done,
+                    onFieldSubmitted: (value) => Navigator.pop(context, value.trim()),
+                    decoration: InputDecoration(
+                      labelText: 'Email'.tr,
+                      prefixIcon: const Icon(Icons.mail_outline, color: Color(0xFFEA4335)),
+                    ),
+                  )
+                else
+                  TextField(
+                    controller: ctrl,
+                    autofocus: true,
+                    keyboardType: TextInputType.phone,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (value) => Navigator.pop(context, value.trim()),
+                    decoration: InputDecoration(
+                      labelText: 'Телефон'.tr,
+                      prefixIcon: const Icon(Icons.sms_outlined, color: Color(0xFF1E88E5)),
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context, ctrl.text.trim()),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF14557F),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text('Далее'.tr),
+                  ),
+                ),
+              ],
+            ),
           ),
         );
       },
     );
-    ctrl.dispose();
     if (result == null || result.isEmpty || !context.mounted) return;
     if (wantEmail && !result.contains('@')) return;
     if (!wantEmail && result.replaceAll(RegExp(r'\D'), '').length < 10) return;

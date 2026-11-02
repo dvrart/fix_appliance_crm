@@ -6,6 +6,7 @@
  */
 const admin = require('firebase-admin');
 const crypto = require('node:crypto');
+const { findMemberPlan } = require('./care_plan_lookup');
 
 const COMPANY_ID = 'fix_appliance_ca';
 
@@ -29,7 +30,7 @@ function channelFor(data) {
     return 'visit_confirm';
   }
   if (type === 'secretary_lesson') return 'secretary_learn';
-  if (type === 'visit_soon') return 'visit_soon';
+  if (type === 'visit_soon' || type === 'care_plan') return 'visit_soon';
   if (type === 'on_the_way' || type === 'leave_status') return 'on_the_way';
   if (type === 'morning' || type === 'evening') return 'morning_jobs';
   if (type === 'call' || (type === 'job' && source !== 'sms') || secretaryAnswered) return 'incoming_calls';
@@ -229,6 +230,27 @@ async function registerDeviceToken({ token, platform, deviceId, userId, previous
   });
 }
 
+const CARE_PLAN_TITLE_TYPES = new Set(['call', 'sms', 'job']);
+
+/**
+ * Звонит или пишет клиент на Care Plan — мастер видит это прямо в шторке:
+ * «Care Plan · Пропущенный звонок». Ошибка поиска — просто старый заголовок.
+ */
+async function withCarePlanTitle(title, data) {
+  const text = String(title || '');
+  try {
+    if (!CARE_PLAN_TITLE_TYPES.has(String(data.type || ''))) return text;
+    if (/care plan/i.test(text)) return text;
+    const plan = await findMemberPlan({
+      phone: data.peer || data.from || '',
+      clientId: data.clientId || '',
+    });
+    return plan ? `Care Plan · ${text}` : text;
+  } catch (_) {
+    return text;
+  }
+}
+
 async function notifyMaster(title, body, data = {}) {
   const snapshot = await tokensRef().get();
   const registrations = selectedRegistrations(snapshot.docs);
@@ -242,6 +264,7 @@ async function notifyMaster(title, body, data = {}) {
     stringData[key] = String(value ?? '');
   }
   await attachShadeFields(stringData);
+  title = await withCarePlanTitle(title, { ...stringData, type: String(data.type || 'sms') });
 
   const type = String(data.type || 'sms');
   const tag = shadeTag({ ...stringData, type });
@@ -292,4 +315,24 @@ async function notifyMaster(title, body, data = {}) {
   }
 }
 
-module.exports = { notifyMaster, channelFor, shadeTag, notificationEventId, sanitizeFcmData, registerDeviceToken };
+/**
+ * Сигнал без шторки — телефон только вибрирует (например, «клиент на линии»
+ * у звонка через SIM). Опоздавший сигнал бесполезен, поэтому живёт 30 секунд.
+ */
+async function pingMaster(data = {}) {
+  const snapshot = await tokensRef().get();
+  const registrations = selectedRegistrations(snapshot.docs);
+  if (!registrations.length) return;
+  const payload = {};
+  for (const [key, value] of Object.entries({ ...data, sentAt: Date.now() })) {
+    payload[key] = String(value ?? '');
+  }
+  sanitizeFcmData(payload);
+  await admin.messaging().sendEachForMulticast({
+    tokens: registrations.map((entry) => entry.token),
+    data: payload,
+    android: { priority: 'high', ttl: 30000 },
+  });
+}
+
+module.exports = { notifyMaster, pingMaster, channelFor, shadeTag, notificationEventId, sanitizeFcmData, registerDeviceToken };

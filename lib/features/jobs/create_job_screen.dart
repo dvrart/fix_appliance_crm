@@ -379,6 +379,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
           ? fullClientAddress
           : (useJobSite ? fullJobSiteAddress : '');
 
+      final siteName = useJobSite ? _siteNameController.text.trim() : '';
       final job = Job(
         id: '',
         clientId: clientId,
@@ -386,7 +387,8 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         clientPhone: _phoneController.text.trim(),
         clientAddress: resolvedClientAddress,
         hasJobSite: useJobSite,
-        jobSiteName: useJobSite ? _siteNameController.text.trim() : null,
+        // Номер телефона в имя на месте не пишем — оно берётся из карточки.
+        jobSiteName: Client.isPlaceholderName(siteName) ? null : siteName,
         jobSitePhone: useJobSite ? _sitePhoneController.text.trim() : null,
         jobSiteEmail: useJobSite && _siteEmailController.text.trim().isNotEmpty
             ? _siteEmailController.text.trim()

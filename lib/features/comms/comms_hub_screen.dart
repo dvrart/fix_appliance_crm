@@ -56,8 +56,9 @@ class _CommsHubScreenState extends State<CommsHubScreen> with UiSettingsAware {
     int index,
     IconData icon,
     Color color,
-    ValueListenable<int> count,
-  ) {
+    ValueListenable<int> count, {
+    bool alwaysBright = false,
+  }) {
     final selected = _index == index;
     return Material(
       color: selected ? Colors.white.withValues(alpha: 0.18) : Colors.transparent,
@@ -74,7 +75,9 @@ class _CommsHubScreenState extends State<CommsHubScreen> with UiSettingsAware {
               child: Icon(
                 icon,
                 size: 30,
-                color: selected ? color : color.withValues(alpha: 0.55),
+                color: alwaysBright || selected
+                    ? color
+                    : color.withValues(alpha: 0.55),
               ),
             ),
           ),
@@ -146,8 +149,9 @@ class _CommsHubScreenState extends State<CommsHubScreen> with UiSettingsAware {
                   _iconTab(
                     1,
                     Icons.sms,
-                    const Color(0xFFD500F9),
-                    CommsBadgeService.unreadMessages,
+                    const Color(0xFFFFEB3B),
+                    CommsBadgeService.messagesTotal,
+                    alwaysBright: true,
                   ),
                 ],
               ),

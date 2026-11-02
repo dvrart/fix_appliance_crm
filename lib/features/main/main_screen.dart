@@ -22,6 +22,7 @@ import '../messages/messages_screen.dart';
 import '../messages/compose_speed_dial.dart';
 import '../messages/conversation_screen.dart';
 import '../ai/assistant/assistant_face.dart';
+import '../../services/care_plan_service.dart';
 import '../../services/comms_badge_service.dart';
 import '../../services/job_service.dart';
 import '../../services/notification_service.dart';
@@ -74,6 +75,9 @@ class _MainScreenState extends State<MainScreen>
     ];
     AppNav.bindTabNavigator(() => _navigatorKeys[_currentIndex].currentState);
     OfflineQueueService.flush();
+    // Care Plan и паспорта — одна подписка на всё приложение: значок
+    // «гарантийный клиент» на звонке и в заявке появляется без запросов.
+    CarePlanService.start();
     unawaited(JobService.completeLegacyJobsIfNeeded());
     AppCommands.selectTab.addListener(_onSelectTabCommand);
     AppCommands.commsTab.addListener(_onCommsTabChanged);
@@ -147,6 +151,8 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Future<void> _selectTab(int index) async {
+    // Сменили вкладку — панели, ждущие возврата, ждут напрасно.
+    PanelReturn.cancel();
     if (_menuOpen) unawaited(_closeMenu());
     final scaffold = _scaffoldKey.currentState;
     if (scaffold != null && scaffold.isEndDrawerOpen) {
@@ -195,6 +201,7 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Future<void> _goDefaultHome() async {
+    PanelReturn.cancel();
     if (_currentIndex != 0) {
       if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
       if (!mounted) return;
@@ -252,6 +259,25 @@ class _MainScreenState extends State<MainScreen>
     _scaffoldKey.currentState?.closeEndDrawer();
   }
 
+  /// Возвращает шторку «Все визиты», из которой ушли в карточку: «Назад» из
+  /// карточки ведёт туда, откуда её открыли, а не на вкладку под шторкой.
+  /// Когда возврат уместен, решает [PanelReturn].
+  void _returnToVisits() {
+    if (!mounted || _menuOpen) return;
+    final scaffold = _scaffoldKey.currentState;
+    if (scaffold == null || scaffold.isEndDrawerOpen) return;
+    scaffold.openEndDrawer();
+  }
+
+  /// То же для левого меню: «Назад» из «Расходов» или «Настроек» возвращает
+  /// меню, с которого их открыли.
+  void _returnToMenu() {
+    if (!mounted || _menuOpen) return;
+    final scaffold = _scaffoldKey.currentState;
+    if (scaffold != null && scaffold.isEndDrawerOpen) return;
+    unawaited(_openMenu());
+  }
+
   void _toggleVisits() {
     final scaffold = _scaffoldKey.currentState;
     if (scaffold == null) return;
@@ -297,6 +323,7 @@ class _MainScreenState extends State<MainScreen>
         endDrawer: _AllVisitsDrawer(
           hostContext: context,
           onClose: _closeVisits,
+          onReturn: _returnToVisits,
         ),
         endDrawerEnableOpenDragGesture: false,
         body: Stack(
@@ -305,7 +332,7 @@ class _MainScreenState extends State<MainScreen>
             _SideMenuLayer(
               controller: _menu,
               onClose: _closeMenu,
-              child: CustomDrawer(onClose: _closeMenu),
+              child: CustomDrawer(onClose: _closeMenu, onReturn: _returnToMenu),
             ),
           ],
         ),
@@ -682,8 +709,13 @@ class _SideMenuLayerState extends State<_SideMenuLayer> {
 class _AllVisitsDrawer extends StatelessWidget {
   final BuildContext hostContext;
   final VoidCallback onClose;
+  final VoidCallback onReturn;
 
-  const _AllVisitsDrawer({required this.hostContext, required this.onClose});
+  const _AllVisitsDrawer({
+    required this.hostContext,
+    required this.onClose,
+    required this.onReturn,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -693,7 +725,11 @@ class _AllVisitsDrawer extends StatelessWidget {
       shape: const RoundedRectangleBorder(),
       clipBehavior: Clip.hardEdge,
       child: RepaintBoundary(
-        child: AllVisitsScreen(onLeave: onClose, hostContext: hostContext),
+        child: AllVisitsScreen(
+          onLeave: onClose,
+          hostContext: hostContext,
+          onReturn: onReturn,
+        ),
       ),
     );
   }

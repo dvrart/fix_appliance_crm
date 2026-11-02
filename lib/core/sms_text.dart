@@ -151,6 +151,40 @@ class SmsText {
         .replaceAll(RegExp(r'^[ \t]*,[ \t]*', multiLine: true), '');
   }
 
+  /// Снимает меню «ответьте 1 / 0 / 5»: визит больше не подтверждается ответом.
+  /// Строки с датой, временем и адресом не трогает — SMS о визите ради них.
+  static String stripConfirmAsk(String template) {
+    final kept = <String>[];
+    for (final line in template.split(RegExp(r'\r?\n'))) {
+      if (RegExp(r'\{(date|time|address|name|review|appliance)\}', caseSensitive: false)
+          .hasMatch(line)) {
+        kept.add(line);
+        continue;
+      }
+      final plain = line.replaceAll(RegExp(r'[\uFE0F\u20E3]'), '');
+      if (RegExp(r'^\s*(reply|ответь(те)?|отвечайте)\b', caseSensitive: false)
+          .hasMatch(plain)) {
+        continue;
+      }
+      if (RegExp(
+        r'let us know|дайте знать|сообщите|your plans|ваши планы',
+        caseSensitive: false,
+      ).hasMatch(plain)) {
+        continue;
+      }
+      final choice = RegExp(
+        r'confirm|cancel|another day|reschedule|подтвер|отмен|перенес|другой день',
+        caseSensitive: false,
+      ).hasMatch(plain);
+      if (choice && RegExp(r'\d').hasMatch(plain)) continue;
+      kept.add(line);
+    }
+    while (kept.isNotEmpty && RegExp(r':\s*$').hasMatch(kept.last)) {
+      kept.removeLast();
+    }
+    return kept.join('\n').replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+  }
+
   /// Проверяет наличие тега `{token}` без учёта регистра (`{url}`, `{URL}`, `{Url}`).
   static bool hasPlaceholder(String text, String token) {
     return RegExp(

@@ -63,9 +63,11 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
             // останутся пустыми. На свежей установке это выглядело так, будто
             // пропали клиенты, календарь и переписка.
             if (!signedIn) {
-              // Идёт тихое восстановление сессии — показываем заставку,
-              // а не форму входа, чтобы не пугать полями email/пароль.
-              if (autoSigningIn) return const _AutoSignInSplash();
+              // Идёт тихое восстановление сессии (или учётные данные вшиты в
+              // сборку) — показываем заставку, а не форму входа с email/паролем.
+              if (autoSigningIn || AuthService.hasBuiltInCredentials) {
+                return const _AutoSignInSplash();
+              }
               return const SignInScreen();
             }
             return Stack(

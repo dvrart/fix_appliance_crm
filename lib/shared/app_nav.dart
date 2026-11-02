@@ -175,6 +175,50 @@ class AppNav {
   }
 }
 
+/// Возврат на панель, которой нет в стеке маршрутов: левое меню, правая
+/// шторка «Все визиты», нижний лист «Без даты визита», поиск. Такая панель при
+/// открытии экрана закрывается, и «Назад» возвращал не её, а то, что лежало
+/// под ней, — список приходилось открывать заново.
+///
+/// [open] запоминает страницу, над которой открылся экран, и возвращает
+/// панель, только если экран закрыли именно «Назад»: стек вернулся ровно на
+/// ту же страницу и никто не отменил возврат. Экран могли снять и без
+/// «Назад» — лимитом [AppNav.maxCards], сбросом покинутой вкладки
+/// ([AppNav.resetToRoot]) или выходом на главную; тогда панели поверх чужого
+/// экрана делать нечего.
+class PanelReturn {
+  PanelReturn._();
+
+  /// Пауза перед возвратом: панель во весь экран, и без неё её выезд
+  /// накладывается на ещё непрозрачный уходящий экран.
+  static const Duration _settle = Duration(milliseconds: 140);
+
+  static int _generation = 0;
+
+  /// Отменяет все ожидающие возвраты. Зовётся на переходах, которые уводят
+  /// совсем в другое место: смена вкладки, выход на главную.
+  static void cancel() => _generation++;
+
+  /// Открывает экран через [push] и возвращает панель вызовом [back].
+  /// Пустой [back] — обычное открытие, возвращать нечего.
+  static Future<T?> open<T>(
+    NavigatorState navigator, {
+    required Future<T?> Function() push,
+    required VoidCallback? back,
+  }) async {
+    final before = AppNav.pagesOf(navigator);
+    final under = before.isEmpty ? null : before.last;
+    final generation = _generation;
+    final result = await push();
+    if (back == null || under == null) return result;
+    await Future<void>.delayed(_settle);
+    if (_generation != generation || !navigator.mounted) return result;
+    final pages = AppNav.pagesOf(navigator);
+    if (pages.isNotEmpty && identical(pages.last, under)) back();
+    return result;
+  }
+}
+
 /// Помнит порядок страниц своего навигатора: без него нельзя снять экран из
 /// середины стека — у [NavigatorState] такого списка наружу нет.
 class AppNavObserver extends NavigatorObserver {

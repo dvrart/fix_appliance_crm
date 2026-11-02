@@ -12,6 +12,7 @@ import '../core/motion.dart';
 import '../core/sms_text.dart';
 import '../core/utils/formatters.dart';
 import '../models/document_settings.dart';
+import '../shared/widgets/dispose_on_close.dart';
 import '../shared/widgets/keyboard_safe.dart';
 import 'job_service.dart';
 import 'network_status_service.dart';
@@ -95,17 +96,18 @@ class DocumentTemplateService {
       ),
     );
 
-    try {
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        useRootNavigator: true,
-        backgroundColor: Colors.white,
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        builder: (sheetContext) {
-          return KeyboardAvoidingSheet(
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useRootNavigator: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return DisposeOnClose(
+          disposables: [preview],
+          child: KeyboardAvoidingSheet(
             padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
             child: SingleChildScrollView(
               child: Column(
@@ -195,13 +197,10 @@ class DocumentTemplateService {
                 ],
               ),
             ),
-          );
-        },
-      );
-    } finally {
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-      preview.dispose();
-    }
+          ),
+        );
+      },
+    );
   }
 
   static String _randomToken() {

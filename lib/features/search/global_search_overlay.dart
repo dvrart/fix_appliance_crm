@@ -8,13 +8,16 @@ import '../../core/motion.dart';
 import '../../models/models.dart';
 import '../../services/services.dart';
 import '../../shared/app_nav.dart';
+import '../../shared/widgets/appliance_picture.dart';
 import '../../shared/widgets/highlight_text.dart';
 import '../clients/client_details_screen.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import '../warehouse/warehouse_screen.dart';
 
 class GlobalSearchOverlay {
-  static Future<void> open(BuildContext context) {
+  /// [query] — чем открыть поле: так поиск возвращается после карточки с тем
+  /// же запросом, а не пустым.
+  static Future<void> open(BuildContext context, {String query = ''}) {
     return AppNav.navigatorOf(context).push(
       PageRouteBuilder<void>(
         opaque: false,
@@ -31,7 +34,7 @@ class GlobalSearchOverlay {
               curve: AppMotion.enter,
               reverseCurve: AppMotion.exit,
             ),
-            child: const _GlobalSearchPage(),
+            child: _GlobalSearchPage(query: query),
           );
         },
       ),
@@ -40,7 +43,9 @@ class GlobalSearchOverlay {
 }
 
 class _GlobalSearchPage extends StatefulWidget {
-  const _GlobalSearchPage();
+  final String query;
+
+  const _GlobalSearchPage({this.query = ''});
 
   @override
   State<_GlobalSearchPage> createState() => _GlobalSearchPageState();
@@ -62,6 +67,16 @@ class _GlobalSearchPageState extends State<_GlobalSearchPage> {
   @override
   void initState() {
     super.initState();
+    final initial = widget.query.trim();
+    if (initial.length >= 2) {
+      // Вернулись из карточки: показываем то же найденное. Клавиатуру не
+      // поднимаем — искать заново не нужно, нужен список.
+      _controller.text = initial;
+      _query = initial;
+      _loading = true;
+      unawaited(_run(initial));
+      return;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _focus.requestFocus();
     });
@@ -111,12 +126,24 @@ class _GlobalSearchPageState extends State<_GlobalSearchPage> {
   /// [card] — ключ карточки (заявка, клиент): по нему стек не плодит копии.
   void _openRoute(Widget page, {String? card}) {
     final nav = AppNav.navigatorOf(context);
+    final query = _query;
+    _focus.unfocus();
     nav.pop();
-    if (card != null) {
-      AppNav.openCard<void>(nav.context, key: card, builder: (_) => page);
-      return;
-    }
-    nav.push(MaterialPageRoute<void>(builder: (_) => page));
+    unawaited(
+      PanelReturn.open<void>(
+        nav,
+        push: () => card != null
+            ? AppNav.openCard<void>(
+                nav.context,
+                key: card,
+                builder: (_) => page,
+              )
+            : nav.push(MaterialPageRoute<void>(builder: (_) => page)),
+        // «Назад» из карточки возвращает поиск с тем же запросом.
+        back: () =>
+            unawaited(GlobalSearchOverlay.open(nav.context, query: query)),
+      ),
+    );
   }
 
   @override
@@ -417,14 +444,7 @@ class _ResultsCard extends StatelessWidget {
           phone: job.clientPhone,
         );
     return ListTile(
-      leading: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: job.statusColor.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Icon(job.applianceIcon, color: job.statusColor),
-      ),
+      leading: AppliancePicture(type: job.applianceType, size: 40),
       title: Row(
         children: [
           Flexible(

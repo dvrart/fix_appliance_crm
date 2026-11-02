@@ -170,6 +170,36 @@ class StripeService {
     );
   }
 
+  /// Ссылка Stripe на подписку Care Plan (ежемесячное списание с карты).
+  /// Открытая ссылка переиспользуется. С [sendSms] сервер отправляет её
+  /// клиенту в SMS — только по нажатию мастера.
+  static Future<CarePlanCheckout> createCarePlanCheckout({
+    required String planId,
+    bool sendSms = false,
+    String? to,
+  }) async {
+    final body = await _postJson('/createCarePlanCheckout', {
+      'planId': planId,
+      'sendSms': sendSms,
+      if (to != null && to.trim().isNotEmpty) 'to': to.trim(),
+    });
+    return CarePlanCheckout(
+      url: (body['url'] ?? '').toString(),
+      monthlyTotal: (body['monthlyTotal'] as num?)?.toDouble() ?? 0,
+      smsSent: body['smsSent'] == true,
+      smsError: body['smsError']?.toString(),
+    );
+  }
+
+  /// Сверить подписку со Stripe напрямую — на случай, если вебхук не дошёл.
+  /// Возвращает статус плана после сверки.
+  static Future<String> syncCarePlan(String planId) async {
+    final body = await _postJson('/syncCarePlanSubscription', {
+      'planId': planId,
+    });
+    return (body['status'] ?? '').toString();
+  }
+
   static Future<Map<String, dynamic>> _postJson(
     String path,
     Map<String, dynamic> payload,
@@ -201,6 +231,20 @@ class StripeService {
       livemode: body['livemode'] == true,
     );
   }
+}
+
+class CarePlanCheckout {
+  final String url;
+  final double monthlyTotal;
+  final bool smsSent;
+  final String? smsError;
+
+  const CarePlanCheckout({
+    required this.url,
+    required this.monthlyTotal,
+    this.smsSent = false,
+    this.smsError,
+  });
 }
 
 class StripeAccountBalance {

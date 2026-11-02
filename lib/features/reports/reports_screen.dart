@@ -24,6 +24,7 @@ import 'tax_writeoff_guide_page.dart';
 import '../expenses/expenses_screen.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import '../../shared/app_nav.dart';
+import '../../shared/widgets/dispose_on_close.dart';
 import '../../services/error_log_service.dart';
 
 class ReportsScreen extends StatefulWidget {
@@ -1801,263 +1802,265 @@ class _ReportsScreenState extends State<ReportsScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (sheetCtx) {
-        return StatefulBuilder(
-          builder: (ctx, setSheet) {
-            final typedUnitCost = double.tryParse(
-              costCtrl.text.trim().replaceAll(',', '.'),
-            );
-            final effectiveUnitCost = !isPart
-                ? 0.0
-                : (typedUnitCost ?? (item.price * 0.4));
-            final totalMyCost = item.qty * effectiveUnitCost;
-            final totalClient = item.sold;
-            final netOnPart = totalClient - totalMyCost;
-            final isGuess = isPart && typedUnitCost == null;
+        return DisposeOnClose(
+          disposables: [costCtrl],
+          child: StatefulBuilder(
+            builder: (ctx, setSheet) {
+              final typedUnitCost = double.tryParse(
+                costCtrl.text.trim().replaceAll(',', '.'),
+              );
+              final effectiveUnitCost = !isPart
+                  ? 0.0
+                  : (typedUnitCost ?? (item.price * 0.4));
+              final totalMyCost = item.qty * effectiveUnitCost;
+              final totalClient = item.sold;
+              final netOnPart = totalClient - totalMyCost;
+              final isGuess = isPart && typedUnitCost == null;
 
-            Future<void> saveCost() async {
-              final job = item.job;
-              if (job == null || saving) return;
-              if (item.docIndex < 0 || item.docIndex >= job.documents.length) {
-                return;
-              }
-              setSheet(() => saving = true);
-              try {
-                final docs = [
-                  for (final d in job.documents) Map<String, dynamic>.from(d),
-                ];
-                final doc = docs[item.docIndex];
-                final rawItems = [
-                  for (final line in doc['items'] as List? ?? [])
-                    if (line is Map) Map<String, dynamic>.from(line) else line,
-                ];
-                if (item.itemIndex >= 0 && item.itemIndex < rawItems.length) {
-                  final raw = rawItems[item.itemIndex];
-                  if (raw is Map<String, dynamic>) {
-                    raw['type'] = isPart ? 'Part' : 'Service';
-                    if (isPart && typedUnitCost != null) {
-                      raw['costPrice'] = typedUnitCost;
-                    } else if (!isPart) {
-                      raw.remove('costPrice');
-                    }
-                    rawItems[item.itemIndex] = raw;
-                    doc['items'] = rawItems;
-                    await JobService.updateDocuments(job.id, docs);
-                  }
+              Future<void> saveCost() async {
+                final job = item.job;
+                if (job == null || saving) return;
+                if (item.docIndex < 0 || item.docIndex >= job.documents.length) {
+                  return;
                 }
-                if (!sheetCtx.mounted) return;
-                Navigator.pop(sheetCtx);
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      context.tr(
-                        'Сохранено — отчёт пересчитан',
-                        'Saved — report updated',
+                setSheet(() => saving = true);
+                try {
+                  final docs = [
+                    for (final d in job.documents) Map<String, dynamic>.from(d),
+                  ];
+                  final doc = docs[item.docIndex];
+                  final rawItems = [
+                    for (final line in doc['items'] as List? ?? [])
+                      if (line is Map) Map<String, dynamic>.from(line) else line,
+                  ];
+                  if (item.itemIndex >= 0 && item.itemIndex < rawItems.length) {
+                    final raw = rawItems[item.itemIndex];
+                    if (raw is Map<String, dynamic>) {
+                      raw['type'] = isPart ? 'Part' : 'Service';
+                      if (isPart && typedUnitCost != null) {
+                        raw['costPrice'] = typedUnitCost;
+                      } else if (!isPart) {
+                        raw.remove('costPrice');
+                      }
+                      rawItems[item.itemIndex] = raw;
+                      doc['items'] = rawItems;
+                      await JobService.updateDocuments(job.id, docs);
+                    }
+                  }
+                  if (!sheetCtx.mounted) return;
+                  Navigator.pop(sheetCtx);
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        context.tr(
+                          'Сохранено — отчёт пересчитан',
+                          'Saved — report updated',
+                        ),
                       ),
                     ),
-                  ),
-                );
-              } finally {
-                if (sheetCtx.mounted) setSheet(() => saving = false);
+                  );
+                } finally {
+                  if (sheetCtx.mounted) setSheet(() => saving = false);
+                }
               }
-            }
 
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.viewInsetsOf(ctx).bottom,
-              ),
-              child: SafeArea(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  item.name,
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.w800,
-                                    color: AppColors.primaryOnCard,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  '${item.invoiceNumber.isEmpty ? '' : 'Invoice #${item.invoiceNumber} · '}${item.clientName} · ${_fmtDay(item.date)}',
-                                  style: TextStyle(
-                                    color: AppColors.inkMuted,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          IconButton(
-                            onPressed: () => Navigator.pop(sheetCtx),
-                            icon: const Icon(Icons.close),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: AppColors.cardMuted,
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: Column(
+              return Padding(
+                padding: EdgeInsets.only(
+                  bottom: MediaQuery.viewInsetsOf(ctx).bottom,
+                ),
+                child: SafeArea(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _comparisonLine(
-                              '${ctx.tr('Стоит для клиента', 'Price for client')} ($qtyStr × ${_money(item.price)})',
-                              _money(totalClient),
-                              color: const Color(0xFF3949AB),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    item.name,
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w800,
+                                      color: AppColors.primaryOnCard,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${item.invoiceNumber.isEmpty ? '' : 'Invoice #${item.invoiceNumber} · '}${item.clientName} · ${_fmtDay(item.date)}',
+                                    style: TextStyle(
+                                      color: AppColors.inkMuted,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                            if (isPart)
-                              _comparisonLine(
-                                '${ctx.tr('Стоило для меня', 'My cost')} ($qtyStr × ${_money(effectiveUnitCost)}${isGuess ? ctx.tr(' · прикидка 40%', ' · 40% guess') : ''})',
-                                _money(totalMyCost),
-                                color: Colors.orange.shade900,
-                              ),
-                            const Divider(height: 14),
-                            _comparisonLine(
-                              ctx.tr(
-                                'Чистыми заработал на этой позиции',
-                                'Net earned on this line',
-                              ),
-                              _money(netOnPart),
-                              color: const Color(0xFF2E7D32),
-                              bold: true,
+                            IconButton(
+                              onPressed: () => Navigator.pop(sheetCtx),
+                              icon: const Icon(Icons.close),
                             ),
                           ],
                         ),
-                      ),
-                      if (item.job != null) ...[
-                        const SizedBox(height: 14),
-                        SizedBox(
+                        const SizedBox(height: 12),
+                        Container(
                           width: double.infinity,
-                          child: SegmentedButton<bool>(
-                            showSelectedIcon: false,
-                            segments: [
-                              ButtonSegment(
-                                value: false,
-                                icon: const Icon(
-                                  Icons.handyman_outlined,
-                                  size: 18,
-                                ),
-                                label: Text(ctx.tr('Работа', 'Service')),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: AppColors.cardMuted,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Column(
+                            children: [
+                              _comparisonLine(
+                                '${ctx.tr('Стоит для клиента', 'Price for client')} ($qtyStr × ${_money(item.price)})',
+                                _money(totalClient),
+                                color: const Color(0xFF3949AB),
                               ),
-                              ButtonSegment(
-                                value: true,
-                                icon: const Icon(
-                                  Icons.settings_outlined,
-                                  size: 18,
+                              if (isPart)
+                                _comparisonLine(
+                                  '${ctx.tr('Стоило для меня', 'My cost')} ($qtyStr × ${_money(effectiveUnitCost)}${isGuess ? ctx.tr(' · прикидка 40%', ' · 40% guess') : ''})',
+                                  _money(totalMyCost),
+                                  color: Colors.orange.shade900,
                                 ),
-                                label: Text(ctx.tr('Запчасть', 'Part')),
+                              const Divider(height: 14),
+                              _comparisonLine(
+                                ctx.tr(
+                                  'Чистыми заработал на этой позиции',
+                                  'Net earned on this line',
+                                ),
+                                _money(netOnPart),
+                                color: const Color(0xFF2E7D32),
+                                bold: true,
                               ),
                             ],
-                            selected: {isPart},
-                            onSelectionChanged: (next) =>
-                                setSheet(() => isPart = next.first),
                           ),
                         ),
-                        if (isPart) ...[
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: costCtrl,
-                            onChanged: (_) => setSheet(() {}),
-                            keyboardType:
-                                const TextInputType.numberWithOptions(
-                                  decimal: true,
+                        if (item.job != null) ...[
+                          const SizedBox(height: 14),
+                          SizedBox(
+                            width: double.infinity,
+                            child: SegmentedButton<bool>(
+                              showSelectedIcon: false,
+                              segments: [
+                                ButtonSegment(
+                                  value: false,
+                                  icon: const Icon(
+                                    Icons.handyman_outlined,
+                                    size: 18,
+                                  ),
+                                  label: Text(ctx.tr('Работа', 'Service')),
                                 ),
-                            decoration: InputDecoration(
-                              labelText: ctx.tr(
-                                'Сколько стоила мне за 1 шт. (закупка)',
-                                'My purchase cost per unit',
-                              ),
-                              prefixText: '\$ ',
-                              helperText: ctx.tr(
-                                'Впишите точную закупочную цену детали и нажмите «Сохранить».',
-                                'Enter the exact purchase cost of the part and tap Save.',
-                              ),
-                              border: const OutlineInputBorder(),
+                                ButtonSegment(
+                                  value: true,
+                                  icon: const Icon(
+                                    Icons.settings_outlined,
+                                    size: 18,
+                                  ),
+                                  label: Text(ctx.tr('Запчасть', 'Part')),
+                                ),
+                              ],
+                              selected: {isPart},
+                              onSelectionChanged: (next) =>
+                                  setSheet(() => isPart = next.first),
                             ),
                           ),
-                        ],
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            onPressed: saving ? null : saveCost,
-                            icon: const Icon(Icons.save_outlined, size: 18),
-                            label: Text(
-                              ctx.tr(
-                                'Сохранить закупку / тип позиции',
-                                'Save cost / line type',
-                              ),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF2E7D32),
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: () {
-                                  Navigator.pop(sheetCtx);
-                                  _openJob(
-                                    item.job!,
-                                    tab: 1,
-                                    openDocumentIndex: item.docIndex,
-                                  );
-                                },
-                                icon: const Icon(Icons.receipt_long, size: 18),
-                                label: Text(
-                                  ctx.tr('Открыть инвойс', 'Open invoice'),
+                          if (isPart) ...[
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: costCtrl,
+                              onChanged: (_) => setSheet(() {}),
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              decoration: InputDecoration(
+                                labelText: ctx.tr(
+                                  'Сколько стоила мне за 1 шт. (закупка)',
+                                  'My purchase cost per unit',
                                 ),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: () {
-                                  Navigator.pop(sheetCtx);
-                                  _openJob(item.job!, tab: 0);
-                                },
-                                icon: const Icon(Icons.assignment, size: 18),
-                                label: Text(
-                                  ctx.tr('Открыть заявку', 'Open job'),
+                                prefixText: '\$ ',
+                                helperText: ctx.tr(
+                                  'Впишите точную закупочную цену детали и нажмите «Сохранить».',
+                                  'Enter the exact purchase cost of the part and tap Save.',
                                 ),
+                                border: const OutlineInputBorder(),
                               ),
                             ),
                           ],
-                        ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              onPressed: saving ? null : saveCost,
+                              icon: const Icon(Icons.save_outlined, size: 18),
+                              label: Text(
+                                ctx.tr(
+                                  'Сохранить закупку / тип позиции',
+                                  'Save cost / line type',
+                                ),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF2E7D32),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () {
+                                    Navigator.pop(sheetCtx);
+                                    _openJob(
+                                      item.job!,
+                                      tab: 1,
+                                      openDocumentIndex: item.docIndex,
+                                    );
+                                  },
+                                  icon: const Icon(Icons.receipt_long, size: 18),
+                                  label: Text(
+                                    ctx.tr('Открыть инвойс', 'Open invoice'),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () {
+                                    Navigator.pop(sheetCtx);
+                                    _openJob(item.job!, tab: 0);
+                                  },
+                                  icon: const Icon(Icons.assignment, size: 18),
+                                  label: Text(
+                                    ctx.tr('Открыть заявку', 'Open job'),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
-              ),
-            );
-          },
+              );
+            },
+          ),
         );
       },
     );
-    costCtrl.dispose();
   }
 
   void _openSingleJobBreakdown(ReportJob row) {

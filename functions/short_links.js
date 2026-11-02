@@ -13,6 +13,7 @@ const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const crypto = require('crypto');
 const { requireAppUser } = require('./auth_guard');
+const passport = require('./passport');
 
 const COMPANY_ID = 'fix_appliance_ca';
 const ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz';
@@ -198,6 +199,11 @@ exports.p = functions.https.onRequest(httpOpts, async (req, res) => {
   if (req.method === 'OPTIONS') {
     setCors(res);
     res.status(204).send('');
+    return;
+  }
+  // /a/<код> — страница цифрового паспорта техники (QR на наклейке).
+  if (passport.isPassportPath(req.path || req.url)) {
+    await passport.handlePassportRequest(req, res);
     return;
   }
   const code = readCode(req);

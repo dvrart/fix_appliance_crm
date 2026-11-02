@@ -25,6 +25,7 @@ import '../../services/settings_service.dart';
 import '../../services/sms_service.dart';
 import '../../models/client.dart';
 import '../../models/job.dart';
+import '../ai/job_preview_screen.dart';
 import '../calls/call_screen.dart';
 import '../clients/client_details_screen.dart';
 import '../clients/edit_client_sheet.dart';
@@ -685,6 +686,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   List<ConversationPeer> _loadedPeers = const [];
 
+  /// После создания заявки из переписки значок в шапке должен её найти:
+  /// меняем ключ, чтобы [JobLinkButton] заново поискал заявку по номеру.
+  int _jobLinkRevision = 0;
+
+  /// ИИ разбирает переписку перед открытием экрана «Проверьте данные».
+  bool _creatingJob = false;
+
   List<ConversationPeer> get _peers {
     final result = <ConversationPeer>[];
     final seenPhones = <String>{};
@@ -1201,6 +1209,158 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
+  static String _stripSmsHeader(String text) {
+    final normalized = text.replaceAll('\r\n', '\n').trim();
+    final parts = normalized.split('\n\n');
+    if (parts.length >= 2) {
+      final first = parts.first.trim().toLowerCase();
+      if (first.contains('fix-appliance') ||
+          first.contains('fixappliance') ||
+          first.contains('fix appliance')) {
+        return parts.sublist(1).join('\n\n').trim();
+      }
+    }
+    return normalized;
+  }
+
+  /// Диалог целиком — и вопросы мастера, и ответы клиента, с временем
+  /// каждого сообщения. Иначе реплика клиента «Yes» или «door is 128»
+  /// висит в воздухе без вопроса мастера «461 Blackburn Dr, Brantford?».
+  String _buildConversationTranscript(List<SmsMessage> allMessages) {
+    final fmt = DateFormat('yyyy-MM-dd HH:mm');
+    final lines = <String>[];
+    for (final m in allMessages) {
+      if (m.isDeleted || m.sendingRejected || m.awaitingApproval) continue;
+      final rawBody =
+          m.body.trim().isNotEmpty ? m.body.trim() : m.bodyRu.trim();
+      final body = m.isOutbound ? _stripSmsHeader(rawBody) : rawBody;
+      final parts = <String>[
+        if (m.subject.trim().isNotEmpty) m.subject.trim(),
+        if (body.isNotEmpty) body,
+      ];
+      if (parts.isEmpty) continue;
+      final who = m.isOutbound ? 'Мастер' : 'Клиент';
+      final when = m.createdAt != null ? '[${fmt.format(m.createdAt!)}] ' : '';
+      lines.add('$when$who: ${parts.join('\n')}');
+    }
+    return lines.join('\n');
+  }
+
+  /// «Создать заявку» из переписки. Вся переписка разбирается ИИ: имя,
+  /// адрес, техника, поломка и дата визита подставляются в экран
+  /// «Проверьте данные», который сам заводит карточку клиента (если её
+  /// ещё нет) и заявку.
+  Future<void> _createJob() async {
+    if (_creatingJob) return;
+    final allMessages =
+        _threadCache[_threadKey] ?? await _messagesStream.first;
+    final inbound = allMessages.where((m) => !m.isOutbound).toList();
+
+    // SMS, которую ИИ пометил как заявку на ремонт: у неё уже разобраны
+    // техника и неисправность, и после создания заявки она помечается
+    // «принята», чтобы карточка в шторке погасла.
+    SmsMessage? offer;
+    for (final message in inbound) {
+      if (message.smsOfferPending && (message.jobId ?? '').trim().isEmpty) {
+        offer = message;
+        break;
+      }
+    }
+
+    final conversationText = _buildConversationTranscript(allMessages);
+
+    // Разобрать переписку целиком: «меня зовут Рохан, холодильник не
+    // морозит» → имя, техника и поломка уже в форме, а не пустые поля.
+    setState(() => _creatingJob = true);
+    ExtractedJobData? fromAi;
+    try {
+      if (conversationText.trim().isNotEmpty) {
+        fromAi = await AiService.extractJobData(conversationText);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            AiService.isBusyError(e)
+                ? 'ИИ перегружен, попробуйте позже'.tr
+                : 'Ошибка ИИ'.tr,
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _creatingJob = false);
+    }
+
+    // Что ИИ не разобрал — добираем из SMS-заявки и из самой переписки.
+    final offerData = offer != null &&
+            offer.extractedData != null &&
+            offer.extractedData!.isNotEmpty
+        ? ExtractedJobData.fromJson(offer.extractedData!)
+        : null;
+
+    // Телефон из переписки надёжнее: ИИ просят отдавать 10 цифр без «+1»,
+    // а карточка и нить SMS знают полный номер. Чужой номер от ИИ (клиент
+    // дал другой в письме) не затираем.
+    String? resolvedPhone;
+    if (_hasPhone) {
+      final aiPhone = fromAi?.clientPhone ?? offerData?.clientPhone;
+      resolvedPhone = aiPhone != null &&
+              SmsService.normalizePhone(aiPhone) !=
+                  SmsService.normalizePhone(_phone)
+          ? aiPhone
+          : _phone;
+    } else {
+      resolvedPhone = fromAi?.clientPhone ?? offerData?.clientPhone;
+    }
+
+    final extracted = ExtractedJobData(
+      clientName: fromAi?.clientName ?? offerData?.clientName,
+      clientPhone: resolvedPhone,
+      clientEmail: fromAi?.clientEmail ??
+          offerData?.clientEmail ??
+          (_hasEmail ? _email : null),
+      address: fromAi?.address ?? offerData?.address,
+      unit: fromAi?.unit ?? offerData?.unit,
+      city: fromAi?.city ?? offerData?.city,
+      postalCode: fromAi?.postalCode ?? offerData?.postalCode,
+      applianceType: fromAi?.applianceType ?? offerData?.applianceType,
+      brand: fromAi?.brand ?? offerData?.brand,
+      model: fromAi?.model ?? offerData?.model,
+      problemDescription:
+          fromAi?.problemDescription ?? offerData?.problemDescription,
+      scheduledDate: fromAi?.scheduledDate ?? offerData?.scheduledDate,
+      scheduledTime: fromAi?.scheduledTime ?? offerData?.scheduledTime,
+      contactOnSiteName:
+          fromAi?.contactOnSiteName ?? offerData?.contactOnSiteName,
+      contactOnSitePhone:
+          fromAi?.contactOnSitePhone ?? offerData?.contactOnSitePhone,
+      hasJobSite:
+          (fromAi?.hasJobSite ?? false) || (offerData?.hasJobSite ?? false),
+      notes: fromAi?.notes ?? offerData?.notes,
+    );
+
+    if (!mounted) return;
+    final result = await AppNav.navigatorOf(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => JobPreviewScreen(
+          extractedData: extracted,
+          originalText: conversationText,
+          fallbackPhone: _hasPhone ? _phone : null,
+          fallbackEmail: _hasEmail ? _email : null,
+          existingClientId: (widget.clientId ?? '').trim().isNotEmpty
+              ? widget.clientId
+              : null,
+          sourceSmsId: offer?.id,
+        ),
+      ),
+    );
+    if (result == true && mounted) {
+      setState(() => _jobLinkRevision++);
+    }
+  }
+
   Future<void> _openClientCard() async {
     Client? client;
     final id = (widget.clientId ?? '').trim();
@@ -1214,7 +1374,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (!mounted) return;
     if (client == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Нет карточки клиента'.tr)),
+        SnackBar(
+          content: Text('Нет карточки клиента'.tr),
+          action: SnackBarAction(
+            label: 'Создать заявку'.tr,
+            onPressed: _createJob,
+          ),
+        ),
       );
       return;
     }
@@ -1249,11 +1415,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
       return;
     }
 
-    // Собрать входящие сообщения из кэша
-    final cacheKey = '$_channel|$_phone|$_email';
-    final allMessages = _threadCache[cacheKey] ?? [];
-    final inbound = allMessages.where((m) => !m.isOutbound).toList();
-    if (inbound.isEmpty) {
+    final allMessages =
+        _threadCache[_threadKey] ?? await _messagesStream.first;
+    final conversationText = _buildConversationTranscript(allMessages);
+    if (conversationText.trim().isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Нет входящих сообщений'.tr)),
@@ -1263,14 +1428,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
     setState(() => _extracting = true);
     try {
-      // Сформировать текст для Gemini из входящих сообщений
-      final conversationText = inbound.map((m) {
-        final parts = <String>[];
-        if (m.subject.trim().isNotEmpty) parts.add(m.subject.trim());
-        if (m.body.trim().isNotEmpty) parts.add(m.body.trim());
-        return parts.join('\n');
-      }).join('\n---\n');
-
       final extracted = await AiService.extractJobData(conversationText);
       if (!mounted) return;
 
@@ -1290,7 +1447,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
         mergedData['name'] = extracted.clientName!;
       }
       if (extracted.address != null) {
-        final addrParts = <String>[extracted.address!];
+        final unitPart = (extracted.unit ?? '').trim();
+        final addrParts = <String>[
+          extracted.address!,
+          if (unitPart.isNotEmpty) 'Unit $unitPart',
+        ];
         if ((extracted.city ?? '').isNotEmpty) addrParts.add(extracted.city!);
         if ((extracted.postalCode ?? '').isNotEmpty) addrParts.add(extracted.postalCode!);
         mergedData['address'] = addrParts.join(', ');
@@ -2592,12 +2753,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
         onPressed: _openClientCard,
       ),
       // По какой заявке идёт переписка. Почта с сайта ни к кому не
-      // привязана — там показывать нечего.
+      // привязана — там показывать нечего. Заявки нет — вместо значка
+      // кнопка «Создать заявку», чтобы карточку клиента и заявку можно
+      // было завести прямо из переписки.
       if (!widget.websiteInbox)
         JobLinkButton(
+          key: ValueKey('job-link-$_jobLinkRevision'),
           jobId: widget.jobId,
           clientId: widget.clientId,
           phone: _phone,
+          onCreateJob: _createJob,
+          busy: _creatingJob,
         ),
       IconButton(
         visualDensity: VisualDensity.compact,

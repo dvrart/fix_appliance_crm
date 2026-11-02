@@ -11,6 +11,7 @@ import 'pages/app_lock_settings_page.dart';
 import 'pages/assistant_settings_page.dart';
 import 'pages/backup_settings_page.dart';
 import 'pages/calendar_settings_page.dart';
+import 'pages/care_plan_settings_page.dart';
 import 'pages/catalog_settings_page.dart';
 import 'pages/communication_settings_page.dart';
 import 'pages/company_settings_page.dart';
@@ -23,6 +24,7 @@ import 'pages/payments_settings_page.dart';
 import 'pages/pricing_settings_page.dart';
 import 'pages/secretary_learn_page.dart';
 import 'pages/service_area_settings_page.dart';
+import 'pages/sticker_printer_settings_page.dart';
 import 'pages/work_days_settings_page.dart';
 import '../../models/secretary_lesson.dart';
 import '../../services/secretary_learn_service.dart';
@@ -192,6 +194,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             onTap: () =>
                                 _open(context, const CatalogSettingsPage()),
                           ),
+                          SettingsHubTile(
+                            title: 'Care Plan',
+                            subtitle: context.tr('Подписка, ТО', 'Plan, upkeep'),
+                            icon: Icons.verified_user,
+                            color: const Color(0xFF2E7D32),
+                            onTap: () =>
+                                _open(context, const CarePlanSettingsPage()),
+                          ),
                         ],
                       ),
                       SettingsTileSection(
@@ -322,6 +332,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             color: const Color(0xFF635BFF),
                             onTap: () =>
                                 _open(context, const PaymentsSettingsPage()),
+                          ),
+                          SettingsHubTile(
+                            title: context.tr('Принтер', 'Printer'),
+                            subtitle: context.tr('Наклейки', 'Stickers'),
+                            icon: Icons.print_outlined,
+                            color: Colors.blueGrey,
+                            onTap: () => _open(
+                              context,
+                              const StickerPrinterSettingsPage(),
+                            ),
                           ),
                         ],
                       ),

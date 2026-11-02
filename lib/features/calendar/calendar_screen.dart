@@ -20,14 +20,13 @@ import '../../services/app_time_service.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import '../jobs/create_job_screen.dart';
 import '../jobs/jobs_screen.dart';
-import '../ai/assistant/review_bell_button.dart';
+import 'calendar_top_icons.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/widgets/animated_app_logo.dart';
 import '../../shared/widgets/appliance_logo.dart';
 import '../../shared/widgets/calendar_hatch.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
-import '../../shared/widgets/visit_confirm_badge.dart';
 import 'calendar_card_shape.dart';
 import 'visit_link_overlay.dart';
 import 'now_time_overlay.dart';
@@ -69,8 +68,6 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   VisitLinkCatalog? _linkCatalog;
   String _defaultViewMode = SettingsService.defaultCalendarView;
 
-  DateTime? _lastTapTime;
-  DateTime? _lastTapDate;
   DateTime? _lastDragSnap;
   DateTime _focusDate = DateTime.now();
   DateTime _pageOriginDate = DateTime.now();
@@ -656,7 +653,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                 children: [
                   _viewButton(),
                   const Spacer(),
-                  const ReviewBellButton(color: Colors.white, iconSize: 28),
+                  const CalendarTopIcons(color: Colors.white, iconSize: 28),
                 ],
               ),
             ),
@@ -1052,7 +1049,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                   });
                   _publishHomeState();
                 },
-          onEmptySlotDoubleTap: _onEmptySlot,
+          onEmptySlotLongPress: _onEmptySlot,
           isDragLocked: (app) => _isAppointmentDragLocked(app, docsById),
           onLockedDragAttempt: () {
             AppFeedback.haptic();
@@ -1201,26 +1198,18 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
             _resetHourlyPager(_focusDate);
           });
           _publishHomeState();
+        }
+      },
+      onLongPress: (CalendarLongPressDetails details) {
+        if (details.targetElement != CalendarElement.calendarCell ||
+            details.date == null) {
           return;
         }
-
-        if (details.targetElement == CalendarElement.appointment) {
+        if (details.appointments != null && details.appointments!.isNotEmpty) {
           return;
         }
-
-        if (details.targetElement == CalendarElement.calendarCell &&
-            details.date != null) {
-          final now = DateTime.now();
-          if (_lastTapTime != null &&
-              now.difference(_lastTapTime!).inMilliseconds < 500 &&
-              _lastTapDate == details.date) {
-            _lastTapTime = null;
-            _onEmptySlot(details.date!);
-          } else {
-            _lastTapTime = now;
-            _lastTapDate = details.date;
-          }
-        }
+        AppFeedback.haptic();
+        _onEmptySlot(details.date!);
       },
       appointmentBuilder: (context, calendarAppointmentDetails) {
         final Appointment app =
@@ -1569,10 +1558,6 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                         badge,
                         const SizedBox(width: 3),
                       ],
-                      if (!fiveDay) ...[
-                        VisitConfirmBadge.mark(visit, size: 16),
-                        const SizedBox(width: 3),
-                      ],
                       Expanded(
                         child: Row(
                           children: [
@@ -1610,26 +1595,6 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                       ),
                       const SizedBox(width: 4),
                       ApplianceLogo(type: type, size: logoSize, onDark: true),
-                      if (!fiveDay &&
-                          visit != null &&
-                          visit.effectiveConfirmStatus ==
-                              JobVisit.confirmConfirmed) ...[
-                        const SizedBox(width: 3),
-                        const Icon(
-                          Icons.check_circle,
-                          color: Colors.white,
-                          size: 14,
-                        ),
-                      ] else if (!fiveDay &&
-                          visit != null &&
-                          visit.effectiveConfirmStatus.isNotEmpty) ...[
-                        const SizedBox(width: 3),
-                        const Icon(
-                          Icons.sms_failed,
-                          color: Colors.white,
-                          size: 14,
-                        ),
-                      ],
                     ],
                   )
                 : Center(
@@ -1799,7 +1764,7 @@ class _AdaptiveCalendarPage extends StatefulWidget {
     required this.initialScrollOffset,
     required this.onScrollOffsetChanged,
     this.onDayHeaderTap,
-    required this.onEmptySlotDoubleTap,
+    required this.onEmptySlotLongPress,
     required this.isDragLocked,
     required this.onLockedDragAttempt,
     required this.cardBuilder,
@@ -1817,7 +1782,7 @@ class _AdaptiveCalendarPage extends StatefulWidget {
   final double? initialScrollOffset;
   final ValueChanged<double> onScrollOffsetChanged;
   final ValueChanged<DateTime>? onDayHeaderTap;
-  final ValueChanged<DateTime> onEmptySlotDoubleTap;
+  final ValueChanged<DateTime> onEmptySlotLongPress;
   final bool Function(Appointment) isDragLocked;
   final VoidCallback onLockedDragAttempt;
   final Widget Function(Appointment, Size, {required bool forDragFeedback})
@@ -1837,8 +1802,6 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
 
   final GlobalKey _gridKey = GlobalKey();
   late final ScrollController _scrollController;
-  DateTime? _lastEmptyTapAt;
-  DateTime? _lastEmptyTapSlot;
 
   Appointment? _draggingApp;
   DateTime? _draggingTime;
@@ -1893,7 +1856,7 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
     return base.add(Duration(minutes: snapped.clamp(0, 23 * 60 + 45)));
   }
 
-  void _handleEmptyTapUp(TapUpDetails details, double dayWidth) {
+  void _handleEmptyLongPress(LongPressStartDetails details, double dayWidth) {
     if (widget.visibleDates.isEmpty || dayWidth <= 0) return;
     final col = (details.localPosition.dx ~/ dayWidth).clamp(
       0,
@@ -1908,17 +1871,8 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
       rawTime.hour,
       (rawTime.minute ~/ 30) * 30,
     );
-    final now = DateTime.now();
-    if (_lastEmptyTapAt != null &&
-        now.difference(_lastEmptyTapAt!).inMilliseconds < 500 &&
-        _lastEmptyTapSlot == slotTime) {
-      _lastEmptyTapAt = null;
-      _lastEmptyTapSlot = null;
-      widget.onEmptySlotDoubleTap(slotTime);
-    } else {
-      _lastEmptyTapAt = now;
-      _lastEmptyTapSlot = slotTime;
-    }
+    AppFeedback.haptic();
+    widget.onEmptySlotLongPress(slotTime);
   }
 
   void _updateDragFromGlobal(Offset globalPos, double dayWidth) {
@@ -2050,8 +2004,8 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
                           bottom: 0,
                           child: GestureDetector(
                             behavior: HitTestBehavior.translucent,
-                            onTapUp: (details) =>
-                                _handleEmptyTapUp(details, dayWidth),
+                            onLongPressStart: (details) =>
+                                _handleEmptyLongPress(details, dayWidth),
                           ),
                         ),
                         for (final app in visibleAppointments)

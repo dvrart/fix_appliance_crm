@@ -14,10 +14,14 @@ import '../messages/conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/motion.dart';
 import '../../models/client.dart';
+import '../../models/contact.dart';
 import '../../models/job.dart';
+import '../../models/location.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/stale_routes.dart';
+import '../../shared/widgets/appliance_picture.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
+import '../care_plan/care_plan_section.dart';
 import 'edit_client_sheet.dart';
 
 class ClientDetailsScreen extends StatefulWidget {
@@ -291,7 +295,8 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         final company = data['companyName'] ?? data['company'] ?? '';
         final email = (data['email'] ?? '').toString();
         final notes = (data['notes'] ?? data['description'] ?? '').toString();
-        final source = (data['source'] ?? '').toString();
+        final source =
+            (data['source'] ?? data['referralSource'] ?? '').toString().trim();
         final topInset = MediaQuery.viewPaddingOf(context).top;
 
         return Scaffold(
@@ -527,16 +532,23 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                         title: 'Адрес'.tr,
                         value: address.isEmpty ? 'Не указан'.tr : address,
                       ),
-                      _buildInfoCard(
-                        icon: Icons.campaign_outlined,
-                        title: 'Откуда узнали'.tr,
-                        value: source.isEmpty ? 'Не указано'.tr : trAny(source),
-                      ),
+                      if (source.isNotEmpty)
+                        _buildInfoCard(
+                          icon: Icons.campaign_outlined,
+                          title: 'Откуда узнали'.tr,
+                          value: trAny(source),
+                        ),
                       if (notes.isNotEmpty)
                         _buildInfoCard(
                           icon: Icons.notes,
                           title: 'Описание'.tr,
                           value: notes,
+                        ),
+                      ..._filledExtraCards(data, phone, address),
+                      if (widget.clientId.isNotEmpty)
+                        CarePlanSection(
+                          clientId: widget.clientId,
+                          clientData: data,
                         ),
                     ],
                   ),
@@ -602,6 +614,66 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         ],
       ),
     );
+  }
+
+  /// То, что заполнено в окне «Изменить», но выше уже не показано:
+  /// второй адрес, другой контакт, почта контакта.
+  List<Widget> _filledExtraCards(
+    Map<String, dynamic> data,
+    String phone,
+    String address,
+  ) {
+    final cards = <Widget>[];
+    final raw = data['locations'];
+    if (raw is! List) return cards;
+    final mainPhone = phone.trim();
+    final mainAddress = address.trim();
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final loc = Location.fromMap(Map<String, dynamic>.from(item));
+      final locAddress = loc.fullAddress.trim();
+      if (locAddress.isNotEmpty && locAddress != mainAddress) {
+        cards.add(
+          _buildInfoCard(
+            icon: Icons.home_outlined,
+            title: 'Адрес'.tr,
+            value: locAddress,
+          ),
+        );
+      }
+      if ((loc.notes ?? '').trim().isNotEmpty) {
+        cards.add(
+          _buildInfoCard(
+            icon: Icons.sticky_note_2_outlined,
+            title: 'Заметка к адресу'.tr,
+            value: loc.notes!.trim(),
+          ),
+        );
+      }
+      for (final contact in loc.contacts) {
+        cards.addAll(_contactCards(contact, mainPhone));
+      }
+    }
+    return cards;
+  }
+
+  List<Widget> _contactCards(Contact contact, String mainPhone) {
+    final name = contact.name.trim();
+    final phone = contact.phone.trim();
+    final samePhone = phone.isNotEmpty && phone == mainPhone;
+    if (name.isEmpty && (phone.isEmpty || samePhone)) return const [];
+    final value = [
+      if (name.isNotEmpty) name,
+      if (phone.isNotEmpty && !samePhone) phone,
+      if (contact.role != 'owner') trAny(contact.roleLabel),
+    ].join(' · ');
+    return [
+      _buildInfoCard(
+        icon: Icons.person_outline,
+        title: 'Контакт'.tr,
+        value: value,
+      ),
+    ];
   }
 
   Widget _buildInfoCard({
@@ -811,6 +883,19 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
             final visits = job.coalescedVisits;
             final nextVisit = job.scheduledAt ??
                 (visits.isNotEmpty ? visits.last.startAt : null);
+            final visitLabel = visits.length > 1
+                ? '${visits.length} ${'визитов'.tr}'
+                : visits.length == 1
+                    ? '1 ${'визит'.tr}'
+                    : '';
+            final dateLabel = nextVisit == null
+                ? 'Дата не указана'.tr
+                : DateFormat('dd.MM.yyyy').format(nextVisit);
+            final notes = [
+              if (nextVisit != null) _ago(nextVisit),
+              if (job.isUnpaid) 'Неоплачено'.tr,
+              if (job.status == JobStatuses.completed) 'Прошлый визит'.tr,
+            ].join(' · ');
 
             return Card(
               margin: const EdgeInsets.only(bottom: 8),
@@ -818,74 +903,8 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                 borderRadius: BorderRadius.circular(12),
                 side: BorderSide(color: StatusService.colorOf(status).withOpacity(0.3)),
               ),
-              child: ListTile(
-                leading: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: StatusService.colorOf(status).withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    ApplianceCategories.getIcon(applianceType),
-                    color: StatusService.colorOf(status),
-                  ),
-                ),
-                title: Text(
-                  trAny(applianceType),
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-                subtitle: Text(
-                  [
-                    if (visits.length > 1)
-                      '${visits.length} ${'визитов'.tr} · ${DateFormat('dd.MM.yyyy HH:mm').format(nextVisit!)}'
-                    else if (nextVisit != null)
-                      DateFormat('dd.MM.yyyy HH:mm').format(nextVisit)
-                    else
-                      'Дата не указана'.tr,
-                    if (nextVisit != null) _ago(nextVisit),
-                    if (job.isUnpaid) 'Неоплачено'.tr,
-                    if (job.status == JobStatuses.completed) 'Прошлый визит'.tr,
-                  ].join(' · '),
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Flexible(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: StatusService.colorOf(status).withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          trAny(status),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: StatusService.colorOf(status),
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Удалить заявку'.tr,
-                      onPressed: () => _deleteJob(job),
-                      padding: EdgeInsets.zero,
-                      visualDensity: VisualDensity.compact,
-                      constraints: const BoxConstraints(
-                        minWidth: 40,
-                        minHeight: 40,
-                      ),
-                      color: Colors.red,
-                      icon: const Icon(Icons.delete_outline),
-                    ),
-                  ],
-                ),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
                 onTap: () {
                   AppNav.openCard(
                     context,
@@ -897,6 +916,114 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                     ),
                   );
                 },
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+                  child: Row(
+                    children: [
+                      AppliancePicture(type: applianceType, size: 40),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    trAny(applianceType),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      dateLabel,
+                                      style: TextStyle(
+                                        color: AppColors.inkMuted,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    if (visitLabel.isNotEmpty)
+                                      Text(
+                                        visitLabel,
+                                        style: TextStyle(
+                                          color: AppColors.inkMuted,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: StatusService.colorOf(status).withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      trAny(status),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: StatusService.colorOf(status),
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                if (notes.isNotEmpty) ...[
+                                  const SizedBox(width: 6),
+                                  Flexible(
+                                    child: Text(
+                                      notes,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: AppColors.inkMuted,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Удалить заявку'.tr,
+                        onPressed: () => _deleteJob(job),
+                        padding: EdgeInsets.zero,
+                        visualDensity: VisualDensity.compact,
+                        constraints: const BoxConstraints(
+                          minWidth: 36,
+                          minHeight: 36,
+                        ),
+                        color: Colors.red,
+                        icon: const Icon(Icons.delete_outline, size: 20),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             );
           }).toList(),

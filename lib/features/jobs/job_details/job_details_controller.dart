@@ -199,17 +199,15 @@ class JobDetailsController extends ChangeNotifier {
     visits = _parseVisits(jobData);
     _applyVisitFields(visits);
 
-    final phone = (jobData['clientPhone'] ?? '').toString().trim();
     jobData['clientName'] = Client.stripClientWord(
       (jobData['clientName'] ?? jobData['name'] ?? '').toString(),
-      phone,
     );
     hasJobSite = jobData['hasJobSite'] == true;
     jobSitePhone = (jobData['jobSitePhone'] ?? '').toString();
     jobSiteName = Client.stripClientWord(
       (jobData['jobSiteName'] ?? '').toString(),
-      jobSitePhone.trim().isNotEmpty ? jobSitePhone : phone,
     );
+    _dropPhoneSavedAsName();
     jobSiteAddress = jobData['jobSiteAddress'] ?? '';
     jobSiteEmail = (jobData['jobSiteEmail'] ?? '').toString();
     clientEmail = (jobData['clientEmail'] ?? '').toString().trim();
@@ -223,6 +221,21 @@ class JobDetailsController extends ChangeNotifier {
       attachments = List<Map<String, dynamic>>.from(jobData['attachments']);
     }
     needsReview = jobData['needsReview'] == true;
+  }
+
+  /// Телефон, когда-то записанный в поле имени, именем не является. Убираем его,
+  /// чтобы на его место встало имя из карточки клиента. Пока карточку не
+  /// сохранили — на сервере ничего не меняется.
+  void _dropPhoneSavedAsName() {
+    if (Client.isPlaceholderName(jobData['clientName']) &&
+        !_draft.containsKey('clientName')) {
+      jobData['clientName'] = '';
+    }
+    if (Client.isPlaceholderName(jobSiteName) &&
+        !_draft.containsKey('jobSiteName')) {
+      jobSiteName = '';
+      jobData['jobSiteName'] = '';
+    }
   }
 
   void _listenJobDocuments() {
@@ -264,11 +277,11 @@ class JobDetailsController extends ChangeNotifier {
       if (data.containsKey('clientPhone')) {
         jobData['clientPhone'] = data['clientPhone'];
       }
-      if (data.containsKey('clientName') || data.containsKey('name')) {
+      if ((data.containsKey('clientName') || data.containsKey('name')) &&
+          !_draft.containsKey('clientName')) {
         jobData['clientName'] = Client.stripClientWord(
           (data['clientName'] ?? data['name'] ?? jobData['clientName'])
               ?.toString(),
-          (jobData['clientPhone'] ?? '').toString(),
         );
       }
       if (data.containsKey('clientIsRegular') || data.containsKey('isRegular')) {
@@ -303,6 +316,9 @@ class JobDetailsController extends ChangeNotifier {
       needsReview = data['needsReview'] == true;
 
       if (!hasUnsavedChanges) {
+        if (data.containsKey('promisedPartAt')) {
+          jobData['promisedPartAt'] = data['promisedPartAt'];
+        }
         currentStatus = data['status'] ?? currentStatus;
         durationMinutes =
             (data['durationMinutes'] as num?)?.toInt() ?? durationMinutes;
@@ -319,12 +335,8 @@ class JobDetailsController extends ChangeNotifier {
           jobSitePhone = (data['jobSitePhone'] ?? '').toString();
         }
         if (data.containsKey('jobSiteName')) {
-          final fallbackPhone = jobSitePhone.trim().isNotEmpty
-              ? jobSitePhone
-              : (jobData['clientPhone'] ?? '').toString();
           jobSiteName = Client.stripClientWord(
             (data['jobSiteName'] ?? '').toString(),
-            fallbackPhone,
           );
         }
         if (data.containsKey('jobSiteAddress')) {
@@ -348,9 +360,9 @@ class JobDetailsController extends ChangeNotifier {
           jobData['clientName'] = Client.stripClientWord(
             (data['clientName'] ?? data['name'] ?? jobData['clientName'])
                 ?.toString(),
-            (jobData['clientPhone'] ?? '').toString(),
           );
         }
+        _dropPhoneSavedAsName();
         if (data.containsKey('description')) {
           currentDescription = (data['description'] ?? currentDescription)
               .toString();
@@ -688,12 +700,15 @@ class JobDetailsController extends ChangeNotifier {
     return own;
   }
 
+  /// Имя без подстановки телефона: номер — не имя, на карточке работы он
+  /// закрывает настоящее имя клиента.
+  String _nameOnly(String? raw) => Client.stripClientWord(raw);
+
   /// Имя человека на месте (из заявки, локаций клиента, других заявок или звонка).
   String get effectiveJobSiteName {
-    final own = Client.stripClientWord(jobSiteName, effectiveJobSitePhone);
-    final clientNameNorm = Client.stripClientWord(
+    final own = _nameOnly(jobSiteName);
+    final clientNameNorm = _nameOnly(
       jobData['clientName']?.toString(),
-      (jobData['clientPhone'] ?? '').toString(),
     ).toLowerCase();
     if (own.isNotEmpty && own.toLowerCase() != clientNameNorm) {
       return own;
@@ -704,7 +719,7 @@ class JobDetailsController extends ChangeNotifier {
     for (final loc in _clientLocations) {
       for (final contact in loc.contacts) {
         final norm = SmsService.normalizePhone(contact.phone);
-        final cName = Client.stripClientWord(contact.name, contact.phone);
+        final cName = _nameOnly(contact.name);
         if (cName.isNotEmpty &&
             (norm != clientPhoneNorm || contact.role == 'tenant') &&
             cName.toLowerCase() != clientNameNorm) {
@@ -713,16 +728,13 @@ class JobDetailsController extends ChangeNotifier {
       }
     }
     for (final call in _relatedCalls.values) {
-      final cn = Client.stripClientWord(
-        (call['contactOnSiteName'] ?? '').toString(),
-        (call['contactOnSitePhone'] ?? '').toString(),
-      );
+      final cn = _nameOnly((call['contactOnSiteName'] ?? '').toString());
       if (cn.isNotEmpty && cn.toLowerCase() != clientNameNorm) {
         return cn;
       }
     }
     for (final j in _clientJobs) {
-      final jn = Client.stripClientWord(j.jobSiteName, j.jobSitePhone ?? '');
+      final jn = _nameOnly(j.jobSiteName);
       if (jn.isNotEmpty && jn.toLowerCase() != clientNameNorm) {
         return jn;
       }
@@ -730,14 +742,16 @@ class JobDetailsController extends ChangeNotifier {
     return own;
   }
 
-  /// Контактное имя на месте
+  /// Контактное имя на месте. Настоящее имя важнее телефона: номер, который
+  /// когда-то записали вместо имени, здесь не показывается.
   String get contactName {
     final site = effectiveJobSiteName;
-    if (hasJobSite && site.isNotEmpty) return site;
-    final owner = Client.stripClientWord(
-      jobData['clientName']?.toString(),
-      contactPhone,
-    );
+    if (hasJobSite && site.isNotEmpty && !Client.isPlaceholderName(site)) {
+      return site;
+    }
+    final owner = _nameOnly(jobData['clientName']?.toString());
+    if (owner.isNotEmpty && !Client.isPlaceholderName(owner)) return owner;
+    if (site.isNotEmpty && !Client.isPlaceholderName(site)) return site;
     return owner.isNotEmpty ? owner : 'Неизвестно'.tr;
   }
 
@@ -958,10 +972,10 @@ class JobDetailsController extends ChangeNotifier {
       final prevContactsCount = chatContacts.length;
       _clientLocations = parsedClient.locations;
       final phone = (data['phone'] ?? '').toString().trim();
-      final name = Client.stripClientWord(
-        (data['fullName'] ?? data['name'] ?? '').toString(),
-        phone,
-      );
+      // Имя — тем же путём, что и в карточке клиента: настоящее имя ищется по
+      // всем полям карточки, а телефон на его место не подставляется.
+      final extracted = Client.extractName(data, fallback: '');
+      final name = Client.isPlaceholderName(extracted) ? '' : extracted;
       final address = (data['address'] ?? '').toString().trim();
       final email = (data['email'] ?? '').toString().trim();
       final isRegular = data['isRegular'] == true;
@@ -1223,39 +1237,6 @@ class JobDetailsController extends ChangeNotifier {
     return saveVisits(visits.where((v) => v.id != visitId).toList());
   }
 
-  Future<void> updateVisitConfirm(JobVisit visit, String status) async {
-    final nextStatus = status.trim().isEmpty
-        ? JobVisit.confirmPending
-        : status.trim();
-    final current = visit.effectiveConfirmStatus;
-    final alreadyPending =
-        current.isEmpty || current == JobVisit.confirmPending;
-    if (nextStatus == JobVisit.confirmPending && alreadyPending) {
-      // «Нет» при уже неподтверждённом визите — ничего не пишем в Firestore,
-      // иначе уйдут все черновые правки (новая дата и т.п.).
-      return;
-    }
-
-    final hadOtherDraft =
-        _visitsDirty ||
-        _draft.isNotEmpty ||
-        _attachmentsDirty ||
-        _pendingClientAddress != null;
-
-    await updateVisit(visit.withManualConfirm(nextStatus));
-
-    if (nextStatus == JobVisit.confirmConfirmed) {
-      // Подтверждение — сохраняем сразу (нужно для SMS).
-      await commitChanges();
-      return;
-    }
-
-    // Снятие подтверждения: в Firestore только если не было других правок.
-    if (!hadOtherDraft) {
-      await commitChanges();
-    }
-  }
-
   Future<void> markVisitDone(String visitId) async {
     JobVisit? target;
     for (final visit in visits) {
@@ -1276,6 +1257,28 @@ class JobDetailsController extends ChangeNotifier {
     }
     notifyListeners();
     _queue({'durationMinutes': durationMinutes});
+  }
+
+  /// День, к которому клиенту обещали запчасть. Не слот календаря.
+  DateTime? get promisedPartAt {
+    final raw = jobData['promisedPartAt'] ?? jobData['agreedReturnAt'];
+    if (raw is Timestamp) return raw.toDate();
+    if (raw is DateTime) return raw;
+    if (raw is String) return DateTime.tryParse(raw);
+    return null;
+  }
+
+  Future<void> updatePromisedPartAt(DateTime? at) async {
+    final day = at == null ? null : DateTime(at.year, at.month, at.day);
+    jobData['promisedPartAt'] = day;
+    jobData.remove('agreedReturnAt');
+    jobData.remove('agreedReturnNote');
+    notifyListeners();
+    _queue({
+      'promisedPartAt': day,
+      'agreedReturnAt': FieldValue.delete(),
+      'agreedReturnNote': FieldValue.delete(),
+    });
   }
 
   Future<void> updatePackingNotes(String notes) async {
@@ -1324,14 +1327,25 @@ class JobDetailsController extends ChangeNotifier {
   Future<List<Map<String, dynamic>>> _uploadPendingAttachments() async {
     photosQueued = false;
     final result = <Map<String, dynamic>>[];
+    final usedNames = <String>{
+      for (final raw in attachments)
+        if (raw['pendingUpload'] != true &&
+            (raw['name'] ?? '').toString().trim().isNotEmpty)
+          (raw['name'] ?? '').toString().trim(),
+    };
+    var seq = 0;
     for (final raw in attachments) {
       final item = Map<String, dynamic>.from(raw);
       final pending = item['pendingUpload'] == true;
       final local = (item['localPath'] ?? '').toString();
       if (pending && local.isNotEmpty) {
-        final fileName =
-            (item['name'] ?? '${DateTime.now().millisecondsSinceEpoch}.jpg')
-                .toString();
+        var fileName = (item['name'] ?? '').toString().trim();
+        if (fileName.isEmpty || usedNames.contains(fileName)) {
+          seq += 1;
+          fileName = '${DateTime.now().microsecondsSinceEpoch}_$seq.jpg';
+          item['name'] = fileName;
+        }
+        usedNames.add(fileName);
         try {
           final storageRef = FirebaseStorage.instance.ref().child(
             'jobs/$jobId/attachments/$fileName',
@@ -1577,7 +1591,7 @@ class JobDetailsController extends ChangeNotifier {
     if (justDeposited) unawaited(markDepositTaken(remoteStatus: remoteStatus));
     if (justPaid) {
       onInvoiceFullyPaid?.call();
-      unawaited(completeAfterInvoicePaid());
+      unawaited(completeAfterInvoicePaid(remoteStatus: remoteStatus));
     }
   }
 
@@ -1650,16 +1664,19 @@ class JobDetailsController extends ChangeNotifier {
     await updateStatus(JobStatuses.deposit, persistNow: true);
   }
 
-  /// Полная оплата инвойса → предлагаем пометить «Готово», не переводим автоматически.
-  Future<void> completeAfterInvoicePaid() async {
+  /// Полная оплата инвойса любым способом → статус «Готово» сразу, без
+  /// вопросов (просьба FIX 24.10.2026). Отменённую заявку не трогаем.
+  Future<void> completeAfterInvoicePaid({String remoteStatus = ''}) async {
     openFinanceMainList();
-    if (JobStatuses.isCompletedStatus(currentStatus) ||
-        JobStatuses.isCancelledStatus(currentStatus)) {
+    // Тем же обновлением «Готово» мог поставить сервер (вебхук Stripe) —
+    // второй раз в базу не пишем.
+    final status = remoteStatus.trim().isEmpty ? currentStatus : remoteStatus;
+    if (JobStatuses.isCompletedStatus(status) ||
+        JobStatuses.isCancelledStatus(status)) {
       return;
     }
-    // Предлагаем пометить заявку завершённой вместо автоматического перевода.
-    pendingSuggestComplete = true;
-    notifyListeners();
+    pendingSuggestComplete = false;
+    await updateStatus(JobStatuses.completed, persistNow: true);
   }
 
   void dismissSuggestComplete() {

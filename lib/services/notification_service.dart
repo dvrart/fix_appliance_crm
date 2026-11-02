@@ -566,7 +566,8 @@ class NotificationService {
 
     // Напоминание «через ~1.5 часа визит» приходит с сервера (крон
     // sendOwnerReminders). Рисуем на своём канале, чтобы не попасть в SMS.
-    if (type == 'visit_soon') {
+    // Care Plan (пора ТО, платёж не прошёл) — туда же: это тоже «скоро ехать».
+    if (type == 'visit_soon' || type == 'care_plan') {
       await LocalNotificationService.showInboxAlert(
         title: title.isEmpty ? 'Через 1.5 часа заявка' : title,
         body: body,

@@ -43,11 +43,11 @@ class SettingsService {
       'Thank you for choosing Fix-Appliance CA 🙏\n'
       'A quick Google review would mean a lot to us ⭐\n{review}\n'
       'Have a great day! 😊';
+  /// Только дата, время и адрес. Визит клиент ответом не подтверждает.
   static const String defaultBookingConfirmSms =
-      'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day';
-  /// Напоминание не просит подтверждения: его просим один раз, в
-  /// `booking_confirm` (решение FIX, 13.10.2026). Даже если в шаблоне просьба
-  /// останется, сервер снимает её при отправке (`stripConfirmAsk`).
+      'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nSee you then!';
+  /// Напоминание тоже ничего не спрашивает. Даже если в сохранённом шаблоне
+  /// просьба останется, сервер снимает её при отправке (`stripConfirmAsk`).
   static const String defaultDayBeforeSms =
       'Reminder 📅\n\n{date} at 🕘 {time}\n📍 {address}\n\nSee you then! No reply needed.';
   static const String defaultCancelSaveSms =
@@ -88,7 +88,7 @@ class SettingsService {
     (
       key: 'booking_confirm',
       section: 'Визиты',
-      defaultTitle: 'Подтверждение визита',
+      defaultTitle: 'Запись на визит',
       icon: Icons.event_available,
       color: Colors.indigo,
     ),
@@ -257,6 +257,16 @@ class SettingsService {
           smsChanged = true;
         }
       }
+      // Визит больше не подтверждается ответом. Старый шаблон с меню
+      // «1 / 0 / 5» заменяем на сообщение только о дате и времени; свой
+      // текст без такого меню не трогаем.
+      final booking = (next['booking_confirm'] ?? '').trim();
+      if (booking.isEmpty ||
+          booking ==
+              'Hi {name}! ✅\n\n📅 Visit: {date}\n🕘 Time: {time}\n📍 {address}\n\nReply:\n1 ✅ confirm\n0 ❌ cancel\n5 🔁 another day') {
+        next['booking_confirm'] = defaults['booking_confirm']!;
+        smsChanged = true;
+      }
       if ((next['cancel_save'] ?? '').trim().isEmpty) {
         next['cancel_save'] = defaults['cancel_save']!;
         smsChanged = true;
@@ -408,10 +418,6 @@ class SettingsService {
         ),
       );
     }
-  }
-
-  static bool readBookingSmsEnabled(Map<String, dynamic> config) {
-    return boolFlag(config, 'bookingSmsEnabled', defaultValue: false);
   }
 
   static bool readReminderSmsEnabled(Map<String, dynamic> config) {

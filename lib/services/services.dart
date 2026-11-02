@@ -30,3 +30,4 @@ export 'offline_queue_service.dart';
 export 'import_export_service.dart';
 export 'calendar_event_service.dart';
 export 'change_log_service.dart';
+export 'care_plan_service.dart';

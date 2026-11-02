@@ -140,7 +140,59 @@ void main() {
       'clientName': 'Клиент',
       'clientPhone': '+14165550101',
     }, 'j1');
-    expect(job.clientName, '+14165550101');
-    expect(job.contactName, '+14165550101');
+    // Телефон живёт в своём поле. На место имени он больше не подставляется.
+    expect(job.clientName, '');
+    expect(job.clientPhone, '+14165550101');
+    expect(job.contactName, '');
+  });
+
+  test('пустое имя на месте — это имя клиента, а не его телефон', () {
+    final job = Job.fromMap({
+      'clientName': 'Артем Пурышев',
+      'clientPhone': '+15197323488',
+      'hasJobSite': true,
+      'jobSiteName': '',
+      'jobSitePhone': '+15197323488',
+    }, 'j2');
+    expect(job.contactName, 'Артем Пурышев');
+
+    final storedPhone = Job.fromMap({
+      'clientName': 'Артем Пурышев',
+      'clientPhone': '+15197323488',
+      'hasJobSite': true,
+      'jobSiteName': '+15197323488',
+      'jobSitePhone': '+15197323488',
+    }, 'j3');
+    expect(storedPhone.contactName, 'Артем Пурышев');
+
+    final tenant = Job.fromMap({
+      'clientName': 'Артем Пурышев',
+      'clientPhone': '+15197323488',
+      'hasJobSite': true,
+      'jobSiteName': 'Maria Lopez',
+      'jobSitePhone': '+14165550101',
+    }, 'j4');
+    expect(tenant.contactName, 'Maria Lopez');
+  });
+
+  test('имя из карточки клиента важнее телефона, записанного в заявку', () {
+    final data = {
+      'fullName': 'Клиент',
+      'name': '',
+      'phone': '+15197323488',
+      'locations': [
+        {
+          'contacts': [
+            {'name': 'Артем Пурышев', 'phone': '+15197323488', 'role': 'owner'},
+          ],
+        },
+      ],
+    };
+    expect(Client.extractName(data, fallback: ''), 'Артем Пурышев');
+
+    // Номер в поле имени заявки не считается именем: показ его отбрасывает,
+    // и на его место встаёт имя из карточки клиента.
+    expect(SmsText.isPlaceholderName('+15197323488'), isTrue);
+    expect(SmsText.isPlaceholderName('Артем Пурышев'), isFalse);
   });
 }

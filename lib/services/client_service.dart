@@ -6,6 +6,7 @@ import '../core/app_commands.dart';
 import '../core/constants.dart';
 import '../models/client.dart';
 import '../models/location.dart';
+import 'care_plan_service.dart';
 import 'firestore_service.dart';
 import 'client_job_sync.dart';
 import 'network_status_service.dart';
@@ -553,6 +554,15 @@ class ClientService {
       );
       jobsMoved++;
     }
+
+    // Care Plan и паспорта техники дубля — тоже к основному клиенту.
+    try {
+      await CarePlanService.reassignClient(
+        fromId: mergeId,
+        toId: keepId,
+        toName: keep.fullName,
+      );
+    } catch (_) {}
 
     // 2. Скопировать уникальные адреса от дубля к основному
     final keepAddresses = keep.locations

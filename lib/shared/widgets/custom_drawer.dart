@@ -27,7 +27,11 @@ class CustomDrawer extends StatefulWidget {
   /// Без него панель считается системным `Scaffold.drawer`.
   final Future<void> Function()? onClose;
 
-  const CustomDrawer({super.key, this.onClose});
+  /// Возвращает меню, когда открытый из него экран закрыли «Назад»:
+  /// «Расходы» → «Назад» → снова меню, а не вкладка под ним.
+  final VoidCallback? onReturn;
+
+  const CustomDrawer({super.key, this.onClose, this.onReturn});
 
   @override
   State<CustomDrawer> createState() => _CustomDrawerState();
@@ -58,7 +62,11 @@ class _CustomDrawerState extends State<CustomDrawer> {
     await _dismiss(context);
     final nav = AppNav.activeTabNavigator ?? rootNavigatorKey.currentState;
     if (nav == null || !nav.mounted) return;
-    nav.push(MaterialPageRoute(builder: (_) => page));
+    await PanelReturn.open(
+      nav,
+      push: () => nav.push(MaterialPageRoute<void>(builder: (_) => page)),
+      back: widget.onReturn,
+    );
   }
 
   void _openSearch(BuildContext context) async {
@@ -67,7 +75,11 @@ class _CustomDrawerState extends State<CustomDrawer> {
     await _dismiss(context);
     final nav = AppNav.activeTabNavigator ?? rootNavigatorKey.currentState;
     if (nav != null && nav.mounted) {
-      await GlobalSearchOverlay.open(nav.context);
+      await PanelReturn.open(
+        nav,
+        push: () => GlobalSearchOverlay.open(nav.context),
+        back: widget.onReturn,
+      );
     }
   }
 

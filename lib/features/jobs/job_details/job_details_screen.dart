@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../../core/app_feedback.dart';
 import '../../../core/constants.dart';
@@ -8,6 +8,7 @@ import '../../../models/client.dart';
 import '../../../models/job.dart';
 import '../../../services/services.dart';
 import '../../clients/client_details_screen.dart';
+import '../../care_plan/care_plan_job_banner.dart';
 import '../../../shared/widgets/confirm_action_sheet.dart';
 import '../../../shared/widgets/unsaved_changes_dialog.dart';
 import '../../../shared/app_nav.dart';
@@ -79,6 +80,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
         if (mounted) setState(() {});
       }
       if (_controller.financeMode == 'builder') return;
+      // Финансы — вторая вкладка. Ушли с неё — закрываем открытый документ.
       if (_tabController.index != 1 && _controller.financeMode != 'main') {
         _controller.setFinanceMode('main');
       }
@@ -331,7 +333,6 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
     final phone = (ctrl.jobData['clientPhone'] ?? '').toString().trim();
     final name = Client.stripClientWord(
       (ctrl.jobData['clientName'] ?? '').toString(),
-      phone,
     );
     final address = (ctrl.jobData['clientAddress'] ?? '').toString().trim();
     final email = ctrl.clientEmail.trim();
@@ -390,10 +391,8 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
 
   /// Шапка: имя клиента вместо названия техники — тап открывает карточку.
   Widget _clientTitle() {
-    final phone = (_controller.jobData['clientPhone'] ?? '').toString().trim();
     final name = Client.stripClientWord(
       (_controller.jobData['clientName'] ?? '').toString(),
-      phone,
     );
     return ValueListenableBuilder<int>(
       valueListenable: ClientService.regularRevision,
@@ -438,9 +437,9 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
                           children: [
                             Flexible(
                               child: Text(
-                                name.isEmpty
-                                    ? (phone.isEmpty ? 'Клиент'.tr : phone)
-                                    : name,
+                                // Имени нет — пишем «Клиент», а не телефон.
+                                // Настоящее имя придёт из карточки клиента.
+                                name.isEmpty ? 'Клиент'.tr : name,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
@@ -518,13 +517,26 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
                   ? null
                   : _FolderTabs(controller: _tabController, onTap: _onJobTabTap),
             ),
-            body: TabBarView(
-              controller: _tabController,
-              physics: builder ? const NeverScrollableScrollPhysics() : null,
+            body: Column(
               children: [
-                DetailsTab(controller: _controller),
-                FinanceTab(controller: _controller),
-                ChatTab(controller: _controller),
+                // Клиент на Care Plan — гарантийный вызов (ТО или ремонт).
+                if (!builder)
+                  CarePlanJobBanner(
+                    jobId: widget.jobId,
+                    clientId: _controller.clientId,
+                    phone: (_controller.jobData['clientPhone'] ?? '').toString(),
+                  ),
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabController,
+                    physics: builder ? const NeverScrollableScrollPhysics() : null,
+                    children: [
+                      DetailsTab(controller: _controller),
+                      FinanceTab(controller: _controller),
+                      ChatTab(controller: _controller),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -618,8 +630,8 @@ class _FolderTabs extends StatelessWidget implements PreferredSizeWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 18, color: fg),
-              const SizedBox(width: 6),
+              Icon(icon, size: 16, color: fg),
+              const SizedBox(width: 4),
               Flexible(
                 child: Text(
                   label,
@@ -627,7 +639,7 @@ class _FolderTabs extends StatelessWidget implements PreferredSizeWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: fg,
-                    fontSize: 14,
+                    fontSize: 12,
                     fontWeight: openness > 0.5
                         ? FontWeight.w800
                         : FontWeight.w600,
@@ -641,3 +653,4 @@ class _FolderTabs extends StatelessWidget implements PreferredSizeWidget {
     );
   }
 }
+

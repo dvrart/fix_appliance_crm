@@ -2,14 +2,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:twilio_voice/twilio_voice.dart';
+import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/motion.dart';
 import '../../models/client.dart';
+import '../../services/call_routing.dart';
 import '../../services/client_service.dart';
 import '../../services/twilio_service.dart';
 import '../../core/l10n/app_locale.dart';
-import '../../shared/app_nav.dart';
+import '../care_plan/care_plan_widgets.dart';
 
 /// Экран активного звонка (исходящего или входящего).
 class CallScreen extends StatefulWidget {
@@ -46,7 +48,10 @@ class CallScreen extends StatefulWidget {
     _shown = true;
     if (!isIncoming) AppFeedback.pleasant();
     try {
-      return await AppNav.navigatorOf(context).push<T>(
+      final navigator =
+          rootNavigatorKey.currentState ??
+          Navigator.of(context, rootNavigator: true);
+      return await navigator.push<T>(
         PageRouteBuilder<T>(
           opaque: true,
           transitionDuration: const Duration(milliseconds: 360),
@@ -133,7 +138,11 @@ class _CallScreenState extends State<CallScreen> {
     if (current == 'ringing' ||
         current == 'calling' ||
         current == 'connecting' ||
-        current == 'connected') {
+        current == 'connected' ||
+        current == 'answering' ||
+        current == 'reconnecting' ||
+        current == 'audioFailed' ||
+        current == 'movingToCell') {
       return current;
     }
     return widget.isIncoming ? 'ringing' : 'connecting';
@@ -148,9 +157,17 @@ class _CallScreenState extends State<CallScreen> {
         _answerWatch?.cancel();
         _startDurationTimer();
         if (!_isSpeaker) unawaited(TwilioService.preferCarAudio());
+      } else if (status == 'movedToCell' || status == 'cell') {
+        // Дальше разговор идёт обычным звонком SIM — экран успевает сказать,
+        // что делать, и уходит.
+        _stopDurationTimer();
+        Future.delayed(const Duration(seconds: 3), () {
+          unawaited(_softClose(true));
+        });
       } else if (status == 'ended' || status == 'failed') {
         _stopDurationTimer();
         if (status == 'failed') {
+          if (_offerCellAfterFailure) return;
           Future.delayed(const Duration(milliseconds: 1800), () {
             unawaited(_softClose(true));
           });
@@ -170,8 +187,16 @@ class _CallScreenState extends State<CallScreen> {
     }
   }
 
+  /// Исходящий из приложения не дозвонился, а SIM указан: вместо тихого
+  /// закрытия экран предлагает позвонить этому клиенту через сотовую связь.
+  bool get _offerCellAfterFailure =>
+      !widget.isIncoming &&
+      TwilioService.routing.hasCell &&
+      TwilioService.routing.effective == CallRoute.app;
+
   void _startDurationTimer() {
-    _durationTimer?.cancel();
+    // После «связь восстановлена» таймер продолжает, а не начинает с нуля.
+    if (_durationTimer != null) return;
     _callDuration = Duration.zero;
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) return;
@@ -202,8 +227,20 @@ class _CallScreenState extends State<CallScreen> {
         return 'Вызов...'.tr;
       case 'ringing':
         return widget.isIncoming ? 'Входящий звонок'.tr : 'Вызов...'.tr;
+      case 'answering':
+        return 'Соединяю звук…'.tr;
       case 'connected':
         return _formatDuration(_callDuration);
+      case 'reconnecting':
+        return 'Связь прервалась'.tr;
+      case 'audioFailed':
+        return 'Звук не соединился'.tr;
+      case 'movingToCell':
+        return 'Перевожу на обычный телефон…'.tr;
+      case 'movedToCell':
+        return 'Звонок переведён на SIM'.tr;
+      case 'cell':
+        return 'Звоню через сотовую связь…'.tr;
       case 'ended':
         return 'Звонок завершён'.tr;
       case 'failed':
@@ -259,7 +296,9 @@ class _CallScreenState extends State<CallScreen> {
     _answerWatch?.cancel();
     _answerWatch = Timer(const Duration(seconds: 3), () {
       if (!mounted || _popped) return;
-      if (_callStatus == 'connected') return;
+      // Мёртвый инвайт не даёт даже «Ответить». Если ответ дошёл и ждём
+      // звук, это решает TwilioService: «Соединяю звук…» или переход на SIM.
+      if (_callStatus != 'ringing') return;
       debugPrint('CallScreen: answer did not connect — dropping stale invite');
       unawaited(_hangUp());
     });
@@ -298,7 +337,15 @@ class _CallScreenState extends State<CallScreen> {
     final isConnected = _callStatus == 'connected';
     final isEnded = _callStatus == 'ended' || _callStatus == 'failed';
     final isRingingIncoming = widget.isIncoming && _callStatus == 'ringing';
-    final showInCallControls = !isEnded && !isRingingIncoming;
+    final isHandover = const {
+      'cell',
+      'movingToCell',
+      'movedToCell',
+    }.contains(_callStatus);
+    final showInCallControls = !isEnded &&
+        !isRingingIncoming &&
+        !isHandover &&
+        _callStatus != 'audioFailed';
 
     return PopScope(
       canPop: true,
@@ -401,6 +448,14 @@ class _CallScreenState extends State<CallScreen> {
                           ),
                         ),
                       ],
+                      // Звонит клиент на Care Plan — гарантийный вызов.
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: CarePlanCallBadge(
+                          phone: widget.phoneNumber,
+                          compact: _showKeypad,
+                        ),
+                      ),
                     ],
                   );
                 },
@@ -422,6 +477,7 @@ class _CallScreenState extends State<CallScreen> {
                   style: const TextStyle(color: Colors.white, fontSize: 16),
                 ),
               ),
+              _buildSignalBanner(),
               if (!_showKeypad) const Spacer(),
               if (showInCallControls && _showKeypad) ...[
                 const Spacer(),
@@ -493,9 +549,11 @@ class _CallScreenState extends State<CallScreen> {
                     ],
                   ),
                 )
+              else if (_callStatus == 'failed' && _offerCellAfterFailure)
+                _buildFailedActions()
               else
                 _fade(
-                  visible: !isEnded,
+                  visible: !isEnded && !isHandover,
                   child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 28),
                   child: Column(
@@ -526,6 +584,200 @@ class _CallScreenState extends State<CallScreen> {
             ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  /// Что сейчас со звуком — словами, чтобы мастер понимал, слышит ли его
+  /// клиент (просьба FIX, 27.10.2026).
+  Widget _buildSignalBanner() {
+    return ValueListenableBuilder<Set<CallQualityWarning>>(
+      valueListenable: TwilioService.qualityWarnings,
+      builder: (context, warnings, _) {
+        return ValueListenableBuilder<bool>(
+          valueListenable: TwilioService.peerAnswered,
+          builder: (context, peerAnswered, _) {
+            final banner = _signalBanner(warnings, peerAnswered);
+            if (banner == null) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(24, 12, 24, 0),
+              child: banner,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget? _signalBanner(Set<CallQualityWarning> warnings, bool peerAnswered) {
+    const red = Color(0xFFE53935);
+    const green = Color(0xFF2E7D32);
+    switch (_callStatus) {
+      case 'answering':
+        return _notice(
+          Icons.hourglass_top,
+          'Клиент вас пока не слышит — жду звук'.tr,
+          const Color(0xFF5C6BC0),
+        );
+      case 'reconnecting':
+        return _notice(
+          Icons.wifi_off,
+          'Пропал интернет — клиент вас сейчас не слышит. Восстанавливаю связь…'.tr,
+          red,
+        );
+      case 'audioFailed':
+        return _audioFailedNotice();
+      case 'movingToCell':
+      case 'movedToCell':
+        return _notice(
+          Icons.sim_card,
+          'Сейчас зазвонит обычный телефон. Ответьте и нажмите 1 — вы соединитесь с клиентом.'.tr,
+          green,
+        );
+      case 'cell':
+        final note = TwilioService.handoverNote;
+        return _notice(
+          Icons.sim_card,
+          '${note == null ? '' : '${note.tr}. '}${'Клиент увидит номер мастерской.'.tr}',
+          green,
+        );
+      case 'connected':
+        if (!_isMuted &&
+            warnings.contains(CallQualityWarning.constantAudioInputLevel)) {
+          return _notice(
+            Icons.mic_off,
+            'Микрофон не передаёт звук — клиент вас не слышит'.tr,
+            red,
+          );
+        }
+        if (warnings.any((w) => const {
+              CallQualityWarning.highPacketLoss,
+              CallQualityWarning.lowMos,
+              CallQualityWarning.highJitter,
+              CallQualityWarning.highRtt,
+            }.contains(w))) {
+          return _notice(
+            Icons.network_check,
+            'Слабый интернет — клиент может вас плохо слышать'.tr,
+            const Color(0xFFF9A825),
+          );
+        }
+        if (!widget.isIncoming && peerAnswered) {
+          return _notice(Icons.check_circle, 'Клиент на линии'.tr, green);
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  Widget _audioFailedNotice() {
+    final canMove = TwilioService.routing.hasCell;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _notice(
+          Icons.error_outline,
+          'Звук не соединился — клиент вас не слышит. Слабый интернет на телефоне.'.tr,
+          const Color(0xFFE53935),
+        ),
+        const SizedBox(height: 10),
+        if (canMove)
+          _buildWideAction(
+            icon: Icons.sim_card,
+            label: 'Перевести на обычный телефон'.tr,
+            color: const Color(0xFF2EBD59),
+            onTap: () => unawaited(TwilioService.moveIncomingToCell()),
+          )
+        else
+          Text(
+            'Положите трубку и перезвоните с обычного телефона.'.tr,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+      ],
+    );
+  }
+
+  Widget _notice(IconData icon, String text, Color color) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.22),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.7)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                height: 1.25,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFailedActions() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 28),
+      child: Column(
+        children: [
+          _buildWideAction(
+            icon: Icons.sim_card,
+            label: 'Позвонить через сотовую связь'.tr,
+            color: const Color(0xFF2EBD59),
+            onTap: _callViaCell,
+          ),
+          const SizedBox(height: 14),
+          _buildWideAction(
+            icon: Icons.close,
+            label: 'Закрыть'.tr,
+            color: Colors.white24,
+            onTap: () => unawaited(_softClose(false)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _callViaCell() async {
+    HapticFeedback.mediumImpact();
+    await TwilioService.placeViaCell(widget.phoneNumber, jobId: widget.jobId);
+  }
+
+  Widget _buildWideAction({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return SizedBox(
+      width: double.infinity,
+      child: FilledButton.icon(
+        style: FilledButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+        ),
+        onPressed: onTap,
+        icon: Icon(icon),
+        label: Text(
+          label,
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
         ),
       ),
     );

@@ -73,6 +73,8 @@
             android:taskAffinity="com.example.fix_appliance_crm"
             android:alwaysRetainTaskState="true"
             android:allowTaskReparenting="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"

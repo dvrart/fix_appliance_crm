@@ -11,6 +11,7 @@ import '../core/constants.dart';
 import '../models/client.dart';
 import '../models/job.dart';
 import 'auth_service.dart';
+import 'care_plan_service.dart';
 import 'client_service.dart';
 import 'network_status_service.dart';
 import 'notification_service.dart';
@@ -375,6 +376,8 @@ class JobService {
       docRef.set({
         ...job.toMap(),
         if (isRegular) 'clientIsRegular': true,
+        // Клиент на Care Plan — заявка сразу помечена «ремонт по плану».
+        ...CarePlanService.autoTagFields(job),
         'createdAt': FieldValue.serverTimestamp(),
       }),
     );
@@ -417,6 +420,9 @@ class JobService {
       createdAt: DateTime.now(),
       durationMinutes: original.durationMinutes,
       repeatOfJobId: original.id,
+      applianceIds: original.applianceIds,
+      carePlanId: original.carePlanId,
+      carePlanKind: original.carePlanKind,
     );
   }
 

@@ -2,17 +2,16 @@ import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-/// Firebase Auth: вход владельца и ID-токен для защищённых HTTP-функций.
+import '../core/api_keys.dart';
+
+/// Firebase Auth: автоматический вход владельца и ID-токен для защищённых
+/// HTTP-функций и правил Firestore/Storage.
 ///
-/// Токен кэшируется, чтобы синхронный код (URL для аудиоплеера) мог
-/// подставить его без await. Обновляется слушателем idTokenChanges
-/// и принудительно при запросе заголовков.
-///
-/// Учётные данные сохраняются в зашифрованное хранилище устройства.
-/// При потере сессии приложение восстанавливает вход автоматически —
-/// без показа экрана с полями email/пароль.
+/// Учётные данные владельца вшиты в локальный `api_keys.dart` (и дублируются
+/// в SharedPreferences). Вход выполняется полностью автоматически без показа
+/// экрана с полями email и пароля.
 class AuthService {
   AuthService._();
 
@@ -22,20 +21,20 @@ class AuthService {
   static String _cachedIdToken = '';
   static DateTime _cachedAt = DateTime.fromMillisecondsSinceEpoch(0);
   static StreamSubscription<User?>? _sub;
+  static Timer? _retryTimer;
 
-  // ------------------------------------------------ авто-вход
-
-  static const _storage = FlutterSecureStorage(
-    aOptions: AndroidOptions(encryptedSharedPreferences: true),
-  );
   static const _kEmail = 'auth_saved_email';
   static const _kPassword = 'auth_saved_password';
+
+  /// Вшиты ли учётные данные владельца прямо в сборку.
+  static bool get hasBuiltInCredentials =>
+      kOwnerEmail.trim().isNotEmpty && kOwnerPassword.isNotEmpty;
 
   /// true пока идёт тихое восстановление сессии — AppLockGate
   /// показывает заставку вместо экрана входа.
   static final ValueNotifier<bool> autoSigningIn =
       ValueNotifier<bool>(false);
-  static bool _autoSignInInProgress = false;
+  static Completer<bool>? _signInCompleter;
 
   // ------------------------------------------------ инициализация
 
@@ -45,17 +44,33 @@ class AuthService {
       user.value = u;
       if (u == null) {
         _cachedIdToken = '';
-        // Сессия пропала во время работы — пробуем войти тихо.
-        if (!_autoSignInInProgress) unawaited(_runAutoSignIn());
+        unawaited(_runAutoSignIn());
       } else {
+        _retryTimer?.cancel();
+        _retryTimer = null;
         unawaited(_refreshToken(u));
       }
     });
-    // Не вошли при старте — пробуем восстановить сессию из хранилища.
-    if (user.value == null) unawaited(_runAutoSignIn());
+    if (user.value == null) {
+      unawaited(_runAutoSignIn());
+    } else {
+      unawaited(_refreshToken(user.value!));
+    }
   }
 
   static bool get signedIn => FirebaseAuth.instance.currentUser != null;
+
+  /// Дожидается автоматического входа (если он ещё идёт или не выполнен).
+  static Future<bool> ensureSignedIn({
+    Duration timeout = const Duration(seconds: 6),
+  }) async {
+    if (signedIn) return true;
+    try {
+      return await _runAutoSignIn().timeout(timeout, onTimeout: () => signedIn);
+    } catch (_) {
+      return signedIn;
+    }
+  }
 
   // ------------------------------------------------ ручной вход
 
@@ -65,8 +80,8 @@ class AuthService {
       password: password,
     );
     final u = FirebaseAuth.instance.currentUser;
+    user.value = u;
     if (u != null) await _refreshToken(u);
-    // Запоминаем для будущего авто-входа.
     unawaited(_saveCredentials(email.trim(), password));
   }
 
@@ -75,23 +90,26 @@ class AuthService {
   static Future<void> _saveCredentials(
       String email, String password) async {
     try {
-      await _storage.write(key: _kEmail, value: email);
-      await _storage.write(key: _kPassword, value: password);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kEmail, email);
+      await prefs.setString(_kPassword, password);
     } catch (e) {
       debugPrint('AuthService: сохранение учётных данных не удалось: $e');
     }
   }
 
-  /// Читает сохранённые учётные данные и выполняет вход. Возвращает true
-  /// при успехе. Не показывает ошибку — вызывающий сам решит, что делать.
+  /// Читает встроенные или сохранённые учётные данные и выполняет вход.
   static Future<bool> tryAutoSignIn() async {
+    if (signedIn) return true;
     try {
-      final email = await _storage.read(key: _kEmail);
-      final password = await _storage.read(key: _kPassword);
-      if (email == null ||
-          password == null ||
-          email.isEmpty ||
-          password.isEmpty) {
+      String email = kOwnerEmail.trim();
+      String password = kOwnerPassword;
+      if (email.isEmpty || password.isEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        email = (prefs.getString(_kEmail) ?? '').trim();
+        password = prefs.getString(_kPassword) ?? '';
+      }
+      if (email.isEmpty || password.isEmpty) {
         return false;
       }
       await FirebaseAuth.instance.signInWithEmailAndPassword(
@@ -99,6 +117,7 @@ class AuthService {
         password: password,
       );
       final u = FirebaseAuth.instance.currentUser;
+      user.value = u;
       if (u != null) await _refreshToken(u);
       return u != null;
     } catch (e) {
@@ -107,16 +126,35 @@ class AuthService {
     }
   }
 
-  static Future<void> _runAutoSignIn() async {
-    if (_autoSignInInProgress) return;
-    _autoSignInInProgress = true;
+  static Future<bool> _runAutoSignIn() async {
+    if (signedIn) return true;
+    final existing = _signInCompleter;
+    if (existing != null) return existing.future;
+
+    final completer = Completer<bool>();
+    _signInCompleter = completer;
     autoSigningIn.value = true;
     try {
-      await tryAutoSignIn();
+      final ok = await tryAutoSignIn();
+      if (!ok && !signedIn && hasBuiltInCredentials) {
+        _scheduleRetry();
+      }
+      completer.complete(ok || signedIn);
+      return ok || signedIn;
     } finally {
-      _autoSignInInProgress = false;
-      autoSigningIn.value = false;
+      _signInCompleter = null;
+      if (signedIn || !hasBuiltInCredentials) {
+        autoSigningIn.value = false;
+      }
     }
+  }
+
+  static void _scheduleRetry() {
+    if (_retryTimer?.isActive ?? false) return;
+    _retryTimer = Timer(const Duration(seconds: 3), () {
+      _retryTimer = null;
+      if (!signedIn) unawaited(_runAutoSignIn());
+    });
   }
 
   // ------------------------------------------------ токен
@@ -135,7 +173,11 @@ class AuthService {
 
   /// Свежий ID-токен (обновляет, если старше 30 минут). Пустая строка офлайн.
   static Future<String> idToken() async {
-    final u = FirebaseAuth.instance.currentUser;
+    var u = FirebaseAuth.instance.currentUser;
+    if (u == null) {
+      await ensureSignedIn();
+      u = FirebaseAuth.instance.currentUser;
+    }
     if (u == null) return '';
     final stale =
         DateTime.now().difference(_cachedAt) > const Duration(minutes: 30);
@@ -146,9 +188,6 @@ class AuthService {
       );
     }
     if (_cachedIdToken.isEmpty) {
-      // Без токена запрос уходит без заголовка и сервер отвечает 401 — а на
-      // экране это выглядело просто как «не удалось отправить SMS». Пробуем
-      // выпросить токен принудительно, прежде чем сдаваться.
       await _refreshToken(u, force: true).timeout(
         const Duration(seconds: 8),
         onTimeout: () {},

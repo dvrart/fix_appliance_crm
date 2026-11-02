@@ -166,18 +166,17 @@ beforeEach(() => {
   clock = Date.parse('2098-12-30T14:00:00Z');
 });
 
-test('pending SMS settles after one write and one notification', async () => {
+test('a new visit no longer queues a confirmation by itself', async () => {
   const initial = job();
   const queued = await trigger(null, initial);
   const again = await trigger(initial, queued);
   await trigger(queued, again);
-  assert.equal(writes.filter((write) => write.path === JOB).length, 1);
-  assert.equal(pushes.length, 1);
-  assert.equal(store.get(JOB).visits[0].smsBooking.state, 'pending');
-  assert.deepEqual(again.visits[0].smsBookingPendingAt, queued.visits[0].smsBookingPendingAt);
+  assert.equal(writes.filter((write) => write.path === JOB).length, 0);
+  assert.equal(pushes.length, 0);
+  assert.equal(store.get(JOB).visits[0].smsBooking, undefined);
 });
 
-test('replayed and concurrent stale trigger events do not queue twice', async () => {
+test('replayed and concurrent stale trigger events do not queue a confirmation', async () => {
   const initial = job();
   store.set(JOB, structuredClone(initial));
   await Promise.all([
@@ -185,8 +184,8 @@ test('replayed and concurrent stale trigger events do not queue twice', async ()
     visitSms.onJobWritten(event(null, initial)),
   ]);
   await visitSms.onJobWritten(event(null, initial));
-  assert.equal(pushes.length, 1);
-  assert.equal(writes.filter((write) => write.path === JOB).length, 1);
+  assert.equal(pushes.length, 0);
+  assert.equal(writes.filter((write) => write.path === JOB).length, 0);
 });
 
 test('owner rejection survives unrelated changes and trigger retries', async () => {
@@ -202,15 +201,14 @@ test('owner rejection survives unrelated changes and trigger retries', async () 
   assert.equal(pushes.length, 0);
 });
 
-test('a real same-day move creates a new decision after rejection', async () => {
+test('a same-day move no longer queues a confirmation by itself', async () => {
   const before = job({ smsBooking: { state: 'rejected', slotKey: SLOT }, smsBookingSlotKey: SLOT });
   const moved = structuredClone(before);
   moved.visits[0].startAt = new Date('2099-01-05T15:00:00Z');
   const after = await trigger(before, moved);
   await trigger(moved, after);
-  assert.equal(store.get(JOB).visits[0].smsBooking.state, 'pending');
-  assert.equal(store.get(JOB).visits[0].smsBooking.slotKey, '2099-01-05T10:00');
-  assert.equal(pushes.length, 1);
+  assert.equal(store.get(JOB).visits[0].smsBooking.state, 'rejected');
+  assert.equal(pushes.length, 0);
 });
 
 test('legacy space slot key does not reset an unchanged confirmed visit', async () => {
@@ -228,7 +226,7 @@ test('legacy space slot key does not reset an unchanged confirmed visit', async 
   assert.equal(pushes.length, 0);
 });
 
-test('legacy pending flag is migrated without notifying again', async () => {
+test('a legacy pending flag is left alone and does not notify again', async () => {
   const pendingAt = new Date('2098-12-30T13:00:00Z');
   const pending = job({
     smsBookingPending: true,
@@ -239,7 +237,7 @@ test('legacy pending flag is migrated without notifying again', async () => {
   const after = await trigger(pending, pending);
   await trigger(pending, after);
   assert.equal(pushes.length, 0);
-  assert.equal(store.get(JOB).visits[0].smsBooking.state, 'pending');
+  assert.equal(store.get(JOB).visits[0].smsBooking, undefined);
   assert.deepEqual(store.get(JOB).visits[0].smsBookingPendingAt, pendingAt);
 });
 
@@ -256,10 +254,11 @@ test('an old sent timestamp cannot complete SMS for the new slot', async () => {
   moved.visits[0].startAt = new Date('2099-01-06T14:00:00Z');
   const after = await trigger(before, moved);
   const again = await trigger(moved, after);
-  assert.equal(again.visits[0].smsBooking.state, 'pending');
-  assert.equal(again.visits[0].smsBookingPending, true);
-  assert.equal(again.visits[0].smsConfirmStatus, 'pending');
-  assert.equal(pushes.length, 1);
+  // Старая отметка об отправке больше не подменяется новой очередью:
+  // подтверждение визита само не создаётся.
+  assert.equal(again.visits[0].smsBooking, undefined);
+  assert.notEqual(again.visits[0].smsBookingPending, true);
+  assert.equal(pushes.length, 0);
 });
 
 for (const state of ['approved', 'sending', 'sent', 'error']) {
@@ -400,7 +399,7 @@ test('a visit confirmation already awaiting a decision is left alone', async () 
   assert.equal(writes.length, 0);
 });
 
-test('a reschedule waits for the owner instead of texting the client', async () => {
+test('a reschedule does not text the client or queue a confirmation by itself', async () => {
   const before = job({
     smsBookingSlotKey: SLOT, smsBookingSentAt: new Date('2026-01-01T00:00:00Z'),
     smsBookingSentSms: true, smsBookingVia: 'sms', smsConfirmStatus: 'pending',
@@ -409,13 +408,12 @@ test('a reschedule waits for the owner instead of texting the client', async () 
   moved.visits[0].startAt = new Date('2099-01-06T14:00:00Z');
   const result = await trigger(before, moved);
   assert.equal(providerCalls, 0);
-  assert.equal(result.visits[0].smsBooking.state, 'pending');
-  assert.equal(result.visits[0].smsBookingPending, true);
-  assert.equal(pushes.length, 1);
-  // Повторный проход не должен будить мастера второй раз.
+  assert.equal(result.visits[0].smsBooking, undefined);
+  assert.notEqual(result.visits[0].smsBookingPending, true);
+  assert.equal(pushes.length, 0);
   await trigger(moved, result);
   assert.equal(providerCalls, 0);
-  assert.equal(pushes.length, 1);
+  assert.equal(pushes.length, 0);
 });
 
 test('manual visit confirmation on the job card does not queue a duplicate SMS', async () => {
@@ -494,7 +492,7 @@ test('client confirmation arriving during sending is preserved', async () => {
   assert.equal(store.get(JOB).description, 'New client information');
 });
 
-test('legacy SMS rescheduling acknowledgement is not replaced with pending', async () => {
+test('a moved visit is not requeued or texted by itself', async () => {
   const before = job({ smsBooking: { state: 'rejected', slotKey: SLOT } });
   const after = structuredClone(before);
   Object.assign(after.visits[0], {
@@ -503,71 +501,34 @@ test('legacy SMS rescheduling acknowledgement is not replaced with pending', asy
     smsBookingSentAt: new Date(),
   });
   const result = await trigger(before, after);
-  assert.equal(result.visits[0].smsBooking.state, 'sent');
+  assert.equal(result.visits[0].smsBooking.state, 'rejected');
   assert.equal(result.visits[0].smsConfirmStatus, 'confirmed');
   assert.equal(pushes.length, 0);
   assert.equal(providerCalls, 0);
 });
 
-test('a second confirmation reply from an already confirmed client does not duplicate SMS or alert unmatched', async () => {
+test('a bare "1" no longer confirms the visit or texts the client back', async () => {
   store.set(JOB, job());
-  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
-  assert.equal(providerCalls, 1);
-  const firstPushCount = pushes.length;
-  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
-  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: 'yes' });
-  assert.equal(providerCalls, 1);
-  assert.equal(pushes.length, firstPushCount);
+  const handled = await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
+  assert.equal(handled, false);
+  assert.equal(store.get(JOB).visits[0].smsConfirmStatus, undefined);
+  assert.equal(providerCalls, 0);
+  assert.equal(pushes.length, 0);
   const messages = [...store.entries()]
     .filter(([path]) => path.startsWith(`${COMPANY}/messages/`))
     .map(([, data]) => data);
-  assert.equal(messages.length, 1);
+  assert.equal(messages.length, 0);
+
+  const again = await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: 'yes' });
+  assert.equal(again, false);
+  assert.equal(providerCalls, 0);
 });
 
-test('a "1" visit confirmation is sent to the client automatically, bypassing owner approval', async () => {
-  store.set(JOB, job());
-  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
-  const saved = store.get(JOB);
-  assert.equal(saved.visits[0].smsConfirmStatus, 'confirmed');
-  // Благодарность ушла клиенту сразу через Twilio, а не легла в очередь на одобрение.
-  assert.equal(providerCalls, 1);
-  const messages = [...store.entries()]
-    .filter(([path]) => path.startsWith(`${COMPANY}/messages/`))
-    .map(([, data]) => data);
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].approval, 'auto');
-  assert.notEqual(messages[0].status, 'awaiting_approval');
-  assert.equal(messages[0].direction, 'outbound');
-  assert.match(messages[0].body, /See you/);
-});
-
-// Решение FIX, 21.10.2026: в шторку идут звонки, SMS и то, что требует
-// решения. «Клиент подтвердил» не требует ничего — карточку приходилось
-// только смахивать. Подтверждение видно в самой заявке, а ответ клиента
-// остаётся непрочитанным сообщением на вкладке «Связь».
-test('a confirmed visit does not wake the owner, a cancellation still does', async () => {
-  store.set(JOB, job());
-  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
-  assert.equal(store.get(JOB).visits[0].smsConfirmStatus, 'confirmed');
-  assert.deepEqual(pushes, []);
-
+test('a cancellation still wakes the owner', async () => {
   store.set(JOB, { ...job({ smsDialog: 'save_offer' }), scheduledAt: START });
   await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '0' });
   assert.equal(store.get(JOB).visits[0].outcome, 'cancelled');
   assert.ok(pushes.length > 0, 'об отмене мастер узнаёт сразу');
-});
-
-test('if the automatic confirmation send fails, it falls back to the approval queue', async () => {
-  store.set(JOB, job());
-  providerFailure = true;
-  await visitSms.tryHandleConfirmReply({ from: '+14165550101', body: '1' });
-  assert.equal(store.get(JOB).visits[0].smsConfirmStatus, 'confirmed');
-  const messages = [...store.entries()]
-    .filter(([path]) => path.startsWith(`${COMPANY}/messages/`))
-    .map(([, data]) => data);
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].status, 'awaiting_approval');
-  assert.equal(messages[0].approval, 'pending');
 });
 
 test('SMS cancellation clears both schedule fields and uses the same visit state as phone cancellation', async () => {
@@ -631,9 +592,9 @@ test('without a cancel digit in the template a bare 2 is still not a cancel', as
   assert.equal(store.get(JOB).visits[0].smsDialog, undefined);
 });
 
-test('a visit reminder never asks the client to confirm again, and skips already confirmed visits', async () => {
-  // Решение FIX 13.10.2026: подтверждение просим один раз, при записи. Шаблон
-  // напоминания правит сам FIX, поэтому просьбу снимаем на отправке.
+test('a visit reminder never asks the client to confirm', async () => {
+  // Подтверждение визита убрано совсем. Шаблон напоминания правит сам FIX,
+  // поэтому просьбу снимаем на отправке.
   store.set(`${COMPANY}/settings/config`, { reminderSmsEnabled: true });
   store.set(`${COMPANY}/settings/sms_templates`, {
     day_before:
@@ -661,27 +622,6 @@ test('a visit reminder never asks the client to confirm again, and skips already
   assert.doesNotMatch(body, /confirm/i);
   assert.doesNotMatch(body, /cancel/i);
   assert.doesNotMatch(body, /another day/i);
-
-  // Если клиент уже подтвердил визит — напоминание ему больше не генерируется.
-  store.set(`${COMPANY}/jobs/confirmed-job`, {
-    status: 'Вызов',
-    needsReview: false,
-    clientName: 'Confirmed Client',
-    clientPhone: '+14165550199',
-    clientAddress: '10 Main St, Brantford',
-    visits: [{
-      id: 'confirmed-visit',
-      startAt: new Date(Date.now() + 24 * 3600 * 1000),
-      durationMinutes: 120,
-      outcome: 'scheduled',
-      smsConfirmStatus: 'confirmed',
-    }],
-  });
-  await visitSms.sendDayBeforeReminders();
-  const forConfirmed = [...store.values()].filter(
-    (item) => item && item.kind === 'day_before' && item.jobId === 'confirmed-job'
-  );
-  assert.equal(forConfirmed.length, 0);
 });
 
 test('stripConfirmAsk keeps the visit facts and drops only the reply menu', () => {

@@ -6,12 +6,13 @@ import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
 import '../../models/client.dart';
 import '../../services/client_service.dart';
+import '../../shared/app_nav.dart';
+import '../clients/client_details_screen.dart';
 import '../../services/comms_badge_service.dart';
 import '../../services/twilio_service.dart';
 import '../../shared/widgets/selection_action_bar.dart';
-import '../messages/conversation_screen.dart';
+import '../care_plan/care_plan_widgets.dart';
 import 'call_review_page.dart';
-import 'call_screen.dart';
 import 'dial_pad_screen.dart';
 
 /// История входящих и исходящих звонков Twilio.
@@ -377,7 +378,24 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          GestureDetector(
+          Padding(
+        padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _phoneIcon(
+              call: call,
+              selecting: selecting,
+              selected: selected,
+              onSelect: () => _toggleGroupSelected(group),
+              onOpenClient: () => _openClientCard(
+                phone: phone,
+                name: name,
+                clientId: call.clientId,
+              ),
+            ),
+            Expanded(
+              child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onLongPress: () => _toggleGroupSelected(group),
         onTap: () {
@@ -397,59 +415,9 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
             call: call,
           );
         },
-        child: Padding(
-        padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SizedBox(
-              width: 64,
-              child: Stack(
-                clipBehavior: Clip.none,
-                alignment: Alignment.topCenter,
-                children: [
-                  Column(
-                    children: [
-                      Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: isIncoming
-                          ? const Color(0xFF2E7D32)
-                          : const Color(0xFF1565C0),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      _directionIcon(call),
-                      color: Colors.white,
-                      size: 22,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    isIncoming ? 'Входящий'.tr : 'Исходящий'.tr,
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      color: isIncoming
-                          ? const Color(0xFF2E7D32)
-                          : const Color(0xFF1565C0),
-                    ),
-                  ),
-                    ],
-                  ),
-                  if (selecting)
-                    Positioned(
-                      left: -8,
-                      top: -8,
-                      child: SelectCheckbox(selected: selected),
-                    ),
-                ],
-              ),
-            ),
             const SizedBox(width: 12),
             Expanded(
               child: Padding(
@@ -468,6 +436,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                           ),
                         ),
                         if (isRegular) const RegularClientStar(size: 17),
+                        CarePlanMark(clientId: call.clientId, phone: phone),
                         if (multi) ...[
                           const SizedBox(width: 6),
                           Container(
@@ -522,9 +491,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                     ],
                     const SizedBox(height: 2),
                     Text(
-                      call.startTime != null
-                          ? '${Formatters.formatDateTime(call.startTime)} • $duration'
-                          : duration,
+                      duration,
                       style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
                     ),
                     if (call.answeredByAi)
@@ -545,6 +512,25 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
+                if (call.startTime != null) ...[
+                  Text(
+                    Formatters.messageDay(call.startTime),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                    ),
+                  ),
+                  Text(
+                    Formatters.formatTime(call.startTime),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                ],
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
@@ -559,41 +545,6 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                       fontSize: 12,
                     ),
                   ),
-                ),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      tooltip: 'Написать'.tr,
-                      onPressed: phone.trim().isEmpty
-                          ? null
-                          : () => ConversationScreen.open(
-                                context,
-                                phoneNumber: phone,
-                                contactName: name,
-                                clientId: call.clientId,
-                                jobId: call.createdJobId,
-                                initialChannel: ConversationChannel.sms,
-                                askRecipient: true,
-                              ),
-                      icon: const Icon(Icons.chat_bubble_outline, size: 20),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                    ),
-                    IconButton(
-                      tooltip: 'Перезвонить'.tr,
-                      onPressed: phone.trim().isEmpty
-                          ? null
-                          : () => CallScreen.open(
-                                context,
-                                phoneNumber: phone,
-                                contactName: name,
-                              ),
-                      icon: const Icon(Icons.call, size: 20),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                    ),
-                  ],
                 ),
                 if (canRetryAi && !isRetrying)
                   TextButton(
@@ -623,17 +574,115 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
             ),
           ],
         ),
-      ),
-      ),
-          if (multi && expanded) ...[
-            const Divider(height: 1),
-            for (final item in group.calls)
-              _groupCallRow(item, name, selectedIds, selecting),
+              ),
+            ),
           ],
+        ),
+          ),
+          if (multi && expanded)
+            _expandedCalls(group, name, selectedIds, selecting),
         ],
       ),
     );
     return card;
+  }
+
+  /// Трубка слева — отдельная кнопка. Стоит снаружи нажатия на строку,
+  /// иначе открылась бы карточка звонка, а не клиента.
+  Widget _phoneIcon({
+    required CallRecord call,
+    required bool selecting,
+    required bool selected,
+    required VoidCallback onSelect,
+    required VoidCallback onOpenClient,
+  }) {
+    final incoming = call.isIncoming;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: onSelect,
+      onTap: selecting ? onSelect : onOpenClient,
+      child: SizedBox(
+        width: 64,
+        child: Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.topCenter,
+          children: [
+            Column(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: incoming
+                        ? const Color(0xFF2E7D32)
+                        : const Color(0xFF1565C0),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    _directionIcon(call),
+                    color: Colors.white,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  incoming ? 'Входящий'.tr : 'Исходящий'.tr,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: incoming
+                        ? const Color(0xFF2E7D32)
+                        : const Color(0xFF1565C0),
+                  ),
+                ),
+              ],
+            ),
+            if (selecting)
+              Positioned(
+                left: -8,
+                top: -8,
+                child: SelectCheckbox(selected: selected),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Раскрытый номер — отдельная секция, а не продолжение строки: своя
+  /// рамка и чередование серый / бежевый, чтобы список читался как список.
+  Widget _expandedCalls(
+    _CallGroup group,
+    String? name,
+    Set<String> selectedIds,
+    bool selecting,
+  ) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFD6CBB8)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          for (var i = 0; i < group.calls.length; i++) ...[
+            if (i > 0)
+              const Divider(height: 1, thickness: 1, color: Color(0xFFE4D9C8)),
+            _groupCallRow(
+              group.calls[i],
+              name,
+              selectedIds,
+              selecting,
+              stripe: i.isOdd,
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   /// Один звонок внутри раскрытого номера: когда, сколько длился и чем
@@ -642,8 +691,9 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     CallRecord call,
     String? name,
     Set<String> selectedIds,
-    bool selecting,
-  ) {
+    bool selecting, {
+    bool stripe = false,
+  }) {
     final (Color statusColor, String statusText) = _statusInfo(call);
     final duration = call.durationSeconds != null
         ? '${call.durationSeconds! ~/ 60}:${(call.durationSeconds! % 60).toString().padLeft(2, '0')}'
@@ -665,7 +715,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
       child: Container(
         color: selectedIds.contains(call.id)
             ? const Color(0xFFE8EEF4)
-            : Colors.transparent,
+            : (stripe ? const Color(0xFFF3E6D0) : const Color(0xFFF4F1EC)),
         padding: const EdgeInsets.fromLTRB(16, 9, 12, 9),
         child: Row(
           children: [
@@ -698,6 +748,41 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
           ],
         ),
       ),
+    );
+  }
+
+  /// Трубка слева от номера — карточка клиента, а не сам звонок.
+  Future<void> _openClientCard({
+    required String phone,
+    String? name,
+    String? clientId,
+  }) async {
+    var id = (clientId ?? '').trim();
+    Client? client;
+    if (id.isNotEmpty) {
+      client = await ClientService.getById(id);
+    }
+    if (client == null && phone.trim().isNotEmpty) {
+      client = await ClientService.findByPhone(phone);
+      if (client != null) id = client.id;
+    }
+    if (!mounted) return;
+    if (id.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Карточка клиента не найдена'.tr)),
+      );
+      return;
+    }
+    final data = client?.toUiMap() ??
+        {
+          'name': name ?? '',
+          'fullName': name ?? '',
+          'phone': phone,
+        };
+    AppNav.openCard(
+      context,
+      key: AppNav.clientKey(id),
+      builder: (_) => ClientDetailsScreen(clientId: id, clientData: data),
     );
   }
 

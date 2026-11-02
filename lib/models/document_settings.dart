@@ -7,6 +7,7 @@ class DocumentSettings {
   final String companyPhone;
   final String companyEmail;
   final String companyAddress;
+  final String technicianName;
   final String hstNumber;
   final String invoiceSms;
   final String estimateSms;
@@ -35,6 +36,7 @@ class DocumentSettings {
     required this.companyPhone,
     required this.companyEmail,
     required this.companyAddress,
+    this.technicianName = '',
     required this.hstNumber,
     required this.invoiceSms,
     required this.estimateSms,
@@ -109,6 +111,7 @@ class DocumentSettings {
     String? companyPhone,
     String? companyEmail,
     String? companyAddress,
+    String? technicianName,
     String? hstNumber,
     String? invoiceSms,
     String? estimateSms,
@@ -137,6 +140,7 @@ class DocumentSettings {
       companyPhone: companyPhone ?? this.companyPhone,
       companyEmail: companyEmail ?? this.companyEmail,
       companyAddress: companyAddress ?? this.companyAddress,
+      technicianName: technicianName ?? this.technicianName,
       hstNumber: hstNumber ?? this.hstNumber,
       invoiceSms: invoiceSms ?? this.invoiceSms,
       estimateSms: estimateSms ?? this.estimateSms,
@@ -240,6 +244,7 @@ class DocumentSettings {
       companyPhone: (map['companyPhone'] ?? defaults.companyPhone).toString(),
       companyEmail: (map['companyEmail'] ?? defaults.companyEmail).toString(),
       companyAddress: (map['companyAddress'] ?? defaults.companyAddress).toString(),
+      technicianName: (map['technicianName'] ?? '').toString(),
       hstNumber: (map['hstNumber'] ?? defaults.hstNumber).toString(),
       invoiceSms: (map['invoiceSms'] ?? defaults.invoiceSms).toString(),
       estimateSms: (map['estimateSms'] ?? defaults.estimateSms).toString(),
@@ -277,6 +282,7 @@ class DocumentSettings {
       'companyPhone': companyPhone,
       'companyEmail': companyEmail,
       'companyAddress': companyAddress,
+      'technicianName': technicianName,
       'hstNumber': hstNumber,
       'invoiceSms': invoiceSms,
       'estimateSms': estimateSms,

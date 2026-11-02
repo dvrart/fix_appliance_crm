@@ -10,7 +10,6 @@ import '../../services/client_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/status_service.dart';
 import 'appliance_picture.dart';
-import 'visit_confirm_badge.dart';
 
 /// Карточка заявки: полная для вызова, полоска после смены статуса.
 class JobAgendaCard extends StatelessWidget {
@@ -143,47 +142,26 @@ class JobAgendaCard extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    SizedBox(
-                      width: 72,
-                      child: Stack(
-                        clipBehavior: Clip.hardEdge,
-                        children: [
-                          Positioned.fill(
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: VisitConfirmBadge.stamp(
-                                visit,
-                                jobStatus: displayStatus,
-                                expand: true,
-                              ),
-                            ),
+                    if (routeIndex != null) ...[
+                      Container(
+                        width: 22,
+                        height: 22,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: routeIndexColor ?? AppColors.primary,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Text(
+                          '$routeIndex',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 11,
                           ),
-                          if (routeIndex != null)
-                            Positioned(
-                              top: 3,
-                              left: 3,
-                              child: Container(
-                                width: 18,
-                                height: 18,
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: routeIndexColor ?? AppColors.primary,
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Text(
-                                  '$routeIndex',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 10,
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 6),
+                      const SizedBox(width: 6),
+                    ],
                     Expanded(
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(0, 2, 0, 20),
@@ -305,7 +283,7 @@ class JobAgendaCard extends StatelessWidget {
                 ),
               ),
               Positioned(
-                left: 80,
+                left: routeIndex == null ? 4 : 32,
                 right: 104,
                 bottom: 0,
                 child: Center(child: _statusTab(statusColor, statusLabel)),
@@ -425,8 +403,6 @@ class JobAgendaCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
               ],
-              VisitConfirmBadge.mark(visit, size: 17),
-              const SizedBox(width: 7),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

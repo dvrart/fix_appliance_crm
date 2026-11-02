@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../core/utils/app_time_picker.dart';
+import '../../../services/call_routing.dart';
 import '../../../services/morning_briefing_service.dart';
 import '../../../services/notification_service.dart';
 import '../../../services/settings_service.dart';
 import '../../../services/twilio_service.dart';
+import '../../../shared/widgets/dispose_on_close.dart';
 import '../../../shared/widgets/email_field.dart';
 import '../widgets/company_name_dialog.dart';
 import '../widgets/settings_ui.dart';
@@ -39,10 +41,10 @@ class CommunicationSettingsPage extends StatefulWidget {
 class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     with WidgetsBindingObserver {
   bool? _phoneAccountEnabled;
+  CallRouting _routing = const CallRouting();
   bool _savingGmail = false;
   String _smsHeader = 'fix-appliance.ca';
   bool _morning = true;
-  bool _bookingSms = false;
   bool _reminderSms = false;
   bool _autoReview = true;
   List<String> _reminderOffsets = const ['24h'];
@@ -63,7 +65,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
   String _gmailUserHint = '';
   String _savedSmsHeader = 'fix-appliance.ca';
   bool _savedMorning = true;
-  bool _savedBookingSms = false;
   bool _savedReminderSms = false;
   bool _savedAutoReview = true;
   List<String> _savedReminderOffsets = const ['24h'];
@@ -85,6 +86,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
         break;
       case _CommSection.calls:
         _checkPhone();
+        _loadRouting();
         break;
       case _CommSection.sms:
         _loadSmsHeader();
@@ -158,6 +160,94 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     if (mounted) setState(() => _phoneAccountEnabled = enabled);
   }
 
+  Future<void> _loadRouting() async {
+    final config = await SettingsService.loadConfig();
+    if (!mounted) return;
+    setState(() => _routing = CallRouting.fromConfig(config));
+  }
+
+  Future<void> _setRoute(CallRoute route) async {
+    if (route != CallRoute.app && !_routing.hasCell) {
+      final saved = await _editCellNumber();
+      if (!saved || !mounted) return;
+    }
+    setState(() => _routing = _routing.copyWith(route: route));
+    TwilioService.routing = _routing;
+    await SettingsService.updateConfig(CallRouting.routeKey, route.name);
+  }
+
+  /// true — номер сохранён и не пустой.
+  Future<bool> _editCellNumber() async {
+    final controller = TextEditingController(
+      text: _routing.hasCell ? CallRouting.pretty(_routing.cellNumber) : '',
+    );
+    final value = await showDialog<String>(
+      context: context,
+      builder: (ctx) => DisposeOnClose(
+        disposables: [controller],
+        child: AlertDialog(
+          title: Text('Номер SIM в этом телефоне'.tr),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+              hintText: '+1 519 555 1234',
+              helperText: 'Сюда придут звонки через сотовую связь'.tr,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('Отмена'.tr),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, controller.text),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (value == null || !mounted) return false;
+    final number = CallRouting.normalizePhone(value);
+    if (value.trim().isNotEmpty && number.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Номер не похож на телефон'.tr),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return false;
+    }
+    setState(() => _routing = _routing.copyWith(cellNumber: number));
+    TwilioService.routing = _routing;
+    await SettingsService.updateConfig(CallRouting.cellKey, number);
+    return number.isNotEmpty;
+  }
+
+  String _routeHint() {
+    if (!_routing.hasCell) {
+      return 'Без номера SIM звонки идут только через приложение.'.tr;
+    }
+    switch (_routing.route) {
+      case CallRoute.app:
+        return 'Звонки идут через интернет в приложении. Если звук не соединится, '
+                'экран скажет об этом и предложит перевести звонок на SIM.'
+            .tr;
+      case CallRoute.cell:
+        return 'Входящие звонят на ваш номер SIM: ответьте и нажмите 1. Не нажали — '
+                'звонок уйдёт секретарю. Исходящие: телефон набирает номер мастерской, '
+                'клиент видит номер мастерской, разговор записывается.'
+            .tr;
+      case CallRoute.auto:
+        return 'Сначала приложение. Если звук не поднялся за 7 секунд, этот звонок '
+                'переходит на SIM: входящий — зазвонит обычный телефон, нажмите 1; '
+                'исходящий — наберётся через сотовую. Следующий звонок снова через приложение.'
+            .tr;
+    }
+  }
+
   Future<void> _loadSmsHeader() async {
     final docs = await SettingsService.loadDocumentSettings();
     if (!mounted) return;
@@ -174,7 +264,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     if (!mounted) return;
     setState(() {
       _morning = SettingsService.boolFlag(config, 'morningBriefingEnabled');
-      _bookingSms = SettingsService.readBookingSmsEnabled(config);
       _reminderSms = SettingsService.readReminderSmsEnabled(config);
       _autoReview = SettingsService.readAutoReviewSmsEnabled(config);
       _reminderOffsets = SettingsService.readReminderOffsets(config);
@@ -184,7 +273,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       _watchedSenders = watched;
       _savedWatchers = List<WatchedEmailSender>.from(watched);
       _savedMorning = _morning;
-      _savedBookingSms = _bookingSms;
       _savedReminderSms = _reminderSms;
       _savedAutoReview = _autoReview;
       _savedReminderOffsets = List<String>.from(_reminderOffsets);
@@ -201,7 +289,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
 
   bool get _smsDirty =>
       _smsHeader != _savedSmsHeader ||
-      _bookingSms != _savedBookingSms ||
       _reminderSms != _savedReminderSms ||
       _autoReview != _savedAutoReview ||
       _reminderMorningHour != _savedReminderMorningHour ||
@@ -221,7 +308,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
       await SettingsService.updateSmsHeader(_smsHeader);
     }
     await SettingsService.updateConfigMap({
-      'bookingSmsEnabled': _bookingSms,
       'reminderSmsEnabled': _reminderSms,
       'autoReviewSmsEnabled': _autoReview,
       'reminderOffsets': _reminderOffsets,
@@ -230,7 +316,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     if (!mounted) return true;
     setState(() {
       _savedSmsHeader = _smsHeader;
-      _savedBookingSms = _bookingSms;
       _savedReminderSms = _reminderSms;
       _savedAutoReview = _autoReview;
       _savedReminderOffsets = List<String>.from(_reminderOffsets);
@@ -590,6 +675,52 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
         padding: const EdgeInsets.only(top: 12, bottom: 32),
         children: [
           SettingsTileSection(
+            title: 'Как звонить'.tr,
+            tiles: [
+              SettingsHubTile(
+                title: 'Приложение'.tr,
+                subtitle: 'Через интернет'.tr,
+                icon: Icons.wifi_calling_3,
+                color: Colors.green,
+                active: _routing.effective == CallRoute.app,
+                onTap: () => _setRoute(CallRoute.app),
+              ),
+              SettingsHubTile(
+                title: 'Сотовая'.tr,
+                subtitle: 'Обычная связь SIM'.tr,
+                icon: Icons.sim_card,
+                color: Colors.blue,
+                active: _routing.effective == CallRoute.cell,
+                onTap: () => _setRoute(CallRoute.cell),
+              ),
+              SettingsHubTile(
+                title: 'Авто'.tr,
+                subtitle: 'Приложение, при сбое — SIM'.tr,
+                icon: Icons.swap_calls,
+                color: Colors.deepPurple,
+                active: _routing.effective == CallRoute.auto,
+                onTap: () => _setRoute(CallRoute.auto),
+              ),
+              SettingsHubTile(
+                title: 'Номер SIM'.tr,
+                subtitle: _routing.hasCell
+                    ? CallRouting.pretty(_routing.cellNumber)
+                    : 'Не указан'.tr,
+                icon: Icons.phone_android,
+                color: _routing.hasCell ? Colors.teal : Colors.red,
+                active: _routing.hasCell,
+                onTap: _editCellNumber,
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+            child: Text(
+              _routeHint(),
+              style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
+            ),
+          ),
+          SettingsTileSection(
             title: 'Звонки'.tr,
             tiles: [
               SettingsHubTile(
@@ -644,14 +775,6 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                 icon: Icons.text_fields,
                 color: Colors.indigo,
                 onTap: _editSmsHeader,
-              ),
-              SettingsHubTile(
-                title: 'При записи'.tr,
-                subtitle: _bookingSms ? 'Вкл'.tr : 'Выкл'.tr,
-                icon: Icons.event_available,
-                color: Colors.blue,
-                active: _bookingSms,
-                onTap: () => setState(() => _bookingSms = !_bookingSms),
               ),
               SettingsHubTile(
                 title: 'Напоминание'.tr,

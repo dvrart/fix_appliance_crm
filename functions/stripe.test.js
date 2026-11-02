@@ -183,10 +183,33 @@ test('checkout link → paid session → one payment, tip split, owner notified,
   assert.equal(payments[1].method, 'Чаевые');
   assert.equal(doc().stripe.status, 'paid');
   assert.equal(store.get(JOB).suggestComplete, true);
+  assert.equal(store.get(JOB).status, 'Завершено');
   assert.equal(notifications.length, 1);
   assert.match(notifications[0][0], /Счёт оплачен/);
+  assert.match(notifications[0][1], /переведена в «Готово»/);
   assert.equal(check.body.paid, true);
   assert.equal(check.body.due, 0);
+});
+
+test('a fully paid invoice closes the job as Готово with its visits; a cancelled job stays cancelled', async () => {
+  apply(JOB, { visits: [{ id: 'v1', startAt: '2098-12-30T13:00:00.000Z', outcome: 'scheduled' }] });
+  const created = response();
+  await api.createStripePayment(request({ jobId: 'pay-job', documentIndex: 0, kind: 'checkout', sendSms: false }), created);
+  const session = { ...stripeState.sessions[created.body.checkoutSessionId], payment_status: 'paid', status: 'complete' };
+  await api.stripeWebhook(webhook('checkout.session.completed', session), response());
+  assert.equal(store.get(JOB).status, 'Завершено');
+  assert.equal(store.get(JOB).needsReview, false);
+  assert.equal(store.get(JOB).visits[0].outcome, 'done');
+
+  store.set(JOB, { ...store.get(JOB), status: 'Отменено', suggestComplete: false, documents: [invoice()] });
+  notifications = [];
+  const again = response();
+  await api.createStripePayment(request({ jobId: 'pay-job', documentIndex: 0, kind: 'checkout', sendSms: false }), again);
+  const paid = { ...stripeState.sessions[again.body.checkoutSessionId], payment_status: 'paid', status: 'complete' };
+  await api.stripeWebhook(webhook('checkout.session.completed', paid), response());
+  assert.equal(store.get(JOB).status, 'Отменено');
+  assert.equal(store.get(JOB).suggestComplete, true);
+  assert.match(notifications[0][1], /Пометить заявку как завершённую/);
 });
 
 test('invoice.paid arriving before the checkout event keeps the deposit label and the tip split', async () => {
@@ -270,4 +293,89 @@ test('refund goes back through the original intent, is recorded once, and sugges
   assert.equal(doc().payments[1].amount, -226);
   assert.equal(doc().stripe.status, 'refunded');
   assert.equal(store.get(JOB).suggestCancel, true);
+});
+
+// ---------------------------------------------------------------- Care Plan
+const PLAN = `${COMPANY}/care_plans/plan-1`;
+const plan = () => store.get(PLAN);
+
+function seedPlan(patch = {}) {
+  store.set(PLAN, {
+    clientId: 'client-1', clientName: 'Audit Client', phones: ['4165550101'], status: 'pending',
+    contractNumber: '0001', monthlyPrice: 10, ...patch,
+  });
+  store.set(`${COMPANY}/settings/config`, { defaultTax: 'hst' });
+}
+
+test('care plan link: monthly subscription $10 + HST, an open link is reused, SMS only when asked', async () => {
+  seedPlan();
+  const first = response();
+  await api.createCarePlanCheckout(request({ planId: 'plan-1' }), first);
+  assert.equal(first.statusCode, 200, JSON.stringify(first.body));
+  assert.equal(first.body.monthlyTotal, 11.3);
+  assert.equal(sentSms.length, 0);
+  const created = stripeCalls.filter(([name]) => name === 'sessions.create');
+  assert.equal(created.length, 1);
+  const payload = created[0][1];
+  assert.equal(payload.mode, 'subscription');
+  assert.equal(payload.metadata.kind, 'care_plan');
+  assert.equal(payload.subscription_data.metadata.carePlanId, 'plan-1');
+  assert.deepEqual(payload.line_items.map((item) => [item.price_data.unit_amount, item.price_data.recurring.interval]), [[1000, 'month'], [130, 'month']]);
+  assert.equal(plan().stripe.checkoutSessionId, first.body.checkoutSessionId);
+
+  const again = response();
+  await api.createCarePlanCheckout(request({ planId: 'plan-1', sendSms: true }), again);
+  assert.equal(again.body.url, first.body.url, 'the open checkout is reused');
+  assert.equal(stripeCalls.filter(([name]) => name === 'sessions.create').length, 1);
+  assert.equal(sentSms.length, 1);
+  assert.match(sentSms[0].body, /Care Plan \(\$11\.30\/month/);
+  assert.match(sentSms[0].body, /checkout\.test/);
+  assert.equal(store.get(JOB).documents[0].payments.length, 0, 'job invoices are untouched');
+});
+
+test('care plan payment activates the plan once; failed renewal, recovery and cancellation follow Stripe', async () => {
+  seedPlan();
+  const created = response();
+  await api.createCarePlanCheckout(request({ planId: 'plan-1' }), created);
+  const id = created.body.checkoutSessionId;
+  const paid = { ...stripeState.sessions[id], mode: 'subscription', status: 'complete', payment_status: 'paid', subscription: 'sub_1', customer: 'cus_1', amount_total: 1130 };
+  stripeState.sessions[id] = paid;
+
+  // Страница «спасибо» после оплаты включает план, даже если вебхук ещё не дошёл.
+  await api.stripePaymentComplete(request({}, { query: { status: 'success', session_id: id } }), response());
+  await api.stripeWebhook(webhook('checkout.session.completed', paid), response());
+  assert.equal(plan().status, 'active');
+  assert.equal(plan().stripe.subscriptionId, 'sub_1');
+  assert.equal(notifications.filter(([title]) => title === 'Care Plan оплачен').length, 1);
+  assert.equal(store.get(JOB).documents[0].payments.length, 0);
+
+  const renewal = { id: 'in_renew_1', amount_due: 1130, parent: { subscription_details: { subscription: 'sub_1', metadata: { kind: 'care_plan', carePlanId: 'plan-1' } } } };
+  await api.stripeWebhook(webhook('invoice.payment_failed', renewal), response());
+  await api.stripeWebhook(webhook('invoice.payment_failed', renewal), response());
+  assert.equal(plan().status, 'past_due');
+  assert.equal(notifications.filter(([title]) => title === 'Care Plan: платёж не прошёл').length, 1);
+
+  await api.stripeWebhook(webhook('invoice.paid', { ...renewal, id: 'in_renew_2', status: 'paid', amount_paid: 1130 }), response());
+  assert.equal(plan().status, 'active');
+  assert.equal(plan().stripe.lastPaymentAmount, 11.3);
+
+  await api.stripeWebhook(webhook('customer.subscription.deleted', { id: 'sub_1', status: 'canceled', metadata: { kind: 'care_plan', carePlanId: 'plan-1' } }), response());
+  assert.equal(plan().status, 'cancelled');
+  assert.equal(notifications.filter(([title]) => title === 'Care Plan отменён').length, 1);
+});
+
+test('a labour discount line goes to the Stripe invoice as a negative item, so totals match the CRM', async () => {
+  store.get(JOB).documents = [invoice({
+    items: [
+      { name: 'Repair', qty: 1, price: 200, type: 'Service' },
+      { name: 'Pump', qty: 1, price: 89, type: 'Part' },
+      { name: 'Labour discount 30%', qty: 1, price: -60, type: 'Service', labourDiscount: true },
+    ],
+  })];
+  const created = response();
+  await api.createStripePayment(request({ jobId: 'pay-job', documentIndex: 0, kind: 'invoice', sendSms: false }), created);
+  assert.equal(created.statusCode, 200, JSON.stringify(created.body));
+  const amounts = stripeCalls.filter(([name]) => name === 'invoiceItems.create').map(([, payload]) => payload.amount);
+  assert.deepEqual(amounts.slice(0, 3), [20000, 8900, -6000]);
+  assert.equal(amounts[3], Math.round((200 + 89 - 60) * 0.13 * 100), 'HST is on the discounted subtotal');
 });
