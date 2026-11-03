@@ -25,6 +25,7 @@ class JobPreviewScreen extends StatefulWidget {
   final String? fallbackPhone;
   final String? fallbackEmail;
   final String? existingClientId;
+  final Client? existingClient;
   final String? sourceMessageId;
   final String sourceEmailFrom;
   final String sourceEmailSubject;
@@ -40,6 +41,7 @@ class JobPreviewScreen extends StatefulWidget {
     this.fallbackPhone,
     this.fallbackEmail,
     this.existingClientId,
+    this.existingClient,
     this.sourceMessageId,
     this.sourceEmailFrom = '',
     this.sourceEmailSubject = '',
@@ -69,6 +71,8 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
   TimeOfDay? _scheduledTime;
   bool _hasJobSite = false;
   bool _isSaving = false;
+  Client? _existingClient;
+  bool _editingExistingClient = false;
 
   List<String> _suggestedParts = [];
   bool _isLoadingParts = false;
@@ -106,6 +110,12 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
     _contactPhoneController = TextEditingController(text: data.contactOnSitePhone ?? '');
     _hasJobSite = data.hasJobSite;
 
+    if (widget.existingClient != null && !widget.existingClient!.isDeleted) {
+      _applyExistingClient(widget.existingClient!);
+    } else {
+      unawaited(_resolveExistingClient());
+    }
+
     _scheduledDate = _parseDate(data.scheduledDate) ?? DateTime.now();
 
     if (data.scheduledTime != null) {
@@ -114,6 +124,69 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
     _scheduledTime ??= const TimeOfDay(hour: 9, minute: 0);
 
     _loadPartsSuggestions();
+  }
+
+  void _applyExistingClient(Client client) {
+    _existingClient = client;
+    final cleanName = Client.stripClientWord(client.fullName);
+    if (cleanName.isNotEmpty) {
+      _nameController.text = cleanName;
+    } else if (_nameController.text.trim().isEmpty && client.phone.trim().isNotEmpty) {
+      _nameController.text = client.phone.trim();
+    }
+    if (client.phone.trim().isNotEmpty) {
+      _phoneController.text = client.phone.trim();
+    }
+    if ((client.email ?? '').trim().isNotEmpty) {
+      _emailController.text = client.email!.trim();
+    }
+    final loc = client.primaryLocation;
+    // Адрес клиента подставляется, только если другого адреса в форме нет:
+    // названное в звонке или переписке место работы не затираем.
+    final hasClientAddr = client.address.trim().isNotEmpty &&
+        _addressController.text.trim().isEmpty;
+    if (hasClientAddr) {
+      if (loc != null &&
+          (loc.street.trim().isNotEmpty ||
+              loc.city.trim().isNotEmpty ||
+              loc.postalCode.trim().isNotEmpty)) {
+        final peeled = peelUnit(loc.street);
+        _addressController.text =
+            (loc.unit ?? '').trim().isNotEmpty ? loc.street : peeled.street;
+        _unitController.text =
+            (loc.unit ?? '').trim().isNotEmpty ? loc.unit!.trim() : peeled.unit;
+        _cityController.text = loc.city;
+        _postalController.text = loc.postalCode;
+      } else {
+        final parts = splitAddress(client.address);
+        final peeled = peelUnit(parts[0]);
+        _addressController.text = peeled.street;
+        _unitController.text = peeled.unit;
+        _cityController.text = parts[1];
+        _postalController.text = parts[2];
+      }
+    }
+  }
+
+  Future<void> _resolveExistingClient() async {
+    Client? found;
+    final id = (widget.existingClientId ?? '').trim();
+    if (id.isNotEmpty) {
+      found = await ClientService.getById(id);
+      if (found != null && found.isDeleted) found = null;
+    }
+    final phone = _phoneController.text.trim();
+    if (found == null && phone.isNotEmpty) {
+      found = await ClientService.findByPhone(phone);
+    }
+    final email = _emailController.text.trim();
+    if (found == null && email.contains('@')) {
+      found = await ClientService.findByEmail(email);
+    }
+    if (found == null || !mounted) return;
+    setState(() {
+      _applyExistingClient(found!);
+    });
   }
 
   DateTime? _parseDate(String? raw) {
@@ -233,31 +306,53 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         _unitController.text,
       );
 
-      Client? existing;
+      Client? existing = _existingClient;
       final existingId = (widget.existingClientId ?? '').trim();
-      if (existingId.isNotEmpty) {
+      if (existing == null && existingId.isNotEmpty) {
         existing = await ClientService.getById(existingId);
+        if (existing != null && existing.isDeleted) existing = null;
       }
       existing ??= email.contains('@') ? await ClientService.findByEmail(email) : null;
       if (existing == null && phone.isNotEmpty) {
         existing = await ClientService.findByPhone(phone);
       }
 
-      final clientId = await ClientService.createOrUpdate(
-        existingId: existing?.id,
-        fullName: _nameController.text.trim(),
-        phone: phone,
-        address: fullAddress,
-        email: email.contains('@') ? email : existing?.email,
-        source: _isEmailOffer ? 'email' : null,
-      );
-      await ClientService.updateAddress(
-        clientId,
-        street: _addressController.text.trim(),
-        city: _cityController.text.trim(),
-        postal: _postalController.text.trim(),
-        unit: _unitController.text.trim(),
-      );
+      final String clientId;
+      final String resolvedAddress;
+      if (existing != null && !_editingExistingClient) {
+        clientId = existing.id;
+        resolvedAddress = fullAddress.trim().isNotEmpty
+            ? fullAddress
+            : existing.address;
+        if (existing.address.trim().isEmpty && fullAddress.trim().isNotEmpty) {
+          await ClientService.updateAddress(
+            clientId,
+            street: _addressController.text.trim(),
+            city: _cityController.text.trim(),
+            postal: _postalController.text.trim(),
+            unit: _unitController.text.trim(),
+          );
+        }
+      } else {
+        resolvedAddress = fullAddress;
+        clientId = await ClientService.createOrUpdate(
+          existingId: existing?.id,
+          fullName: _nameController.text.trim(),
+          phone: phone,
+          address: fullAddress,
+          email: email.contains('@') ? email : existing?.email,
+          companyName: existing?.companyName,
+          notes: existing?.notes,
+          source: existing?.source ?? (_isEmailOffer ? 'email' : null),
+        );
+        await ClientService.updateAddress(
+          clientId,
+          street: _addressController.text.trim(),
+          city: _cityController.text.trim(),
+          postal: _postalController.text.trim(),
+          unit: _unitController.text.trim(),
+        );
+      }
 
       // Создаём дату-время визита
       final scheduledAt = DateTime(
@@ -274,7 +369,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         clientId: clientId,
         clientName: _nameController.text.trim(),
         clientPhone: phone,
-        clientAddress: fullAddress,
+        clientAddress: resolvedAddress,
         hasJobSite: _hasJobSite,
         // Номер телефона в имя на месте не пишем — оно берётся из карточки.
         jobSiteName: _hasJobSite &&
@@ -282,7 +377,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
             ? _contactNameController.text.trim()
             : null,
         jobSitePhone: _hasJobSite ? _contactPhoneController.text.trim() : null,
-        jobSiteAddress: _hasJobSite ? fullAddress : null,
+        jobSiteAddress: _hasJobSite ? resolvedAddress : null,
         appliances: [
           JobAppliance(
             type: _applianceController.text.trim(),
@@ -405,7 +500,11 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
       child: Scaffold(
       appBar: AppBar(
         title: Text(
-          _isEmailOffer ? 'Письмо о ремонте'.tr : 'Проверьте данные'.tr,
+          _isEmailOffer
+              ? 'Письмо о ремонте'.tr
+              : (_existingClient != null
+                  ? 'Новая заявка'.tr
+                  : 'Проверьте данные'.tr),
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         backgroundColor: AppColors.primary,
@@ -458,126 +557,131 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
               ),
               const SizedBox(height: 16),
             ],
-            // Информация о клиенте
-            _buildSection(
-              title: 'Клиент'.tr,
-              icon: Icons.person,
-              children: [
-                _buildTextField(
-                  controller: _nameController,
-                  label: 'Имя'.tr,
-                  icon: Icons.person_outline,
-                ),
-                _buildTextField(
-                  controller: _phoneController,
-                  label: 'Телефон'.tr,
-                  icon: Icons.phone,
-                  keyboardType: TextInputType.phone,
-                ),
-                if (_isEmailOffer)
+            if (_existingClient != null && !_editingExistingClient) ...[
+              _buildExistingClientCard(),
+              const SizedBox(height: 16),
+            ] else ...[
+              // Информация о клиенте
+              _buildSection(
+                title: 'Клиент'.tr,
+                icon: Icons.person,
+                children: [
                   _buildTextField(
-                    controller: _emailController,
-                    label: 'Email'.tr,
-                    icon: Icons.email_outlined,
-                    keyboardType: TextInputType.emailAddress,
+                    controller: _nameController,
+                    label: 'Имя'.tr,
+                    icon: Icons.person_outline,
                   ),
-              ],
-            ),
-            const SizedBox(height: 16),
-
-            // Адрес
-            _buildSection(
-              title: 'Адрес'.tr,
-              icon: Icons.location_on,
-              children: [
-                // Кнопка умного поиска адреса
-                GestureDetector(
-                  onTap: () {
-                    showSmartAddressPicker(
-                      context: context,
-                      initialStreet: _addressController.text,
-                      initialCity: _cityController.text,
-                      initialPostal: _postalController.text,
-                      initialUnit: _unitController.text,
-                      onSaved: (street, city, postal, unit) {
-                        setState(() {
-                          _addressController.text = street;
-                          _cityController.text = city;
-                          _postalController.text = postal;
-                          _unitController.text = unit;
-                        });
-                      },
-                    );
-                  },
-                  child: Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                    decoration: BoxDecoration(
-                      color: AppColors.cardMuted,
-                      border: Border.all(color: AppColors.border),
-                      borderRadius: BorderRadius.circular(12),
+                  _buildTextField(
+                    controller: _phoneController,
+                    label: 'Телефон'.tr,
+                    icon: Icons.phone,
+                    keyboardType: TextInputType.phone,
+                  ),
+                  if (_isEmailOffer)
+                    _buildTextField(
+                      controller: _emailController,
+                      label: 'Email'.tr,
+                      icon: Icons.email_outlined,
+                      keyboardType: TextInputType.emailAddress,
                     ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.search, color: AppColors.primaryOnCard, size: 24),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            _addressController.text.isEmpty && _cityController.text.isEmpty
-                                ? 'Нажмите для поиска адреса...'.tr
-                                : joinAddress(
-                                    _addressController.text,
-                                    _cityController.text,
-                                    _postalController.text,
-                                    _unitController.text,
-                                  ),
-                            style: TextStyle(
-                              color: _addressController.text.isEmpty &&
-                                      _cityController.text.isEmpty
-                                  ? Colors.grey
-                                  : AppColors.ink,
-                              fontSize: 16,
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // Адрес
+              _buildSection(
+                title: 'Адрес'.tr,
+                icon: Icons.location_on,
+                children: [
+                  // Кнопка умного поиска адреса
+                  GestureDetector(
+                    onTap: () {
+                      showSmartAddressPicker(
+                        context: context,
+                        initialStreet: _addressController.text,
+                        initialCity: _cityController.text,
+                        initialPostal: _postalController.text,
+                        initialUnit: _unitController.text,
+                        onSaved: (street, city, postal, unit) {
+                          setState(() {
+                            _addressController.text = street;
+                            _cityController.text = city;
+                            _postalController.text = postal;
+                            _unitController.text = unit;
+                          });
+                        },
+                      );
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      decoration: BoxDecoration(
+                        color: AppColors.cardMuted,
+                        border: Border.all(color: AppColors.border),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.search, color: AppColors.primaryOnCard, size: 24),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _addressController.text.isEmpty && _cityController.text.isEmpty
+                                  ? 'Нажмите для поиска адреса...'.tr
+                                  : joinAddress(
+                                      _addressController.text,
+                                      _cityController.text,
+                                      _postalController.text,
+                                      _unitController.text,
+                                    ),
+                              style: TextStyle(
+                                color: _addressController.text.isEmpty &&
+                                        _cityController.text.isEmpty
+                                    ? Colors.grey
+                                    : AppColors.ink,
+                                fontSize: 16,
+                              ),
                             ),
                           ),
-                        ),
-                        Icon(Icons.edit, color: Colors.grey.shade400, size: 20),
-                      ],
+                          Icon(Icons.edit, color: Colors.grey.shade400, size: 20),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                _buildTextField(
-                  controller: _addressController,
-                  label: 'Улица и дом'.tr,
-                  icon: Icons.home,
-                ),
-                _buildTextField(
-                  controller: _unitController,
-                  label: 'Unit',
-                  icon: Icons.meeting_room_outlined,
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: _buildTextField(
-                        controller: _cityController,
-                        label: 'Город'.tr,
-                        icon: Icons.location_city,
+                  _buildTextField(
+                    controller: _addressController,
+                    label: 'Улица и дом'.tr,
+                    icon: Icons.home,
+                  ),
+                  _buildTextField(
+                    controller: _unitController,
+                    label: 'Unit',
+                    icon: Icons.meeting_room_outlined,
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 2,
+                        child: _buildTextField(
+                          controller: _cityController,
+                          label: 'Город'.tr,
+                          icon: Icons.location_city,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _buildTextField(
-                        controller: _postalController,
-                        label: 'Индекс'.tr,
-                        icon: Icons.markunread_mailbox,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _buildTextField(
+                          controller: _postalController,
+                          label: 'Индекс'.tr,
+                          icon: Icons.markunread_mailbox,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+            ],
 
             // Job Site
             Container(
@@ -779,6 +883,83 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         onPressed: () { _saveJob(); },
       ),
     ),
+    );
+  }
+
+  Widget _buildExistingClientCard() {
+    final address = joinAddress(
+      _addressController.text,
+      _cityController.text,
+      _postalController.text,
+      _unitController.text,
+    );
+    final name = _nameController.text.trim().isNotEmpty
+        ? _nameController.text.trim()
+        : (_existingClient?.fullName ?? 'Клиент'.tr);
+    final phone = _phoneController.text.trim();
+    final email = _emailController.text.trim();
+
+    return Material(
+      color: AppColors.card,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => setState(() => _editingExistingClient = true),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+          ),
+          child: Row(
+            children: [
+              CircleAvatar(
+                backgroundColor: AppColors.primary,
+                child: const Icon(Icons.person, color: Colors.white),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    if (phone.isNotEmpty)
+                      Text(
+                        phone,
+                        style: TextStyle(color: AppColors.inkMuted),
+                      ),
+                    if (email.isNotEmpty)
+                      Text(
+                        email,
+                        style: TextStyle(color: AppColors.inkMuted),
+                      ),
+                    if (address.isNotEmpty)
+                      Text(
+                        address,
+                        style: TextStyle(
+                          color: AppColors.inkMuted,
+                          fontSize: 13,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Изменить'.tr,
+                onPressed: () => setState(() => _editingExistingClient = true),
+                icon: Icon(Icons.edit, color: AppColors.primaryOnCard),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

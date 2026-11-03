@@ -149,6 +149,8 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
       _clientUnitCtrl.text = peeled.unit;
       _clientCityCtrl.text = parts[1];
       _clientPostalCtrl.text = parts[2];
+    } else if ((widget.existingClientId ?? '').trim().isNotEmpty) {
+      unawaited(_loadExistingClientAddress(widget.existingClientId!.trim()));
     }
     for (final controller in [
       _nameController,
@@ -206,6 +208,46 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
     _emailController.dispose();
     _companyController.dispose();
     super.dispose();
+  }
+
+  bool get _clientAddressEmpty =>
+      _clientStreetCtrl.text.trim().isEmpty &&
+      _clientCityCtrl.text.trim().isEmpty;
+
+  /// Адрес из карточки клиента — по полям основной локации, а не разрезкой
+  /// строки по запятым: «Unit 23» иначе уезжал в город.
+  /// [onlyIfEmpty] — не затирать адрес, который уже вписан в форму.
+  bool _fillAddressFromClient(Client client, {bool onlyIfEmpty = true}) {
+    if (onlyIfEmpty && !_clientAddressEmpty) return false;
+    final loc = client.primaryLocation;
+    if (loc != null &&
+        (loc.street.trim().isNotEmpty || loc.city.trim().isNotEmpty)) {
+      final peeled = peelUnit(loc.street);
+      final unit = (loc.unit ?? '').trim();
+      _clientStreetCtrl.text = unit.isNotEmpty ? loc.street.trim() : peeled.street;
+      _clientUnitCtrl.text = unit.isNotEmpty ? unit : peeled.unit;
+      _clientCityCtrl.text = loc.city.trim();
+      _clientPostalCtrl.text = loc.postalCode.trim();
+      return true;
+    }
+    final full = client.address.trim();
+    if (full.isEmpty) return false;
+    final parts = splitAddress(full);
+    final peeled = peelUnit(parts[0]);
+    _clientStreetCtrl.text = peeled.street;
+    _clientUnitCtrl.text = peeled.unit;
+    _clientCityCtrl.text = parts[1];
+    _clientPostalCtrl.text = parts[2];
+    return true;
+  }
+
+  Future<void> _loadExistingClientAddress(String clientId) async {
+    final client = await ClientService.getById(clientId);
+    if (!mounted || client == null || client.isDeleted) return;
+    final wasDirty = _dirty;
+    if (_fillAddressFromClient(client)) {
+      setState(() => _dirty = wasDirty);
+    }
   }
 
   void _addAppliance() {
@@ -307,7 +349,13 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
     _selectedDate ??= DateTime.now();
     _selectedTime ??= _defaultStartTime;
 
-    if (_clientStreetCtrl.text.trim().isEmpty && _clientCityCtrl.text.trim().isEmpty) {
+    // Другого адреса не вписали — берём адрес из карточки клиента.
+    final knownClientId = (_existingClientId ?? '').trim();
+    if (_clientAddressEmpty && knownClientId.isNotEmpty) {
+      final client = await ClientService.getById(knownClientId);
+      if (client != null && !client.isDeleted) _fillAddressFromClient(client);
+    }
+    if (_clientAddressEmpty) {
       _showError('Укажите адрес клиента'.tr);
       return false;
     }
@@ -580,14 +628,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 _nameController.text = client.fullName;
                 _emailController.text = client.email ?? '';
                 _companyController.text = client.companyName ?? '';
-                final addrParts = client.address.split(',');
-                _clientStreetCtrl.text =
-                    addrParts.isNotEmpty ? addrParts[0].trim() : '';
-                _clientCityCtrl.text =
-                    addrParts.length > 1 ? addrParts[1].trim() : '';
-                _clientPostalCtrl.text = addrParts.length > 2
-                    ? addrParts.sublist(2).join(',').trim()
-                    : '';
+                _fillAddressFromClient(client, onlyIfEmpty: false);
                 suggestions = [];
                 setSheet(() {});
                 FocusScope.of(sheetContext).unfocus();
@@ -766,6 +807,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                         );
                         if (found != null) {
                           _existingClientId = found.id;
+                          _fillAddressFromClient(found);
                         } else if (widget.existingClientId == null) {
                           _existingClientId = null;
                         }
