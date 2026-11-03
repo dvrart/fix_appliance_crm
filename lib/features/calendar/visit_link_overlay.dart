@@ -386,9 +386,6 @@ class VisitLinkPainter extends CustomPainter {
   /// Скругление карточек визита — по нему вырезается «подкладка» линии.
   final double cardRadius;
 
-  /// Насколько гаснет линия там, где она пересекает чужую карточку.
-  static const double _underCardAlpha = 0.26;
-
   @override
   void paint(Canvas canvas, Size size) {
     final segments = hub.segments(
@@ -399,20 +396,6 @@ class VisitLinkPainter extends CustomPainter {
     if (segments.isEmpty) return;
 
     const stub = VisitLinkHub._edgeStub;
-
-    // Поверх карточек линия рисуется призраком, а в полную силу — только
-    // между ними: так видно, что связь есть, но она идёт под карточкой.
-    final cards = Path();
-    for (final rect in hub.visibleRects(overlayKey).values) {
-      cards.addRRect(
-        RRect.fromRectAndRadius(rect.deflate(0.5), Radius.circular(cardRadius)),
-      );
-    }
-    final outside = Path.combine(
-      PathOperation.difference,
-      Path()..addRect(Offset.zero & size),
-      cards,
-    );
 
     for (final seg in segments) {
       final p0 = seg.from;
@@ -443,7 +426,6 @@ class VisitLinkPainter extends CustomPainter {
       if (seg.fromEdge == null && seg.toEdge == null) {
         path.lineTo(p1.dx, p1.dy);
       } else if (seg.fromEdge != null && seg.toEdge != null) {
-        // Карточка → карточка: вертикальный выход/вход, плавная дуга между.
         final dx = p1In.dx - p0Out.dx;
         final dy = p1In.dy - p0Out.dy;
         if (dx.abs() < 8) {
@@ -467,36 +449,26 @@ class VisitLinkPainter extends CustomPainter {
         }
         path.lineTo(p1.dx, p1.dy);
       } else if (seg.fromEdge != null && seg.toEdge == null) {
-        // Хвост вправо: вертикальный выход, затем горизонталь к краю.
         path.lineTo(p1.dx, p1.dy);
       } else {
-        // Хвост слева: горизонталь от края, затем вертикально в карточку.
         path.lineTo(p1In.dx, p1In.dy);
         path.lineTo(p1.dx, p1.dy);
       }
 
       final gradientRect = Rect.fromPoints(p0, p1);
-      Paint strokeFor(double alpha, double width) => Paint()
+      final stroke = Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = width
+        ..strokeWidth = 3.0
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
         ..shader = LinearGradient(
           colors: [
-            seg.fromColor.withValues(alpha: alpha),
-            seg.toColor.withValues(alpha: alpha),
+            seg.fromColor.withValues(alpha: 0.88),
+            seg.toColor.withValues(alpha: 0.88),
           ],
         ).createShader(gradientRect);
 
-      canvas.save();
-      canvas.clipPath(cards);
-      canvas.drawPath(path, strokeFor(_underCardAlpha, 2.4));
-      canvas.restore();
-
-      canvas.save();
-      canvas.clipPath(outside);
-      canvas.drawPath(path, strokeFor(0.95, 3.2));
-      canvas.restore();
+      canvas.drawPath(path, stroke);
 
       if (seg.fromEdge != null) {
         canvas.drawCircle(p0, 3.2, Paint()..color = seg.fromColor);

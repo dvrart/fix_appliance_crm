@@ -20,6 +20,7 @@ import '../../services/app_time_service.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import '../jobs/create_job_screen.dart';
 import '../jobs/jobs_screen.dart';
+import '../care_plan/care_plan_widgets.dart';
 import 'calendar_top_icons.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/app_nav.dart';
@@ -50,8 +51,8 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   List<CalendarEvent> _events = const [];
 
   static const String _visitLinksPrefKey = 'calendarShowVisitLinks';
-  static const double _calendarHeaderHeight = 40;
-  static const double _calendarViewHeaderHeight = 60;
+  static const double _calendarHeaderHeight = 24;
+  static const double _calendarViewHeaderHeight = 42;
   static const double _timeRulerWidth = 52;
   static const int _kBasePage = 1200;
 
@@ -238,17 +239,17 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     final on = _showVisitLinks;
     return Material(
       color: on ? const Color(0xFF008F3B) : const Color(0xFF9AA3B0),
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(8),
       child: InkWell(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(8),
         onTap: () {
           AppFeedback.pleasant();
           _setShowVisitLinks(!on);
         },
         child: const SizedBox(
-          width: 40,
-          height: 36,
-          child: Icon(Icons.timeline, size: 22, color: Colors.white),
+          width: 34,
+          height: 28,
+          child: Icon(Icons.timeline, size: 18, color: Colors.white),
         ),
       ),
     );
@@ -433,10 +434,10 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     _pageOriginDate = DateTime(focus.year, focus.month, focus.day);
     _currentPageIndex = _kBasePage;
     _savedVerticalOffset = null;
-    _pagerGeneration++;
-    if (_pageController.hasClients) {
+    if (_pageController.hasClients && _pageController.positions.length == 1) {
       _pageController.jumpToPage(_kBasePage);
     } else {
+      _pagerGeneration++;
       _pageController.dispose();
       _pageController = PageController(initialPage: _kBasePage);
     }
@@ -646,14 +647,14 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
           children: [
             // --- ВЕРХНЯЯ ПАНЕЛЬ С ВЫБОРОМ ВИДА ---
             Container(
-              height: 56,
+              height: 42,
               padding: const EdgeInsets.fromLTRB(12, 0, 8, 0),
               color: AppColors.primary,
               child: Row(
                 children: [
                   _viewButton(),
                   const Spacer(),
-                  const CalendarTopIcons(color: Colors.white, iconSize: 28),
+                  const CalendarTopIcons(color: Colors.white, iconSize: 24),
                 ],
               ),
             ),
@@ -921,11 +922,11 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                                     ),
                                                   if (_visitLinksViewOk)
                                                     Positioned(
-                                                      left: 6,
+                                                      left: 8,
                                                       top:
                                                           _calendarHeaderHeight +
                                                           (_calendarViewHeaderHeight -
-                                                                  36) /
+                                                                  28) /
                                                               2,
                                                       child:
                                                           _visitLinksToggle(),
@@ -1017,7 +1018,11 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
           cardSide: cardSide,
         );
         if (pageIndex == _currentPageIndex) {
-          _nowLine.hourLayout = layout;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && pageIndex == _currentPageIndex) {
+              _nowLine.hourLayout = layout;
+            }
+          });
         }
         return _AdaptiveCalendarPage(
           key: ValueKey('hourly_page_${view.name}_$pageIndex'),
@@ -1543,6 +1548,13 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     final radius = BorderRadius.circular(
       _calendarController.view == CalendarView.month ? 4 : 8,
     );
+    final timeStr = DateFormat('HH:mm').format(app.startTime);
+    final cityStr = (parsedJob?.city ?? '').trim();
+    final minimalSubtitle = [
+      timeStr,
+      if (cityStr.isNotEmpty) cityStr,
+      if (type.trim().isNotEmpty) trAny(type.trim()),
+    ].join(' · ');
 
     Widget cardBody = HatchedCalendarCard(
       color: app.color,
@@ -1550,51 +1562,82 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
       child: Stack(
         children: [
           Padding(
-            padding: EdgeInsets.symmetric(horizontal: showName ? 4 : 2),
+            padding: EdgeInsets.symmetric(horizontal: showName ? 8 : 2),
             child: showName
                 ? Row(
                     children: [
-                      if (badge != null) ...[
-                        badge,
-                        const SizedBox(width: 3),
-                      ],
+                      ApplianceLogo(type: type, size: logoSize, onDark: true),
+                      const SizedBox(width: 8),
                       Expanded(
-                        child: Row(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Flexible(
-                              child: Text(
-                                clientName,
-                                maxLines: slotSize.height >= 48 ? 2 : 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 12,
-                                  height: 1.15,
-                                  decoration:
-                                      hatch == CalendarHatchStyle.cancelled
-                                      ? TextDecoration.lineThrough
-                                      : null,
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    clientName.isEmpty
+                                        ? 'Клиент'.tr
+                                        : clientName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 13.5,
+                                      height: 1.1,
+                                      decoration:
+                                          hatch == CalendarHatchStyle.cancelled
+                                          ? TextDecoration.lineThrough
+                                          : null,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            ),
-                            if (jobData['clientIsRegular'] == true ||
-                                ClientService.isRegularClient(
+                                if (jobData['clientIsRegular'] == true ||
+                                    ClientService.isRegularClient(
+                                      clientId: (jobData['clientId'] ?? '')
+                                          .toString(),
+                                      phone: (jobData['clientPhone'] ?? '')
+                                          .toString(),
+                                    ))
+                                  const RegularClientStar(
+                                    size: 13,
+                                    onDark: true,
+                                    padding: EdgeInsets.only(left: 3),
+                                  ),
+                                CarePlanMark(
                                   clientId: (jobData['clientId'] ?? '')
                                       .toString(),
                                   phone: (jobData['clientPhone'] ?? '')
                                       .toString(),
-                                ))
-                              const RegularClientStar(
-                                size: 13,
-                                onDark: true,
-                                padding: EdgeInsets.only(left: 2),
+                                  planId: (jobData['carePlanId'] ?? '')
+                                      .toString(),
+                                  size: 14,
+                                  onDark: true,
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              minimalSubtitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.88),
+                                fontWeight: FontWeight.w600,
+                                fontSize: 11.5,
+                                height: 1.1,
                               ),
+                            ),
                           ],
                         ),
                       ),
-                      const SizedBox(width: 4),
-                      ApplianceLogo(type: type, size: logoSize, onDark: true),
+                      if (badge != null) ...[
+                        const SizedBox(width: 6),
+                        badge,
+                      ],
                     ],
                   )
                 : Center(
@@ -1795,8 +1838,8 @@ class _AdaptiveCalendarPage extends StatefulWidget {
 }
 
 class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
-  static const double _headerHeight = 40;
-  static const double _viewHeaderHeight = 60;
+  static const double _headerHeight = 24;
+  static const double _viewHeaderHeight = 42;
   static const double _rulerWidth = 52;
   static Color get _nonWorkingHourColor => AppColors.nonWorkingHour;
 
@@ -1946,8 +1989,9 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
                 child: Text(
                   monthTitle,
                   style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 15,
+                    height: 1.1,
+                    fontWeight: FontWeight.w700,
                     color: AppColors.ink,
                   ),
                 ),
@@ -2049,14 +2093,15 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
           overflow: TextOverflow.clip,
           style: TextStyle(
             fontWeight: FontWeight.bold,
-            fontSize: 13,
+            fontSize: 11.5,
+            height: 1.0,
             color: isToday ? AppColors.primaryOnCard : AppColors.inkMuted,
           ),
         ),
-        const SizedBox(height: 2),
+        const SizedBox(height: 1),
         Container(
-          width: 34,
-          height: 34,
+          width: 26,
+          height: 26,
           alignment: Alignment.center,
           decoration: isToday
               ? BoxDecoration(
@@ -2068,7 +2113,8 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
             '${date.day}',
             style: TextStyle(
               fontWeight: FontWeight.bold,
-              fontSize: 18,
+              fontSize: 15,
+              height: 1.0,
               color: isToday ? Colors.white : AppColors.ink,
             ),
           ),
@@ -2094,10 +2140,18 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
     final dayIndex = dates.indexWhere((d) => _sameDay(d, placement.day));
     if (dayIndex < 0) return const SizedBox.shrink();
 
-    final rect = placement.rectInColumn(
-      _rulerWidth + dayIndex * dayWidth,
-      dayWidth,
-    );
+    final fullWidth = dates.length == 1 && dayWidth > placement.size.width + 8;
+    final rect = fullWidth
+        ? Rect.fromLTWH(
+            _rulerWidth + dayIndex * dayWidth + 4,
+            placement.topInDay,
+            dayWidth - 8,
+            placement.size.height,
+          )
+        : placement.rectInColumn(
+            _rulerWidth + dayIndex * dayWidth,
+            dayWidth,
+          );
     final isBeingDragged =
         _draggingApp != null &&
         _draggingApp!.id.toString() == app.id.toString();
@@ -2167,7 +2221,10 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
     final dayIndex = dates.indexWhere((d) => _sameDay(d, draggingTime));
     if (dayIndex < 0) return const [];
     final y = widget.layout.yForTime(draggingTime);
-    final side = dayWidth < cardSize.width ? dayWidth : cardSize.width;
+    final fullWidth = dates.length == 1 && dayWidth > cardSize.width + 8;
+    final side = fullWidth
+        ? dayWidth - 8
+        : (dayWidth < cardSize.width ? dayWidth : cardSize.width);
     final left = _rulerWidth + dayIndex * dayWidth + (dayWidth - side) / 2;
     final top = y.clamp(0.0, widget.layout.totalHeight - cardSize.height);
     final timeLabel = DateFormat('HH:mm').format(draggingTime);
