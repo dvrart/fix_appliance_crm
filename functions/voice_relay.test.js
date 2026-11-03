@@ -875,6 +875,38 @@ test('a deaf model (caller audibly talks, Gemini hears nothing) is replaced, and
   assert.equal(call.twilio.closed, true);
 });
 
+test('a click on the line reaches Gemini as silence, real speech goes up whole with its first syllable', (t) => {
+  const call = liveCall(t);
+  const { CLICK_MAX_MS, CLICK_QUIET_MS } = voiceRelay._internals.timing;
+  const QUIET_FRAME = Buffer.alloc(160, 0xff).toString('base64');
+  const frames = () => call.current().sent
+    .filter((m) => m.realtimeInput)
+    .map((m) => Buffer.from(m.realtimeInput.audio.data, 'base64'));
+  const loud = (buf) => buf.some((byte) => byte !== 0);
+  const send = (payload, ms) => {
+    for (let at = 0; at < ms; at += 20) voiceRelay._internals.sendCallerAudio(call.session, payload);
+  };
+  call.ready();
+  call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
+
+  // Щелчок в 40 мс: пока не ясно, что это, кадры придержаны, потом уходят тишиной.
+  send(LOUD_FRAME, 40);
+  assert.equal(frames().length, 0);
+  send(QUIET_FRAME, CLICK_QUIET_MS);
+  assert.equal(frames().length, 2 + Math.ceil(CLICK_QUIET_MS / 20), 'the stream keeps its length');
+  assert.equal(frames().some(loud), false, 'Gemini never hears the click');
+  assert.equal(call.session.clicksMuted, 1);
+
+  // Речь: как только громкого набралось больше порога, уходит всё, с самого начала.
+  const before = frames().length;
+  send(LOUD_FRAME, CLICK_MAX_MS + 20);
+  const speech = frames().slice(before);
+  assert.equal(speech.length, (CLICK_MAX_MS + 20) / 20);
+  assert.ok(speech.every(loud));
+  send(LOUD_FRAME, 200);
+  assert.equal(frames().length - before, (CLICK_MAX_MS + 220) / 20, 'no more holding mid-sentence');
+});
+
 test('a long story from the caller is not mistaken for silence or deafness', (t) => {
   const call = liveCall(t);
   const { SILENCE_CHECK_MS } = voiceRelay._internals.timing;

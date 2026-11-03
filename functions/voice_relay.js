@@ -223,6 +223,20 @@ const DEAF_VOICED_MS = 1500;
 // решаем: здоровая модель отвечает через ~1,2 с после конца фразы.
 const VOICE_QUIET_MS = 2500;
 
+// Щелчки на линии (03.11.2026). Gemini слушает с START_SENSITIVITY_HIGH и
+// принимает за начало речи даже щелчок в 40–60 мс (задели трубку, вдох,
+// помехи): она обрывается на полуслове, щелчок «расслышан» как «¿Qué?» или «A»,
+// и она отвечает в пустоту — «Sorry, the line cut out…», иногда по-испански.
+// Звуки из настоящих звонков, поданные Gemini 3.8 поверх её речи: щелчок
+// перебивал её 8 раз из 8. START_SENSITIVITY_LOW щелчков не слышит, но теряет
+// и короткие «Okay», поэтому фильтр стоит в релее: громкий кадр открывает
+// удержание; набралось громкого больше CLICK_MAX_MS — это речь, удержанное
+// уходит целиком (начало слова не теряется, задержка ~0,1 с); раньше пришла
+// тишина CLICK_QUIET_MS — это был щелчок, удержанное уходит тишиной.
+const CLICK_RMS = 300;
+const CLICK_MAX_MS = 120;
+const CLICK_QUIET_MS = 250;
+
 // Сколько обрывов Live терпим за звонок, прежде чем уйти в резервный Gather.
 // Модель меняем после второго обрыва подряд на одной и той же.
 const LIVE_FAILURE_LIMIT = 5;
@@ -1304,15 +1318,49 @@ function forwardCallerAudio(session, payload) {
     sendJson(ws, { type: 'input_audio_buffer.append', audio: payload });
     return true;
   }
-  sendJson(ws, {
-    realtimeInput: {
-      audio: {
-        data: int16ToBase64(upsample8kTo16k(pcm8)),
-        mimeType: 'audio/pcm;rate=16000',
+  for (const frame of filterLineClicks(session, pcm8)) {
+    sendJson(ws, {
+      realtimeInput: {
+        audio: {
+          data: int16ToBase64(upsample8kTo16k(frame)),
+          mimeType: 'audio/pcm;rate=16000',
+        },
       },
-    },
-  });
+    });
+  }
   return true;
+}
+
+/// Звук звонящего для Gemini без одиночных щелчков (см. CLICK_MAX_MS). Отдаёт
+/// кадры к отправке: как есть, тишиной или пока ничего — кадр удержан.
+function filterLineClicks(session, pcm8) {
+  const state = session.clickHold || (session.clickHold = { held: [], loudMs: 0, quietMs: 0, open: false });
+  let sum = 0;
+  for (let i = 0; i < pcm8.length; i++) sum += pcm8[i] * pcm8[i];
+  const loud = Math.sqrt(sum / pcm8.length) >= CLICK_RMS;
+  const ms = pcm8.length / 8;
+  if (state.open) {
+    state.quietMs = loud ? 0 : state.quietMs + ms;
+    if (state.quietMs >= CLICK_QUIET_MS) state.open = false;
+    return [pcm8];
+  }
+  if (!state.held.length && !loud) return [pcm8];
+  state.held.push(pcm8);
+  if (loud) {
+    state.loudMs += ms;
+    state.quietMs = 0;
+  } else {
+    state.quietMs += ms;
+  }
+  if (state.loudMs <= CLICK_MAX_MS && state.quietMs < CLICK_QUIET_MS) return [];
+  const speech = state.loudMs > CLICK_MAX_MS;
+  const out = speech ? state.held : state.held.map((frame) => new Int16Array(frame.length));
+  if (!speech) session.clicksMuted = Number(session.clicksMuted || 0) + 1;
+  state.held = [];
+  state.loudMs = 0;
+  state.quietMs = 0;
+  state.open = speech;
+  return out;
 }
 
 // Один чанк Twilio — 20 мс, значит 200 чанков это всего 4 секунды. Установка
@@ -2501,7 +2549,7 @@ function handleSocket(ws) {
         `heard=${Number(session.heardChunks || 0)} ` +
         `turns=${Number(session.turns || 0)} drops=${Number(session.liveFailures || 0)} ` +
         `switches=${Number(session.modelSwitches || 0)} silence=${Number(session.silenceStage || 0)} ` +
-        `hangup=${session.hangupReason || '-'} reason="${String(reason || '').slice(0, 80)}"`
+        `clicks=${Number(session.clicksMuted || 0)} hangup=${session.hangupReason || '-'} reason="${String(reason || '').slice(0, 80)}"`
     );
     session.closed = true;
     clearSessionTimers(session);
@@ -2645,6 +2693,7 @@ module.exports = {
     timing: {
       SILENCE_MS, PREFIX_MS, STALL_MS, SILENCE_CHECK_MS, SILENCE_HOLD_MS, SILENCE_GIVEUP_MS,
       SILENCE_HANGUP_MS, DEAF_VOICED_MS, LIVE_FAILURE_LIMIT, TWILIO_FRAME_BYTES,
+      CLICK_MAX_MS, CLICK_QUIET_MS,
     },
   },
 };
