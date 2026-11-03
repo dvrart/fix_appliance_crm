@@ -15,6 +15,7 @@ import '../../services/expense_service.dart';
 import '../../services/job_service.dart';
 import '../../services/sms_service.dart';
 import '../../services/twilio_service.dart';
+import 'secretary_stats.dart';
 import 'statistics_detail_page.dart';
 
 class StatisticsScreen extends StatefulWidget {
@@ -358,18 +359,21 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     var callsMissed = 0;
     var totalSecs = 0;
     var aiSecs = 0;
+    final periodCalls = <CallRecord>[];
+    final aiCalls = <CallRecord>[];
 
     for (final call in _calls) {
       if (!_inPeriod(call.startTime)) continue;
-      final by = call.answeredBy.toLowerCase();
+      periodCalls.add(call);
       final dur = call.durationSeconds ?? 0;
       final status = call.status.toLowerCase();
       final missed = status == 'no-answer' || status == 'busy' || status == 'failed';
 
       if (missed) {
         callsMissed++;
-      } else if (by == 'ai' || by == 'secretary') {
+      } else if (SecretaryCost.answeredByAi(call)) {
         callsAi++;
+        aiCalls.add(call);
         aiSecs += dur;
         totalSecs += dur;
       } else {
@@ -390,13 +394,6 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       }
     }
 
-    // Cost estimate (rough Twilio + Gemini Live)
-    final inboundCallMin = totalSecs / 60.0;
-    final aiMin = aiSecs / 60.0;
-    // Twilio: $0.0085/min inbound + $0.0079/sms outbound
-    // Gemini Live: ~$0.008/min of AI call
-    final cost = (inboundCallMin * 0.0085) + (outSms * 0.0079) + (inSms * 0.0079) + (aiMin * 0.008);
-
     return _SecretaryStats(
       callsAnsweredByAi: callsAi,
       callsAnsweredByHuman: callsHuman,
@@ -405,7 +402,8 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       aiCallMinutes: aiSecs ~/ 60,
       outboundSms: outSms,
       inboundSms: inSms,
-      estimatedCost: cost,
+      cost: SecretaryCost.of(periodCalls, smsCount: outSms + inSms),
+      funnel: SecretaryFunnel.of(aiCalls, _jobs),
     );
   }
 
@@ -692,11 +690,19 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
             _statRow('SMS входящих'.tr, '${sec.inboundSms}', Colors.teal),
             const Divider(height: 20),
             _statRow('Доля ответов секретаря'.tr, '${(pct * 100).round()}%', Colors.indigo),
-            _statRow('Оценка расходов (Twilio+Gemini)'.tr, money.format(sec.estimatedCost), Colors.orange),
+            _statRow('Стали заявкой'.tr, '${sec.funnel.jobs} из ${sec.funnel.calls}'.tr, Colors.indigo),
+            _statRow('Из них оплачено'.tr, '${sec.funnel.paidJobs}', Colors.green.shade700),
+            _statRow('Оплачено по ним'.tr, money.format(sec.funnel.revenue), Colors.green.shade700),
+            const Divider(height: 20),
+            _statRow('Связь Twilio'.tr, money.format(sec.cost.phone), Colors.orange),
+            _statRow('Голос секретаря (ИИ)'.tr, money.format(sec.cost.ai), Colors.orange),
+            _statRow('Запись и расшифровка'.tr, money.format(sec.cost.recording), Colors.orange),
+            _statRow('SMS'.tr, money.format(sec.cost.sms), Colors.orange),
+            _statRow('Расходы, оценка'.tr, money.format(sec.cost.total), Colors.deepOrange),
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
-                'Грубая оценка: \$0.0085/мин звонок, \$0.008/мин Gemini Live, \$0.0079/SMS'.tr,
+                'Грубая оценка по прайсам: звонок \$0.0085/мин (исходящий \$0.014), поток к ИИ \$0.0044/мин, Gemini Live ~\$0.02/мин, OpenAI ~\$0.06/мин, запись и Whisper \$0.0145/мин, SMS \$0.0079. Минуты — с округлением вверх по звонку.'.tr,
                 style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
               ),
             ),
@@ -762,7 +768,8 @@ class _SecretaryStats {
   final int aiCallMinutes;
   final int outboundSms;
   final int inboundSms;
-  final double estimatedCost; // USD
+  final SecretaryCost cost;
+  final SecretaryFunnel funnel;
 
   const _SecretaryStats({
     required this.callsAnsweredByAi,
@@ -772,6 +779,7 @@ class _SecretaryStats {
     required this.aiCallMinutes,
     required this.outboundSms,
     required this.inboundSms,
-    required this.estimatedCost,
+    required this.cost,
+    required this.funnel,
   });
 }
