@@ -1437,6 +1437,50 @@ class TwilioService {
     });
   }
 
+  /// Звонки одного клиента — запросами по карточке и по его номерам, без
+  /// выгрузки всех звонков мастерской.
+  static Stream<List<CallRecord>> streamForContact({
+    required String clientId,
+    Iterable<String> phones = const [],
+  }) {
+    final numbers = {
+      for (final phone in phones) CallRouting.normalizePhone(phone),
+    }.where((phone) => phone.isNotEmpty).take(30).toList();
+    final queries = <Query>[
+      if (clientId.trim().isNotEmpty)
+        _callsRef.where('clientId', isEqualTo: clientId.trim()),
+      if (numbers.isNotEmpty) ...[
+        _callsRef.where('fromNumber', whereIn: numbers),
+        _callsRef.where('toNumber', whereIn: numbers),
+      ],
+    ];
+    if (queries.isEmpty) return Stream.value(const <CallRecord>[]);
+    return Stream<List<CallRecord>>.multi((controller) {
+      final parts = List<List<QueryDocumentSnapshot>?>.filled(
+        queries.length,
+        null,
+      );
+      final subs = [
+        for (var i = 0; i < queries.length; i++)
+          queries[i].snapshots().listen((snap) {
+            parts[i] = snap.docs;
+            if (parts.contains(null)) return;
+            controller.add(
+              _mapCallDocs({
+                for (final docs in parts)
+                  for (final doc in docs!) doc.id: doc,
+              }.values),
+            );
+          }, onError: controller.addError),
+      ];
+      controller.onCancel = () async {
+        for (final sub in subs) {
+          await sub.cancel();
+        }
+      };
+    });
+  }
+
   static Stream<CallRecord?> watchCall(String callId) {
     if (callId.trim().isEmpty) return Stream.value(null);
     return _callsRef.doc(callId).snapshots().map((snapshot) {

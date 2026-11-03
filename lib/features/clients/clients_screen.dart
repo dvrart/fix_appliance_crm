@@ -106,9 +106,23 @@ class _ClientsScreenState extends State<ClientsScreen> {
       final company = FirebaseFirestore.instance
           .collection('companies')
           .doc(kCompanyId);
+      // Заявки держит в кэше общий живой список; звонков хватает последних.
+      Future<QuerySnapshot<Map<String, dynamic>>> jobs() async {
+        final ref = company.collection('jobs');
+        try {
+          final cached = await ref.get(const GetOptions(source: Source.cache));
+          if (cached.docs.isNotEmpty) return cached;
+        } catch (_) {}
+        return ref.get();
+      }
+
       final results = await Future.wait([
-        company.collection('jobs').get(),
-        company.collection('calls').get(),
+        jobs(),
+        company
+            .collection('calls')
+            .orderBy('startTime', descending: true)
+            .limit(200)
+            .get(),
       ]);
       if (!mounted) return;
       for (final doc in results[0].docs) {

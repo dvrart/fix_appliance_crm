@@ -41,7 +41,8 @@ class ClientDetailsScreen extends StatefulWidget {
 class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _historyTabs;
-  late final _callsStream = TwilioService.streamAll();
+  Stream<List<CallRecord>>? _callsStream;
+  String _callsKey = '';
   Stream<DocumentSnapshot>? _clientStream;
   late Stream<List<Job>> _jobsStream;
   StreamSubscription<DocumentSnapshot>? _goneSub;
@@ -781,10 +782,22 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     return hit(call.fromNumber) || hit(call.toNumber);
   }
 
+  Stream<List<CallRecord>> _callsFor(Set<String> phones) {
+    final key = (phones.toList()..sort()).join(',');
+    if (_callsStream == null || key != _callsKey) {
+      _callsKey = key;
+      _callsStream = TwilioService.streamForContact(
+        clientId: widget.clientId,
+        phones: phones,
+      );
+    }
+    return _callsStream!;
+  }
+
   Widget _buildCallHistory(Map<String, dynamic> data) {
     final phones = _phoneKeys(data);
     return StreamBuilder<List<CallRecord>>(
-      stream: _callsStream,
+      stream: _callsFor(phones),
       builder: (context, snapshot) {
         final calls = [
           for (final call in snapshot.data ?? const <CallRecord>[])
