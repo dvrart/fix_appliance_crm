@@ -739,11 +739,35 @@ module.exports = function createEmailModule({
     const orderId = extractOrderId(`${subject} ${body}`);
     const jobsSnap = await refs().jobsRef.get();
     let matched = null;
+    let matchedOrderIndex = -1;
+    const normTrack = tracking ? tracking.replace(/\s/g, '').toLowerCase() : '';
     for (const doc of jobsSnap.docs) {
       const data = doc.data() || {};
+      const orders = Array.isArray(data.trackingOrders) ? data.trackingOrders : [];
+      for (let i = 0; i < orders.length; i++) {
+        const entry = orders[i] || {};
+        const entryTrack = String(entry.trackingNumber || entry.number || '')
+          .replace(/\s/g, '')
+          .toLowerCase();
+        const entryOrder = String(
+          entry.orderId || entry.amazonOrderId || entry.trackingOrderId || ''
+        ).trim();
+        if (normTrack && entryTrack && entryTrack === normTrack) {
+          matched = { id: doc.id, ...data };
+          matchedOrderIndex = i;
+          break;
+        }
+        if (orderId && entryOrder && entryOrder === orderId) {
+          matched = { id: doc.id, ...data };
+          matchedOrderIndex = i;
+          break;
+        }
+      }
+      if (matched) break;
+
       const jobTrack = String(data.trackingNumber || '').replace(/\s/g, '');
       const jobOrder = String(data.amazonOrderId || data.trackingOrderId || '').trim();
-      if (tracking && jobTrack && jobTrack.toLowerCase() === tracking.replace(/\s/g, '').toLowerCase()) {
+      if (normTrack && jobTrack && jobTrack.toLowerCase() === normTrack) {
         matched = { id: doc.id, ...data };
         break;
       }
@@ -765,22 +789,43 @@ module.exports = function createEmailModule({
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    let matchedPartName = '';
     if (matched) {
-      await refs().jobsRef.doc(matched.id).set(
-        {
-          trackingStatus: status,
-          trackingNumber: tracking || matched.trackingNumber || '',
-          amazonOrderId: orderId || matched.amazonOrderId || '',
-          trackingCarrier: supplier.id,
-          trackingUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
+      const existingOrders = Array.isArray(matched.trackingOrders)
+        ? matched.trackingOrders.map((o) => ({ ...(o || {}) }))
+        : [];
+      if (matchedOrderIndex >= 0 && matchedOrderIndex < existingOrders.length) {
+        const prev = existingOrders[matchedOrderIndex];
+        matchedPartName = String(prev.part || prev.trackingPart || '').trim();
+        existingOrders[matchedOrderIndex] = {
+          ...prev,
+          status,
+          trackingNumber: tracking || prev.trackingNumber || '',
+          orderId: orderId || prev.orderId || prev.amazonOrderId || '',
+          amazonOrderId: orderId || prev.orderId || prev.amazonOrderId || '',
+          carrier: supplier.id || prev.carrier || '',
+        };
+      }
+      const patch = {
+        trackingStatus: status,
+        trackingNumber: tracking || matched.trackingNumber || '',
+        amazonOrderId: orderId || matched.amazonOrderId || '',
+        trackingCarrier: supplier.id,
+        trackingUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (existingOrders.length > 0) {
+        patch.trackingOrders = existingOrders;
+      }
+      await refs().jobsRef.doc(matched.id).set(patch, { merge: true });
     }
 
     if (notifyMaster) {
       const who = matched
-        ? [matched.clientName || '', matched.applianceType || '', matched.trackingPart || '']
+        ? [
+            matched.clientName || '',
+            matched.applianceType || '',
+            matchedPartName || matched.trackingPart || '',
+          ]
             .map((s) => String(s).trim())
             .filter(Boolean)
             .join(' · ')

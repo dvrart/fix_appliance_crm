@@ -5975,15 +5975,32 @@ async function findRecentEmailIntakeJob({ from, messageId, fingerprint }) {
 async function findOpenJobForContact({ phone, clientId, email }) {
   const pickLatest = (items) => {
     items.sort((a, b) => {
-      const millis = (v) => v && typeof v.toMillis === 'function' ? v.toMillis() : 0;
+      const millis = (v) =>
+        v && typeof v.toMillis === 'function'
+          ? v.toMillis()
+          : v instanceof Date
+            ? v.getTime()
+            : 0;
       return millis(b.createdAt) - millis(a.createdAt);
     });
     return items.find((item) => !schedule.isClosedJob(item)) || null;
   };
 
+  const normalized = normalizePhone(phone);
   if (clientId) {
     const snap = await jobsRef.where('clientId', '==', clientId).get();
-    const items = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const items = snap.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .filter((item) => !item.deletedAt);
+    if (normalized) {
+      const siteMatched = items.filter(
+        (item) =>
+          normalizePhone(item.jobSitePhone) === normalized &&
+          normalizePhone(item.clientPhone) !== normalized
+      );
+      const pickedSite = pickLatest(siteMatched);
+      if (pickedSite) return pickedSite;
+    }
     const picked = pickLatest(items);
     if (picked) return picked;
   }
@@ -6005,7 +6022,6 @@ async function findOpenJobForContact({ phone, clientId, email }) {
     if (picked) return picked;
   }
 
-  const normalized = normalizePhone(phone);
   if (!normalized) return null;
   const snapshot = await jobsRef.get();
   const all = [];

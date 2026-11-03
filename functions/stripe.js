@@ -490,10 +490,18 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
     }
     const chargeCents = baseCents + tipCents;
 
+    const isTenantBill = String(doc.billTo || '').toLowerCase() === 'tenant';
+    const billToName = isTenantBill
+      ? String(doc.billToName || job.jobSiteName || job.clientName || '').trim()
+      : String(doc.billToName || job.clientName || '').trim();
+    const billToPhone = isTenantBill
+      ? String(toPhone || doc.billToPhone || job.jobSitePhone || job.clientPhone || '').trim()
+      : String(toPhone || doc.billToPhone || job.clientPhone || job.jobSitePhone || '').trim();
+
     const customer = await getOrCreateStripeCustomer({
-      clientId: job.clientId || '',
-      name: job.clientName || '',
-      phone: toPhone || job.clientPhone || job.jobSitePhone || '',
+      clientId: isTenantBill ? '' : (job.clientId || ''),
+      name: billToName,
+      phone: billToPhone,
     });
 
     await expirePreviousCheckout(doc);
@@ -505,6 +513,7 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
       kind: kindNorm,
       dueCents: String(baseCents),
       tipCents: String(tipCents),
+      billTo: isTenantBill ? 'tenant' : 'owner',
     };
 
     const base = publicBaseUrl(req);
@@ -524,7 +533,7 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
         days_until_due: 7,
         currency: CURRENCY,
         metadata,
-        description: `Fix Appliance — ${job.clientName || 'customer'}`.trim(),
+        description: `Fix Appliance — ${billToName || 'customer'}`.trim(),
       });
 
       for (const item of totals.items) {

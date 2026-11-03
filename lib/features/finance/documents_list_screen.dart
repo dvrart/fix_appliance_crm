@@ -232,7 +232,13 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
                                   children: [
                                     Flexible(
                                       child: Text(
-                                        row.job.clientName,
+                                        (row.doc['billTo'] == 'tenant' &&
+                                                (row.doc['billToName'] ?? '')
+                                                    .toString()
+                                                    .trim()
+                                                    .isNotEmpty)
+                                            ? '${row.doc['billToName']} (${context.tr('Арендатор', 'Tenant')})'
+                                            : row.job.clientName,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                       ),

@@ -450,3 +450,51 @@ test('an unsupported scheduled channel is failed instead of reported as sent', a
   assert.equal(sentSms.length, 0);
   assert.equal(store.get(path).status, 'failed');
 });
+
+test('when a property manager has two open jobs, a tenant SMS attaches to the job with that tenant phone', async () => {
+  store.set(`${COMPANY}/clients/pm`, {
+    fullName: 'Kyle Malinouski',
+    phone: '5197719009',
+    address: '320 Cockshutt Road, Brantford',
+  });
+  store.set(`${COMPANY}/jobs/older-tenant-job`, {
+    clientId: 'pm',
+    clientName: 'Kyle Malinouski',
+    clientPhone: '5197719009',
+    hasJobSite: true,
+    jobSiteName: 'Andrew',
+    jobSitePhone: '9053797046',
+    jobSiteAddress: '46 Cole Crescent, Brantford',
+    status: 'Вызов',
+    createdAt: new Date('2026-10-26T10:00:00Z'),
+  });
+  store.set(`${COMPANY}/jobs/newer-other-job`, {
+    clientId: 'pm',
+    clientName: 'Kyle Malinouski',
+    clientPhone: '5197719009',
+    hasJobSite: false,
+    jobSiteName: '',
+    jobSitePhone: '',
+    status: 'Вызов',
+    createdAt: new Date('2026-10-27T10:00:00Z'),
+  });
+
+  geminiReply = JSON.stringify({ relevant: false, client_name: 'Andrew' });
+  const path = `${COMPANY}/messages/sms-tenant-pm`;
+  store.set(path, {
+    from: '+19053797046',
+    to: '+14165550102',
+    body: 'My name is Andrew',
+    direction: 'inbound',
+    status: 'received',
+    channel: 'sms',
+    processingVersion: 2,
+    smsProcessingRequestId: 'sms-tenant-pm',
+    twilioMedia: [],
+    read: false,
+    clientId: 'pm',
+  });
+  await api.processIncomingSms({ data: { before: { exists: false }, after: snapshot(path) } });
+
+  assert.equal(store.get(path).jobId, 'older-tenant-job');
+});
