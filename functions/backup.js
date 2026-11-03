@@ -18,7 +18,17 @@ const COLLECTIONS = [
   'calls',
   'messages',
   'service_guide',
+  'care_plans',
+  'appliances',
+  'passport_notes',
+  'scheduled_messages',
+  'secretary_lessons',
+  'shipment_events',
+  'short_links',
 ];
+
+/// Подколлекции внутри заявок: чат по заявке и история правок.
+const JOB_SUBCOLLECTIONS = ['messages', 'changes'];
 
 /// Сколько копий храним. Раз в неделю — это примерно три месяца истории.
 const KEEP = 12;
@@ -97,6 +107,28 @@ async function buildBackupPayload(db, companyId) {
       payload.collections[name] = [];
       counts[name] = 0;
       failed.push(name);
+    }
+  }
+  payload.jobSubcollections = {};
+  for (const name of JOB_SUBCOLLECTIONS) {
+    const key = `jobs/*/${name}`;
+    try {
+      const snapshot = await db.collectionGroup(name).get();
+      const docs = snapshot.docs.filter((doc) => {
+        const job = doc.ref.parent.parent;
+        return job && job.parent.id === 'jobs' && job.parent.parent && job.parent.parent.id === companyId;
+      });
+      payload.jobSubcollections[name] = docs.map((doc) => ({
+        jobId: doc.ref.parent.parent.id,
+        id: doc.id,
+        ...jsonSafe(doc.data()),
+      }));
+      counts[key] = docs.length;
+    } catch (error) {
+      console.warn(`backup: ${key} пропущена: ${error.message}`);
+      payload.jobSubcollections[name] = [];
+      counts[key] = 0;
+      failed.push(key);
     }
   }
   payload.counts = counts;
@@ -203,4 +235,11 @@ async function pruneAppErrors(db, companyId, days = 14) {
   }
 }
 
-module.exports = { runCloudBackup, pruneAppErrors, COLLECTIONS, KEEP };
+module.exports = {
+  runCloudBackup,
+  pruneAppErrors,
+  buildBackupPayload,
+  COLLECTIONS,
+  JOB_SUBCOLLECTIONS,
+  KEEP,
+};
