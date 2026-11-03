@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Fix Appliance CRM — context for the next agent
 
-Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: `44c25486` — `adb devices -l` 05.10.2026 отдаёт `model:26077PC53G device:songyuan` (Xiaomi/HyperOS), а не OPPO F9, как было записано раньше; replaced Samsung `R5CW421KFXH` on 03.10.2026. Samsung-specific notes below (One UI shade, battery dialogs, mic click) need re-verification on this phone. package `ca.fixappliance.crm` (с 02.11.2026; классы Kotlin остались в namespace `com.example.fix_appliance_crm`, поэтому activity — `ca.fixappliance.crm/com.example.fix_appliance_crm.MainActivity`). PowerShell: no `&&`; use `;`. Do not commit unless asked. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
+Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: `44c25486` — `adb devices -l` 05.10.2026 отдаёт `model:26077PC53G device:songyuan` (Xiaomi/HyperOS), а не OPPO F9, как было записано раньше; replaced Samsung `R5CW421KFXH` on 03.10.2026. Samsung-specific notes below (One UI shade, battery dialogs, mic click) need re-verification on this phone. package `ca.fixappliance.crm` (с 02.11.2026; классы Kotlin остались в namespace `com.example.fix_appliance_crm`, поэтому activity — `ca.fixappliance.crm/com.example.fix_appliance_crm.MainActivity`). PowerShell: no `&&`; use `;`. **Коммитить и отправлять на GitHub самому в конце каждой задачи** (решение FIX, 03.11.2026): после проверок и установки на телефон — коммит (одна задача — один коммит, автор `FIX <office@fix-appliance.ca>` через `git -c user.name=… -c user.email=…`, настройки git не менять) и `git push origin FIX-APP`. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
 
 ## Как отвечать владельцу (FIX)
 
@@ -86,7 +86,7 @@ adb -s 44c25486 shell am start -n ca.fixappliance.crm/com.example.fix_appliance_
 
 **Голос секретаря: два провайдера в одной цепочке (06.10.2026).** Живой голос стал
 роботизированным, и тракт переделан. **Основной провайдер — Gemini Live**
-(`gemini-3.1-flash-live-preview`, затем `gemini-2.5-flash-native-audio-preview-12-2025`,
+(с 03.11.2026 `gemini-3.8-live`, до того `gemini-3.1-flash-live-preview`; затем `gemini-2.5-flash-native-audio-preview-12-2025`,
 голос `Aoede`): FIX послушал обоих в трубке и выбрал его. Запасной — **OpenAI Realtime**
 (`gpt-realtime`, голос `marin`), он встаёт в конец цепочки. Откат симметричный: кто не
 выбран основным, тот запасной. Выбор живёт в `settings/ai_voice`: `voiceProvider`
@@ -114,8 +114,9 @@ adb -s 44c25486 shell am start -n ca.fixappliance.crm/com.example.fix_appliance_
   `audio_codec.js`, два биквада = 4-й порядок Баттерворта, срез 3400 Гц, состояние живёт на
   сессии). Без него усреднения трёх сэмплов не хватало и всё выше 4 кГц заворачивалось в
   слышимую полосу.
-- `gemini-3.8-live` **удалена**: такой модели в API нет, каждый обрыв стоил гарантированного
-  404 и секунд тишины перед настоящей запасной.
+- `gemini-3.8-live` была удалена 06.10.2026 («в API нет», 404). **03.11.2026 она в списке
+  моделей нашего ключа (v1beta и v1alpha) и снова основная** — см. раздел о переходе на 3.8 в
+  конце файла.
 - `enableAffectiveDialog` вернулся, но аккуратно: только для native-audio и только на
   **v1alpha**. Если попытка не дожила до `setupComplete`, релей ставит `session.noAffective`
   и поднимает ту же модель на v1beta без флага. Интонация не стоит потерянной запасной
@@ -2725,4 +2726,24 @@ Job site», а заявка получила `hasJobSite: true, jobSiteAddress: 
   `JobService.streamAll`, а окно по датам требует индекса дней визита в заявке.
 - **Google выключает `gemini-3.1-flash-live-preview` и
   `gemini-2.5-flash-native-audio-preview-12-2025` не раньше 17.11.2026** (страница deprecations,
-  замена — `gemini-3.8-live`). Обе стоят в цепочке секретаря.
+  замена — `gemini-3.8-live`).
+
+## Переход на Gemini 3.8 Live, копия на почту и в Telegram (03.11.2026)
+
+- **Секретарь:** `GEMINI_MODELS` = `gemini-3.8-live` → `gemini-2.5-flash-native-audio-preview-12-2025`
+  (3.1 убрана). Зонд `tools/live_probe.js` боевым setup с инструментами: setup ~550 мс, первый
+  звук ~740 мс после приветствия, ответ звонящему ~1 с; имя, «вы человек?», фреон — по делу.
+  VAD оставлен 500/300/HIGH: на паузе 450 мс посреди фразы 3.8 начинает отвечать и сразу
+  уступает (INTERRUPTED) при 500, 600 и 700 мс одинаково — у неё своё определение конца фразы,
+  а 700 мс только добавили бы задержку. После выключения 2.5 (17.11) убрать её из списка.
+- **Ассистент в приложении и проба голоса секретаря в настройках** тоже на `gemini-3.8-live`
+  (были на 3.1). Их setup (ru-RU/en-US, NO_INTERRUPTION, BLOCKING-инструменты) проверен живым
+  сокетом на v1beta: принят, вызов инструмента и ответ голосом работают.
+- **Копия вне Firebase:** `runCloudBackup(..., senders)` после сохранения в Storage шлёт
+  сжатый `fix-backup-ГГГГ-ММ-ДД.json.gz` (≈1 МБ): на почту мастерской (`sendOwnerFile` в
+  `email.js`, с подключённого Gmail на него же или на `BACKUP_EMAIL`; синхронизация входящих
+  письма от своего адреса пропускает) и в Telegram-бот @FixApplianceBot (`TELEGRAM_BOT_TOKEN`,
+  `TELEGRAM_CHAT_ID` в `functions/.env`; чат — личный чат FIX). Каналы независимы; итог пишется в
+  документ копии полем `delivered`. Работает и по воскресеньям, и по кнопке «В облако сейчас».
+- **GitHub Actions не запускаются с 01.10.2026:** аккаунт заблокирован из-за оплаты. До починки
+  проверки (анализ, тесты, сборка, `npm test`) гонять локально.
