@@ -15,6 +15,7 @@ import '../shared/app_nav.dart';
 import 'app_lock_service.dart';
 import 'auth_service.dart';
 import 'client_service.dart';
+import 'job_reminder_service.dart';
 import 'job_service.dart';
 import 'notification_service.dart';
 import 'sms_service.dart';
@@ -285,6 +286,12 @@ class NotificationRouter {
     _lastAt = now;
 
     unawaited(NotificationService.dismissInbox(data));
+    if ((data['type'] ?? '').toString().trim() == 'job_reminder') {
+      final remindJobId = _at(data, ['jobId', 'job_id']);
+      if (remindJobId.isNotEmpty) {
+        unawaited(JobReminderService.markOpened(remindJobId));
+      }
+    }
 
     final target = targetFor(data);
     if (target.kind == NotificationTargetKind.none) return;

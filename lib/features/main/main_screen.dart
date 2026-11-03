@@ -17,19 +17,24 @@ import '../calendar/calendar_screen.dart';
 import '../jobs/active_jobs_screen.dart';
 import '../clients/clients_screen.dart';
 import '../comms/comms_hub_screen.dart';
+import '../calls/call_screen.dart';
 import '../calls/dial_pad_screen.dart';
 import '../messages/messages_screen.dart';
 import '../messages/compose_speed_dial.dart';
 import '../messages/conversation_screen.dart';
 import '../ai/assistant/assistant_face.dart';
+import '../../core/l10n/app_locale.dart';
 import '../../services/care_plan_service.dart';
 import '../../services/comms_badge_service.dart';
+import '../../services/job_reminder_service.dart';
 import '../../services/job_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/offline_queue_service.dart';
+import '../../services/twilio_service.dart';
 import '../../services/error_log_service.dart';
 
-const double _handleWidth = 36;
+const double _handleWidth = 30;
+const double _dockHeight = 46;
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -78,6 +83,7 @@ class _MainScreenState extends State<MainScreen>
     // Care Plan и паспорта — одна подписка на всё приложение: значок
     // «гарантийный клиент» на звонке и в заявке появляется без запросов.
     CarePlanService.start();
+    unawaited(JobReminderService.start());
     unawaited(JobService.completeLegacyJobsIfNeeded());
     AppCommands.selectTab.addListener(_onSelectTabCommand);
     AppCommands.commsTab.addListener(_onCommsTabChanged);
@@ -173,6 +179,14 @@ class _MainScreenState extends State<MainScreen>
       _currentIndex = index;
       _composeOpen = false;
     });
+    ErrorLogService.markScreen(
+      switch (index) {
+        0 => 'Главная',
+        1 => 'Связь',
+        2 => 'Клиенты',
+        _ => 'Главная',
+      },
+    );
     _forgetTab(leaving);
     _syncRoot();
     _markCallsSeenIfVisible();
@@ -348,17 +362,18 @@ class _MainScreenState extends State<MainScreen>
               child: SafeArea(
                 bottom: false,
                 child: SizedBox(
-                  height: 56,
+                  height: 44,
                   child: Stack(
                     alignment: Alignment.center,
                     children: const [
-                      Center(child: AssistantFaceButton(size: 52)),
+                      Center(child: AssistantFaceButton(size: 40)),
                       Positioned(left: 12, child: OfflineChip()),
                     ],
                   ),
                 ),
               ),
             ),
+            const _ActiveCallReturnBar(),
             Expanded(
               child: Stack(
                 clipBehavior: Clip.none,
@@ -374,7 +389,7 @@ class _MainScreenState extends State<MainScreen>
                       viewInsets: MediaQuery.viewInsetsOf(context).copyWith(
                         bottom:
                             (MediaQuery.viewInsetsOf(context).bottom -
-                                    (64 + MediaQuery.paddingOf(context).bottom))
+                                    (_dockHeight + MediaQuery.paddingOf(context).bottom))
                                 .clamp(0.0, double.infinity),
                       ),
                     ),
@@ -387,7 +402,7 @@ class _MainScreenState extends State<MainScreen>
                     Positioned(
                       left: 0,
                       right: 0,
-                      bottom: 16,
+                      bottom: 12,
                       child: Center(child: _tabRoundButton()),
                     ),
                 ],
@@ -403,7 +418,7 @@ class _MainScreenState extends State<MainScreen>
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(height: 64, child: _buildBottomDock()),
+                        SizedBox(height: _dockHeight, child: _buildBottomDock()),
                         const SafeArea(top: false, child: SizedBox.shrink()),
                       ],
                     ),
@@ -423,7 +438,7 @@ class _MainScreenState extends State<MainScreen>
 
   Widget _buildBottomDock() {
     return SizedBox(
-      height: 64,
+      height: _dockHeight,
       child: Row(
         children: [
           const SizedBox(width: _handleWidth),
@@ -486,7 +501,7 @@ class _MainScreenState extends State<MainScreen>
     final scale = AppUiSettings.instance.scale;
     Widget glyph = Icon(
       icon,
-      size: 32 * scale,
+      size: 24 * scale,
       color: selected ? AppColors.footer : Colors.white,
     );
     // Новый звонок и непрочитанное сообщение теперь видно там, где их
@@ -497,17 +512,17 @@ class _MainScreenState extends State<MainScreen>
     return InkWell(
       onTap: () => _selectTab(index),
       child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: 10 * scale),
+        padding: EdgeInsets.symmetric(horizontal: 7 * scale),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 160),
           curve: Curves.easeOutCubic,
           padding: EdgeInsets.symmetric(
-            horizontal: 10 * scale,
-            vertical: 6 * scale,
+            horizontal: 8 * scale,
+            vertical: 4 * scale,
           ),
           decoration: BoxDecoration(
             color: selected ? AppColors.accent : Colors.transparent,
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(12),
           ),
           child: glyph,
         ),
@@ -755,7 +770,7 @@ class _RightVisitsHandleState extends State<_RightVisitsHandle> {
 
   @override
   Widget build(BuildContext context) {
-    const radius = BorderRadius.horizontal(left: Radius.circular(18));
+    const radius = BorderRadius.horizontal(left: Radius.circular(14));
     return Positioned(
       right: 0,
       top: 0,
@@ -785,7 +800,7 @@ class _RightVisitsHandleState extends State<_RightVisitsHandle> {
               child: Icon(
                 Icons.event_note,
                 color: Color(0xFF14557F),
-                size: 22,
+                size: 19,
               ),
             ),
           ),
@@ -804,8 +819,8 @@ class _DockSideButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final radius = BorderRadius.horizontal(
-      right: left ? const Radius.circular(18) : Radius.zero,
-      left: left ? Radius.zero : const Radius.circular(18),
+      right: left ? const Radius.circular(14) : Radius.zero,
+      left: left ? Radius.zero : const Radius.circular(14),
     );
     return Material(
       color: AppColors.accent,
@@ -816,9 +831,82 @@ class _DockSideButton extends StatelessWidget {
         customBorder: RoundedRectangleBorder(borderRadius: radius),
         onTap: onTap,
         child: const Center(
-          child: Icon(Icons.more_vert, color: Color(0xFF14557F), size: 22),
+          child: Icon(Icons.more_vert, color: Color(0xFF14557F), size: 19),
         ),
       ),
+    );
+  }
+}
+
+class _ActiveCallReturnBar extends StatelessWidget {
+  const _ActiveCallReturnBar();
+
+  static bool _isLive(String status) {
+    return status == 'connected' ||
+        status == 'calling' ||
+        status == 'connecting' ||
+        status == 'ringing' ||
+        status == 'answering' ||
+        status == 'reconnecting';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<String>(
+      stream: TwilioService.callStatusStream,
+      initialData: TwilioService.callStatus,
+      builder: (context, snapshot) {
+        final status = snapshot.data ?? TwilioService.callStatus;
+        if (!_isLive(status) || CallScreen.isShown) {
+          return const SizedBox.shrink();
+        }
+        final active = TwilioService.activeCall;
+        final phone = active != null
+            ? activeCallDisplayNumber(active)
+            : '';
+        return Material(
+          color: const Color(0xFF2E7D32),
+          child: InkWell(
+            onTap: () {
+              CallScreen.clearMinimized();
+              CallScreen.open(
+                context,
+                phoneNumber: phone,
+                isIncoming: active?.callDirection.name == 'incoming',
+                resumeExisting: true,
+              );
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.phone_in_talk,
+                    color: Colors.white,
+                    size: 17,
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      phone.isNotEmpty
+                          ? '${context.tr('Идёт разговор', 'Call in progress')} ($phone) · ${context.tr('Вернуться', 'Return')}'
+                          : '${context.tr('Идёт разговор', 'Call in progress')} · ${context.tr('Вернуться к звонку', 'Return to call')}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

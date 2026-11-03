@@ -25,6 +25,7 @@ class LocalNotificationService {
   static const visitConfirmChannelId = 'visit_confirm';
   static const visitSoonChannelId = 'visit_soon';
   static const secretaryLearnChannelId = 'secretary_learn';
+  static const jobReminderChannelId = 'job_reminders';
   static const morningNotificationId = 7100;
   static const eveningNotificationId = 7110;
   static const onWayNotificationId = 7200;
@@ -200,6 +201,16 @@ class LocalNotificationService {
         enableVibration: false,
       ),
     );
+    await android?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        jobReminderChannelId,
+        'Job reminders',
+        description: 'Personal reminders about job cards',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+      ),
+    );
   }
 
   static int inboxIdForTag(String tag) => 7400 + ((tag).hashCode.abs() % 180);
@@ -302,6 +313,103 @@ class LocalNotificationService {
       hash = (hash * 16777619) & 0x7fffffff;
     }
     return 810000 + (hash % 90000);
+  }
+
+  static int jobReminderId(String jobId) {
+    var hash = 2166136261;
+    for (final unit in 'reminder|$jobId'.codeUnits) {
+      hash ^= unit;
+      hash = (hash * 16777619) & 0x7fffffff;
+    }
+    return 910000 + (hash % 80000);
+  }
+
+  static Future<void> scheduleJobReminder({
+    required String jobId,
+    required String clientId,
+    required String title,
+    required String body,
+    required DateTime remindAt,
+    String applianceType = '',
+    String clientName = '',
+    String city = '',
+  }) async {
+    await initialize();
+    await ensureInboxChannels();
+    final id = jobReminderId(jobId);
+    final tag = 'job_reminder_$jobId';
+    await _cancelIfPending(id);
+    await cancelTags([tag]);
+    final when = tz.TZDateTime.from(remindAt, tz.local);
+    final now = tz.TZDateTime.now(tz.local);
+    if (!when.isAfter(now)) {
+      await showJobReminderNow(
+        jobId: jobId,
+        clientId: clientId,
+        title: title,
+        body: body,
+        applianceType: applianceType,
+        clientName: clientName,
+        city: city,
+      );
+      return;
+    }
+    await _scheduleZoned(
+      id: id,
+      title: title,
+      body: body,
+      when: when,
+      details: _headsUpDetails(
+        channelId: jobReminderChannelId,
+        channelName: 'Напоминание о заявке'.tr,
+        channelDescription: 'Личные напоминания по рабочим карточкам'.tr,
+        title: title,
+        body: body,
+        tag: tag,
+        persist: true,
+        largeIcon: await _badgeFor('reminder'),
+      ),
+      payloadValue: payload({
+        'type': 'job_reminder',
+        'jobId': jobId,
+        if (clientId.isNotEmpty) 'clientId': clientId,
+        'tag': tag,
+      }),
+    );
+  }
+
+  static Future<void> showJobReminderNow({
+    required String jobId,
+    required String clientId,
+    required String title,
+    required String body,
+    String applianceType = '',
+    String clientName = '',
+    String city = '',
+  }) async {
+    final tag = 'job_reminder_$jobId';
+    await showInboxAlert(
+      title: title,
+      body: body,
+      tag: tag,
+      channelId: jobReminderChannelId,
+      channelName: 'Напоминание о заявке'.tr,
+      channelDescription: 'Личные напоминания по рабочим карточкам'.tr,
+      applianceType: applianceType,
+      clientName: clientName,
+      city: city,
+      data: {
+        'type': 'job_reminder',
+        'jobId': jobId,
+        if (clientId.isNotEmpty) 'clientId': clientId,
+      },
+    );
+  }
+
+  static Future<void> cancelJobReminder(String jobId) async {
+    await initialize();
+    await _cancelIfPending(jobReminderId(jobId));
+    await cancelTags(['job_reminder_$jobId']);
   }
 
   static Future<void> _cancelIfPending(int id) async {

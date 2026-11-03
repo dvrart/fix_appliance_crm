@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../models/job.dart';
+import '../../services/job_reminder_service.dart';
 import '../../services/job_service.dart';
 import '../../shared/app_nav.dart';
 import '../care_plan/care_plan_attention.dart';
@@ -58,49 +59,73 @@ class _CalendarTopIconsState extends State<CalendarTopIcons> {
           }
           if (job.isUnscheduled) noDate++;
         }
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Care Plan: пора ТО / платёж не прошёл. Своей подписки на
-            // Firestore у значка нет — он читает общий индекс CarePlanService.
-            CarePlanAttentionButton(
-              color: widget.color,
-              iconSize: widget.iconSize,
-            ),
-            if (parts > 0)
-              _headerButton(
-                icon: Icons.local_shipping,
-                count: parts,
-                // Красный грузовик — кому-то обещанный срок уже прошёл.
-                alert: overdue > 0,
-                tooltip: overdue > 0
-                    ? context.tr(
-                        'Срок обещания прошёл',
-                        'A promised date has passed',
-                      )
-                    : context.tr('Ждём запчасть', 'Waiting for a part'),
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  unawaited(
-                    AppNav.openCard(
-                      context,
-                      key: 'card:parts-queue',
-                      builder: (_) => const PartsQueueScreen(),
+        final allJobs = snapshot.data ?? const <Job>[];
+        return ValueListenableBuilder<int>(
+          valueListenable: JobReminderService.revision,
+          builder: (context, _, _) {
+            final dueReminders = JobReminderService.dueReminders(allJobs);
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (dueReminders.isNotEmpty)
+                  _headerButton(
+                    icon: Icons.notifications_active_rounded,
+                    count: dueReminders.length,
+                    alert: true,
+                    tooltip: context.tr(
+                      'Напоминания о карточках',
+                      'Job reminders',
                     ),
-                  );
-                },
-              ),
-            if (noDate > 0)
-              _headerButton(
-                icon: Icons.event_busy,
-                count: noDate,
-                tooltip: context.tr('Без даты визита', 'No visit date'),
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  UnscheduledJobsSheet.show(context, _jobs);
-                },
-              ),
-          ],
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      JobReminderService.showDueRemindersSheet(
+                        context,
+                        allJobs,
+                      );
+                    },
+                  ),
+                // Care Plan: пора ТО / платёж не прошёл. Своей подписки на
+                // Firestore у значка нет — он читает общий индекс CarePlanService.
+                CarePlanAttentionButton(
+                  color: widget.color,
+                  iconSize: widget.iconSize,
+                ),
+                if (parts > 0)
+                  _headerButton(
+                    icon: Icons.local_shipping,
+                    count: parts,
+                    // Красный грузовик — кому-то обещанный срок уже прошёл.
+                    alert: overdue > 0,
+                    tooltip: overdue > 0
+                        ? context.tr(
+                            'Срок обещания прошёл',
+                            'A promised date has passed',
+                          )
+                        : context.tr('Ждём запчасть', 'Waiting for a part'),
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      unawaited(
+                        AppNav.openCard(
+                          context,
+                          key: 'card:parts-queue',
+                          builder: (_) => const PartsQueueScreen(),
+                        ),
+                      );
+                    },
+                  ),
+                if (noDate > 0)
+                  _headerButton(
+                    icon: Icons.event_busy,
+                    count: noDate,
+                    tooltip: context.tr('Без даты визита', 'No visit date'),
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      UnscheduledJobsSheet.show(context, _jobs);
+                    },
+                  ),
+              ],
+            );
+          },
         );
       },
     );
