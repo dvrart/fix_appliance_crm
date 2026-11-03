@@ -48,6 +48,139 @@ class JobAppliance {
   }
 }
 
+/// Заказанная запчасть для отслеживания доставки (Amazon, Reliable Parts и др.).
+class JobTrackingOrder {
+  final String id;
+  final String part;
+  final String carrier;
+  final String trackingNumber;
+  final String orderId;
+  final String status;
+
+  const JobTrackingOrder({
+    this.id = '',
+    this.part = '',
+    this.carrier = '',
+    this.trackingNumber = '',
+    this.orderId = '',
+    this.status = '',
+  });
+
+  bool get isEmpty =>
+      part.trim().isEmpty &&
+      carrier.trim().isEmpty &&
+      trackingNumber.trim().isEmpty &&
+      orderId.trim().isEmpty &&
+      status.trim().isEmpty;
+
+  bool get isNotEmpty => !isEmpty;
+
+  String get effectiveCarrier {
+    if (isEmpty) return '';
+    final c = carrier.trim();
+    if (c.isNotEmpty) return c;
+    if (orderId.trim().isNotEmpty ||
+        trackingNumber.trim().toUpperCase().startsWith('TBA')) {
+      return 'amazon';
+    }
+    return 'other';
+  }
+
+  JobTrackingOrder copyWith({
+    String? id,
+    String? part,
+    String? carrier,
+    String? trackingNumber,
+    String? orderId,
+    String? status,
+  }) {
+    return JobTrackingOrder(
+      id: id ?? this.id,
+      part: part ?? this.part,
+      carrier: carrier ?? this.carrier,
+      trackingNumber: trackingNumber ?? this.trackingNumber,
+      orderId: orderId ?? this.orderId,
+      status: status ?? this.status,
+    );
+  }
+
+  factory JobTrackingOrder.fromMap(Map<String, dynamic> map) {
+    final orderId =
+        (map['orderId'] ?? map['amazonOrderId'] ?? map['trackingOrderId'] ?? '')
+            .toString()
+            .trim();
+    return JobTrackingOrder(
+      id: (map['id'] ?? '').toString().trim(),
+      part: (map['part'] ?? map['trackingPart'] ?? '').toString().trim(),
+      carrier:
+          (map['carrier'] ?? map['trackingCarrier'] ?? map['supplier'] ?? '')
+              .toString()
+              .trim(),
+      trackingNumber: (map['trackingNumber'] ?? map['number'] ?? '')
+          .toString()
+          .trim(),
+      orderId: orderId,
+      status: (map['status'] ?? map['trackingStatus'] ?? '').toString().trim(),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    final resolvedCarrier = effectiveCarrier;
+    return {
+      if (id.trim().isNotEmpty) 'id': id.trim(),
+      'part': part.trim(),
+      'carrier': resolvedCarrier,
+      'trackingNumber': trackingNumber.trim(),
+      'orderId': orderId.trim(),
+      'amazonOrderId': orderId.trim(),
+      if (status.trim().isNotEmpty) 'status': status.trim(),
+    };
+  }
+
+  static List<JobTrackingOrder> parseList(Map<String, dynamic> map) {
+    final raw = map['trackingOrders'];
+    if (raw is List && raw.isNotEmpty) {
+      final parsed = <JobTrackingOrder>[];
+      for (final item in raw) {
+        if (item is Map) {
+          final order = JobTrackingOrder.fromMap(
+            Map<String, dynamic>.from(item),
+          );
+          if (order.isNotEmpty) parsed.add(order);
+        }
+      }
+      if (parsed.isNotEmpty) return parsed;
+    }
+    final legacy = JobTrackingOrder(
+      part: (map['trackingPart'] ?? '').toString().trim(),
+      carrier: (map['trackingCarrier'] ?? '').toString().trim(),
+      trackingNumber: (map['trackingNumber'] ?? '').toString().trim(),
+      orderId: (map['amazonOrderId'] ?? '').toString().trim(),
+      status: (map['trackingStatus'] ?? '').toString().trim(),
+    );
+    if (legacy.isNotEmpty) return [legacy];
+    return const [];
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is JobTrackingOrder &&
+      part.trim() == other.part.trim() &&
+      effectiveCarrier == other.effectiveCarrier &&
+      trackingNumber.trim() == other.trackingNumber.trim() &&
+      orderId.trim() == other.orderId.trim() &&
+      status.trim() == other.status.trim();
+
+  @override
+  int get hashCode => Object.hash(
+    part.trim(),
+    effectiveCarrier,
+    trackingNumber.trim(),
+    orderId.trim(),
+    status.trim(),
+  );
+}
+
 /// Один выезд внутри заявки (диагностика, повтор после запчасти и т.д.).
 class JobVisit {
   static const String scheduled = 'scheduled';
@@ -488,6 +621,7 @@ class Job {
   final String trackingPart;
   final String trackingStatus;
   final String amazonOrderId;
+  final List<JobTrackingOrder> trackingOrders;
   /// Исходная заявка, если это повторный вызов по той же неисправности.
   final String? repeatOfJobId;
   /// Заявка, в которую сервер слил этот дубляж (сама заявка при этом закрыта).
@@ -514,6 +648,7 @@ class Job {
   /// День, к которому клиенту обещали запчасть. Не слот календаря: визит
   /// ставится отдельно, когда запчасть уже есть.
   final DateTime? promisedPartAt;
+  final DateTime? reminderAt;
 
   Job({
     required this.id,
@@ -556,6 +691,7 @@ class Job {
     this.trackingPart = '',
     this.trackingStatus = '',
     this.amazonOrderId = '',
+    List<JobTrackingOrder>? trackingOrders,
     this.repeatOfJobId,
     this.mergedIntoJobId = '',
     this.mergedFromJobIds = const [],
@@ -566,7 +702,23 @@ class Job {
     this.carePlanId = '',
     this.carePlanKind = '',
     this.promisedPartAt,
-  });
+    this.reminderAt,
+  }) : trackingOrders = trackingOrders != null
+           ? trackingOrders.where((o) => o.isNotEmpty).toList()
+           : [
+               if (trackingNumber.trim().isNotEmpty ||
+                   trackingCarrier.trim().isNotEmpty ||
+                   trackingPart.trim().isNotEmpty ||
+                   trackingStatus.trim().isNotEmpty ||
+                   amazonOrderId.trim().isNotEmpty)
+                 JobTrackingOrder(
+                   part: trackingPart.trim(),
+                   carrier: trackingCarrier.trim(),
+                   trackingNumber: trackingNumber.trim(),
+                   orderId: amazonOrderId.trim(),
+                   status: trackingStatus.trim(),
+                 ),
+             ];
 
   /// Закрытый дубляж: его данные уже переехали в другую заявку.
   bool get isMergedDuplicate => mergedIntoJobId.trim().isNotEmpty;
@@ -847,6 +999,12 @@ class Job {
 
     for (final note in packingNotes.split(RegExp(r'[,;\n]'))) {
       add(note);
+    }
+    for (final order in trackingOrders) {
+      add(order.part);
+    }
+    if (trackingPart.trim().isNotEmpty) {
+      add(trackingPart);
     }
     for (final doc in documents) {
       final status = (doc['status'] ?? '').toString().toLowerCase();
@@ -1285,6 +1443,7 @@ class Job {
       trackingPart: (map['trackingPart'] ?? '').toString(),
       trackingStatus: (map['trackingStatus'] ?? '').toString(),
       amazonOrderId: (map['amazonOrderId'] ?? '').toString(),
+      trackingOrders: JobTrackingOrder.parseList(map),
       repeatOfJobId: (map['repeatOfJobId'] ?? '').toString().trim().isEmpty
           ? null
           : (map['repeatOfJobId'] ?? '').toString().trim(),
@@ -1310,6 +1469,7 @@ class Job {
       carePlanKind: (map['carePlanKind'] ?? '').toString().trim(),
       promisedPartAt:
           parseDate(map['promisedPartAt']) ?? parseDate(map['agreedReturnAt']),
+      reminderAt: parseDate(map['reminderAt']),
     );
   }
 
@@ -1355,6 +1515,10 @@ class Job {
       'trackingPart': trackingPart,
       'trackingStatus': trackingStatus,
       'amazonOrderId': amazonOrderId,
+      'trackingOrders': [
+        for (final order in trackingOrders)
+          if (order.isNotEmpty) order.toMap(),
+      ],
       'repeatOfJobId': repeatOfJobId,
       'mergedIntoJobId': mergedIntoJobId,
       'mergedFromJobIds': mergedFromJobIds,
@@ -1364,6 +1528,7 @@ class Job {
       if (carePlanId.isNotEmpty) 'carePlanId': carePlanId,
       if (carePlanKind.isNotEmpty) 'carePlanKind': carePlanKind,
       'promisedPartAt': promisedPartAt,
+      if (reminderAt != null) 'reminderAt': reminderAt!.toIso8601String(),
       'updatedAt': FieldValue.serverTimestamp(),
       ...JobVisit.syncFields(
         coalescedVisits,
@@ -1413,6 +1578,7 @@ class Job {
     String? trackingPart,
     String? trackingStatus,
     String? amazonOrderId,
+    List<JobTrackingOrder>? trackingOrders,
     String? repeatOfJobId,
     String? mergedIntoJobId,
     List<String>? mergedFromJobIds,
@@ -1424,6 +1590,8 @@ class Job {
     String? carePlanKind,
     DateTime? promisedPartAt,
     bool clearPromisedPartAt = false,
+    DateTime? reminderAt,
+    bool clearReminderAt = false,
   }) {
     return Job(
       id: id ?? this.id,
@@ -1466,6 +1634,7 @@ class Job {
       trackingPart: trackingPart ?? this.trackingPart,
       trackingStatus: trackingStatus ?? this.trackingStatus,
       amazonOrderId: amazonOrderId ?? this.amazonOrderId,
+      trackingOrders: trackingOrders ?? this.trackingOrders,
       repeatOfJobId: repeatOfJobId ?? this.repeatOfJobId,
       mergedIntoJobId: mergedIntoJobId ?? this.mergedIntoJobId,
       mergedFromJobIds: mergedFromJobIds ?? this.mergedFromJobIds,
@@ -1478,6 +1647,8 @@ class Job {
       carePlanKind: carePlanKind ?? this.carePlanKind,
       promisedPartAt:
           clearPromisedPartAt ? null : (promisedPartAt ?? this.promisedPartAt),
+      reminderAt:
+          clearReminderAt ? null : (reminderAt ?? this.reminderAt),
     );
   }
 }

@@ -77,4 +77,52 @@ void main() {
 
     expect(job.promisedPartAt, DateTime(2026, 10, 31));
   });
+
+  test('обещание с временем в сегодняшний день сохраняет время и не просрочено', () {
+    final withTime = DateTime(2026, 10, 27, 14, 30);
+    final job = Job.fromMap({
+      'clientId': 'c',
+      'createdAt': Timestamp.fromDate(DateTime(2026, 10, 1)),
+      'promisedPartAt': Timestamp.fromDate(withTime),
+    }, 'timed');
+
+    expect(job.promisedPartAt, withTime);
+    final ordered = partQueueOrder([
+      partJob('today-timed', DateTime(2026, 10, 1), promised: withTime),
+      partJob('yesterday', DateTime(2026, 10, 2), promised: DateTime(2026, 10, 26, 18, 0)),
+    ], today);
+    expect(ordered.first.id, 'yesterday');
+  });
+
+  test('несколько заказанных запчастей (Amazon, Reliable Parts) читаются и сохраняются', () {
+    final job = Job.fromMap({
+      'clientId': 'c',
+      'createdAt': Timestamp.fromDate(DateTime(2026, 10, 1)),
+      'trackingOrders': [
+        {
+          'part': 'Помпа',
+          'carrier': 'amazon',
+          'trackingNumber': 'TBA1234567890',
+          'orderId': '112-1111111-1111111',
+          'status': 'shipped',
+        },
+        {
+          'part': 'ТЭН',
+          'carrier': 'reliable_parts',
+          'trackingNumber': '1Z999AA10123456784',
+          'orderId': 'RP-987654',
+          'status': 'delivered',
+        },
+      ],
+    }, 'multi-parts');
+
+    expect(job.trackingOrders.length, 2);
+    expect(job.trackingOrders[0].part, 'Помпа');
+    expect(job.trackingOrders[0].effectiveCarrier, 'amazon');
+    expect(job.trackingOrders[0].orderId, '112-1111111-1111111');
+    expect(job.trackingOrders[1].part, 'ТЭН');
+    expect(job.trackingOrders[1].effectiveCarrier, 'reliable_parts');
+    expect(job.trackingOrders[1].status, 'delivered');
+    expect(job.expectedParts, containsAll(['Помпа', 'ТЭН']));
+  });
 }

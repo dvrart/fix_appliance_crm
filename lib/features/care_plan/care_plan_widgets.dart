@@ -89,6 +89,7 @@ class CarePlanStyle {
 class CarePlanMark extends StatelessWidget {
   final String? clientId;
   final String? phone;
+  final String? planId;
   final double size;
   final bool onDark;
 
@@ -96,6 +97,7 @@ class CarePlanMark extends StatelessWidget {
     super.key,
     this.clientId,
     this.phone,
+    this.planId,
     this.size = 17,
     this.onDark = false,
   });
@@ -105,10 +107,12 @@ class CarePlanMark extends StatelessWidget {
     return ValueListenableBuilder<int>(
       valueListenable: CarePlanService.revision,
       builder: (context, _, _) {
-        final plan = CarePlanService.memberPlanFor(
-          clientId: clientId,
-          phone: phone,
-        );
+        final pid = (planId ?? '').trim();
+        final plan = (pid.isNotEmpty ? CarePlanService.planById(pid) : null) ??
+            CarePlanService.memberPlanFor(
+              clientId: clientId,
+              phone: phone,
+            );
         if (plan == null) return const SizedBox.shrink();
         return Padding(
           padding: const EdgeInsets.only(left: 4),

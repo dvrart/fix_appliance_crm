@@ -10,13 +10,13 @@ import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/motion.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/utils/number_input.dart';
+import '../../../../models/client.dart';
 import '../../../../models/document_settings.dart';
 import '../../../../models/job.dart';
 import '../../../../models/labour_discount.dart';
 import '../../../../models/warehouse_item.dart';
 import '../../../../services/services.dart';
 import '../../../../shared/widgets/app_bar_save.dart';
-import '../../../../shared/widgets/client_signature_sheet.dart';
 import '../../../../shared/widgets/confirm_action_sheet.dart';
 import '../../../../shared/widgets/dispose_on_close.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
@@ -240,33 +240,16 @@ class _FinanceTabState extends State<FinanceTab> {
       }
       return false;
     }
-    Map<String, dynamic>? signature;
-    if (ctrl.builderDocType == 'Invoice') {
-      if (!mounted) return false;
-      final bytes = await ClientSignatureSheet.capture(context);
-      if (!mounted) return false;
-      if (bytes == null) return false;
-      if (bytes.isNotEmpty) {
-        try {
-          signature = await ClientSignatureSheet.uploadToJob(
-            jobId: ctrl.jobId,
-            bytes: bytes,
-          );
-        } catch (e) {
-          if (!mounted) return false;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${'Не удалось сохранить подпись'.tr}: $e'),
-            ),
-          );
-          return false;
-        }
-      }
-    }
     final number = await SettingsService.takeNextDocumentNumber(ctrl.builderDocType);
+    final recipient = _recipientForBillTo(ctrl.builderBillTo);
     final doc = {
       'type': ctrl.builderDocType,
       'number': number,
+      'billTo': recipient.billTo,
+      'billToName': recipient.name,
+      'billToPhone': recipient.phone,
+      'billToEmail': recipient.email,
+      'billToAddress': recipient.address,
       // Скидка на работу пересчитывается по текущей работе в счёте. На
       // технике со стикером работа по плану покрывается целиком.
       'items': _coveredIfPlan(
@@ -277,21 +260,17 @@ class _FinanceTabState extends State<FinanceTab> {
       'taxRate': ctrl.builderTaxRate,
       'payments': <Map<String, dynamic>>[],
       'createdAt': DateTime.now().toIso8601String(),
-      if (signature != null) 'signature': signature,
     };
     await ctrl.addDocument(doc);
-    if (signature != null) {
-      ctrl.addAttachment(signature);
-      await JobService.addAttachment(ctrl.jobId, signature);
-    }
     ctrl.setViewingDocumentIndex(ctrl.documents.length - 1);
     ctrl.setFinanceMode('view_document');
     return true;
   }
 
-  void _createDocument(String type) {
+  void _createDocument(String type, {String? billTo}) {
     ctrl.builderItems.clear();
     ctrl.builderDocType = type;
+    ctrl.builderBillTo = billTo ?? 'owner';
     ctrl.setFinanceMode('builder');
   }
 
@@ -330,9 +309,16 @@ class _FinanceTabState extends State<FinanceTab> {
     setState(() => _busy = true);
     try {
       final number = await SettingsService.takeNextDocumentNumber('Invoice');
+      final estBillTo = _docBillTo(estimate);
+      final recipient = _recipientForBillTo(estBillTo, doc: estimate);
       final invoice = {
         'type': 'Invoice',
         'number': number,
+        'billTo': recipient.billTo,
+        'billToName': recipient.name,
+        'billToPhone': recipient.phone,
+        'billToEmail': recipient.email,
+        'billToAddress': recipient.address,
         'items': items,
         'taxRate': estimate['taxRate'] ?? 0.0,
         'payments': <Map<String, dynamic>>[],
@@ -751,6 +737,7 @@ class _FinanceTabState extends State<FinanceTab> {
                                         fontWeight: FontWeight.w600,
                                       ),
                                     ),
+                                  _buildBillToBadge(doc),
                                 ],
                               ),
                             ],
@@ -1200,6 +1187,16 @@ class _FinanceTabState extends State<FinanceTab> {
       ),
       body: Column(
         children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+            child: _buildBillToSelector(
+              currentBillTo: ctrl.builderBillTo,
+              onChanged: (next) {
+                setState(() => ctrl.builderBillTo = next);
+                ctrl.notifyBuilderChanged();
+              },
+            ),
+          ),
           Expanded(
             child: ctrl.builderItems.isEmpty
                 ? Center(
@@ -2633,7 +2630,17 @@ class _FinanceTabState extends State<FinanceTab> {
                                   ),
                                 ],
                               ),
-                              const SizedBox(height: 4),
+                              const SizedBox(height: 8),
+                              _buildBillToSelector(
+                                currentBillTo: _docBillTo(doc),
+                                onChanged: _busy || isCancelled
+                                    ? null
+                                    : (next) => _changeSavedDocBillTo(
+                                          docIndex,
+                                          next,
+                                        ),
+                              ),
+                              const SizedBox(height: 6),
                               Text(
                                 itemsEditable
                                     ? context.tr(
@@ -3721,7 +3728,115 @@ class _FinanceTabState extends State<FinanceTab> {
     return ctrl.contactPhone.trim();
   }
 
-  Future<JobChatContact?> _pickSmsContact() async {
+  static String _docBillTo(Map<String, dynamic> doc) {
+    final raw = (doc['billTo'] ?? '').toString().trim().toLowerCase();
+    return raw == 'tenant' ? 'tenant' : 'owner';
+  }
+
+  ({
+    String billTo,
+    String name,
+    String phone,
+    String email,
+    String address,
+    String company,
+  }) _recipientForBillTo(String billTo, {Map<String, dynamic>? doc}) {
+    final isTenant = billTo.trim().toLowerCase() == 'tenant';
+    final ownerName = Client.stripClientWord(
+      (ctrl.jobData['clientName'] ?? '').toString(),
+    ).trim();
+    final ownerPhone = (ctrl.jobData['clientPhone'] ?? '').toString().trim();
+    final ownerEmail = ctrl.clientEmail.trim();
+    final ownerAddress = (ctrl.jobData['clientAddress'] ?? '').toString().trim();
+    final ownerCompany = (ctrl.jobData['companyName'] ?? '').toString().trim();
+
+    if (!isTenant) {
+      final savedName = doc != null && _docBillTo(doc) == 'owner'
+          ? (doc['billToName'] ?? '').toString().trim()
+          : '';
+      return (
+        billTo: 'owner',
+        name: ownerName.isNotEmpty
+            ? ownerName
+            : (savedName.isNotEmpty ? savedName : ctrl.contactName),
+        phone: ownerPhone.isNotEmpty ? ownerPhone : ctrl.contactPhone.trim(),
+        email: ownerEmail,
+        address: ownerAddress.isNotEmpty ? ownerAddress : ctrl.workAddress.trim(),
+        company: ownerCompany,
+      );
+    }
+
+    var tenantName = ctrl.effectiveJobSiteName.trim();
+    var tenantPhone = ctrl.effectiveJobSitePhone.trim();
+    var tenantEmail = ctrl.jobSiteEmail.trim();
+    final tenantAddress = ctrl.jobSiteAddress.trim().isNotEmpty
+        ? ctrl.jobSiteAddress.trim()
+        : ctrl.workAddress.trim();
+
+    for (final c in ctrl.chatContacts) {
+      if (!c.isOwner) {
+        if (tenantName.isEmpty &&
+            c.name.trim().isNotEmpty &&
+            !Client.isPlaceholderName(c.name)) {
+          tenantName = c.name.trim();
+        }
+        if (tenantPhone.isEmpty && c.hasPhone) {
+          tenantPhone = c.phone.trim();
+        }
+        if (tenantEmail.isEmpty && c.hasEmail) {
+          tenantEmail = c.email.trim();
+        }
+      }
+    }
+    if (doc != null && _docBillTo(doc) == 'tenant') {
+      if (tenantName.isEmpty) {
+        tenantName = (doc['billToName'] ?? '').toString().trim();
+      }
+      if (tenantPhone.isEmpty) {
+        tenantPhone = (doc['billToPhone'] ?? '').toString().trim();
+      }
+      if (tenantEmail.isEmpty) {
+        tenantEmail = (doc['billToEmail'] ?? '').toString().trim();
+      }
+    }
+    if (tenantName.isEmpty) {
+      tenantName = 'Арендатор'.tr;
+    }
+    if (tenantPhone.isEmpty) {
+      tenantPhone = ctrl.contactPhone.trim();
+    }
+
+    return (
+      billTo: 'tenant',
+      name: tenantName,
+      phone: tenantPhone,
+      email: tenantEmail,
+      address: tenantAddress,
+      company: '',
+    );
+  }
+
+  Future<void> _changeSavedDocBillTo(int docIndex, String nextBillTo) async {
+    if (_busy || docIndex < 0 || docIndex >= ctrl.documents.length) return;
+    final current = Map<String, dynamic>.from(ctrl.documents[docIndex]);
+    if (_docBillTo(current) == nextBillTo) return;
+    final recipient = _recipientForBillTo(nextBillTo, doc: current);
+    current['billTo'] = recipient.billTo;
+    current['billToName'] = recipient.name;
+    current['billToPhone'] = recipient.phone;
+    current['billToEmail'] = recipient.email;
+    current['billToAddress'] = recipient.address;
+    current.remove('pdfUrl');
+    current.remove('pdfShortUrl');
+    setState(() => _busy = true);
+    try {
+      await ctrl.updateDocument(docIndex, current);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<JobChatContact?> _pickSmsContact({String? preferredRole}) async {
     if (ctrl.chatContacts.length <= 1) {
       await ctrl.ensureChatContactsLoaded();
       if (!mounted) return null;
@@ -3731,6 +3846,12 @@ class _FinanceTabState extends State<FinanceTab> {
         if (c.hasPhone) c,
     ];
     if (contacts.isEmpty) return null;
+    if (preferredRole != null) {
+      final wantOwner = preferredRole == 'owner';
+      for (final c in contacts) {
+        if (c.isOwner == wantOwner) return c;
+      }
+    }
     if (contacts.length == 1) return contacts.first;
     return showModalBottomSheet<JobChatContact>(
       context: context,
@@ -3771,9 +3892,196 @@ class _FinanceTabState extends State<FinanceTab> {
     );
   }
 
+  Widget _buildBillToBadge(Map<String, dynamic> doc) {
+    final isTenant = _docBillTo(doc) == 'tenant';
+    final recipient = _recipientForBillTo(
+      isTenant ? 'tenant' : 'owner',
+      doc: doc,
+    );
+    final roleLabel = isTenant
+        ? context.tr('Арендатор', 'Tenant')
+        : context.tr('Владелец', 'Owner');
+    final showName =
+        recipient.name.isNotEmpty &&
+        recipient.name.toLowerCase() != roleLabel.toLowerCase() &&
+        !Client.isPlaceholderName(recipient.name);
+    final text = showName ? '$roleLabel: ${recipient.name}' : roleLabel;
+    final fg = isTenant ? Colors.deepOrange.shade800 : AppColors.primaryOnCard;
+    final bg = isTenant
+        ? Colors.orange.withValues(alpha: 0.14)
+        : AppColors.primary.withValues(alpha: 0.10);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isTenant ? Icons.home_work_outlined : Icons.person_outline,
+            size: 12,
+            color: fg,
+          ),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: fg,
+                fontWeight: FontWeight.w700,
+                fontSize: 11,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _copyUrl(String url) async {
     if (!mounted) return;
     await AppFeedback.copy(context, url);
+  }
+
+  Widget _buildBillToSelector({
+    required String currentBillTo,
+    required ValueChanged<String>? onChanged,
+  }) {
+    final owner = _recipientForBillTo('owner');
+    final tenant = _recipientForBillTo('tenant');
+
+    Widget buildOption({
+      required String value,
+      required IconData icon,
+      required String title,
+      required String subtitle,
+    }) {
+      final selected = currentBillTo == value;
+      final isTenant = value == 'tenant';
+      final activeColor = isTenant
+          ? Colors.deepOrange.shade700
+          : AppColors.primary;
+      return Expanded(
+        child: Material(
+          color: selected
+              ? activeColor.withValues(alpha: 0.14)
+              : AppColors.cardMuted,
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: onChanged == null || selected ? null : () => onChanged(value),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: selected ? activeColor : AppColors.border,
+                  width: selected ? 1.5 : 1,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    icon,
+                    size: 18,
+                    color: selected ? activeColor : AppColors.inkMuted,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w800,
+                            color: selected ? activeColor : AppColors.ink,
+                          ),
+                        ),
+                        if (subtitle.isNotEmpty)
+                          Text(
+                            subtitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.inkMuted,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (selected)
+                    Icon(
+                      Icons.check_circle,
+                      size: 16,
+                      color: activeColor,
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final ownerSub = [
+      if (owner.name.isNotEmpty && !Client.isPlaceholderName(owner.name))
+        owner.name,
+      if (owner.phone.isNotEmpty) owner.phone,
+    ].join(' · ');
+    final tenantLabel = context.tr('Арендатор', 'Tenant');
+    final tenantSub = [
+      if (tenant.name.isNotEmpty &&
+          tenant.name.toLowerCase() != tenantLabel.toLowerCase() &&
+          !Client.isPlaceholderName(tenant.name))
+        tenant.name,
+      if (tenant.phone.isNotEmpty && tenant.phone != owner.phone) tenant.phone,
+    ].join(' · ');
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 2, bottom: 4),
+          child: Text(
+            context.tr('На кого выставить счёт:', 'Bill to:'),
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w700,
+              color: AppColors.inkMuted,
+            ),
+          ),
+        ),
+        Row(
+          children: [
+            buildOption(
+              value: 'owner',
+              icon: Icons.person_outline,
+              title: context.tr('Владелец', 'Owner'),
+              subtitle: ownerSub,
+            ),
+            const SizedBox(width: 8),
+            buildOption(
+              value: 'tenant',
+              icon: Icons.home_work_outlined,
+              title: tenantLabel,
+              subtitle: tenantSub,
+            ),
+          ],
+        ),
+      ],
+    );
   }
 
   Future<void> _openUrl(String url) async {
@@ -3784,9 +4092,11 @@ class _FinanceTabState extends State<FinanceTab> {
 
   Future<void> _resendCurrentLink(Map<String, dynamic> doc) async {
     final url = _stripeSmsUrl(doc);
-    final chosen = await _pickSmsContact();
+    final billTo = _docBillTo(doc);
+    final recipient = _recipientForBillTo(billTo, doc: doc);
+    final chosen = await _pickSmsContact(preferredRole: billTo);
     if (!mounted) return;
-    final phone = (chosen?.phone ?? _smsPhone).trim();
+    final phone = (chosen?.phone ?? recipient.phone).trim();
     if (url.isEmpty || phone.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3836,9 +4146,11 @@ class _FinanceTabState extends State<FinanceTab> {
 
   Future<void> _sendAppDocument(int documentIndex) async {
     if (documentIndex < 0 || documentIndex >= ctrl.documents.length) return;
-    final chosen = await _pickSmsContact();
-    if (!mounted) return;
     final doc = ctrl.documents[documentIndex];
+    final billTo = _docBillTo(doc);
+    final recipient = _recipientForBillTo(billTo, doc: doc);
+    final chosen = await _pickSmsContact(preferredRole: billTo);
+    if (!mounted) return;
     final items = doc['items'] as List? ?? [];
     final subtotal = ctrl.calcSubtotal(items);
     final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
@@ -3854,12 +4166,14 @@ class _FinanceTabState extends State<FinanceTab> {
         kind: kind,
         jobId: ctrl.jobId,
         clientId: ctrl.clientId,
-        clientName:
-            chosen?.displayName ??
-            (ctrl.jobData['clientName'] ?? ctrl.contactName).toString(),
-        clientPhone: (chosen?.phone ?? _smsPhone).trim(),
-        clientAddress: (ctrl.jobData['clientAddress'] ?? ctrl.workAddress).toString(),
-        documentNumber: documentIndex + 1,
+        clientName: recipient.name.isNotEmpty
+            ? recipient.name
+            : (chosen?.displayName ?? ctrl.contactName),
+        clientPhone: recipient.phone.isNotEmpty
+            ? recipient.phone
+            : (chosen?.phone ?? _smsPhone).trim(),
+        clientAddress: recipient.address,
+        documentNumber: (doc['number'] as num?)?.toInt() ?? (documentIndex + 1),
         items: items,
         subtotal: subtotal,
         tax: tax,
@@ -3869,13 +4183,15 @@ class _FinanceTabState extends State<FinanceTab> {
         due: due,
         payments: List<Map<String, dynamic>>.from(doc['payments'] ?? []),
         subject: ctrl.workAddress.trim().isEmpty
-            ? ctrl.contactName
+            ? recipient.name
             : ctrl.workAddress,
         serviceDate: DateTime.tryParse((doc['createdAt'] ?? '').toString()),
-        clientEmail: (chosen != null && chosen.hasEmail)
-            ? chosen.email
-            : ctrl.clientEmail,
-        clientCompany: (ctrl.jobData['companyName'] ?? '').toString(),
+        clientEmail: recipient.email.isNotEmpty
+            ? recipient.email
+            : ((chosen != null && chosen.hasEmail)
+                  ? chosen.email
+                  : ctrl.clientEmail),
+        clientCompany: recipient.company,
         persistPdfUrl: (url) async {
           final next = Map<String, dynamic>.from(ctrl.documents[documentIndex]);
           next['pdfUrl'] = url;
@@ -3912,6 +4228,7 @@ class _FinanceTabState extends State<FinanceTab> {
     final charge = repair + tip;
 
     setState(() => _busy = true);
+    _inPayResult = true;
     try {
       final error = await StripeTerminalService.collectWithDialog(
         context: context,
@@ -3931,6 +4248,7 @@ class _FinanceTabState extends State<FinanceTab> {
       if (!mounted) return;
       await _showPayResult(success: false, message: e.toString());
     } finally {
+      _inPayResult = false;
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -3941,9 +4259,17 @@ class _FinanceTabState extends State<FinanceTab> {
     double? amount,
     double tip = 0,
   }) async {
-    final chosen = await _pickSmsContact();
+    final doc =
+        documentIndex >= 0 && documentIndex < ctrl.documents.length
+            ? ctrl.documents[documentIndex]
+            : const <String, dynamic>{};
+    final billTo = _docBillTo(doc);
+    final recipient = _recipientForBillTo(billTo, doc: doc);
+    final chosen = await _pickSmsContact(preferredRole: billTo);
     if (!mounted) return;
-    final targetPhone = (chosen?.phone ?? _smsPhone).trim();
+    final targetPhone = recipient.phone.isNotEmpty
+        ? recipient.phone
+        : (chosen?.phone ?? _smsPhone).trim();
     setState(() => _busy = true);
     try {
       final result = await StripeService.createPayment(

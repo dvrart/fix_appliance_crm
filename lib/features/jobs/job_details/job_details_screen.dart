@@ -8,7 +8,7 @@ import '../../../models/client.dart';
 import '../../../models/job.dart';
 import '../../../services/services.dart';
 import '../../clients/client_details_screen.dart';
-import '../../care_plan/care_plan_job_banner.dart';
+import '../../care_plan/care_plan_widgets.dart';
 import '../../../shared/widgets/confirm_action_sheet.dart';
 import '../../../shared/widgets/unsaved_changes_dialog.dart';
 import '../../../shared/app_nav.dart';
@@ -451,6 +451,15 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
                             ),
                             if (isRegular)
                               const RegularClientStar(size: 18, onDark: true),
+                            CarePlanMark(
+                              clientId: _controller.clientId,
+                              phone: (_controller.jobData['clientPhone'] ?? '')
+                                  .toString(),
+                              planId: (_controller.jobData['carePlanId'] ?? '')
+                                  .toString(),
+                              size: 19,
+                              onDark: true,
+                            ),
                           ],
                         ),
                         Text(
@@ -495,15 +504,72 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
           },
           child: Scaffold(
             appBar: AppBar(
-              // «Удалить» слева, карточка клиента справа — так попросил FIX.
+              // «Удалить» слева, напоминание и карточка клиента справа.
               leading: IconButton(
                 icon: const Icon(Icons.delete, color: Colors.red),
                 tooltip: 'Удалить заявку'.tr,
                 onPressed: _deleteJob,
               ),
-              title: Align(
-                alignment: Alignment.centerRight,
-                child: _clientTitle(),
+              title: Row(
+                children: [
+                  ValueListenableBuilder<int>(
+                    valueListenable: JobReminderService.revision,
+                    builder: (context, _, _) {
+                      final remindAt = JobReminderService.reminderFor(
+                        widget.jobId,
+                        _controller.jobData,
+                      );
+                      final hasReminder = remindAt != null;
+                      final due =
+                          remindAt != null && !remindAt.isAfter(DateTime.now());
+                      return IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: hasReminder
+                            ? '${context.tr('Напоминание', 'Reminder')}: ${appDateTimeLabel(remindAt)}'
+                            : context.tr(
+                                'Напомнить о карточке',
+                                'Remind about job',
+                              ),
+                        icon: Icon(
+                          hasReminder
+                              ? Icons.notifications_active_rounded
+                              : Icons.notifications_none_rounded,
+                          color: due
+                              ? const Color(0xFFFF5252)
+                              : hasReminder
+                                  ? AppColors.accent
+                                  : Colors.white,
+                          size: 24,
+                        ),
+                        onPressed: () {
+                          JobReminderService.showPickerSheet(
+                            context,
+                            jobId: widget.jobId,
+                            clientId: _controller.clientId,
+                            jobData: _controller.jobData,
+                            onChanged: (dt) {
+                              if (!mounted) return;
+                              setState(() {
+                                if (dt == null) {
+                                  _controller.jobData.remove('reminderAt');
+                                } else {
+                                  _controller.jobData['reminderAt'] =
+                                      dt.toIso8601String();
+                                }
+                              });
+                            },
+                          );
+                        },
+                      );
+                    },
+                  ),
+                  Expanded(
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: _clientTitle(),
+                    ),
+                  ),
+                ],
               ),
               titleSpacing: 4,
               toolbarHeight: 52,
@@ -519,13 +585,6 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
             ),
             body: Column(
               children: [
-                // Клиент на Care Plan — гарантийный вызов (ТО или ремонт).
-                if (!builder)
-                  CarePlanJobBanner(
-                    jobId: widget.jobId,
-                    clientId: _controller.clientId,
-                    phone: (_controller.jobData['clientPhone'] ?? '').toString(),
-                  ),
                 Expanded(
                   child: TabBarView(
                     controller: _tabController,

@@ -6,7 +6,6 @@ import 'package:firebase_storage/firebase_storage.dart';
 import '../../../core/constants.dart';
 import '../../../models/client.dart';
 import '../../../models/job.dart';
-import '../../../models/location.dart';
 import '../../../services/services.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../shared/stale_routes.dart';
@@ -86,20 +85,21 @@ class JobDetailsController extends ChangeNotifier {
     }());
   }
 
-  late bool needsReview;
+  bool needsReview = false;
 
   // Состояние
-  late String currentStatus;
-  late String currentDescription;
-  late String currentSolution;
-  late bool hasJobSite;
-  late String jobSiteName;
-  late String jobSitePhone;
-  late String jobSiteAddress;
-  late String jobSiteEmail;
+  String currentStatus = 'Новая';
+  String currentDescription = 'Нет описания';
+  String currentSolution = '';
+  bool hasJobSite = false;
+  String jobSiteName = '';
+  String jobSitePhone = '';
+  String jobSiteAddress = '';
+  String jobSiteEmail = '';
 
   String financeMode = 'main'; // 'main', 'builder', 'view_document'
   String builderDocType = 'Invoice';
+  String builderBillTo = 'owner'; // 'owner' | 'tenant'
   List<Map<String, dynamic>> documents = [];
   List<Map<String, dynamic>> builderItems = [];
   double builderTaxRate = TaxRates.hst;
@@ -112,8 +112,6 @@ class JobDetailsController extends ChangeNotifier {
   final Map<String, Map<String, dynamic>> _relatedCalls = {};
   final Map<String, Map<String, dynamic>> _clientCalls = {};
   String _clientCallsKey = '';
-  List<Location> _clientLocations = const [];
-  List<Job> _clientJobs = const [];
   Future<void>? _loadingClientContacts;
   bool _disposed = false;
   bool _financeTabRequested = false;
@@ -141,6 +139,7 @@ class JobDetailsController extends ChangeNotifier {
   String trackingCarrier = '';
   String trackingPart = '';
   String trackingStatus = '';
+  List<JobTrackingOrder> trackingOrders = [];
   List<JobVisit> visits = [];
 
   DateTime? _parseDate(dynamic value) {
@@ -196,6 +195,7 @@ class JobDetailsController extends ChangeNotifier {
     trackingCarrier = (jobData['trackingCarrier'] ?? '').toString();
     trackingPart = (jobData['trackingPart'] ?? '').toString();
     trackingStatus = (jobData['trackingStatus'] ?? '').toString();
+    trackingOrders = JobTrackingOrder.parseList(jobData);
     visits = _parseVisits(jobData);
     _applyVisitFields(visits);
 
@@ -328,6 +328,7 @@ class JobDetailsController extends ChangeNotifier {
         trackingCarrier =
             (data['trackingCarrier'] ?? trackingCarrier).toString();
         trackingPart = (data['trackingPart'] ?? trackingPart).toString();
+        trackingOrders = JobTrackingOrder.parseList(data);
         visits = _parseVisits(data);
         _applyVisitFields(visits);
         hasJobSite = data['hasJobSite'] == true;
@@ -665,8 +666,9 @@ class JobDetailsController extends ChangeNotifier {
     return (jobData['clientAddress'] ?? '').toString();
   }
 
-  /// Телефон человека на месте (из заявки, локаций карточки клиента, других
-  /// заявок клиента или разбора звонка).
+  /// Телефон человека на месте (из самой заявки или разбора звонка по ней).
+  /// Чужие заявки клиента не берём: у управляющей компании в разных заказах
+  /// разные арендаторы.
   String get effectiveJobSitePhone {
     final own = jobSitePhone.trim();
     final clientNorm = SmsService.normalizePhone(
@@ -675,26 +677,11 @@ class JobDetailsController extends ChangeNotifier {
     if (own.isNotEmpty && SmsService.normalizePhone(own) != clientNorm) {
       return own;
     }
-    for (final loc in _clientLocations) {
-      for (final contact in loc.contacts) {
-        final norm = SmsService.normalizePhone(contact.phone);
-        if (norm.length >= 10 && norm != clientNorm) {
-          return contact.phone.trim();
-        }
-      }
-    }
     for (final call in _relatedCalls.values) {
       final cp = (call['contactOnSitePhone'] ?? '').toString().trim();
       final norm = SmsService.normalizePhone(cp);
       if (norm.length >= 10 && norm != clientNorm) {
         return cp;
-      }
-    }
-    for (final j in _clientJobs) {
-      final jp = (j.jobSitePhone ?? '').trim();
-      final norm = SmsService.normalizePhone(jp);
-      if (norm.length >= 10 && norm != clientNorm) {
-        return jp;
       }
     }
     return own;
@@ -704,7 +691,7 @@ class JobDetailsController extends ChangeNotifier {
   /// закрывает настоящее имя клиента.
   String _nameOnly(String? raw) => Client.stripClientWord(raw);
 
-  /// Имя человека на месте (из заявки, локаций клиента, других заявок или звонка).
+  /// Имя человека на месте (из самой заявки или разбора звонка по ней).
   String get effectiveJobSiteName {
     final own = _nameOnly(jobSiteName);
     final clientNameNorm = _nameOnly(
@@ -713,30 +700,10 @@ class JobDetailsController extends ChangeNotifier {
     if (own.isNotEmpty && own.toLowerCase() != clientNameNorm) {
       return own;
     }
-    final clientPhoneNorm = SmsService.normalizePhone(
-      (jobData['clientPhone'] ?? '').toString(),
-    );
-    for (final loc in _clientLocations) {
-      for (final contact in loc.contacts) {
-        final norm = SmsService.normalizePhone(contact.phone);
-        final cName = _nameOnly(contact.name);
-        if (cName.isNotEmpty &&
-            (norm != clientPhoneNorm || contact.role == 'tenant') &&
-            cName.toLowerCase() != clientNameNorm) {
-          return cName;
-        }
-      }
-    }
     for (final call in _relatedCalls.values) {
       final cn = _nameOnly((call['contactOnSiteName'] ?? '').toString());
       if (cn.isNotEmpty && cn.toLowerCase() != clientNameNorm) {
         return cn;
-      }
-    }
-    for (final j in _clientJobs) {
-      final jn = _nameOnly(j.jobSiteName);
-      if (jn.isNotEmpty && jn.toLowerCase() != clientNameNorm) {
-        return jn;
       }
     }
     return own;
@@ -820,30 +787,6 @@ class JobDetailsController extends ChangeNotifier {
       );
     }
 
-    for (final location in _clientLocations) {
-      for (final contact in location.contacts) {
-        final isFirstOwner = result.isEmpty && contact.role == 'owner';
-        final label = isFirstOwner
-            ? 'Хозяин'.tr
-            : (contact.role == 'manager'
-                ? contact.roleLabel
-                : 'Арендатор'.tr);
-        final cName = Client.stripClientWord(contact.name, contact.phone);
-        add(
-          JobChatContact(
-            id: result.any((c) => c.id == 'site')
-                ? 'loc-${contact.id.isEmpty ? contact.phone : contact.id}'
-                : 'site',
-            label: label,
-            name: cName.isNotEmpty
-                ? cName
-                : (siteName.isNotEmpty ? siteName : label),
-            phone: contact.phone,
-          ),
-        );
-      }
-    }
-
     for (final call in _relatedCalls.values) {
       final cp = (call['contactOnSitePhone'] ?? '').toString().trim();
       if (cp.isEmpty) continue;
@@ -865,28 +808,11 @@ class JobDetailsController extends ChangeNotifier {
       );
     }
 
-    for (final j in _clientJobs) {
-      if (j.id == jobId) continue;
-      final jp = (j.jobSitePhone ?? '').trim();
-      final je = (j.jobSiteEmail ?? '').trim();
-      if (!j.hasJobSite && jp.isEmpty && je.isEmpty) continue;
-      final jn = Client.stripClientWord(j.jobSiteName, jp);
-      add(
-        JobChatContact(
-          id: result.any((c) => c.id == 'site') ? 'job-${j.id}' : 'site',
-          label: 'Арендатор'.tr,
-          name: jn.isEmpty ? 'Арендатор'.tr : jn,
-          phone: jp,
-          email: je,
-        ),
-      );
-    }
-
     return result;
   }
 
-  /// Догружает карточку клиента и все его заявки, если мастер нажал кнопку
-  /// звонка/SMS быстрее, чем пришёл первый снимок.
+  /// Догружает карточку клиента, если мастер нажал кнопку звонка/SMS
+  /// быстрее, чем пришёл первый снимок.
   Future<void> ensureChatContactsLoaded() async {
     final pending = _loadingClientContacts;
     if (pending != null) {
@@ -896,19 +822,14 @@ class JobDetailsController extends ChangeNotifier {
     if (clientId.trim().isEmpty) return;
     final future = () async {
       try {
-        if (_clientLocations.isEmpty) {
+        if (clientEmail.isEmpty) {
           final client = await ClientService.getById(clientId);
-          if (client != null && !_disposed) {
-            _clientLocations = client.locations;
-            if (client.email != null &&
-                client.email!.trim().isNotEmpty &&
-                clientEmail.isEmpty) {
-              clientEmail = client.email!.trim();
-            }
+          if (client != null &&
+              !_disposed &&
+              client.email != null &&
+              client.email!.trim().isNotEmpty) {
+            clientEmail = client.email!.trim();
           }
-        }
-        if (_clientJobs.isEmpty) {
-          await _loadClientJobs();
         }
       } catch (_) {}
     }();
@@ -919,27 +840,6 @@ class JobDetailsController extends ChangeNotifier {
       _loadingClientContacts = null;
     }
     if (!_disposed) notifyListeners();
-  }
-
-  Future<void> _loadClientJobs() async {
-    if (clientId.trim().isEmpty) return;
-    try {
-      final snap = await FirestoreService.jobsRef
-          .where('clientId', isEqualTo: clientId)
-          .get();
-      if (_disposed) return;
-      final loaded = <Job>[];
-      for (final doc in snap.docs) {
-        final parsed = Job.fromMap(
-          doc.data() as Map<String, dynamic>,
-          doc.id,
-        );
-        if (!parsed.isDeleted) loaded.add(parsed);
-      }
-      _clientJobs = loaded;
-      _listenClientCalls();
-      if (!_disposed) notifyListeners();
-    } catch (_) {}
   }
 
   JobChatContact? get selectedChatContact {
@@ -961,16 +861,13 @@ class JobDetailsController extends ChangeNotifier {
 
   void _listenClient() {
     if (clientId.isEmpty) return;
-    unawaited(_loadClientJobs());
     _clientSub = FirestoreService.clientsRef.doc(clientId).snapshots().listen((
       snap,
     ) {
       if (_disposed || !snap.exists) return;
       final data = snap.data() as Map<String, dynamic>?;
       if (data == null) return;
-      final parsedClient = Client.fromMap(data, clientId);
       final prevContactsCount = chatContacts.length;
-      _clientLocations = parsedClient.locations;
       final phone = (data['phone'] ?? '').toString().trim();
       // Имя — тем же путём, что и в карточке клиента: настоящее имя ищется по
       // всем полям карточки, а телефон на его место не подставляется.
@@ -1269,13 +1166,15 @@ class JobDetailsController extends ChangeNotifier {
   }
 
   Future<void> updatePromisedPartAt(DateTime? at) async {
-    final day = at == null ? null : DateTime(at.year, at.month, at.day);
-    jobData['promisedPartAt'] = day;
+    final next = at == null
+        ? null
+        : DateTime(at.year, at.month, at.day, at.hour, at.minute);
+    jobData['promisedPartAt'] = next;
     jobData.remove('agreedReturnAt');
     jobData.remove('agreedReturnNote');
     notifyListeners();
     _queue({
-      'promisedPartAt': day,
+      'promisedPartAt': next,
       'agreedReturnAt': FieldValue.delete(),
       'agreedReturnNote': FieldValue.delete(),
     });
@@ -1374,35 +1273,56 @@ class JobDetailsController extends ChangeNotifier {
     return result;
   }
 
+  Future<void> updateTrackingOrders(List<JobTrackingOrder> orders) async {
+    final cleaned = [
+      for (final o in orders)
+        if (o.isNotEmpty)
+          o.copyWith(
+            part: o.part.trim(),
+            carrier: o.effectiveCarrier,
+            trackingNumber: o.trackingNumber.trim(),
+            orderId: o.orderId.trim(),
+            status: o.status.trim(),
+          ),
+    ];
+    trackingOrders = cleaned;
+    final first = cleaned.isNotEmpty ? cleaned.first : const JobTrackingOrder();
+    trackingNumber = first.trackingNumber;
+    amazonOrderId = first.orderId;
+    trackingCarrier = first.effectiveCarrier;
+    trackingPart = first.part;
+    trackingStatus = first.status;
+    final serialized = [for (final o in cleaned) o.toMap()];
+    jobData['trackingOrders'] = serialized;
+    jobData['trackingNumber'] = trackingNumber;
+    jobData['amazonOrderId'] = amazonOrderId;
+    jobData['trackingCarrier'] = trackingCarrier;
+    jobData['trackingPart'] = trackingPart;
+    jobData['trackingStatus'] = trackingStatus;
+    _queue({
+      'trackingOrders': serialized,
+      'trackingNumber': trackingNumber,
+      'amazonOrderId': amazonOrderId,
+      'trackingCarrier': trackingCarrier,
+      'trackingPart': trackingPart,
+      'trackingStatus': trackingStatus,
+    });
+  }
+
   Future<void> updateTracking({
     required String number,
     required String amazonId,
     String carrier = '',
     String part = '',
   }) async {
-    trackingNumber = number.trim();
-    amazonOrderId = amazonId.trim();
-    trackingPart = part.trim();
-    final hasAny =
-        trackingNumber.isNotEmpty ||
-        amazonOrderId.isNotEmpty ||
-        trackingPart.isNotEmpty;
-    final resolvedCarrier = !hasAny
-        ? ''
-        : (carrier.trim().isNotEmpty
-              ? carrier.trim()
-              : (amazonOrderId.isNotEmpty ? 'amazon' : 'other'));
-    trackingCarrier = resolvedCarrier;
-    jobData['trackingNumber'] = trackingNumber;
-    jobData['amazonOrderId'] = amazonOrderId;
-    jobData['trackingCarrier'] = resolvedCarrier;
-    jobData['trackingPart'] = trackingPart;
-    _queue({
-      'trackingNumber': trackingNumber,
-      'amazonOrderId': amazonOrderId,
-      'trackingCarrier': resolvedCarrier,
-      'trackingPart': trackingPart,
-    });
+    final order = JobTrackingOrder(
+      part: part.trim(),
+      carrier: carrier.trim(),
+      trackingNumber: number.trim(),
+      orderId: amazonId.trim(),
+      status: trackingStatus.trim(),
+    );
+    await updateTrackingOrders(order.isNotEmpty ? [order] : const []);
   }
 
   Future<void> updateWorkAddress({
@@ -1625,6 +1545,11 @@ class JobDetailsController extends ChangeNotifier {
           'payments': <Map<String, dynamic>>[],
           'createdAt': DateTime.now().toIso8601String(),
           'fromEstimateNumber': doc['number'],
+          if (doc['billTo'] != null) 'billTo': doc['billTo'],
+          if (doc['billToName'] != null) 'billToName': doc['billToName'],
+          if (doc['billToPhone'] != null) 'billToPhone': doc['billToPhone'],
+          if (doc['billToEmail'] != null) 'billToEmail': doc['billToEmail'],
+          if (doc['billToAddress'] != null) 'billToAddress': doc['billToAddress'],
         };
         await WarehouseService.applyDocumentStock(invoice, reverse: false);
         documents[i] = {

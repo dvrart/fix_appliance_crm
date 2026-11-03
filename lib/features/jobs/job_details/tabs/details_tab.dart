@@ -29,8 +29,6 @@ import '../../../../shared/widgets/appliance_picture.dart';
 import '../../../../widgets/smart_address_picker.dart';
 import '../../../../shared/widgets/email_field.dart';
 import '../../../../shared/widgets/confirm_action_sheet.dart';
-import '../../../reports/report_breakdown_page.dart';
-import '../../../reports/report_metrics.dart';
 
 class DetailsTab extends StatefulWidget {
   final JobDetailsController controller;
@@ -250,7 +248,6 @@ class _DetailsTabState extends State<DetailsTab> {
   }
 
   void _showStatusMenu() {
-    final hostContext = context;
     showModalBottomSheet(
       sheetAnimationStyle: AppMotion.sheet,
       context: context,
@@ -313,15 +310,21 @@ class _DetailsTabState extends State<DetailsTab> {
                               Navigator.pop(sheetContext);
                               if (_statusNeedsNewDate(status)) {
                                 await _editVisit(followUpStatus: status);
+                              } else if (status == JobStatuses.call) {
+                                // «Вызов» переносит эту же карточку на новый
+                                // день и время — без второй заявки и без
+                                // второго активного визита.
+                                final active = _orderConfirmVisit;
+                                await _editVisit(
+                                  existing: active != null && active.isActiveSlot
+                                      ? active
+                                      : null,
+                                  moveStatus: status,
+                                );
                               } else if (_shouldCompleteJob(status)) {
                                 await _completeJobFlow();
                               } else {
                                 await ctrl.updateStatus(status);
-                                if (status == JobStatuses.waitingPart &&
-                                    hostContext.mounted &&
-                                    ctrl.promisedPartAt == null) {
-                                  await _pickPromisedPartDay();
-                                }
                               }
                             },
                           );
@@ -345,8 +348,15 @@ class _DetailsTabState extends State<DetailsTab> {
   /// новый визит добавляется в эту же заявку, прошлые выезды закрываются.
   /// Отдельную заявку перенос больше не заводит — счёт, депозит, фото и
   /// переписка должны остаться в одной карточке.
-  Future<void> _editVisit({JobVisit? existing, String? followUpStatus}) async {
+  /// [moveStatus] — «Вызов» из меню статусов: активный визит ([existing])
+  /// переезжает на новый день и время, а если его нет — ставится один.
+  Future<void> _editVisit({
+    JobVisit? existing,
+    String? followUpStatus,
+    String? moveStatus,
+  }) async {
     final followUp = followUpStatus != null && existing == null;
+    final moving = moveStatus != null;
     final now = DateTime.now();
     final last = ctrl.visits.isNotEmpty ? ctrl.visits.last.startAt : now;
     var startAt =
@@ -365,6 +375,8 @@ class _DetailsTabState extends State<DetailsTab> {
     var sendSms = false;
     final statusLabel = followUp
         ? trAny(StatusService.labelOf(followUpStatus))
+        : moving
+        ? trAny(StatusService.labelOf(moveStatus))
         : '';
 
     final saved = await showModalBottomSheet<String>(
@@ -388,7 +400,7 @@ class _DetailsTabState extends State<DetailsTab> {
                       children: [
                         Expanded(
                           child: Text(
-                            followUp ? statusLabel : 'Дата визита'.tr,
+                            followUp || moving ? statusLabel : 'Дата визита'.tr,
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 18,
@@ -398,7 +410,7 @@ class _DetailsTabState extends State<DetailsTab> {
                         // Корзина в заголовке, а не под кнопкой «Сохранить»:
                         // окно с календарём и колесом времени высокое, и
                         // кнопку внизу FIX просто не видел (11.10.2026).
-                        if (existing != null)
+                        if (existing != null && !moving)
                           IconButton(
                             onPressed: () =>
                                 Navigator.pop(sheetContext, 'delete'),
@@ -408,11 +420,13 @@ class _DetailsTabState extends State<DetailsTab> {
                           ),
                       ],
                     ),
-                    if (followUp)
+                    if (followUp || moving)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
                         child: Text(
-                          'Новый визит добавится в эту же заявку: счёт и оплаты останутся на месте. Прошлые выезды закроются.'
+                          (moving
+                                  ? 'Эта же карточка переедет на выбранный день и время — без копии.'
+                                  : 'Новый визит добавится в эту же заявку: счёт и оплаты останутся на месте. Прошлые выезды закроются.')
                               .tr,
                           style: TextStyle(
                             fontWeight: FontWeight.w600,
@@ -533,6 +547,9 @@ class _DetailsTabState extends State<DetailsTab> {
     if (existing != null) {
       final visit = existing.copyWith(startAt: startAt);
       await ctrl.updateVisit(visit, correction: true);
+      if (moving && ctrl.currentStatus != moveStatus) {
+        await ctrl.updateStatus(moveStatus);
+      }
       if (!await ctrl.commitChanges() || !mounted) return;
       if (sendSms && visit.isScheduled) await _resendVisitBookingSms(visit);
       return;
@@ -551,7 +568,11 @@ class _DetailsTabState extends State<DetailsTab> {
       ...(followUp ? JobVisit.markAllScheduledDone(ctrl.visits) : ctrl.visits),
       visit,
     ]);
-    if (followUp) await ctrl.updateStatus(followUpStatus);
+    if (followUp) {
+      await ctrl.updateStatus(followUpStatus);
+    } else if (moving && ctrl.currentStatus != moveStatus) {
+      await ctrl.updateStatus(moveStatus);
+    }
     if (!await ctrl.commitChanges() || !mounted) return;
     if (sendSms) await _resendVisitBookingSms(visit);
   }
@@ -585,6 +606,7 @@ class _DetailsTabState extends State<DetailsTab> {
     final emptyInfo = description.isEmpty || description == 'Нет описания';
     final packing = packingItemsFromNotes(ctrl.packingNotes);
     final hasTracking =
+        ctrl.trackingOrders.isNotEmpty ||
         ctrl.trackingPart.trim().isNotEmpty ||
         ctrl.trackingNumber.trim().isNotEmpty ||
         ctrl.amazonOrderId.trim().isNotEmpty ||
@@ -662,6 +684,8 @@ class _DetailsTabState extends State<DetailsTab> {
                   ),
           ),
         ),
+        const SizedBox(width: 6),
+        Expanded(child: _buildPromisedTile()),
       ],
     );
   }
@@ -674,6 +698,7 @@ class _DetailsTabState extends State<DetailsTab> {
     Color? fillColor,
     bool hasData = false,
     VoidCallback? onLongPress,
+    String? caption,
   }) {
     final bg = Color.alphaBlend(
       fillColor ?? color.withValues(alpha: hasData ? 0.18 : 0.11),
@@ -684,6 +709,34 @@ class _DetailsTabState extends State<DetailsTab> {
     // Значок растёт вместе с плиткой, но медленнее неё: иначе кассета на
     // жёлтой плитке упирается в края.
     final iconSize = grown ? 34.0 + (height - 72) * 0.32 : 34.0;
+    // Плитка с подписью (у «Когда пообещал» на ней дата): значок поменьше,
+    // под ним текст, без круглой подложки.
+    final Widget content = caption == null
+        ? (grown
+              ? _iconBadge(color, iconSize + 22, _sizedIcon(icon, iconSize))
+              : icon)
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _sizedIcon(icon, grown ? 26.0 + (height - 72) * 0.25 : 24.0),
+              const SizedBox(height: 3),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                child: Text(
+                  caption,
+                  maxLines: 2,
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    height: 1.1,
+                    fontWeight: FontWeight.w800,
+                    color: color,
+                  ),
+                ),
+              ),
+            ],
+          );
     return Tooltip(
       message: tooltip,
       child: Material(
@@ -704,11 +757,7 @@ class _DetailsTabState extends State<DetailsTab> {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                Center(
-                  child: grown
-                      ? _iconBadge(color, iconSize + 22, _sizedIcon(icon, iconSize))
-                      : icon,
-                ),
+                Center(child: content),
                 if (hasData)
                   Positioned(
                     top: 7,
@@ -1362,92 +1411,77 @@ class _DetailsTabState extends State<DetailsTab> {
     return ok;
   }
 
-  /// День, к которому клиенту обещана запчасть. Не визит: слот календаря
-  /// ставится отдельно, когда запчасть уже есть.
+  /// День и время, когда пообещали клиенту приехать со следующим визитом / запчастью.
   Future<void> _pickPromisedPartDay() async {
     final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final day = await showAppDateSheet(
+    final defaultInitial = DateTime(now.year, now.month, now.day + 2, 10, 0);
+    final current = ctrl.promisedPartAt;
+    final initial = current == null
+        ? defaultInitial
+        : (current.hour == 0 && current.minute == 0
+              ? DateTime(current.year, current.month, current.day, 10, 0)
+              : current);
+    final picked = await showAppDateTimeSheet(
       context: context,
-      initial: ctrl.promisedPartAt ?? today.add(const Duration(days: 2)),
+      initial: initial,
       firstDate: DateTime(now.year - 1),
       lastDate: DateTime(now.year + 2),
       title: 'Пообещал к'.tr,
     );
-    if (day == null) return;
-    await ctrl.updatePromisedPartAt(day);
+    if (picked == null) return;
+    await ctrl.updatePromisedPartAt(picked);
     if (!mounted) return;
     await ctrl.commitChanges();
   }
 
+  String _formatPromisedPartAt(DateTime at) {
+    final date = DateFormat('d MMM', AppLocale.instance.dateLocale).format(at);
+    if (at.hour == 0 && at.minute == 0) return date;
+    return '$date · ${DateFormat('HH:mm').format(at)}';
+  }
+
   /// Верх карточки: что чиним — слева, где заказ сейчас — справа.
-  /// Под статусом «Ожидание запчасти» — день, к которому её обещали.
   Widget _buildTopRow() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        IntrinsicHeight(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(flex: 11, child: _buildApplianceHero()),
-              const SizedBox(width: 6),
-              Expanded(flex: 9, child: _buildStatusButton()),
-            ],
-          ),
-        ),
-        if (ctrl.currentStatus == JobStatuses.waitingPart) ...[
-          const SizedBox(height: 4),
-          _buildPromisedPartChip(),
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(flex: 11, child: _buildApplianceHero()),
+          const SizedBox(width: 6),
+          Expanded(flex: 9, child: _buildStatusButton()),
         ],
-      ],
+      ),
     );
   }
 
-  /// Полоска на всю ширину под техникой и статусом: «Пообещал к 29 окт.».
-  /// Красная — срок, который назвали клиенту, уже прошёл.
-  Widget _buildPromisedPartChip() {
+  /// Кнопка «Когда пообещал» в ряду рядом с «Фото»: на ней сама дата, к
+  /// которой обещали клиенту. Красная — этот срок уже прошёл. Долгое
+  /// нажатие убирает дату.
+  Widget _buildPromisedTile() {
     final at = ctrl.promisedPartAt;
     final today = DateTime.now();
     final startOfToday = DateTime(today.year, today.month, today.day);
     final overdue = at != null && at.isBefore(startOfToday);
     final color = overdue ? const Color(0xFFC62828) : const Color(0xFFEF6C00);
-    final label = at == null
-        ? 'Пообещал к…'.tr
-        : '${'Пообещал к'.tr} ${DateFormat('d MMM', AppLocale.instance.dateLocale).format(at)}';
-    return Material(
-      color: color.withValues(alpha: 0.12),
-      borderRadius: BorderRadius.circular(9),
-      child: InkWell(
-        onTap: _pickPromisedPartDay,
-        onLongPress: at == null
-            ? null
-            : () async {
-                await ctrl.updatePromisedPartAt(null);
-                if (!mounted) return;
-                await ctrl.commitChanges();
-              },
-        borderRadius: BorderRadius.circular(9),
-        child: Container(
-          height: 26,
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(9),
-            border: Border.all(color: color.withValues(alpha: 0.6)),
-          ),
-          child: Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: color,
-              fontSize: 11.5,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-        ),
-      ),
+    final caption = at == null
+        ? context.tr('Когда пообещал', 'Promised by')
+        : _formatPromisedPartAt(at).replaceFirst(' · ', '\n');
+    return _quickIconTile(
+      tooltip: at == null
+          ? context.tr('Когда пообещал', 'Promised by')
+          : '${context.tr('Пообещал к', 'Promised by')} ${_formatPromisedPartAt(at)}',
+      color: color,
+      hasData: at != null,
+      onTap: _pickPromisedPartDay,
+      onLongPress: at == null
+          ? null
+          : () async {
+              await ctrl.updatePromisedPartAt(null);
+              if (!mounted) return;
+              await ctrl.commitChanges();
+            },
+      caption: caption,
+      icon: Icon(Icons.handshake_outlined, size: 26, color: color),
     );
   }
 
@@ -1661,7 +1695,6 @@ class _DetailsTabState extends State<DetailsTab> {
         mainAxisSize: MainAxisSize.min,
         children: [
           InkWell(
-            onTap: () => _editVisit(existing: currentVisit),
             borderRadius: BorderRadius.circular(9),
             child: Stack(
               alignment: Alignment.center,
@@ -1942,7 +1975,6 @@ class _DetailsTabState extends State<DetailsTab> {
         ? AppColors.primaryOnCard
         : (visit.isDone ? AppColors.ink : AppColors.inkMuted);
     return InkWell(
-      onTap: () => _editVisit(existing: visit),
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.only(bottom: 1),
@@ -2360,7 +2392,6 @@ class _DetailsTabState extends State<DetailsTab> {
                               _buildJobSiteCard(mapHeight: mapHeight),
                               const SizedBox(height: 6),
                               _buildQuickIconBar(),
-                              _buildJobEconomicsTile(),
                               if (!ctrl.needsReview &&
                                   _pendingSmsVisit != null) ...[
                                 const SizedBox(height: 6),
@@ -2391,123 +2422,6 @@ class _DetailsTabState extends State<DetailsTab> {
         // Маршрут, звонок и SMS — всегда под пальцем, не уезжают с прокруткой.
         _buildContactActions(),
       ],
-    );
-  }
-
-  Widget _buildJobEconomicsTile() {
-    final currentJob = Job.fromMap(
-      {
-        ...ctrl.jobData,
-        'documents': ctrl.documents,
-      },
-      ctrl.jobId,
-    );
-    final summary = ReportMetrics.jobOf(
-      currentJob,
-      warehouseCosts: WarehouseService.latestCosts,
-    );
-    if (summary.invoices.isEmpty) return const SizedBox.shrink();
-
-    String m(double v) => ReportBreakdownPage.money(v);
-    return Padding(
-      padding: const EdgeInsets.only(top: 6),
-      child: Material(
-        color: AppColors.card,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(11),
-          side: BorderSide(color: AppColors.primary.withValues(alpha: 0.25)),
-        ),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(11),
-          onTap: () => ctrl.openFinanceMainList(switchTab: true),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.savings_outlined,
-                      size: 16,
-                      color: AppColors.primaryOnCard,
-                    ),
-                    const SizedBox(width: 5),
-                    Expanded(
-                      child: Text(
-                        context.tr(
-                          'Деньги и запчасти по заявке',
-                          'Money & parts on this job',
-                        ),
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.primaryOnCard,
-                        ),
-                      ),
-                    ),
-                    Text(
-                      '${context.tr('Чистыми', 'Net')}: ${m(summary.netProfit)}',
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w900,
-                        color: Color(0xFF2E7D32),
-                      ),
-                    ),
-                    const SizedBox(width: 2),
-                    Icon(
-                      Icons.chevron_right,
-                      size: 16,
-                      color: Colors.grey.shade500,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Wrap(
-                  spacing: 5,
-                  runSpacing: 3,
-                  children: [
-                    _econBadge(
-                      '${context.tr('Грязными без HST', 'Gross excl. HST')}: ${m(summary.salesExHst)} (${context.tr('с HST', 'incl. HST')} ${m(summary.invoiced)})',
-                      const Color(0xFF1565C0),
-                    ),
-                    _econBadge(
-                      '${context.tr('Запчасти мне', 'Parts my cost')}: ${m(summary.partsCost)}',
-                      Colors.orange.shade900,
-                    ),
-                    _econBadge(
-                      '${context.tr('Запчасти клиенту', 'Parts client')}: ${m(summary.partsSales)}',
-                      const Color(0xFF3949AB),
-                    ),
-                    _econBadge(
-                      '${context.tr('Работа', 'Labour')}: ${m(summary.labourSales)}',
-                      const Color(0xFF00897B),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _econBadge(String text, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(7),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          color: color,
-        ),
-      ),
     );
   }
 

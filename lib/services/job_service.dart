@@ -23,9 +23,42 @@ import '../shared/widgets/call_transcript_chat.dart';
 class JobService {
   static final _ref = FirestoreService.jobsRef;
 
+  static StreamSubscription<QuerySnapshot>? _allSub;
+  static List<Job>? _allLatest;
+  static final Set<MultiStreamController<List<Job>>> _allListeners = {};
+
   /// Стрим всех заявок
   static Stream<List<Job>> streamAll() {
-    return _ref.snapshots().map((snapshot) => _parseDocs(snapshot));
+    return Stream<List<Job>>.multi((controller) {
+      final cached = _allLatest;
+      if (cached != null) {
+        controller.add(cached);
+      }
+      _allListeners.add(controller);
+      _allSub ??= _ref.snapshots().listen(
+        (snapshot) {
+          final jobs = _parseDocs(snapshot);
+          _allLatest = jobs;
+          for (final listener in _allListeners.toList()) {
+            listener.add(jobs);
+          }
+        },
+        onError: (Object error, StackTrace stack) {
+          for (final listener in _allListeners.toList()) {
+            listener.addError(error, stack);
+          }
+        },
+      );
+      controller.onCancel = () async {
+        _allListeners.remove(controller);
+        if (_allListeners.isEmpty) {
+          final sub = _allSub;
+          _allSub = null;
+          _allLatest = null;
+          await sub?.cancel();
+        }
+      };
+    });
   }
 
   static Stream<List<Job>> streamTrashed() {

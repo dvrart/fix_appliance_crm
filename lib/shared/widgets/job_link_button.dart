@@ -73,8 +73,20 @@ class JobLinkButton extends StatefulWidget {
       }
     }
 
+    final siteMatched = digits.length >= 10
+        ? [
+            for (final job in candidates)
+              if (!job.isDeleted &&
+                  !job.isMergedDuplicate &&
+                  ClientService.normalizePhone(job.jobSitePhone ?? '') == digits &&
+                  ClientService.normalizePhone(job.clientPhone) != digits)
+                job,
+          ]
+        : const <Job>[];
+    final pool = siteMatched.isNotEmpty ? siteMatched : candidates;
+
     Job? best;
-    for (final job in candidates) {
+    for (final job in pool) {
       if (job.isDeleted || job.isMergedDuplicate) continue;
       if (best == null) {
         best = job;

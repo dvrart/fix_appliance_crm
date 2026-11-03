@@ -82,7 +82,11 @@ class _ClientJobTexts {
         appliance.issue,
       ],
     ]);
-    texts.parts.addAll([job.packingNotes, job.trackingPart]);
+    texts.parts.addAll([
+      job.packingNotes,
+      job.trackingPart,
+      for (final order in job.trackingOrders) order.part,
+    ]);
     for (final doc in job.documents) {
       if (Job.isDocumentTrashed(doc)) continue;
       final items = doc['items'];

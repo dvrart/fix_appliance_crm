@@ -153,17 +153,31 @@ class PartsQueueScreen extends StatelessWidget {
                                   ),
                                 ),
                               if (promised != null)
-                                Text(
-                                  overdue
-                                      ? '${'Обещал к'.tr} ${DateFormat('d MMM', AppLocale.instance.dateLocale).format(promised)} — ${'срок прошёл'.tr}'
-                                      : '${'Обещал к'.tr} ${DateFormat('d MMM', AppLocale.instance.dateLocale).format(promised)}',
-                                  style: TextStyle(
-                                    color: overdue
-                                        ? const Color(0xFFC62828)
-                                        : AppColors.primary,
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 13,
-                                  ),
+                                Builder(
+                                  builder: (context) {
+                                    final datePart = DateFormat(
+                                      'd MMM',
+                                      AppLocale.instance.dateLocale,
+                                    ).format(promised);
+                                    final hasTime =
+                                        promised.hour != 0 ||
+                                        promised.minute != 0;
+                                    final whenLabel = hasTime
+                                        ? '$datePart · ${DateFormat('HH:mm').format(promised)}'
+                                        : datePart;
+                                    return Text(
+                                      overdue
+                                          ? '${'Обещал к'.tr} $whenLabel — ${'срок прошёл'.tr}'
+                                          : '${'Обещал к'.tr} $whenLabel',
+                                      style: TextStyle(
+                                        color: overdue
+                                            ? const Color(0xFFC62828)
+                                            : AppColors.primary,
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 13,
+                                      ),
+                                    );
+                                  },
                                 ),
                               if (job.scheduledAt != null)
                                 Text(
@@ -173,37 +187,30 @@ class PartsQueueScreen extends StatelessWidget {
                                     fontSize: 13,
                                   ),
                                 ),
-                              if (job.trackingPart.isNotEmpty ||
-                                  job.trackingNumber.isNotEmpty ||
-                                  job.amazonOrderId.isNotEmpty ||
-                                  job.trackingStatus.isNotEmpty)
+                              for (final order in job.trackingOrders)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 4),
                                   child: Text(
                                     [
-                                      if (job.trackingCarrier.isNotEmpty ||
-                                          job.amazonOrderId.isNotEmpty)
+                                      if (order.effectiveCarrier.isNotEmpty)
                                         trackingPartsFromLabel(
-                                          job.trackingCarrier.isNotEmpty
-                                              ? job.trackingCarrier
-                                              : 'amazon',
+                                          order.effectiveCarrier,
                                         ),
-                                      if (job.trackingPart.isNotEmpty)
-                                        job.trackingPart,
-                                      if (job.trackingNumber.isNotEmpty)
-                                        job.trackingNumber
-                                      else if (job.amazonOrderId.isNotEmpty)
-                                        job.amazonOrderId,
-                                      if (job.trackingStatus == 'delivered')
+                                      if (order.part.isNotEmpty) order.part,
+                                      if (order.trackingNumber.isNotEmpty)
+                                        order.trackingNumber
+                                      else if (order.orderId.isNotEmpty)
+                                        order.orderId,
+                                      if (order.status == 'delivered')
                                         'Доставлено'.tr
-                                      else if (job.trackingStatus ==
+                                      else if (order.status ==
                                           'out_for_delivery')
                                         'Курьер сегодня'.tr
-                                      else if (job.trackingStatus == 'shipped')
+                                      else if (order.status == 'shipped')
                                         'Отправлено'.tr,
                                     ].join(' · '),
                                     style: TextStyle(
-                                      color: job.trackingStatus == 'delivered'
+                                      color: order.status == 'delivered'
                                           ? Colors.green.shade700
                                           : AppColors.primary,
                                       fontWeight: FontWeight.w600,

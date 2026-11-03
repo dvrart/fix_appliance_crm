@@ -52,6 +52,9 @@ class AssistantTools {
         'carrier': job.trackingCarrier,
         'part': job.trackingPart,
         'status': job.trackingStatus,
+        'orders': [
+          for (final order in job.trackingOrders) order.toMap(),
+        ],
       },
       'appliances': job.appliances
           .map(
