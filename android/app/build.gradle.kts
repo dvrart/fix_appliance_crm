@@ -1,3 +1,5 @@
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Properties
 
 // Реквизиты релизного ключа. Сам файл ключа лежит вне репозитория (~/keys),
@@ -62,7 +64,8 @@ android {
         minSdk = maxOf(flutter.minSdkVersion, 26)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        // Дата и время сборки в версии: журнал ошибок различает сборки.
+        versionName = flutter.versionName + "-" + SimpleDateFormat("yyMMdd.HHmm").format(Date())
         multiDexEnabled = true
     }
 
