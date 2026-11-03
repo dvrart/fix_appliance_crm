@@ -14,7 +14,7 @@ import 'pcm_playback_queue.dart';
 /// Connects, sends a silent trigger so the AI greets first (phone-call style),
 /// and stays open until [close] is called.
 class VoiceTestController extends ChangeNotifier {
-  static const _model = 'gemini-3.1-flash-live-preview';
+  static const _model = 'gemini-3.8-live';
 
   static const _systemPrompt = '''
 You are the phone secretary for FixApplianceCA appliance repair in Toronto, Canada.

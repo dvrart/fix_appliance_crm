@@ -242,10 +242,9 @@ test('pause tuning preserves the voice, listening sensitivity and long-session c
 });
 
 test('the fallback list holds only models that exist, and the voice is configurable', () => {
-  // gemini-3.8-live в API нет: каждый обрыв стоил гарантированного 404 и
-  // лишних секунд тишины перед настоящей запасной моделью.
+  // 3.1-flash-live-preview Google выключает 17.11.2026 — основной стала 3.8-live.
   assert.deepEqual(voiceRelay._internals.liveModels(), [
-    'gemini-3.1-flash-live-preview',
+    'gemini-3.8-live',
     'gemini-2.5-flash-native-audio-preview-12-2025',
   ]);
   const voiceOf = (voice) => voiceRelay.buildSetup('gemini-3.1-flash-live-preview', 'Shop rules', false, '', { voice })
@@ -733,8 +732,8 @@ test('a model that keeps dropping is swapped for the next one, never looping "I\
   call.ready();
   // Первый обрыв — та же модель с ручкой сессии, второй подряд — следующая.
   assert.deepEqual(models(), [
-    'gemini-3.1-flash-live-preview',
-    'gemini-3.1-flash-live-preview',
+    'gemini-3.8-live',
+    'gemini-3.8-live',
     'gemini-2.5-flash-native-audio-preview-12-2025',
     'gemini-2.5-flash-native-audio-preview-12-2025',
   ]);
@@ -763,7 +762,7 @@ test('a planned goAway reconnect keeps the model and is not counted as a failure
   assert.equal(call.sockets.length, 2, 'goAway opens the next session straight away');
   call.ready();
   assert.deepEqual(call.sockets[1].setup.sessionResumption, { handle: 'handle-9' });
-  assert.equal(call.sockets[1].setup.model, 'models/gemini-3.1-flash-live-preview');
+  assert.equal(call.sockets[1].setup.model, 'models/gemini-3.8-live');
   assert.equal(call.session.liveFailures || 0, 0);
 });
 
@@ -904,24 +903,24 @@ test('the provider chain falls back to Gemini and never offers a provider withou
   const both = { geminiApiKey: 'g', openaiApiKey: 'o' };
   assert.deepEqual(chain({ voiceProvider: 'openai', openaiModel: 'gpt-realtime' }, both), [
     'openai:gpt-realtime',
-    'gemini:gemini-3.1-flash-live-preview',
+    'gemini:gemini-3.8-live',
     'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
   ]);
   // Выбран Gemini — он ведёт, OpenAI ждёт в конце очереди. Откат симметричный.
   assert.deepEqual(chain({ voiceProvider: 'gemini', openaiModel: 'gpt-realtime' }, both), [
-    'gemini:gemini-3.1-flash-live-preview',
+    'gemini:gemini-3.8-live',
     'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
     'openai:gpt-realtime',
   ]);
   // По умолчанию (поле не задано) звонки ведёт Gemini.
   assert.deepEqual(chain({}, both), [
-    'gemini:gemini-3.1-flash-live-preview',
+    'gemini:gemini-3.8-live',
     'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
     'openai:gpt-realtime',
   ]);
   // Ключа OpenAI нет — звонки ведёт Gemini, как и раньше.
   assert.deepEqual(chain({ voiceProvider: 'openai' }, { geminiApiKey: 'g' }), [
-    'gemini:gemini-3.1-flash-live-preview',
+    'gemini:gemini-3.8-live',
     'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
   ]);
   // Нет ключа Gemini — лучше OpenAI, чем тишина в трубке.
@@ -1230,7 +1229,7 @@ test('OpenAI: a deaf session (caller audibly talks, nothing heard) is handed to 
   deaf.geminiSockets[0].emit('open');
   assert.equal(
     deaf.geminiSockets[0].sent.find((m) => m.setup).setup.model,
-    'models/gemini-3.1-flash-live-preview'
+    'models/gemini-3.8-live'
   );
 });
 

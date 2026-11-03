@@ -15,7 +15,7 @@ import 'assistant_tools.dart';
 import 'pcm_playback_queue.dart';
 
 class AssistantController extends ChangeNotifier {
-  static const _model = 'gemini-3.1-flash-live-preview';
+  static const _model = 'gemini-3.8-live';
 
   static String _systemPromptRu(String name) => '''
 Ты — $name, голосовой ассистент мастера по ремонту бытовой техники в Канаде (приложение Fix Appliance CRM).
