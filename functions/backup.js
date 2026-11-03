@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 /// Еженедельная копия базы в Storage. Работает на сервере, поэтому не зависит
 /// от того, включён ли телефон и есть ли на нём интернет.
@@ -152,8 +153,48 @@ async function prune(bucket, prefix) {
   }
 }
 
+/// Копия вне Firebase: сжатый файл уходит каждому получателю из senders
+/// (почта мастерской, Telegram). Каналы независимы — упала почта, Telegram
+/// файл всё равно получит. Возвращает { канал: true/false }.
+async function deliverBackup({ body, date, totalDocs, partial, senders }) {
+  const fileName = `fix-backup-${date}${partial ? '-partial' : ''}.json.gz`;
+  const content = zlib.gzipSync(body);
+  const caption =
+    `FIX CRM — резервная копия ${date}${partial ? ' (частичная)' : ''}: ` +
+    `${totalDocs} документов, ${(content.length / 1048576).toFixed(1)} МБ`;
+  const delivered = {};
+  for (const [name, send] of Object.entries(senders || {})) {
+    if (typeof send !== 'function') continue;
+    try {
+      delivered[name] = (await send({ fileName, content, caption })) !== false;
+    } catch (error) {
+      console.warn(`backup ${name}: ${error.message}`);
+      delivered[name] = false;
+    }
+  }
+  return delivered;
+}
+
+/// Файл в Telegram от бота мастерской.
+async function sendTelegramDocument({ token, chatId, fileName, content, caption, fetchImpl = fetch }) {
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  form.append('caption', caption);
+  form.append('document', new Blob([content], { type: 'application/gzip' }), fileName);
+  const res = await fetchImpl(`https://api.telegram.org/bot${token}/sendDocument`, {
+    method: 'POST',
+    body: form,
+    signal: AbortSignal.timeout(60000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    throw new Error(`telegram ${res.status} ${data.description || ''}`.trim());
+  }
+  return true;
+}
+
 /// Делает копию и возвращает { url, path, bytes, counts } либо null.
-async function runCloudBackup({ admin, db, companyId }) {
+async function runCloudBackup({ admin, db, companyId, senders }) {
   const payload = await buildBackupPayload(db, companyId);
   const isPartial = payload.partial === true;
   const body = Buffer.from(JSON.stringify(payload), 'utf8');
@@ -180,6 +221,13 @@ async function runCloudBackup({ admin, db, companyId }) {
       if (!isPartial) await prune(bucket, prefix);
 
       const total = Object.values(payload.counts).reduce((sum, n) => sum + n, 0);
+      const delivered = await deliverBackup({
+        body,
+        date: today,
+        totalDocs: total,
+        partial: isPartial,
+        senders,
+      });
       const record = {
         createdAt: new Date().toISOString(),
         url,
@@ -188,6 +236,7 @@ async function runCloudBackup({ admin, db, companyId }) {
         bytes: body.length,
         counts: payload.counts,
         totalDocs: total,
+        delivered,
         ...(isPartial && {
           partial: true,
           failedCollections: payload.failedCollections || [],
@@ -239,6 +288,8 @@ module.exports = {
   runCloudBackup,
   pruneAppErrors,
   buildBackupPayload,
+  deliverBackup,
+  sendTelegramDocument,
   COLLECTIONS,
   JOB_SUBCOLLECTIONS,
   KEEP,

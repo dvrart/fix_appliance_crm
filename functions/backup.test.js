@@ -2,7 +2,9 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const { buildBackupPayload, COLLECTIONS } = require('./backup');
+const zlib = require('node:zlib');
+
+const { buildBackupPayload, COLLECTIONS, deliverBackup, sendTelegramDocument } = require('./backup');
 
 const COMPANY = 'fix_appliance_ca';
 
@@ -82,4 +84,55 @@ test('чат и история правок внутри заявок попад
   assert.deepEqual(payload.jobSubcollections.changes, [{ jobId: 'j1', id: 'c1', field: 'status' }]);
   assert.equal(payload.counts['jobs/*/messages'], 1);
   assert.equal(payload.partial, false);
+});
+
+test('копия уходит сжатой на почту и в Telegram, и один упавший канал не мешает другому', async () => {
+  const body = Buffer.from(JSON.stringify({ collections: { jobs: [{ id: 'j1' }] } }));
+  const got = [];
+  const delivered = await deliverBackup({
+    body,
+    date: '2026-11-08',
+    totalDocs: 1,
+    partial: false,
+    senders: {
+      email: async (file) => {
+        got.push(file);
+        throw new Error('smtp down');
+      },
+      telegram: async (file) => {
+        got.push(file);
+        return true;
+      },
+    },
+  });
+
+  assert.deepEqual(delivered, { email: false, telegram: true });
+  assert.equal(got.length, 2);
+  assert.equal(got[1].fileName, 'fix-backup-2026-11-08.json.gz');
+  assert.deepEqual(zlib.gunzipSync(got[1].content), body);
+  assert.match(got[1].caption, /2026-11-08: 1 документов/);
+});
+
+test('без получателей копия никуда не уходит', async () => {
+  assert.deepEqual(await deliverBackup({ body: Buffer.from('{}'), date: 'd', totalDocs: 0 }), {});
+});
+
+test('Telegram получает файл в чат владельца, а отказ бота — это ошибка канала', async () => {
+  const calls = [];
+  const ok = async (url, init) => {
+    calls.push({ url, chat: init.body.get('chat_id'), file: init.body.get('document') });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  await sendTelegramDocument({
+    token: 'T', chatId: 42, fileName: 'b.json.gz', content: Buffer.from('x'), caption: 'c', fetchImpl: ok,
+  });
+  assert.equal(calls[0].url, 'https://api.telegram.org/botT/sendDocument');
+  assert.equal(calls[0].chat, '42');
+  assert.equal(calls[0].file.name, 'b.json.gz');
+
+  const refused = async () => ({ ok: false, status: 403, json: async () => ({ ok: false, description: 'bot was blocked by the user' }) });
+  await assert.rejects(
+    sendTelegramDocument({ token: 'T', chatId: 42, fileName: 'b', content: Buffer.from('x'), caption: 'c', fetchImpl: refused }),
+    /403 bot was blocked/
+  );
 });

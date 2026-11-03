@@ -7244,6 +7244,27 @@ exports.secretaryLearningDigest = functions.scheduler.onSchedule(
 
 const cloudBackup = require('./backup');
 
+/// Куда ещё уходит копия, кроме Storage: почта мастерской (BACKUP_EMAIL, по
+/// умолчанию — сам подключённый Gmail) и Telegram-бот, если заданы его ключи.
+function backupSenders() {
+  const senders = {
+    email: ({ fileName, content, caption }) =>
+      createEmailModule.sendOwnerFile({
+        to: process.env.BACKUP_EMAIL,
+        subject: caption,
+        text: 'Резервная копия базы FIX CRM во вложении (сжатый JSON). Та же копия лежит в Firebase Storage.',
+        fileName,
+        content,
+      }),
+  };
+  const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  const chatId = (process.env.TELEGRAM_CHAT_ID || '').trim();
+  if (token && chatId) {
+    senders.telegram = (file) => cloudBackup.sendTelegramDocument({ token, chatId, ...file });
+  }
+  return senders;
+}
+
 exports.weeklyCloudBackup = functions.scheduler.onSchedule(
   {
     schedule: 'every sunday 03:30',
@@ -7257,6 +7278,7 @@ exports.weeklyCloudBackup = functions.scheduler.onSchedule(
       admin,
       db,
       companyId: COMPANY_ID,
+      senders: backupSenders(),
     });
     if (!result) console.error('weeklyCloudBackup: копия не сохранилась');
     await cloudBackup.pruneAppErrors(db, COMPANY_ID);
@@ -7318,6 +7340,7 @@ exports.runCloudBackupNow = onRequestV2(
         admin,
         db,
         companyId: COMPANY_ID,
+        senders: backupSenders(),
       });
       if (!result) {
         res.status(500).json({ success: false, error: 'backup failed' });

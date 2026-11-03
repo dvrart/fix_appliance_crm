@@ -1351,4 +1351,25 @@ module.exports = function createEmailModule({
   return { sendEmail, syncGmailInbox, sendEmailDirect };
 };
 
+/// Файл владельцу с почты мастерской (резервная копия). В переписку CRM не
+/// пишется, а синхронизация входящих письма от своего же адреса пропускает.
+async function sendOwnerFile({ to, subject, text, fileName, content }) {
+  const auth = await getGmailAuth();
+  if (!auth) {
+    console.warn('sendOwnerFile: Gmail is not connected');
+    return false;
+  }
+  const transporter = nodemailer.createTransport({ service: 'gmail', auth });
+  await transporter.sendMail({
+    from: `"${await getCompanyName()}" <${auth.user}>`,
+    to: String(to || auth.user).trim(),
+    subject,
+    text,
+    attachments: [{ filename: fileName, content, contentType: 'application/gzip' }],
+    headers: { 'X-Fix-CRM': '1' },
+  });
+  return true;
+}
+
 module.exports.sendCrmEmail = sendCrmEmail;
+module.exports.sendOwnerFile = sendOwnerFile;
