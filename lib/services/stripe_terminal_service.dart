@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:mek_stripe_terminal/mek_stripe_terminal.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'firestore_service.dart';
 import 'settings_service.dart';
 import 'stripe_service.dart';
 import '../core/l10n/app_locale.dart';
@@ -95,14 +97,66 @@ class StripeTerminalService {
       );
       onProcessing?.call(processing);
 
-      PaymentIntent processed;
+      final webhookPaid = Completer<StripeTerminalComplete>();
+      StreamSubscription<DocumentSnapshot>? jobSub;
+      if (jobId.trim().isNotEmpty) {
+        jobSub = FirestoreService.jobsRef.doc(jobId).snapshots().listen((snap) {
+          if (webhookPaid.isCompleted || !snap.exists) return;
+          final data = snap.data() as Map<String, dynamic>?;
+          final docs = data?['documents'];
+          if (docs is! List ||
+              documentIndex < 0 ||
+              documentIndex >= docs.length) {
+            return;
+          }
+          final doc = docs[documentIndex];
+          if (doc is! Map) return;
+          final stripe = doc['stripe'];
+          final stripePaid = stripe is Map &&
+              stripe['paymentIntentId'] == created.paymentIntentId &&
+              stripe['status'] == 'paid';
+          var paymentRecorded = false;
+          final payments = doc['payments'];
+          if (payments is List) {
+            for (final p in payments) {
+              if (p is Map &&
+                  p['stripePaymentIntentId'] == created.paymentIntentId) {
+                paymentRecorded = true;
+                break;
+              }
+            }
+          }
+          if (stripePaid || paymentRecorded) {
+            webhookPaid.complete(
+              StripeTerminalComplete(
+                amount: created.amount,
+                paymentIntentId: created.paymentIntentId,
+              ),
+            );
+          }
+        }, onError: (_) {});
+      }
+
+      PaymentIntent? processed;
       try {
-        processed = await processing;
+        final winner = await Future.any<Object>([
+          processing,
+          webhookPaid.future,
+        ]);
+        if (winner is StripeTerminalComplete) {
+          return winner;
+        }
+        processed = winner as PaymentIntent;
       } on TerminalException catch (e) {
+        if (webhookPaid.isCompleted) {
+          return await webhookPaid.future;
+        }
         if (e.code == TerminalExceptionCode.canceled) {
           throw StripeServiceException('Оплата отменена'.tr);
         }
         throw StripeServiceException(_mapTerminalError(e));
+      } finally {
+        await jobSub?.cancel();
       }
 
       final succeeded = processed.status == PaymentIntentStatus.succeeded ||
@@ -210,70 +264,93 @@ class StripeTerminalService {
         SettingsService.readCardReader(config) == SettingsService.cardReaderTerminal;
     final status = ValueNotifier<String>('Готовлю приём карты...'.tr);
     CancelableFuture<PaymentIntent>? processing;
+    BuildContext? dialogCtx;
+    Route<dynamic>? dialogRoute;
     var closed = false;
 
     Future<void> closeDialog() async {
-      if (closed || !context.mounted) return;
+      if (closed) return;
       closed = true;
-      Navigator.of(context, rootNavigator: true).pop();
+      final ctx = dialogCtx;
+      final route = dialogRoute;
+      if (ctx != null && ctx.mounted) {
+        final nav = Navigator.of(ctx);
+        if (route != null && route.isActive) {
+          nav.removeRoute(route);
+          return;
+        }
+        if (nav.canPop()) {
+          nav.pop();
+          return;
+        }
+      }
+      if (context.mounted) {
+        final rootNav = Navigator.of(context, rootNavigator: true);
+        if (route != null && route.isActive) {
+          rootNav.removeRoute(route);
+        } else if (rootNav.canPop()) {
+          rootNav.pop();
+        }
+      }
     }
 
-    showDialog<void>(
-      animationStyle: AppMotion.dialog,
-      context: context,
-      barrierDismissible: false,
-      useRootNavigator: true,
-      builder: (dialogContext) {
-        return PopScope(
-          canPop: false,
-          child: AlertDialog(
-            title: Text(
-              useTerminal ? 'Терминал Stripe'.tr : 'Приложите карту'.tr,
-            ),
-            content: ValueListenableBuilder<String>(
-              valueListenable: status,
-              builder: (context, text, _) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      useTerminal ? Icons.point_of_sale : Icons.contactless,
-                      size: 64,
-                      color: const Color(0xFF635BFF),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      '\$${(amount + tip).toStringAsFixed(2)}',
-                      style: const TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    const CircularProgressIndicator(),
-                    const SizedBox(height: 16),
-                    Text(text, textAlign: TextAlign.center),
-                  ],
-                );
-              },
-            ),
-            actions: [
-              TextButton(
-                onPressed: () async {
-                  try {
-                    await processing?.cancel();
-                  } catch (_) {}
-                  if (dialogContext.mounted) {
-                    Navigator.pop(dialogContext);
-                    closed = true;
-                  }
-                },
-                child: Text('Отмена'.tr),
+    unawaited(
+      showDialog<void>(
+        animationStyle: AppMotion.dialog,
+        context: context,
+        barrierDismissible: false,
+        useRootNavigator: true,
+        builder: (dialogContext) {
+          dialogCtx = dialogContext;
+          dialogRoute = ModalRoute.of(dialogContext);
+          return PopScope(
+            canPop: false,
+            child: AlertDialog(
+              title: Text(
+                useTerminal ? 'Терминал Stripe'.tr : 'Приложите карту'.tr,
               ),
-            ],
-          ),
-        );
-      },
+              content: ValueListenableBuilder<String>(
+                valueListenable: status,
+                builder: (context, text, _) {
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        useTerminal ? Icons.point_of_sale : Icons.contactless,
+                        size: 64,
+                        color: const Color(0xFF635BFF),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        '\$${(amount + tip).toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 16),
+                      Text(text, textAlign: TextAlign.center),
+                    ],
+                  );
+                },
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    try {
+                      await processing?.cancel();
+                    } catch (_) {}
+                    await closeDialog();
+                  },
+                  child: Text('Отмена'.tr),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
 
     try {
