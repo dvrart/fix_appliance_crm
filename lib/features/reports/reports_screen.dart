@@ -5,6 +5,7 @@ import '../../core/utils/app_date_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../models/job.dart';
 import '../../models/expense.dart';
@@ -45,6 +46,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
   String _companyAddress = '';
   double _inventoryAtCost = 0;
   bool _t2Mode = false;
+
+  /// «HST и налоги» в финансовом отчёте. Выключено (по умолчанию) — суммы
+  /// без налога и без строк про HST. Помнится на телефоне.
+  static const _showTaxKey = 'reports_show_tax_v1';
+  bool _showTax = false;
   ReportPayMethod? _selectedPayMethod;
   ReportMetrics? _latestMetrics;
   List<Expense> _expenses = const [];
@@ -58,6 +64,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     _loadWarehouseCosts();
     _loadStripeBalance();
     _loadCompany();
+    unawaited(_loadShowTax());
     _expenseSub = ExpenseService.streamAll().listen((items) {
       if (!mounted) return;
       setState(() => _expenses = items);
@@ -68,6 +75,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
   void dispose() {
     _expenseSub?.cancel();
     super.dispose();
+  }
+
+  Future<void> _loadShowTax() async {
+    final prefs = await SharedPreferences.getInstance();
+    final value = prefs.getBool(_showTaxKey) ?? false;
+    if (!mounted || value == _showTax) return;
+    setState(() => _showTax = value);
+  }
+
+  void _setShowTax(bool value) {
+    setState(() => _showTax = value);
+    unawaited(
+      SharedPreferences.getInstance().then(
+        (prefs) => prefs.setBool(_showTaxKey, value),
+      ),
+    );
   }
 
   Future<void> _loadCompany() async {
@@ -525,6 +548,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return sub.paid;
   }
 
+  /// Доля без HST в счетах периода: по ней долг и средний чек показываются
+  /// без налога, когда «HST и налоги» выключено.
+  double _exHstShare(ReportMetrics m) => m.invoiced > 0.009
+      ? (m.salesExHst / m.invoiced).clamp(0.0, 1.0)
+      : 1.0;
+
   Widget _buildActivity(ReportMetrics allMetrics) {
     final receipts = _receipts;
     final hasMethodFilter = _selectedPayMethod != null;
@@ -532,12 +561,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
         ? allMetrics.forMethod(_selectedPayMethod!)
         : allMetrics;
     final bars = _bars(m);
-    final net = hasMethodFilter
-        ? _methodNetEarned(m)
-        : m.grossProfit - receipts.operatingTotal;
-    final cashNet = hasMethodFilter
-        ? m.cashGrossProfit
-        : m.cashGrossProfit - receipts.operatingTotal;
+    final tax = _showTax;
+    final share = _exHstShare(m);
+    final invoicedShown = tax
+        ? (hasMethodFilter ? _methodGrossInclHst(m) : m.invoiced)
+        : (hasMethodFilter ? _methodGrossExHst(m) : m.salesExHst);
+    final paidShown = tax ? m.paid : m.cashExHst;
+    final dueShown = tax ? m.due : m.due * share;
+    final avgShown = m.invoiceCount <= 0
+        ? 0.0
+        : (tax ? m.avgTicket : m.salesExHst / m.invoiceCount);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -548,194 +581,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
             _classifyBanner(allMetrics.unclassifiedItems.length),
             const SizedBox(height: 12),
           ],
-          _sectionTitle(
-            context.tr(
-              'Способ оплаты: наличные, кредитка, эл. перевод',
-              'Payment method: cash, credit card, e-Transfer',
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            context.tr(
-              'Выберите способ оплаты, чтобы пересчитать весь отчёт по нему, или нажмите на строку способа ниже для полного расклада.',
-              'Select a payment method to filter the entire report, or tap a method card below for its full breakdown.',
-            ),
-            style: const TextStyle(
-              color: Colors.black54,
-              fontSize: 12.5,
-              height: 1.35,
-            ),
-          ),
-          const SizedBox(height: 10),
           _payMethodSelector(allMetrics, receipts),
-          const SizedBox(height: 18),
-          _sectionTitle(
-            hasMethodFilter
-                ? '${context.tr('Сколько я заработал', 'What I earned')} · ${_methodTitle(_selectedPayMethod)}'
-                : context.tr(
-                    'Сколько я заработал: чистыми и грязными',
-                    'What I earned: net and gross',
-                  ),
-          ),
           const SizedBox(height: 6),
-          Text(
-            context.tr(
-              'Нажмите на любую карточку, заявку, инвойс или деталь — откроется полный расклад.',
-              'Tap any card, job, invoice or part to see the full breakdown.',
-            ),
-            style: const TextStyle(
-              color: Colors.black54,
-              fontSize: 12.5,
-              height: 1.35,
-            ),
-          ),
-          const SizedBox(height: 12),
+          _taxSwitch(),
+          const SizedBox(height: 10),
           _profitCard(m, receipts, allMetrics: allMetrics),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _moneyCardWithHint(
-                  title: context.tr('Грязными (без HST)', 'Gross (excl. HST)'),
-                  amount: hasMethodFilter ? _methodGrossExHst(m) : m.salesExHst,
-                  hint:
-                      '${context.tr('С HST', 'Incl. HST')}: ${_money(hasMethodFilter ? _methodGrossInclHst(m) : m.invoiced)}\n${context.tr('Пришло', 'Received')}: ${_money(m.paid)}',
-                  iconColor: const Color(0xFF1565C0),
-                  icon: Icons.account_balance_wallet_outlined,
-                  onTap: () => hasMethodFilter
-                      ? _openMethodBreakdown(allMetrics, _selectedPayMethod!)
-                      : _openGross(m, receipts, allMetrics: allMetrics),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _moneyCardWithHint(
-                  title: context.tr('Чистыми заработал', 'Net earned'),
-                  amount: net,
-                  hint: hasMethodFilter
-                      ? '${context.tr('Деньгами на руках', 'Cash net')}: ${_money(cashNet)}\n${context.tr('Запчасти мне', 'Parts cost')}: ${_money(m.partsCost)}'
-                      : '${context.tr('Деньгами на руках', 'Cash net')}: ${_money(cashNet)}\n${context.tr('До чеков', 'Before receipts')}: ${_money(m.grossProfit)}',
-                  iconColor: const Color(0xFF2E7D32),
-                  icon: Icons.savings_outlined,
-                  onTap: () => hasMethodFilter
-                      ? _openMethodBreakdown(allMetrics, _selectedPayMethod!)
-                      : _openProfit(m, receipts, allMetrics: allMetrics),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 22),
-          _sectionTitle(
-            context.tr(
-              'Расклад по способам оплаты',
-              'Breakdown by payment method',
-            ),
-          ),
+          const SizedBox(height: 18),
+          _sectionTitle(context.tr('Деньги', 'Money')),
           const SizedBox(height: 10),
-          _paymentMethodCard(allMetrics, ReportPayMethod.cash),
-          const SizedBox(height: 10),
-          _paymentMethodCard(allMetrics, ReportPayMethod.card),
-          const SizedBox(height: 10),
-          _paymentMethodCard(allMetrics, ReportPayMethod.etransfer),
-          const SizedBox(height: 22),
-          _sectionTitle(
-            context.tr(
-              'Запчасти: сколько для меня и для клиента',
-              'Parts: my cost vs client price',
-            ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _moneyCardWithHint(
-                  title: context.tr(
-                    'Потратил (для меня)',
-                    'My cost (spent)',
-                  ),
-                  amount: m.partsCost,
-                  hint: context.tr(
-                    'Сколько запчасти стоили мне (${m.parts.length} шт.)',
-                    'What parts cost me (${m.parts.length} pcs)',
-                  ),
-                  iconColor: Colors.orange.shade800,
-                  icon: Icons.inventory_2_outlined,
-                  onTap: () => _openPartsCost(m),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _moneyCardWithHint(
-                  title: context.tr(
-                    'Стоит для клиента',
-                    'Client price',
-                  ),
-                  amount: m.partsSales,
-                  hint: context.tr(
-                    'Сколько взяли с клиента за детали (без HST)',
-                    'Billed to clients for parts (excl. HST)',
-                  ),
-                  iconColor: const Color(0xFF3949AB),
-                  icon: Icons.sell_outlined,
-                  onTap: () => _openPartsSold(m),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          _partsComparisonCard(m),
-          const SizedBox(height: 22),
-          _sectionTitle(
-            context.tr(
-              'Смотреть подробно: заявки, инвойсы, детали',
-              'Drill down: every job, invoice, part',
-            ),
-          ),
-          const SizedBox(height: 10),
-          _drilldownTile(
-            icon: Icons.assignment_outlined,
-            color: const Color(0xFF14557F),
-            title:
-                '${context.tr('В каждой заявке', 'Every job')} (${m.invoiceJobs.length})',
-            subtitle:
-                '${context.tr('Грязными', 'Gross')}: ${_money(m.salesExHst)} · ${context.tr('Запчасти мне', 'Parts cost')}: ${_money(m.partsCost)} · ${context.tr('Клиенту', 'Client')}: ${_money(m.partsSales)}',
-            trailingAmount: m.grossProfit,
-            trailingLabel: context.tr('чистыми', 'net'),
-            onTap: () => _openJobsBreakdown(m),
-          ),
-          const SizedBox(height: 10),
-          _drilldownTile(
-            icon: Icons.receipt_long_outlined,
-            color: const Color(0xFF00897B),
-            title:
-                '${context.tr('В каждом инвойсе', 'Every invoice')} (${m.invoiceCount})',
-            subtitle:
-                '${context.tr('С HST', 'Incl. HST')}: ${_money(m.invoiced)} · ${context.tr('Запчасти мне', 'Parts cost')}: ${_money(m.partsCost)} · ${context.tr('Клиенту', 'Client')}: ${_money(m.partsSales)}',
-            trailingAmount: m.grossProfit,
-            trailingLabel: context.tr('чистыми', 'net'),
-            onTap: () => _openInvoices(m),
-          ),
-          const SizedBox(height: 10),
-          _drilldownTile(
-            icon: Icons.build_circle_outlined,
-            color: const Color(0xFF3949AB),
-            title:
-                '${context.tr('На каждой детали', 'Every part')} (${m.parts.length})',
-            subtitle:
-                '${context.tr('Для меня', 'My cost')}: ${_money(m.partsCost)} · ${context.tr('Для клиента', 'For client')}: ${_money(m.partsSales)}',
-            trailingAmount: m.partsMargin,
-            trailingLabel: context.tr('наценка', 'margin'),
-            onTap: () => _openAllParts(m),
-          ),
-          const SizedBox(height: 22),
-          _sectionTitle(context.tr('Деньги и расходы', 'Money & expenses')),
-          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
                 child: _moneyCard(
-                  'Счета с HST'.tr,
-                  m.invoiced,
+                  tax ? 'Счета с HST'.tr : context.tr('Счета', 'Invoices'),
+                  invoicedShown,
                   Colors.blue,
                   Icons.receipt_long,
                   () => _openInvoices(m),
@@ -744,8 +603,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: _moneyCard(
-                  'Получено с HST'.tr,
-                  m.paid,
+                  tax ? 'Получено с HST'.tr : context.tr('Получено', 'Received'),
+                  paidShown,
                   Colors.green,
                   Icons.payments,
                   () => _openReceived(m),
@@ -759,7 +618,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
               Expanded(
                 child: _moneyCard(
                   'Долг'.tr,
-                  m.due,
+                  dueShown,
                   Colors.red,
                   Icons.warning_amber,
                   () => _openDue(m),
@@ -777,33 +636,74 @@ class _ReportsScreenState extends State<ReportsScreen> {
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 18),
+          _sectionTitle(context.tr('Из чего выручка', 'Where revenue comes from')),
+          const SizedBox(height: 10),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
-                child: _moneyCard(
-                  context.tr('Работа и выезд', 'Labour and call-out'),
-                  m.labourSales,
-                  const Color(0xFF00897B),
-                  Icons.handyman_outlined,
-                  () => _openLabour(m),
+                child: _moneyCardWithHint(
+                  title: context.tr('Работа и выезд', 'Labour and call-out'),
+                  amount: m.labourSales,
+                  hint: context.tr(
+                    '${m.labourItems.length} поз.',
+                    '${m.labourItems.length} lines',
+                  ),
+                  iconColor: const Color(0xFF00897B),
+                  icon: Icons.handyman_outlined,
+                  onTap: () => _openLabour(m),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _moneyCard(
-                  context.tr('Чеки расходов', 'Receipt expenses'),
-                  receipts.operatingTotal,
-                  const Color(0xFF6D4C41),
-                  Icons.receipt,
-                  () => _openReceipts(m, receipts),
+                child: _moneyCardWithHint(
+                  title: context.tr('Запчасти клиенту', 'Parts to clients'),
+                  amount: m.partsSales,
+                  hint:
+                      '${context.tr('Закупка', 'Cost')}: ${_money(m.partsCost)}\n${context.tr('Наценка', 'Margin')}: ${_money(m.partsMargin)}',
+                  iconColor: const Color(0xFF3949AB),
+                  icon: Icons.sell_outlined,
+                  onTap: () => _openPartsSold(m),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 22),
-          _sectionTitle(context.tr('Операции', 'Shop activity')),
-          const SizedBox(height: 12),
+          if (m.hasGuessedCost) ...[
+            const SizedBox(height: 8),
+            InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => _openPartsCost(m),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.info_outline,
+                      size: 15,
+                      color: Color(0xFFB26A00),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        context.tr(
+                          'У части деталей нет закупки (взято 40%) — уточнить',
+                          'Some parts have no cost (40% assumed) — set it',
+                        ),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFFB26A00),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 18),
+          _sectionTitle(context.tr('Работа', 'Work')),
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
@@ -833,7 +733,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
               Expanded(
                 child: _kpiCard(
                   'Средний чек'.tr,
-                  '\$${m.avgTicket.toStringAsFixed(0)}',
+                  '\$${avgShown.toStringAsFixed(0)}',
                   Colors.indigo,
                   Icons.receipt,
                   () => _openAvgTicket(m),
@@ -852,12 +752,57 @@ class _ReportsScreenState extends State<ReportsScreen> {
             ],
           ),
           const SizedBox(height: 18),
+          _sectionTitle(context.tr('Подробно', 'Details')),
+          const SizedBox(height: 10),
+          Material(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(12),
+            elevation: 1.5,
+            shadowColor: Colors.black12,
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                _detailRow(
+                  icon: Icons.assignment_outlined,
+                  color: const Color(0xFF14557F),
+                  title: context.tr('Заявки', 'Jobs'),
+                  count: m.invoiceJobs.length,
+                  onTap: () => _openJobsBreakdown(m),
+                ),
+                const Divider(height: 1, indent: 56),
+                _detailRow(
+                  icon: Icons.receipt_long_outlined,
+                  color: const Color(0xFF00897B),
+                  title: context.tr('Инвойсы', 'Invoices'),
+                  count: m.invoiceCount,
+                  onTap: () => _openInvoices(m),
+                ),
+                const Divider(height: 1, indent: 56),
+                _detailRow(
+                  icon: Icons.build_circle_outlined,
+                  color: const Color(0xFF3949AB),
+                  title: context.tr('Детали', 'Parts'),
+                  count: m.parts.length,
+                  onTap: () => _openAllParts(m),
+                ),
+                const Divider(height: 1, indent: 56),
+                _detailRow(
+                  icon: Icons.receipt,
+                  color: const Color(0xFF6D4C41),
+                  title: context.tr('Чеки расходов', 'Receipts'),
+                  count: _periodExpenses.length,
+                  onTap: () => _openReceipts(m, receipts),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
           _buildStripeCard(),
           const SizedBox(height: 12),
           _buildOpenT2Card(),
           const SizedBox(height: 26),
           Text(
-            'Выручка без HST'.tr,
+            tax ? 'Выручка без HST'.tr : context.tr('Выручка', 'Revenue'),
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.bold,
@@ -932,6 +877,46 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
+  /// «HST и налоги»: выключено — все суммы без налога и ни строчки про HST;
+  /// включено — суммы с HST и отдельные строки налога.
+  Widget _taxSwitch() {
+    return Material(
+      color: AppColors.card,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _setShowTax(!_showTax),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 2, 4, 2),
+          child: Row(
+            children: [
+              Icon(
+                Icons.percent_rounded,
+                size: 18,
+                color: _showTax ? AppColors.primaryOnCard : AppColors.inkMuted,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  context.tr('HST и налоги', 'HST and taxes'),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13.5,
+                    color: AppColors.ink,
+                  ),
+                ),
+              ),
+              Switch(
+                value: _showTax,
+                onChanged: _setShowTax,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _sectionTitle(String text) {
     return Text(
       text,
@@ -939,93 +924,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
         fontSize: 18,
         fontWeight: FontWeight.bold,
         color: AppColors.primaryOnCard,
-      ),
-    );
-  }
-
-  Widget _partsComparisonCard(ReportMetrics m) {
-    return _tappableCard(
-      onTap: () => _openAllParts(m),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.compare_arrows,
-                color: AppColors.primaryOnCard,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  context.tr(
-                    'Итог по запчастям (${m.parts.length} шт.)',
-                    'Parts summary (${m.parts.length} pcs)',
-                  ),
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
-                    color: AppColors.primaryOnCard,
-                  ),
-                ),
-              ),
-              const Icon(Icons.chevron_right, size: 18, color: Colors.black26),
-            ],
-          ),
-          const SizedBox(height: 10),
-          _comparisonLine(
-            context.tr(
-              'Сколько стоило для меня (закупка)',
-              'What it cost me (purchase)',
-            ),
-            _money(m.partsCost),
-            color: Colors.orange.shade900,
-          ),
-          _comparisonLine(
-            context.tr(
-              'Сколько стоит для клиента (в счетах)',
-              'What it cost the client (billed)',
-            ),
-            _money(m.partsSales),
-            color: const Color(0xFF3949AB),
-          ),
-          const Divider(height: 14),
-          _comparisonLine(
-            context.tr(
-              'Чистыми заработал на запчастях (наценка)',
-              'Net earned on parts (margin)',
-            ),
-            '+${_money(m.partsMargin)}',
-            color: const Color(0xFF2E7D32),
-            bold: true,
-          ),
-          if (m.hasGuessedCost) ...[
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                const Icon(
-                  Icons.info_outline,
-                  size: 14,
-                  color: Color(0xFFB26A00),
-                ),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    context.tr(
-                      'У части деталей не указана закупка (взято 40%) — нажмите, чтобы посмотреть и уточнить.',
-                      'Some parts have no cost set (40% assumed) — tap to view and set exact cost.',
-                    ),
-                    style: const TextStyle(
-                      fontSize: 11.5,
-                      color: Color(0xFFB26A00),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ],
       ),
     );
   }
@@ -1063,77 +961,52 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
-  Widget _drilldownTile({
+  /// Строка раздела «Подробно»: что внутри и сколько штук. Суммы уже стоят
+  /// в карточках выше — здесь их не повторяем.
+  Widget _detailRow({
     required IconData icon,
     required Color color,
     required String title,
-    required String subtitle,
-    required double trailingAmount,
-    required String trailingLabel,
+    required int count,
     required VoidCallback onTap,
   }) {
-    return _tappableCard(
+    return InkWell(
       onTap: onTap,
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: color, size: 18),
             ),
-            child: Icon(icon, color: color, size: 22),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    color: AppColors.inkMuted,
-                    fontSize: 12,
-                    height: 1.3,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                _money(trailingAmount),
-                style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                  fontSize: 15,
-                  color: color,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 14.5,
                 ),
               ),
-              Text(
-                trailingLabel,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: AppColors.inkMuted,
-                  fontWeight: FontWeight.w600,
-                ),
+            ),
+            Text(
+              '$count',
+              style: TextStyle(
+                fontWeight: FontWeight.w900,
+                fontSize: 15,
+                color: color,
               ),
-            ],
-          ),
-          const SizedBox(width: 4),
-          Icon(Icons.chevron_right, size: 18, color: AppColors.inkMuted),
-        ],
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.chevron_right, size: 18, color: AppColors.inkMuted),
+          ],
+        ),
       ),
     );
   }
@@ -1286,205 +1159,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
             ],
           ),
         ),
-        if (_selectedPayMethod != null) ...[
-          const SizedBox(height: 10),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: _methodColor(_selectedPayMethod).withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: _methodColor(_selectedPayMethod).withValues(alpha: 0.35),
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  _methodIcon(_selectedPayMethod),
-                  size: 18,
-                  color: _methodColor(_selectedPayMethod),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '${context.tr('Фильтр отчёта', 'Report filter')}: ${_methodTitle(_selectedPayMethod)}',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: 13,
-                      color: _methodColor(_selectedPayMethod),
-                    ),
-                  ),
-                ),
-                TextButton(
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                  ),
-                  onPressed: () =>
-                      _openMethodBreakdown(allMetrics, _selectedPayMethod!),
-                  child: Text(
-                    context.tr('Подробно', 'Details'),
-                    style: TextStyle(
-                      fontWeight: FontWeight.w800,
-                      color: _methodColor(_selectedPayMethod),
-                    ),
-                  ),
-                ),
-                TextButton(
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                  ),
-                  onPressed: () => setState(() => _selectedPayMethod = null),
-                  child: Text(
-                    context.tr('Все способы', 'Show all'),
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
       ],
     );
   }
 
-  /// Карточка одного способа оплаты (Наличные / Кредитка / Эл. перевод).
-  Widget _paymentMethodCard(ReportMetrics allMetrics, ReportPayMethod method) {
-    final sub = allMetrics.forMethod(method);
-    final color = _methodColor(method);
-    final selected = _selectedPayMethod == method;
-    final net = _methodNetEarned(sub);
-    final grossEx = _methodGrossExHst(sub);
-    final grossIncl = _methodGrossInclHst(sub);
-    final payCount = sub.repairPayments.where((p) => p.amount > 0).length;
-
-    return Material(
-      color: AppColors.card,
-      borderRadius: BorderRadius.circular(12),
-      elevation: 1.5,
-      shadowColor: Colors.black12,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () => _openMethodBreakdown(allMetrics, method),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            border: selected ? Border.all(color: color, width: 1.8) : null,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: color.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Icon(_methodIcon(method), color: color, size: 22),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                _methodTitle(method),
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 15,
-                                ),
-                              ),
-                            ),
-                            if (selected) ...[
-                              const SizedBox(width: 6),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 7,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: color.withValues(alpha: 0.14),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Text(
-                                  context.tr('выбрано', 'selected'),
-                                  style: TextStyle(
-                                    fontSize: 10.5,
-                                    fontWeight: FontWeight.w800,
-                                    color: color,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          '${context.tr('Грязными без HST', 'Gross excl. HST')}: ${_money(grossEx)} · ${context.tr('С HST', 'Incl. HST')}: ${_money(grossIncl)}',
-                          style: TextStyle(
-                            color: AppColors.inkMuted,
-                            fontSize: 12,
-                            height: 1.3,
-                          ),
-                        ),
-                        Text(
-                          '${context.tr('Пришло', 'Received')}: ${_money(sub.paid)} · ${context.tr('Запчасти мне', 'Parts cost')}: ${_money(sub.partsCost)} · ${context.tr('Клиенту', 'Client')}: ${_money(sub.partsSales)}${payCount > 0 ? ' · ${context.tr('оплат', 'payments')}: $payCount' : ''}${sub.tips > 0.009 ? ' · ${context.tr('чаевые', 'tips')}: ${_money(sub.tips)}' : ''}',
-                          style: TextStyle(
-                            color: AppColors.inkMuted,
-                            fontSize: 12,
-                            height: 1.3,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        _money(net),
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 16,
-                          color: color,
-                        ),
-                      ),
-                      Text(
-                        context.tr('чистыми', 'net'),
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: AppColors.inkMuted,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(width: 4),
-                  const Icon(
-                    Icons.chevron_right,
-                    size: 18,
-                    color: Colors.black26,
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Итог периода: грязными, запчасти (для меня и для клиента), чеки и чистыми.
+  /// Итог периода: выручка, минус закупка запчастей и чеки — чистыми.
+  /// Строки нажимаются и открывают свою расшифровку, вся карточка — общую.
+  /// Строки налога — только при включённом «HST и налоги».
   Widget _profitCard(
     ReportMetrics m,
     ExpenseRollup receipts, {
@@ -1494,20 +1175,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final net = hasMethodFilter
         ? _methodNetEarned(m)
         : m.grossProfit - receipts.operatingTotal;
-    final cashNet = hasMethodFilter
-        ? m.cashGrossProfit
-        : m.cashGrossProfit - receipts.operatingTotal;
     final cardColor = hasMethodFilter
         ? _methodColor(_selectedPayMethod)
         : const Color(0xFF14557F);
+    void openMain() => hasMethodFilter
+        ? _openMethodBreakdown(allMetrics, _selectedPayMethod!)
+        : _openProfit(m, receipts, allMetrics: allMetrics);
     return Material(
       color: cardColor,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () => hasMethodFilter
-            ? _openMethodBreakdown(allMetrics, _selectedPayMethod!)
-            : _openProfit(m, receipts, allMetrics: allMetrics),
+        onTap: openMain,
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -1517,11 +1196,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   Expanded(
                     child: Text(
                       hasMethodFilter
-                          ? '${context.tr('Чистыми за период', 'Net for the period')} · ${_methodTitle(_selectedPayMethod)}'
-                          : context.tr(
-                              'Чистыми за период (по счетам)',
-                              'Net for the period (invoiced)',
-                            ),
+                          ? '${context.tr('Чистыми', 'Net')} · ${_methodTitle(_selectedPayMethod)}'
+                          : context.tr('Чистыми за период', 'Net for the period'),
                       style: const TextStyle(color: Colors.white70, fontSize: 14),
                     ),
                   ),
@@ -1539,62 +1215,36 @@ class _ReportsScreenState extends State<ReportsScreen> {
               ),
               const SizedBox(height: 10),
               _profitRow(
-                context.tr(
-                  'Грязными (выручка без HST)',
-                  'Gross (revenue excl. HST)',
-                ),
+                context.tr('Выручка', 'Revenue'),
                 hasMethodFilter ? _methodGrossExHst(m) : m.salesExHst,
+                onTap: hasMethodFilter
+                    ? openMain
+                    : () => _openGross(m, receipts, allMetrics: allMetrics),
               ),
               _profitRow(
-                context.tr(
-                  'Грязными (счета с HST)',
-                  'Gross (invoices incl. HST)',
-                ),
-                hasMethodFilter ? _methodGrossInclHst(m) : m.invoiced,
-                muted: true,
-              ),
-              _profitRow(
-                context.tr(
-                  'Запчасти — стоит для клиента',
-                  'Parts — billed to client',
-                ),
-                m.partsSales,
-                muted: true,
-              ),
-              _profitRow(
-                context.tr(
-                  '− Запчасти — стоило для меня',
-                  '− Parts — my purchase cost',
-                ),
+                context.tr('− Запчасти (закупка)', '− Parts (my cost)'),
                 -m.partsCost,
+                onTap: () => _openPartsCost(m),
               ),
               if (!hasMethodFilter)
                 _profitRow(
-                  context.tr('− Расходы по чекам', '− Receipt expenses'),
+                  context.tr('− Чеки расходов', '− Receipt expenses'),
                   -receipts.operatingTotal,
+                  onTap: () => _openReceipts(m, receipts),
                 ),
-              const Divider(color: Colors.white24, height: 14),
-              _profitRow(
-                context.tr(
-                  'Пришло чистыми деньгами (без долгов)',
-                  'Net from money actually received',
-                ),
-                cashNet,
-              ),
-              if (m.tips > 0.009)
+              if (_showTax) ...[
+                const Divider(color: Colors.white24, height: 14),
                 _profitRow(
-                  context.tr('+ Чаевые (сверх ремонта)', '+ Tips (on top)'),
-                  m.tips,
+                  context.tr('HST в счетах', 'HST on invoices'),
+                  m.hstCollectible,
+                  muted: true,
                 ),
-              const SizedBox(height: 8),
-              Text(
-                context.tr(
-                  'Нажмите, чтобы увидеть расклад по каждой заявке, инвойсу и детали.',
-                  'Tap to see the breakdown by every job, invoice and part.',
+                _profitRow(
+                  context.tr('HST получено — отдать CRA', 'HST received — owed to CRA'),
+                  m.hstReceived,
+                  muted: true,
                 ),
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
+              ],
             ],
           ),
         ),
@@ -1602,8 +1252,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
-  Widget _profitRow(String label, double amount, {bool muted = false}) {
-    return Padding(
+  Widget _profitRow(
+    String label,
+    double amount, {
+    bool muted = false,
+    VoidCallback? onTap,
+  }) {
+    final row = Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         children: [
@@ -1627,6 +1282,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
         ],
       ),
     );
+    if (onTap == null) return row;
+    return InkWell(onTap: onTap, child: row);
   }
 
   // ───────────────────────────── расшифровки ─────────────────────────────
@@ -2069,6 +1726,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         : row.job.clientName;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: title,
       periodLabel:
           '${_fmtDay(row.date)} · ${row.job.applianceType} · ${trAny(row.job.status)}',
@@ -2185,6 +1843,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final numLabel = inv.number.isEmpty ? '${inv.docIndex + 1}' : inv.number;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: 'Invoice #$numLabel',
       periodLabel:
           '${inv.job.clientName} · ${_fmtDay(inv.date)} · ${inv.job.applianceType}',
@@ -2293,6 +1952,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   void _openJobsBreakdown(ReportMetrics m) {
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr('В каждой заявке', 'Every job'),
       periodLabel: _periodLabel,
       headline: _money(m.grossProfit),
@@ -2367,6 +2027,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final parts = m.parts;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr('На каждой детали', 'Every part'),
       periodLabel: _periodLabel,
       headline: '+${_money(m.partsMargin)}',
@@ -2505,6 +2166,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: _methodTitle(method),
       periodLabel: _periodLabel,
       headline: _money(net),
@@ -2716,6 +2378,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final net = m.grossProfit - receipts.operatingTotal;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr('Грязными за период', 'Gross for the period'),
       periodLabel: _periodLabel,
       headline: _money(m.salesExHst),
@@ -2842,6 +2505,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   void _openCreatedJobs(ReportMetrics m) {
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: 'Новые заявки'.tr,
       periodLabel: _periodLabel,
       headline: '${m.createdCount}',
@@ -2886,6 +2550,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         m.completedJobs.fold<double>(0, (s, r) => s + r.partsSales);
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: 'Завершено работ'.tr,
       periodLabel: _periodLabel,
       headline: '${m.completedCount}',
@@ -2934,6 +2599,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   void _openAvgTicket(ReportMetrics m) {
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: 'Средний чек'.tr,
       periodLabel: _periodLabel,
       headline: '\$${m.avgTicket.toStringAsFixed(2)}',
@@ -2967,6 +2633,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final open = m.unpaidInvoices;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: 'Собрано'.tr,
       periodLabel: _periodLabel,
       headline: '${m.collectionRate.toStringAsFixed(0)}%',
@@ -3008,6 +2675,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   void _openInvoices(ReportMetrics m) {
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr('Каждый инвойс', 'Every invoice'),
       periodLabel: _periodLabel,
       headline: _money(m.invoiced),
@@ -3063,6 +2731,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         .fold<double>(0, (s, p) => s + p.amount);
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: 'Получено с HST'.tr,
       periodLabel: _periodLabel,
       headline: _money(m.paid),
@@ -3155,6 +2824,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final open = m.unpaidInvoices;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: 'Долг'.tr,
       periodLabel: _periodLabel,
       headline: _money(m.due),
@@ -3202,6 +2872,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final tips = m.tipPayments;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr('Чаевые', 'Tips'),
       periodLabel: _periodLabel,
       headline: _money(m.tips),
@@ -3244,6 +2915,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final items = m.labourItems;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr('Работа и выезд', 'Labour and call-out'),
       periodLabel: _periodLabel,
       headline: _money(m.labourSales),
@@ -3276,6 +2948,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final parts = m.parts;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr(
         'Запчасти: сколько стоит для клиента',
         'Parts: what it costs the client',
@@ -3337,6 +3010,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         receiptParts.fold<double>(0, (s, e) => s + e.amountExHst);
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr(
         'Запчасти: сколько стоило для меня',
         'Parts: what it cost me',
@@ -3430,6 +3104,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final capital = _periodExpenses.where((e) => e.capitalAsset).toList();
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr('Чеки расходов', 'Receipt expenses'),
       periodLabel: _periodLabel,
       headline: _money(receipts.operatingTotal),
@@ -3509,6 +3184,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final cashNet = m.cashGrossProfit - receipts.operatingTotal;
     ReportBreakdownPage.open(
       context,
+      showTax: _showTax,
       title: context.tr('Чистыми за период', 'Net for the period'),
       periodLabel: _periodLabel,
       headline: _money(net),

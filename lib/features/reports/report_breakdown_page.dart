@@ -55,6 +55,51 @@ class BreakdownSection {
   });
 }
 
+/// Подписи отчёта, когда мастер выключил «HST и налоги»: строки и куски про
+/// налог уходят, а пометка «без HST» становится лишней и тоже убирается.
+class ReportTaxText {
+  static final _exclParen = RegExp(
+    r'\s*\((?:без|excl\.)\s+HST\)',
+    caseSensitive: false,
+  );
+  static final _excl = RegExp(
+    r'\s*(?:без|excl\.)\s+HST\b',
+    caseSensitive: false,
+  );
+  static final _inclParen = RegExp(
+    r'\s*\((?:с|incl\.)\s+HST[^)]*\)',
+    caseSensitive: false,
+  );
+  static final _taxWord = RegExp(
+    r'HST|GST|налог|\btax\b|\bCRA\b',
+    caseSensitive: false,
+  );
+
+  /// «Грязными (без HST)» → «Грязными», «… (с HST $120)» → «…».
+  static String clean(String text) => text
+      .replaceAll(_inclParen, '')
+      .replaceAll(_exclParen, '')
+      .replaceAll(_excl, '')
+      .replaceAll(RegExp(r'\s+:'), ':')
+      .trim();
+
+  /// Строка всё ещё про налог, даже когда «без HST» из неё убрали.
+  static bool mentionsTax(String text) => _taxWord.hasMatch(clean(text));
+
+  /// Составная подпись «А: $1 · С HST: $2\nБ: $3»: куски про налог уходят.
+  static String plain(String text) {
+    final lines = <String>[];
+    for (final line in text.split('\n')) {
+      final parts = [
+        for (final part in line.split(' · '))
+          if (!mentionsTax(part) && clean(part).isNotEmpty) clean(part),
+      ];
+      if (parts.isNotEmpty) lines.add(parts.join(' · '));
+    }
+    return lines.join('\n');
+  }
+}
+
 /// Экран «из чего сложилась эта цифра». Открывается по нажатию на любую
 /// карточку отчёта. Если расшифровывать нечего (процент, средний чек) —
 /// остаются пояснение и формула, и карточка всё равно нажимается: FIX
@@ -78,6 +123,10 @@ class ReportBreakdownPage extends StatelessWidget {
   final IconData? actionIcon;
   final VoidCallback? onAction;
 
+  /// false — в Отчётах выключено «HST и налоги»: строки про налог не
+  /// показываются (см. [ReportTaxText]).
+  final bool showTax;
+
   const ReportBreakdownPage({
     super.key,
     required this.title,
@@ -93,6 +142,7 @@ class ReportBreakdownPage extends StatelessWidget {
     this.actionLabel,
     this.actionIcon,
     this.onAction,
+    this.showTax = true,
   });
 
   static Future<void> open(
@@ -110,24 +160,69 @@ class ReportBreakdownPage extends StatelessWidget {
     String? actionLabel,
     IconData? actionIcon,
     VoidCallback? onAction,
+    bool showTax = true,
   }) {
+    final tax = showTax;
+    String label(String text) => tax ? text : ReportTaxText.clean(text);
+    String note(String text) => tax ? text : ReportTaxText.plain(text);
     return Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => ReportBreakdownPage(
-          title: title,
+          title: label(title),
           periodLabel: periodLabel,
           headline: headline,
-          headlineLabel: headlineLabel,
-          headlineHint: headlineHint,
+          headlineLabel: label(headlineLabel),
+          headlineHint: note(headlineHint),
           color: color,
           icon: icon,
-          explain: explain,
-          formula: formula,
-          sections: sections,
+          explain: tax
+              ? explain
+              : [
+                  for (final line in explain)
+                    if (!ReportTaxText.mentionsTax(line)) line,
+                ],
+          formula: tax
+              ? formula
+              : [
+                  for (final (name, value) in formula)
+                    if (!ReportTaxText.mentionsTax(name)) (label(name), value),
+                ],
+          sections: tax
+              ? sections
+              : [
+                  for (final section in sections)
+                    BreakdownSection(
+                      title: label(section.title),
+                      hint: note(section.hint),
+                      total: section.total,
+                      totalLabel: label(section.totalLabel),
+                      empty: section.empty,
+                      rows: [
+                        for (final row in section.rows)
+                          BreakdownRow(
+                            title: label(row.title),
+                            subtitle: note(row.subtitle),
+                            amount: row.amount,
+                            amountText: row.amountText,
+                            amountLabel: row.amountLabel == null
+                                ? null
+                                : label(row.amountLabel!),
+                            chips: [
+                              for (final chip in row.chips)
+                                if (!ReportTaxText.mentionsTax(chip)) chip,
+                            ],
+                            negative: row.negative,
+                            warning: row.warning,
+                            onTap: row.onTap,
+                          ),
+                      ],
+                    ),
+                ],
           actionLabel: actionLabel,
           actionIcon: actionIcon,
           onAction: onAction,
+          showTax: showTax,
         ),
       ),
     );
