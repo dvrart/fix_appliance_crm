@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
@@ -178,15 +180,48 @@ class ClientService {
     await ClientJobSync.apply(clientId: cleanId, isRegular: isRegular);
   }
 
+  static StreamSubscription<QuerySnapshot>? _allSub;
+  static List<Client>? _allLatest;
+  static final Set<MultiStreamController<List<Client>>> _allListeners = {};
+
   /// Стрим всех клиентов
   static Stream<List<Client>> streamAll() {
-    return _ref.snapshots().map((snapshot) {
-      final list = snapshot.docs
-          .map((doc) => Client.fromMap(doc.data() as Map<String, dynamic>, doc.id))
-          .where((client) => !client.isDeleted)
-          .toList();
-      syncRegularFromClients(list);
-      return list;
+    return Stream<List<Client>>.multi((controller) {
+      final cached = _allLatest;
+      if (cached != null) {
+        controller.add(cached);
+      }
+      _allListeners.add(controller);
+      _allSub ??= _ref.snapshots().listen(
+        (snapshot) {
+          final list = snapshot.docs
+              .map(
+                (doc) =>
+                    Client.fromMap(doc.data() as Map<String, dynamic>, doc.id),
+              )
+              .where((client) => !client.isDeleted)
+              .toList();
+          syncRegularFromClients(list);
+          _allLatest = list;
+          for (final listener in _allListeners.toList()) {
+            listener.add(list);
+          }
+        },
+        onError: (Object error, StackTrace stack) {
+          for (final listener in _allListeners.toList()) {
+            listener.addError(error, stack);
+          }
+        },
+      );
+      controller.onCancel = () async {
+        _allListeners.remove(controller);
+        if (_allListeners.isEmpty) {
+          final sub = _allSub;
+          _allSub = null;
+          _allLatest = null;
+          await sub?.cancel();
+        }
+      };
     });
   }
 
@@ -673,10 +708,17 @@ class ClientService {
   static Future<Client?> findByPhone(String phone) async {
     final normalized = normalizePhone(phone);
     if (normalized.length < 7) return null;
+    final cached = _allLatest;
+    if (cached != null) {
+      for (final client in cached) {
+        if (!client.isDeleted && hasPhone(client, phone)) return client;
+      }
+    }
     final snapshot = await _ref.get();
     for (final doc in snapshot.docs) {
       try {
         final client = Client.fromMap(doc.data() as Map<String, dynamic>, doc.id);
+        if (client.isDeleted) continue;
         if (hasPhone(client, phone)) return client;
       } catch (_) {}
     }

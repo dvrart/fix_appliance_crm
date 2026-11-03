@@ -221,7 +221,16 @@ class _Bubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final shop = line.isShop;
-    final color = shop ? AppColors.primary : AppColors.accent;
+    final color = shop
+        ? (AppColors.isDark
+            ? const Color(0xFF153E5C)
+            : const Color(0xFFD4ECFF))
+        : (AppColors.isDark
+            ? const Color(0xFF3E3210)
+            : const Color(0xFFFFF3C4));
+    final borderColor = shop
+        ? const Color(0xFF64B5F6).withValues(alpha: 0.55)
+        : const Color(0xFFFFD54F).withValues(alpha: 0.65);
     return Align(
       alignment: shop ? Alignment.centerLeft : Alignment.centerRight,
       child: ConstrainedBox(
@@ -232,6 +241,7 @@ class _Bubble extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
           decoration: BoxDecoration(
             color: color,
+            border: Border.all(color: borderColor, width: 1.0),
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(16),
               topRight: const Radius.circular(16),
@@ -248,7 +258,7 @@ class _Bubble extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w800,
-                  color: Colors.white.withValues(alpha: 0.85),
+                  color: AppColors.inkMuted,
                 ),
               ),
               const SizedBox(height: 2),
@@ -256,11 +266,11 @@ class _Bubble extends StatelessWidget {
               // разговора нажимаются.
               LinkedText(
                 line.text,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 15,
                   height: 1.35,
                   fontWeight: FontWeight.w600,
-                  color: Colors.white,
+                  color: AppColors.ink,
                 ),
               ),
             ],

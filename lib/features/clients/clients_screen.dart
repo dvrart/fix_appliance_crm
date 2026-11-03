@@ -65,6 +65,8 @@ class _ClientsScreenState extends State<ClientsScreen> {
   final Map<String, String> _knownNamesByPhone = {};
   final Set<String> _backfilledClientIds = {};
 
+  bool _externalNamesRequested = false;
+
   @override
   void initState() {
     super.initState();
@@ -80,7 +82,6 @@ class _ClientsScreenState extends State<ClientsScreen> {
       return true;
     };
     AppCommands.addSelectionGuard(_dismissSelection);
-    unawaited(_loadExternalClientNames());
   }
 
   void _rememberExternalName({
@@ -1261,6 +1262,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                 }
 
                 final rawDocs = snapshot.data!.docs;
+                var needsExternalLookup = false;
                 for (final doc in rawDocs) {
                   final d = doc.data() as Map<String, dynamic>;
                   if (d['deletedAt'] != null) continue;
@@ -1271,7 +1273,13 @@ class _ClientsScreenState extends State<ClientsScreen> {
                       phone: (d['phone'] ?? '').toString(),
                       rawName: own,
                     );
+                  } else {
+                    needsExternalLookup = true;
                   }
+                }
+                if (needsExternalLookup && !_externalNamesRequested) {
+                  _externalNamesRequested = true;
+                  unawaited(_loadExternalClientNames());
                 }
 
                 List<Map<String, dynamic>> clients = rawDocs.map((

@@ -10,7 +10,6 @@ import '../../core/motion.dart';
 import '../../core/sms_text.dart';
 import '../../core/utils/app_date_picker.dart';
 import '../../core/utils/formatters.dart';
-import '../../core/utils/thumb_image.dart';
 import '../../models/document_settings.dart';
 import '../../services/ai_service.dart';
 import '../../services/app_time_service.dart';
@@ -29,7 +28,9 @@ import '../ai/job_preview_screen.dart';
 import '../calls/call_screen.dart';
 import '../clients/client_details_screen.dart';
 import '../clients/edit_client_sheet.dart';
+import '../jobs/job_details/widgets/full_screen_gallery.dart';
 import '../settings/pages/message_templates_page.dart';
+import '../settings/widgets/company_logo.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/widgets/job_link_button.dart';
@@ -340,7 +341,9 @@ class ConversationPeer {
       }
 
       final jobs = <Job>[];
-      if (resolvedClientId.isNotEmpty) {
+      if (job != null) {
+        jobs.add(job);
+      } else if (resolvedClientId.isNotEmpty) {
         final snap = await FirestoreService.jobsRef
             .where('clientId', isEqualTo: resolvedClientId)
             .get();
@@ -349,11 +352,11 @@ class ConversationPeer {
             doc.data() as Map<String, dynamic>,
             doc.id,
           );
-          if (!parsed.isDeleted) jobs.add(parsed);
+          if (!parsed.isDeleted && !JobStatuses.isClosed(parsed.status)) {
+            jobs.add(parsed);
+          }
         }
-      }
-      if (job != null && !jobs.any((item) => item.id == job.id)) {
-        jobs.insert(0, job);
+        jobs.sort((a, b) => b.createdAt.compareTo(a.createdAt));
       }
 
       final String ownerName;
@@ -413,15 +416,13 @@ class ConversationPeer {
         );
       }
 
-      if (client != null) {
-        var fallbackSiteName = (job?.jobSiteName ?? '').trim();
-        if (fallbackSiteName.isEmpty) {
-          for (final item in jobs) {
-            final jn = (item.jobSiteName ?? '').trim();
-            if (jn.isNotEmpty) {
-              fallbackSiteName = jn;
-              break;
-            }
+      if (client != null && job == null) {
+        var fallbackSiteName = '';
+        for (final item in jobs) {
+          final jn = (item.jobSiteName ?? '').trim();
+          if (jn.isNotEmpty) {
+            fallbackSiteName = jn;
+            break;
           }
         }
         for (final location in client.locations) {
@@ -1269,6 +1270,35 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
     final conversationText = _buildConversationTranscript(allMessages);
 
+    // Найти существующего клиента в базе: по id, по телефону переписки,
+    // по email или по контактам в переписке.
+    Client? existingClient;
+    final cid = (widget.clientId ?? '').trim();
+    if (cid.isNotEmpty) {
+      existingClient = await ClientService.getById(cid);
+      if (existingClient != null && existingClient.isDeleted) {
+        existingClient = null;
+      }
+    }
+    if (existingClient == null && _hasPhone) {
+      existingClient = await ClientService.findByPhone(_phone);
+    }
+    if (existingClient == null && _hasEmail) {
+      existingClient = await ClientService.findByEmail(_email);
+    }
+    if (existingClient == null) {
+      for (final peer in _peers) {
+        if (peer.hasPhone) {
+          existingClient = await ClientService.findByPhone(peer.phone);
+          if (existingClient != null) break;
+        }
+        if (peer.hasEmail) {
+          existingClient = await ClientService.findByEmail(peer.email);
+          if (existingClient != null) break;
+        }
+      }
+    }
+
     // Разобрать переписку целиком: «меня зовут Рохан, холодильник не
     // морозит» → имя, техника и поломка уже в форме, а не пустые поля.
     setState(() => _creatingJob = true);
@@ -1300,6 +1330,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ? ExtractedJobData.fromJson(offer.extractedData!)
         : null;
 
+    if (existingClient == null) {
+      final aiPhone = fromAi?.clientPhone ?? offerData?.clientPhone;
+      if (aiPhone != null && aiPhone.trim().isNotEmpty) {
+        existingClient = await ClientService.findByPhone(aiPhone);
+      }
+    }
+    if (existingClient == null) {
+      final aiEmail = fromAi?.clientEmail ?? offerData?.clientEmail;
+      if (aiEmail != null && aiEmail.contains('@')) {
+        existingClient = await ClientService.findByEmail(aiEmail);
+      }
+    }
+
     // Телефон из переписки надёжнее: ИИ просят отдавать 10 цифр без «+1»,
     // а карточка и нить SMS знают полный номер. Чужой номер от ИИ (клиент
     // дал другой в письме) не затираем.
@@ -1312,15 +1355,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ? aiPhone
           : _phone;
     } else {
-      resolvedPhone = fromAi?.clientPhone ?? offerData?.clientPhone;
+      resolvedPhone =
+          fromAi?.clientPhone ?? offerData?.clientPhone ?? existingClient?.phone;
     }
 
     final extracted = ExtractedJobData(
-      clientName: fromAi?.clientName ?? offerData?.clientName,
+      clientName: fromAi?.clientName ??
+          offerData?.clientName ??
+          existingClient?.fullName,
       clientPhone: resolvedPhone,
       clientEmail: fromAi?.clientEmail ??
           offerData?.clientEmail ??
-          (_hasEmail ? _email : null),
+          (_hasEmail ? _email : existingClient?.email),
       address: fromAi?.address ?? offerData?.address,
       unit: fromAi?.unit ?? offerData?.unit,
       city: fromAi?.city ?? offerData?.city,
@@ -1342,16 +1388,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
 
     if (!mounted) return;
+    final resolvedClientId = existingClient?.id ??
+        ((widget.clientId ?? '').trim().isNotEmpty ? widget.clientId : null);
     final result = await AppNav.navigatorOf(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => JobPreviewScreen(
           extractedData: extracted,
           originalText: conversationText,
-          fallbackPhone: _hasPhone ? _phone : null,
-          fallbackEmail: _hasEmail ? _email : null,
-          existingClientId: (widget.clientId ?? '').trim().isNotEmpty
-              ? widget.clientId
-              : null,
+          fallbackPhone: _hasPhone ? _phone : existingClient?.phone,
+          fallbackEmail: _hasEmail ? _email : existingClient?.email,
+          existingClientId: resolvedClientId,
+          existingClient: existingClient,
           sourceSmsId: offer?.id,
         ),
       ),
@@ -1498,32 +1545,38 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  bool _isImageMediaUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('.jpg') ||
+        lower.contains('.jpeg') ||
+        lower.contains('.png') ||
+        lower.contains('.gif') ||
+        lower.contains('.webp');
+  }
+
   void _openPhoto(String url) {
+    final messages = _threadCache[_threadKey] ?? const <SmsMessage>[];
+    final urls = <String>[];
+    for (final m in messages) {
+      if (m.isDeleted) continue;
+      for (final mediaUrl in m.mediaUrls) {
+        if (_isImageMediaUrl(mediaUrl) && !urls.contains(mediaUrl)) {
+          urls.add(mediaUrl);
+        }
+      }
+    }
+    if (!urls.contains(url)) {
+      urls.add(url);
+    }
+    final initialIndex = urls.indexOf(url);
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => Scaffold(
-          backgroundColor: Colors.black,
-          appBar: AppBar(backgroundColor: Colors.black, foregroundColor: Colors.white),
-          body: Center(
-            child: InteractiveViewer(
-              minScale: 0.8,
-              maxScale: 4,
-              child: Builder(
-                builder: (inner) => Image(
-                  // Фото клиента приходит в полном разрешении — без сжатия
-                  // под экран один такой кадр это десятки мегабайт.
-                  image: fullImage(
-                    NetworkImage(url),
-                    logicalWidth: MediaQuery.sizeOf(inner).width,
-                    devicePixelRatio: MediaQuery.devicePixelRatioOf(inner),
-                  ),
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white54, size: 64),
-                ),
-              ),
-            ),
-          ),
+        builder: (_) => FullScreenGallery(
+          images: [
+            for (final itemUrl in urls) {'url': itemUrl},
+          ],
+          initialIndex: initialIndex < 0 ? 0 : initialIndex,
         ),
       ),
     );
@@ -1608,9 +1661,20 @@ class _ConversationScreenState extends State<ConversationScreen> {
           }
           if (jobs.isNotEmpty) {
             jobs.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-            job = jobs.firstWhere(
+            final peerDigits = SmsService.normalizePhone(_phone);
+            final bySitePhone = peerDigits.length >= 10
+                ? jobs
+                      .where(
+                        (j) =>
+                            SmsService.normalizePhone(j.jobSitePhone ?? '') ==
+                            peerDigits,
+                      )
+                      .toList()
+                : const <Job>[];
+            final pool = bySitePhone.isNotEmpty ? bySitePhone : jobs;
+            job = pool.firstWhere(
               (j) => j.activeVisits.isNotEmpty,
-              orElse: () => jobs.first,
+              orElse: () => pool.first,
             );
           }
         }
@@ -2083,12 +2147,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _buildBubble(SmsMessage message) {
     final isOutbound = message.isOutbound;
     // Сообщение, которое придумал сервер, ждёт решения мастера. Рисуем его
-    // не синим «отправлено», а жёлтым черновиком с кнопками — иначе
+    // не голубым «отправлено», а черновиком с кнопками — иначе
     // неотправленный текст выглядит в переписке как ушедший клиенту.
     final waiting = message.awaitingApproval;
     final refused = message.sendingRejected;
-    final onDark = isOutbound && !waiting && !refused;
+    final onDark = AppColors.isDark;
     final selected = _selectedIds.contains(message.id);
+    final outboundBg = AppColors.isDark
+        ? const Color(0xFF153E5C)
+        : const Color(0xFFD4ECFF);
+    final inboundBg = AppColors.isDark
+        ? const Color(0xFF3E3210)
+        : const Color(0xFFFFF3C4);
+    final bubbleBorderColor = waiting
+        ? Colors.orange.shade300
+        : refused
+            ? AppColors.border
+            : isOutbound
+                ? const Color(0xFF64B5F6).withValues(alpha: 0.55)
+                : const Color(0xFFFFD54F).withValues(alpha: 0.65);
     // Долгое нажатие выделяет сообщение, двойное касание по тексту — слова
     // внутри него. Порог долгого нажатия укорочен, иначе жест забирает себе
     // выделение текста (см. QuickLongPress).
@@ -2099,12 +2176,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
       alignment: isOutbound ? Alignment.centerRight : Alignment.centerLeft,
       child: Row(
         mainAxisSize: MainAxisSize.min,
+        // Значок собеседника слева от его сообщения, мой — справа от моего,
+        // оба у нижнего края пузыря, как в обычном мессенджере.
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           if (_selecting && !isOutbound)
             Padding(
               padding: const EdgeInsets.only(right: 6, bottom: 10),
               child: SelectCheckbox(selected: selected),
             ),
+          if (!isOutbound) _senderAvatar(outbound: false),
           Flexible(
             child: Container(
         margin: const EdgeInsets.only(bottom: 10),
@@ -2112,15 +2193,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
         decoration: BoxDecoration(
           color: selected
-              ? (onDark ? const Color(0xFF0D47A1) : AppColors.selectedCard)
+              ? AppColors.selectedCard
               : waiting
                   ? AppColors.tint(AppColors.accent, 0.16)
                   : refused
                       ? AppColors.cardMuted
-                      : (isOutbound ? AppColors.primary : AppColors.card),
-          border: waiting
-              ? Border.all(color: Colors.orange.shade300, width: 1.5)
-              : null,
+                      : (isOutbound ? outboundBg : inboundBg),
+          border: Border.all(
+            color: bubbleBorderColor,
+            width: waiting ? 1.5 : 1.0,
+          ),
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(14),
             topRight: const Radius.circular(14),
@@ -2315,6 +2397,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ),
       ),
           ),
+          if (isOutbound) _senderAvatar(outbound: true),
           if (_selecting && isOutbound)
             Padding(
               padding: const EdgeInsets.only(left: 6, bottom: 10),
@@ -2323,6 +2406,58 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ],
       ),
     ),
+    );
+  }
+
+  /// Кружок у пузыря: у клиента — первая буква имени (или человечек), у
+  /// мастерской — логотип приложения.
+  Widget _senderAvatar({required bool outbound}) {
+    const size = 30.0;
+    final Widget avatar;
+    if (outbound) {
+      avatar = const CompanyLogo(size: size);
+    } else {
+      final name =
+          (_contactName.isNotEmpty ? _contactName : (widget.contactName ?? ''))
+              .trim();
+      final first = name.isEmpty ? '' : name.characters.first.toUpperCase();
+      final letter = RegExp(r'\p{L}', unicode: true).hasMatch(first);
+      avatar = Container(
+        width: size,
+        height: size,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: AppColors.isDark
+              ? const Color(0xFF5C4A12)
+              : const Color(0xFFFFE082),
+          border: Border.all(
+            color: const Color(0xFFFFD54F).withValues(alpha: 0.9),
+          ),
+        ),
+        child: letter
+            ? Text(
+                first,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                  color: AppColors.isDark ? Colors.white : AppColors.ink,
+                ),
+              )
+            : Icon(
+                Icons.person_rounded,
+                size: 19,
+                color: AppColors.isDark ? Colors.white : AppColors.ink,
+              ),
+      );
+    }
+    return Padding(
+      padding: EdgeInsets.only(
+        left: outbound ? 6 : 0,
+        right: outbound ? 0 : 6,
+        bottom: 10,
+      ),
+      child: avatar,
     );
   }
 
@@ -3205,140 +3340,142 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
   Widget build(BuildContext context) {
     final inset = MediaQuery.of(context).viewInsets.bottom;
     return Padding(
-      padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + inset),
-      child: SizedBox(
-        height: MediaQuery.of(context).size.height * 0.62,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.border,
-                  borderRadius: BorderRadius.circular(2),
-                ),
+      padding: EdgeInsets.fromLTRB(12, 8, 12, 10 + inset),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Center(
+            child: Container(
+              width: 34,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.border,
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
-            const SizedBox(height: 12),
-            Text(
-              'Сообщение'.tr,
-              style: TextStyle(
-                fontWeight: FontWeight.w800,
-                fontSize: 18,
-                color: AppColors.ink,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Сообщение'.tr,
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 15,
+              height: 1.1,
+              color: AppColors.ink,
+            ),
+          ),
+          const SizedBox(height: 6),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            minLines: 2,
+            maxLines: 5,
+            textAlignVertical: TextAlignVertical.top,
+            keyboardType: TextInputType.multiline,
+            textInputAction: TextInputAction.newline,
+            textCapitalization: TextCapitalization.sentences,
+            style: const TextStyle(fontSize: 15, height: 1.3),
+            decoration: InputDecoration(
+              hintText: 'Пишите по-русски — клиенту уйдёт на английском'.tr,
+              filled: true,
+              fillColor: AppColors.cardMuted,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: BorderSide.none,
               ),
             ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                autofocus: true,
-                maxLines: null,
-                expands: true,
-                textAlignVertical: TextAlignVertical.top,
-                keyboardType: TextInputType.multiline,
-                textInputAction: TextInputAction.newline,
-                textCapitalization: TextCapitalization.sentences,
-                decoration: InputDecoration(
-                  hintText: 'Пишите по-русски — клиенту уйдёт на английском'.tr,
-                  filled: true,
-                  fillColor: AppColors.cardMuted,
-                  contentPadding: const EdgeInsets.all(16),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide.none,
-                  ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              OutlinedButton(
+                key: _polishKey,
+                onPressed: _polishing ? null : () => _polish(),
+                onLongPress: _polishing ? null : _openPolishMenu,
+                style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  minimumSize: const Size(0, 36),
                 ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                OutlinedButton(
-                  key: _polishKey,
-                  onPressed: _polishing ? null : () => _polish(),
-                  onLongPress: _polishing ? null : _openPolishMenu,
-                  style: OutlinedButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    minimumSize: const Size(0, 40),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_polishing)
-                        const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      else
-                        const Icon(Icons.auto_fix_high, size: 18),
-                      const SizedBox(width: 6),
-                      Text(
-                        _showPolishMenu
-                            ? 'Ещё'.tr
-                            : 'Оформить'.tr,
-                      ),
-                      const SizedBox(width: 2),
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: _polishing ? null : _openPolishMenu,
-                        child: const Padding(
-                          padding: EdgeInsets.only(left: 4),
-                          child: Icon(Icons.expand_less, size: 18),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Spacer(),
-                if (widget.onSchedule != null) ...[
-                  Tooltip(
-                    message: 'Запланировать'.tr,
-                    child: SizedBox(
-                      width: 40,
-                      height: 40,
-                      child: OutlinedButton(
-                        onPressed: widget.sending ? null : _scheduleFromSheet,
-                        style: OutlinedButton.styleFrom(
-                          padding: EdgeInsets.zero,
-                          shape: const CircleBorder(),
-                          side: BorderSide(color: AppColors.primary.withValues(alpha: 0.35)),
-                          foregroundColor: AppColors.primary,
-                        ),
-                        child: const Icon(Icons.schedule, size: 20),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_polishing)
+                      const SizedBox(
+                        width: 15,
+                        height: 15,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    else
+                      const Icon(Icons.auto_fix_high, size: 17),
+                    const SizedBox(width: 5),
+                    Text(
+                      _showPolishMenu
+                          ? 'Ещё'.tr
+                          : 'Оформить'.tr,
+                    ),
+                    const SizedBox(width: 2),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _polishing ? null : _openPolishMenu,
+                      child: const Padding(
+                        padding: EdgeInsets.only(left: 4),
+                        child: Icon(Icons.expand_less, size: 17),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                ],
-                SizedBox(
-                  width: 42,
-                  height: 42,
-                  child: IconButton.filled(
-                    onPressed: widget.sending ? null : widget.onSend,
-                    tooltip: 'Отправить'.tr,
-                    style: IconButton.styleFrom(
-                      backgroundColor: widget.channel == ConversationChannel.email
-                          ? const Color(0xFFEA4335)
-                          : AppColors.primary,
-                      foregroundColor: Colors.white,
-                    ),
-                    icon: Icon(
-                      widget.channel == ConversationChannel.email
-                          ? Icons.email_rounded
-                          : Icons.send_rounded,
-                      size: 20,
+                  ],
+                ),
+              ),
+              const Spacer(),
+              if (widget.onSchedule != null) ...[
+                Tooltip(
+                  message: 'Запланировать'.tr,
+                  child: SizedBox(
+                    width: 36,
+                    height: 36,
+                    child: OutlinedButton(
+                      onPressed: widget.sending ? null : _scheduleFromSheet,
+                      style: OutlinedButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        shape: const CircleBorder(),
+                        side: BorderSide(color: AppColors.primary.withValues(alpha: 0.35)),
+                        foregroundColor: AppColors.primary,
+                      ),
+                      child: const Icon(Icons.schedule, size: 18),
                     ),
                   ),
                 ),
+                const SizedBox(width: 8),
               ],
-            ),
-          ],
-        ),
+              SizedBox(
+                width: 38,
+                height: 38,
+                child: IconButton.filled(
+                  onPressed: widget.sending ? null : widget.onSend,
+                  tooltip: 'Отправить'.tr,
+                  style: IconButton.styleFrom(
+                    backgroundColor: widget.channel == ConversationChannel.email
+                        ? const Color(0xFFEA4335)
+                        : AppColors.primary,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: Icon(
+                    widget.channel == ConversationChannel.email
+                        ? Icons.email_rounded
+                        : Icons.send_rounded,
+                    size: 18,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -3420,7 +3557,8 @@ class _TranslatedMessageBodyState extends State<_TranslatedMessageBody> {
 
   @override
   Widget build(BuildContext context) {
-    final color = widget.isOutbound ? Colors.white : Colors.black87;
+    final color = AppColors.ink;
+    final subColor = AppColors.inkMuted;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -3430,7 +3568,7 @@ class _TranslatedMessageBodyState extends State<_TranslatedMessageBody> {
             child: Text(
               'Перевод...'.tr,
               style: TextStyle(
-                color: widget.isOutbound ? Colors.white70 : Colors.black54,
+                color: subColor,
                 fontSize: 12,
               ),
             ),
@@ -3446,7 +3584,7 @@ class _TranslatedMessageBodyState extends State<_TranslatedMessageBody> {
             _original!,
             interactive: widget.interactive,
             style: TextStyle(
-              color: widget.isOutbound ? Colors.white70 : Colors.black54,
+              color: subColor,
               fontSize: 11,
               height: 1.3,
               fontWeight: FontWeight.w400,

@@ -767,29 +767,61 @@ class SmsService {
     return '+$digits';
   }
 
+  static StreamSubscription<QuerySnapshot>? _allSub;
+  static List<SmsMessage>? _allLatest;
+  static final Set<MultiStreamController<List<SmsMessage>>> _allListeners = {};
+
   /// Стрим всех сообщений (для группировки в переписки).
   static Stream<List<SmsMessage>> streamAll() {
-    return _ref.snapshots().map((snapshot) {
-      final messages = <SmsMessage>[];
-      for (final doc in snapshot.docs) {
-        try {
-          final data = doc.data();
-          if (data is! Map) continue;
-          final message = SmsMessage.fromMap(
-            Map<String, dynamic>.from(data),
-            doc.id,
-          );
-          if (message.visibleInCrm && !message.isDeleted) {
-            messages.add(message);
-          }
-        } catch (error) {
-          debugPrint('SMS ${doc.id}: $error');
-        }
+    return Stream<List<SmsMessage>>.multi((controller) {
+      final cached = _allLatest;
+      if (cached != null) {
+        controller.add(cached);
       }
-      messages.sort(
-        (a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)),
+      _allListeners.add(controller);
+      _allSub ??= _ref.snapshots().listen(
+        (snapshot) {
+          final messages = <SmsMessage>[];
+          for (final doc in snapshot.docs) {
+            try {
+              final data = doc.data();
+              if (data is! Map) continue;
+              final message = SmsMessage.fromMap(
+                Map<String, dynamic>.from(data),
+                doc.id,
+              );
+              if (message.visibleInCrm && !message.isDeleted) {
+                messages.add(message);
+              }
+            } catch (error) {
+              debugPrint('SMS ${doc.id}: $error');
+            }
+          }
+          messages.sort(
+            (a, b) => (b.createdAt ?? DateTime(0)).compareTo(
+              a.createdAt ?? DateTime(0),
+            ),
+          );
+          _allLatest = messages;
+          for (final listener in _allListeners.toList()) {
+            listener.add(messages);
+          }
+        },
+        onError: (Object error, StackTrace stack) {
+          for (final listener in _allListeners.toList()) {
+            listener.addError(error, stack);
+          }
+        },
       );
-      return messages;
+      controller.onCancel = () async {
+        _allListeners.remove(controller);
+        if (_allListeners.isEmpty) {
+          final sub = _allSub;
+          _allSub = null;
+          _allLatest = null;
+          await sub?.cancel();
+        }
+      };
     });
   }
 

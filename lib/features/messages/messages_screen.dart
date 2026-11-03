@@ -314,20 +314,9 @@ class _MessagesScreenState extends State<MessagesScreen>
     final preview = last.isEmail && last.subject.trim().isNotEmpty
         ? last.subject.trim()
         : last.displayBody;
-    final avatar = CircleAvatar(
-      backgroundColor: AppColors.primary.withValues(alpha: 0.15),
-      child: conv.isWebsite
-          ? Icon(Icons.language, color: AppColors.primary)
-          : client != null
-          ? Text(
-              client.initials,
-              style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold),
-            )
-          : Icon(
-              conv.hasEmail && !conv.hasSms ? Icons.email_outlined : Icons.person_outline,
-              color: AppColors.primary,
-            ),
-    );
+    final isEmailThread =
+        conv.isWebsite || last.isEmail || (conv.hasEmail && !conv.hasSms);
+    final avatar = _MessageChannelAvatar(isEmail: isEmailThread);
 
     return ColoredBox(
       // Непрочитанное видно самой строкой, а не только цифрой справа: жёлтая
@@ -597,6 +586,67 @@ class _MessagesScreenState extends State<MessagesScreen>
       phoneNumber: wantEmail ? '' : result,
       email: wantEmail ? result : null,
       initialChannel: wantEmail ? ConversationChannel.email : ConversationChannel.sms,
+    );
+  }
+}
+
+/// Значок слева в списке сообщений: иконка письма SMS или письма электронной почты.
+class _MessageChannelAvatar extends StatelessWidget {
+  final bool isEmail;
+
+  const _MessageChannelAvatar({required this.isEmail});
+
+  @override
+  Widget build(BuildContext context) {
+    const smsColor = Color(0xFF1E88E5);
+    const emailColor = Color(0xFFEA4335);
+    final tint = isEmail ? emailColor : smsColor;
+    final badgeText = isEmail ? '@' : 'SMS';
+
+    return Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        color: tint.withValues(alpha: 0.14),
+        shape: BoxShape.circle,
+      ),
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 5),
+            child: Icon(
+              isEmail ? Icons.email_outlined : Icons.mail_outline_rounded,
+              size: 22,
+              color: tint,
+            ),
+          ),
+          Positioned(
+            bottom: 3,
+            child: Container(
+              padding: EdgeInsets.symmetric(
+                horizontal: isEmail ? 5 : 4,
+                vertical: 1,
+              ),
+              decoration: BoxDecoration(
+                color: tint,
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: Text(
+                badgeText,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: isEmail ? 8.5 : 7.5,
+                  height: 1.05,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: isEmail ? 0 : 0.2,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
