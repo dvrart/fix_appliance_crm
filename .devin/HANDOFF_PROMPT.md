@@ -13,7 +13,7 @@
 - **Репозиторий:** `C:\Projects\fix_appliance_crm`, ветка **FIX-APP**
 - **НЕ трогать:** `C:\Projects\fix_appliance_cloud`
 - **Устройство:** `44c25486` (Xiaomi/HyperOS; старый Samsung `R5CW421KFXH` заменён 03.10.2026)
-- **Пакет:** `com.example.fix_appliance_crm`
+- **Пакет:** `ca.fixappliance.crm` (классы Kotlin — в namespace `com.example.fix_appliance_crm`)
 - **Firebase:** `fix-appliance-crm`, компания `fix_appliance_ca`
 - **Язык UI:** русский, код на английском
 - **PowerShell:** `;` вместо `&&`
@@ -32,9 +32,9 @@
 ### Сборка после Flutter-изменений
 
 ```powershell
-flutter build apk --release
-adb -s 44c25486 install -r build\app\outputs\flutter-apk\app-release.apk
-adb -s 44c25486 shell am start -n com.example.fix_appliance_crm/.MainActivity
+flutter build apk --release --split-per-abi
+adb -s 44c25486 install -r build\app\outputs\flutter-apk\app-arm64-v8a-release.apk
+adb -s 44c25486 shell am start -n ca.fixappliance.crm/com.example.fix_appliance_crm.MainActivity
 ```
 
 ### Deploy после Functions-изменений

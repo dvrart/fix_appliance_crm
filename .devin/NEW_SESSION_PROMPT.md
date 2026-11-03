@@ -24,9 +24,9 @@
 ## После Flutter-изменений
 
 ```powershell
-flutter build apk --release
-adb -s 44c25486 install -r build\app\outputs\flutter-apk\app-release.apk
-adb -s 44c25486 shell am start -n com.example.fix_appliance_crm/.MainActivity
+flutter build apk --release --split-per-abi
+adb -s 44c25486 install -r build\app\outputs\flutter-apk\app-arm64-v8a-release.apk
+adb -s 44c25486 shell am start -n ca.fixappliance.crm/com.example.fix_appliance_crm.MainActivity
 ```
 
 Устройство: `44c25486` (Xiaomi/HyperOS). Старый Samsung `R5CW421KFXH` заменён 03.10.2026 — если где-то встретишь его серийник, это устаревшее.

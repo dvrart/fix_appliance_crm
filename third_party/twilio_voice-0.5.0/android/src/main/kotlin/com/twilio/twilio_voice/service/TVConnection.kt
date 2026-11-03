@@ -80,7 +80,7 @@ class TVCallInviteConnection(
     fun rejectFromNotification() {
         val complete = Runnable { if (state == STATE_RINGING) rejectInvite() }
         try {
-            Class.forName("${context.packageName}.CrmCallActions")
+            Class.forName("com.example.fix_appliance_crm.CrmCallActions")
                 .getMethod("decline", String::class.java, Runnable::class.java)
                 .invoke(null, callInvite.customParameters["parentCallSid"].orEmpty(), complete)
         } catch (error: Exception) {

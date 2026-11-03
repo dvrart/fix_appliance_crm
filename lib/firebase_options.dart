@@ -51,7 +51,7 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyDE4nxOyA1Qwp58yDzyzInXRxq3jIB1zvA',
-    appId: '1:772324431093:android:afff73faed16a00f2fe1bc',
+    appId: '1:772324431093:android:1bab4004783335bd2fe1bc',
     messagingSenderId: '772324431093',
     projectId: 'fix-appliance-crm',
     storageBucket: 'fix-appliance-crm.firebasestorage.app',

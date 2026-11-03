@@ -274,7 +274,7 @@ object IncomingCallNotifier {
 
     private fun prepareHostActivityForCall(context: Context) {
         try {
-            Class.forName("${context.packageName}.MainActivity")
+            Class.forName("com.example.fix_appliance_crm.MainActivity")
                 .getMethod("prepareForIncomingCall")
                 .invoke(null)
         } catch (_: Throwable) {

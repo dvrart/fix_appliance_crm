@@ -189,7 +189,7 @@ class VoiceFirebaseMessagingService : FirebaseMessagingService() {
             ?: "crm_${if (type.isEmpty()) "sms" else type}_${data["from"] ?: data["jobId"] ?: ""}".take(50)
 
         val launch = Intent().apply {
-            setClassName(packageName, "$packageName.MainActivity")
+            setClassName(packageName, "com.example.fix_appliance_crm.MainActivity")
             action = "com.example.fix_appliance_crm.NOTIFICATION"
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
             for ((key, value) in data) {

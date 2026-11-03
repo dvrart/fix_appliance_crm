@@ -1,9 +1,9 @@
 @echo off
-REM Автоматический деплой APK на устройство Samsung R5CW421KFXH
+REM Автоматический деплой APK на телефон Xiaomi 44c25486
 REM Проверка: сборка + установка + запуск. Каждый шаг проверяется дважды.
 
 set DEVICE=44c25486
-set PACKAGE=com.example.fix_appliance_crm
+set PACKAGE=ca.fixappliance.crm
 
 echo [1/6] Сборка release APK с split-per-abi...
 flutter build apk --release --split-per-abi --no-pub
@@ -31,7 +31,7 @@ if %ERRORLEVEL% NEQ 0 (
 echo [3/6] Установка OK
 
 echo [4/6] Запуск приложения...
-adb -s %DEVICE% shell am start -n %PACKAGE%/.MainActivity
+adb -s %DEVICE% shell am start -n %PACKAGE%/com.example.fix_appliance_crm.MainActivity
 
 echo [5/6] Вторая проверка запуска (проверка процесса)...
 adb -s %DEVICE% shell pidof %PACKAGE%

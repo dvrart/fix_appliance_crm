@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Fix Appliance CRM — context for the next agent
 
-Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: `44c25486` — `adb devices -l` 05.10.2026 отдаёт `model:26077PC53G device:songyuan` (Xiaomi/HyperOS), а не OPPO F9, как было записано раньше; replaced Samsung `R5CW421KFXH` on 03.10.2026. Samsung-specific notes below (One UI shade, battery dialogs, mic click) need re-verification on this phone. package `com.example.fix_appliance_crm`. PowerShell: no `&&`; use `;`. Do not commit unless asked. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
+Flutter shop CRM at `c:\Projects\fix_appliance_crm`, branch **FIX-APP**. Owner is **FIX**. UI language preference: **Russian**. Device: `44c25486` — `adb devices -l` 05.10.2026 отдаёт `model:26077PC53G device:songyuan` (Xiaomi/HyperOS), а не OPPO F9, как было записано раньше; replaced Samsung `R5CW421KFXH` on 03.10.2026. Samsung-specific notes below (One UI shade, battery dialogs, mic click) need re-verification on this phone. package `ca.fixappliance.crm` (с 02.11.2026; классы Kotlin остались в namespace `com.example.fix_appliance_crm`, поэтому activity — `ca.fixappliance.crm/com.example.fix_appliance_crm.MainActivity`). PowerShell: no `&&`; use `;`. Do not commit unless asked. This repo is the shop copy — do not mix with `C:\Projects\fix_appliance_cloud`. Gemini/Maps keys in `lib/core/api_keys.dart` — do not commit.
 
 ## Как отвечать владельцу (FIX)
 
@@ -56,9 +56,9 @@ Kotlin DSL, поэтому `flutter build apk --release` **вообще не с�
 Typical install (always do this after app UI/code changes — do not wait for FIX to say «поставь»):
 
 ```
-flutter build apk --release
-adb -s 44c25486 install -r build\app\outputs\flutter-apk\app-release.apk
-adb -s 44c25486 shell am start -n com.example.fix_appliance_crm/.MainActivity
+flutter build apk --release --split-per-abi
+adb -s 44c25486 install -r build\app\outputs\flutter-apk\app-arm64-v8a-release.apk
+adb -s 44c25486 shell am start -n ca.fixappliance.crm/com.example.fix_appliance_crm.MainActivity
 ```
 
 ## Two different AIs
@@ -457,7 +457,7 @@ FIX: «поднимаю трубку — не слышу клиента, пер�
 - **`dumpsys telecom`**, звонки `TVConnectionService`: исходящие кончаются
   `ERROR / Media connection failed` (53405) и `Request Timeout`; входящие, где мастер нажал
   «Ответить», Twilio записал как `no-answer` — ответ до сервера не дошёл.
-- **`dumpsys appops --package com.example.fix_appliance_crm --include-discrete 100000`** —
+- **`dumpsys appops --package ca.fixappliance.crm --include-discrete 100000`** —
   история RECORD_AUDIO примерно за сутки. В удачном звонке микрофон открывается ровно в момент
   `setActive`, в неудачном не открывается вообще: медиаканал не поднялся. Reject в эти минуты
   нет — разрешение микрофона ни при чём.
@@ -1169,7 +1169,7 @@ Twilio**. Он кладёт готовый текст (с шапкой) в `mess
     и на Xiaomi/HyperOS AppOp `10021` «Открывать новые окна в фоне» через `miui.intent.action.APP_PERM_EDITOR`),
     а в **Настройки → Связь → Уведомления** добавлена плитка **«Звонок на весь экран»**.
 - **Проверять тапы на телефоне можно без push**: PendingIntent шторки — это обычный
-  `am start`. `adb -s 44c25486 shell "am start -n com.example.fix_appliance_crm/.MainActivity
+  `am start`. `adb -s 44c25486 shell "am start -n ca.fixappliance.crm/com.example.fix_appliance_crm.MainActivity
   -a com.example.fix_appliance_crm.NOTIFICATION -f 0x24000000 --es type call --es callSid CAxxx
   --es peer +1416..."`. **Осторожно: `CallReviewPage.open` зовёт `markReviewed`, а он
   `set(merge: true)` — выдуманный SID создаст пустой документ `calls/<SID>` в боевой базе.**
@@ -1395,7 +1395,7 @@ catalogs, warehouse, expenses and calendar events to Storage
 Firestore `backups/{ymd}` that the page streams. Runs on the server, so the phone may be off.
 «В облако сейчас» calls `runCloudBackupNow` (plain `onRequest`, like the other endpoints — this
 repo does not use `onCall`). **На телефоне** is the old local JSON in the app private documents
-folder (`/data/user/0/com.example.fix_appliance_crm/app_flutter/backups`), last 5, on startup
+folder (`/data/user/0/ca.fixappliance.crm/app_flutter/backups`), last 5, on startup
 when due; that folder dies with the app, so the page still tells FIX to share the file to email.
 Deploy `weeklyCloudBackup`, `runCloudBackupNow`.
 
@@ -2693,7 +2693,7 @@ Job site», а заявка получила `hasJobSite: true, jobSiteAddress: 
   SIM он узнаёт по номеру (`handleCellBridge`) при любом режиме. В настройках «Звонки» две
   секции плиток: «Входящие» и «Исходящие».
 - **После каждой установки APK MIUI сбрасывает «Автозапуск»** в `ignore` — снова
-  `adb shell cmd appops set com.example.fix_appliance_crm 10008 allow`. Исключение из экономии
+  `adb shell cmd appops set ca.fixappliance.crm 10008 allow`. Исключение из экономии
   батареи (`dumpsys deviceidle whitelist +…`) и `TURN_SCREEN_ON allow` переживают `install -r`.
 - `test/message_stamp_test.dart` «позавчерашнее…» падает с 23:00 до полуночи в первые сутки
   после перевода часов: `now.subtract(Duration(days: 2))` попадает на вчера. Ошибка теста, не

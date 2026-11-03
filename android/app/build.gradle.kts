@@ -53,8 +53,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.fix_appliance_crm"
+        // Имя пакета на телефоне и в Google Play. Классы Kotlin живут в namespace
+        // com.example.fix_appliance_crm — форк twilio_voice ищет их по этому имени.
+        applicationId = "ca.fixappliance.crm"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         // Twilio Voice SDK требует minSdk 26 (Android 8.0)

@@ -7,6 +7,42 @@
   "client": [
     {
       "client_info": {
+        "mobilesdk_app_id": "1:772324431093:android:1bab4004783335bd2fe1bc",
+        "android_client_info": {
+          "package_name": "ca.fixappliance.crm"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "772324431093-at2i1m30ok6djitq6pdhvb2hdvd9h05a.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDE4nxOyA1Qwp58yDzyzInXRxq3jIB1zvA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "772324431093-at2i1m30ok6djitq6pdhvb2hdvd9h05a.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "772324431093-4c3i2h5mp922o9gnlnoaq2jg4i5esocr.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.fixApplianceCrm"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:772324431093:android:afff73faed16a00f2fe1bc",
         "android_client_info": {
           "package_name": "com.example.fix_appliance_crm"
@@ -29,6 +65,13 @@
             {
               "client_id": "772324431093-at2i1m30ok6djitq6pdhvb2hdvd9h05a.apps.googleusercontent.com",
               "client_type": 3
+            },
+            {
+              "client_id": "772324431093-4c3i2h5mp922o9gnlnoaq2jg4i5esocr.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.fixApplianceCrm"
+              }
             }
           ]
         }

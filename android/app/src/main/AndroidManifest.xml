@@ -62,7 +62,7 @@
         android:name=".FixApplianceApplication"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
-        android:taskAffinity="com.example.fix_appliance_crm"
+        android:taskAffinity="ca.fixappliance.crm"
         android:enableOnBackInvokedCallback="false">
         <!-- Google Maps SDK (для карты маршрута) -->
         <meta-data
@@ -73,7 +73,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:documentLaunchMode="never"
-            android:taskAffinity="com.example.fix_appliance_crm"
+            android:taskAffinity="ca.fixappliance.crm"
             android:alwaysRetainTaskState="true"
             android:allowTaskReparenting="false"
             android:showWhenLocked="true"
