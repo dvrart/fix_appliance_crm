@@ -127,13 +127,21 @@ class AppNav {
   }
 
   /// Выход на корень навигатора: промежуточные экраны снимаются без анимации.
-  /// Пока есть несохранённые правки, идём по одному — каждый экран должен
-  /// успеть спросить про сохранение.
+  /// Если есть несохранённые правки, один раз спрашиваем подтверждение через
+  /// [UnsavedNavigationGate.allowLeave], а затем снимаем верхний экран напрямую
+  /// через [NavigatorState.pop] (без бесконечного цикла `maybePop`, когда
+  /// экран держит `PopScope(canPop: false)` ради переключения внутренних вкладок).
   static Future<void> popToRoot(NavigatorState navigator) async {
-    if (!UnsavedNavigationGate.hasUnsavedWork) collapse(navigator);
-    while (navigator.mounted && navigator.canPop()) {
-      final popped = await navigator.maybePop();
-      if (!popped) return;
+    if (!navigator.mounted || !navigator.canPop()) return;
+    if (UnsavedNavigationGate.hasUnsavedWork) {
+      final allowed = await UnsavedNavigationGate.allowLeave(
+        host: navigator.context,
+      );
+      if (!allowed || !navigator.mounted || !navigator.canPop()) return;
+    }
+    collapse(navigator);
+    if (navigator.mounted && navigator.canPop()) {
+      navigator.pop();
     }
   }
 

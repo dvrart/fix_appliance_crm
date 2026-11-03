@@ -134,9 +134,16 @@ class _AssistantHostState extends State<AssistantHost>
   bool get _typing => _textFieldFocused || _keyboardShown;
 
   void _onFocusChanged() {
-    final focus = FocusManager.instance.primaryFocus;
-    final editing =
-        focus?.context?.findAncestorWidgetOfExactType<EditableText>() != null;
+    if (!mounted) return;
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    var editing = false;
+    if (ctx != null && ctx.mounted) {
+      try {
+        editing = ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+      } catch (_) {
+        editing = false;
+      }
+    }
     if (editing == _textFieldFocused) return;
     _textFieldFocused = editing;
     unawaited(_syncWake());
