@@ -39,8 +39,9 @@ class AppDateTimePanel extends StatefulWidget {
   State<AppDateTimePanel> createState() => _AppDateTimePanelState();
 }
 
-/// Барабан часов и минут (24 ч). Меняет только время у [value], дата остаётся.
-class AppTimeWheel extends StatelessWidget {
+/// Барабан часов и минут (24 ч) без круговой прокрутки: 00–23 и 00–59.
+/// Меняет только время у [value], дата остаётся.
+class AppTimeWheel extends StatefulWidget {
   final DateTime value;
   final ValueChanged<DateTime> onChanged;
   final double height;
@@ -53,31 +54,135 @@ class AppTimeWheel extends StatelessWidget {
   });
 
   @override
+  State<AppTimeWheel> createState() => _AppTimeWheelState();
+}
+
+class _AppTimeWheelState extends State<AppTimeWheel> {
+  late FixedExtentScrollController _hourController;
+  late FixedExtentScrollController _minuteController;
+  late int _hour;
+  late int _minute;
+
+  @override
+  void initState() {
+    super.initState();
+    _hour = widget.value.hour.clamp(0, 23);
+    _minute = widget.value.minute.clamp(0, 59);
+    _hourController = FixedExtentScrollController(initialItem: _hour);
+    _minuteController = FixedExtentScrollController(initialItem: _minute);
+  }
+
+  @override
+  void didUpdateWidget(covariant AppTimeWheel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextHour = widget.value.hour.clamp(0, 23);
+    final nextMinute = widget.value.minute.clamp(0, 59);
+    if (nextHour != _hour) {
+      _hour = nextHour;
+      if (_hourController.hasClients) {
+        _hourController.jumpToItem(_hour);
+      }
+    }
+    if (nextMinute != _minute) {
+      _minute = nextMinute;
+      if (_minuteController.hasClients) {
+        _minuteController.jumpToItem(_minute);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _hourController.dispose();
+    _minuteController.dispose();
+    super.dispose();
+  }
+
+  void _emit(int hour, int minute) {
+    if (hour == _hour && minute == _minute) return;
+    _hour = hour;
+    _minute = minute;
+    HapticFeedback.selectionClick();
+    widget.onChanged(
+      DateTime(
+        widget.value.year,
+        widget.value.month,
+        widget.value.day,
+        _hour,
+        _minute,
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final textStyle = TextStyle(
+      fontSize: 22,
+      fontWeight: FontWeight.w600,
+      color: AppColors.ink,
+    );
     return SizedBox(
-      height: height,
+      height: widget.height,
       child: CupertinoTheme(
         data: CupertinoThemeData(
           brightness: AppColors.isDark ? Brightness.dark : Brightness.light,
           textTheme: CupertinoTextThemeData(
-            dateTimePickerTextStyle: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w600,
-              color: AppColors.ink,
-            ),
+            dateTimePickerTextStyle: textStyle,
+            pickerTextStyle: textStyle,
           ),
         ),
-        child: CupertinoDatePicker(
-          mode: CupertinoDatePickerMode.time,
-          use24hFormat: true,
-          initialDateTime: DateTime(2024, 1, 1, value.hour, value.minute),
-          onDateTimeChanged: (t) {
-            if (t.hour == value.hour && t.minute == value.minute) return;
-            HapticFeedback.selectionClick();
-            onChanged(
-              DateTime(value.year, value.month, value.day, t.hour, t.minute),
-            );
-          },
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 96,
+              child: CupertinoPicker(
+                scrollController: _hourController,
+                itemExtent: 36,
+                looping: false,
+                selectionOverlay:
+                    const CupertinoPickerDefaultSelectionOverlay(
+                      capEndEdge: false,
+                    ),
+                onSelectedItemChanged: (h) => _emit(h.clamp(0, 23), _minute),
+                children: [
+                  for (var h = 0; h < 24; h++)
+                    Center(
+                      child: Text(
+                        h.toString().padLeft(2, '0'),
+                        style: textStyle,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: Text(':', style: textStyle),
+            ),
+            SizedBox(
+              width: 96,
+              child: CupertinoPicker(
+                scrollController: _minuteController,
+                itemExtent: 36,
+                looping: false,
+                selectionOverlay:
+                    const CupertinoPickerDefaultSelectionOverlay(
+                      capStartEdge: false,
+                    ),
+                onSelectedItemChanged: (m) => _emit(_hour, m.clamp(0, 59)),
+                children: [
+                  for (var m = 0; m < 60; m++)
+                    Center(
+                      child: Text(
+                        m.toString().padLeft(2, '0'),
+                        style: textStyle,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

@@ -1,4 +1,5 @@
 import 'package:fix_appliance_crm/core/utils/app_date_picker.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
@@ -59,5 +60,26 @@ void main() {
     // Сентябрь — первый разрешённый месяц, дальше назад не уходим.
     await tester.tap(find.text('1').first);
     expect(changes.last, DateTime(2026, 9, 1, 9, 0));
+  });
+
+  testWidgets('барабаны часов и минут не крутятся по кругу (00–23 и 00–59)', (
+    tester,
+  ) async {
+    await pump(tester, value: DateTime(2026, 9, 30, 0, 0));
+    final pickers = tester
+        .widgetList<CupertinoPicker>(find.byType(CupertinoPicker))
+        .toList();
+    expect(pickers.length, 2);
+    for (final picker in pickers) {
+      expect(picker.childDelegate, isA<ListWheelChildListDelegate>());
+      final delegate = picker.childDelegate as ListWheelChildListDelegate;
+      expect(delegate.children.isNotEmpty, isTrue);
+    }
+    final hourDelegate =
+        pickers[0].childDelegate as ListWheelChildListDelegate;
+    final minuteDelegate =
+        pickers[1].childDelegate as ListWheelChildListDelegate;
+    expect(hourDelegate.children.length, 24);
+    expect(minuteDelegate.children.length, 60);
   });
 }

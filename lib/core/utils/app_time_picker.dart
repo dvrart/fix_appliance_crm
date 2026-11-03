@@ -1,13 +1,12 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../services/app_time_service.dart';
 import '../constants.dart';
 import '../l10n/app_locale.dart';
+import 'app_date_picker.dart';
 
-/// Единый выбор времени: барабан часов и минут, 24 часа. Окно снизу —
-/// кнопки под большим пальцем.
+/// Единый выбор времени: барабан часов и минут, 24 часа, без круговой прокрутки.
+/// Окно снизу — кнопки под большим пальцем.
 Future<TimeOfDay?> showAppTimePicker({
   required BuildContext context,
   required TimeOfDay initialTime,
@@ -112,36 +111,13 @@ class _AppTimePickerDialogState extends State<_AppTimePickerDialog> {
               ),
             ),
             const SizedBox(height: 8),
-            SizedBox(
-              height: 216,
-              width: double.infinity,
-              child: CupertinoTheme(
-                data: CupertinoThemeData(
-                  brightness:
-                      AppColors.isDark ? Brightness.dark : Brightness.light,
-                  textTheme: CupertinoTextThemeData(
-                    dateTimePickerTextStyle: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.ink,
-                    ),
-                  ),
-                ),
-                child: CupertinoDatePicker(
-                  key: _pickerKey,
-                  mode: CupertinoDatePickerMode.time,
-                  use24hFormat: true,
-                  minuteInterval: 1,
-                  initialDateTime: initialDateTime,
-                  onDateTimeChanged: (DateTime value) {
-                    final next = TimeOfDay(hour: value.hour, minute: value.minute);
-                    if (next != _time) {
-                      HapticFeedback.selectionClick();
-                    }
-                    _time = next;
-                  },
-                ),
-              ),
+            AppTimeWheel(
+              key: _pickerKey,
+              height: 200,
+              value: initialDateTime,
+              onChanged: (DateTime value) {
+                _time = TimeOfDay(hour: value.hour, minute: value.minute);
+              },
             ),
             const SizedBox(height: 8),
             SizedBox(
