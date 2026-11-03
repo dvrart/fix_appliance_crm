@@ -2698,3 +2698,31 @@ Job site», а заявка получила `hasJobSite: true, jobSiteAddress: 
 - `test/message_stamp_test.dart` «позавчерашнее…» падает с 23:00 до полуночи в первые сутки
   после перевода часов: `now.subtract(Duration(days: 2))` попадает на вчера. Ошибка теста, не
   приложения.
+
+## Пакет, резервная копия, статистика секретаря (02.11.2026, вечер)
+
+- **Пакет — `ca.fixappliance.crm`**, приложение зарегистрировано в Firebase (appId
+  `1:772324431093:android:1bab4004783335bd2fe1bc`), `google-services.json` держит оба клиента.
+  Namespace Kotlin остался `com.example.fix_appliance_crm`: форк twilio_voice ищет
+  `MainActivity`, `CrmCallActions`, `CrmShadeNotifier` по этому имени. Имена классов из
+  `packageName` не собирать — после смены пакета они не совпадают. Старое приложение
+  `com.example.fix_appliance_crm` ещё стоит на телефоне, пока FIX не проверит новое; разрешения,
+  автозапуск MIUI, батарея, `TURN_SCREEN_ON` и аккаунт звонков для нового пакета ставятся заново.
+- `versionName` = `1.0.0-ггММдд.ЧЧмм` (время сборки) — журнал ошибок различает сборки.
+- **Резервная копия** (`functions/backup.js`): добавлены `care_plans`, `appliances`,
+  `passport_notes`, `scheduled_messages`, `secretary_lessons`, `shipment_events`, `short_links`
+  и подколлекции заявок `messages`/`changes` (ключ `jobSubcollections`). Тест
+  `functions/backup.test.js`. Задеплоены `weeklyCloudBackup` и `runCloudBackupNow`. Копия
+  по-прежнему лежит в том же проекте Firebase.
+- **Статистика → Секретарь**: воронка «звонки секретаря → заявки (по `createdJobId` или
+  `sourceCallId`) → оплаченные → сумма» и разбивка расходов (Twilio с округлением по звонку,
+  Media Streams, Gemini/OpenAI по `aiReception.engine`, запись + Whisper по двум дорожкам, SMS) —
+  `lib/features/reports/secretary_stats.dart`, тест `test/secretary_stats_test.dart`.
+- **Клиенты**: имена для карточек-заглушек берутся из кэша заявок (его держит живой
+  `JobService.streamAll`) и последних 200 звонков; карточка клиента читает звонки запросами
+  `TwilioService.streamForContact` (clientId, fromNumber/toNumber в E.164), а не все звонки.
+  Календарь и отчёты не трогались: их подписка на все заявки делит один канал Firestore с
+  `JobService.streamAll`, а окно по датам требует индекса дней визита в заявке.
+- **Google выключает `gemini-3.1-flash-live-preview` и
+  `gemini-2.5-flash-native-audio-preview-12-2025` не раньше 17.11.2026** (страница deprecations,
+  замена — `gemini-3.8-live`). Обе стоят в цепочке секретаря.
