@@ -2,7 +2,7 @@
 REM Автоматический деплой APK на устройство Samsung R5CW421KFXH
 REM Проверка: сборка + установка + запуск. Каждый шаг проверяется дважды.
 
-set DEVICE=R5CW421KFXH
+set DEVICE=44c25486
 set PACKAGE=com.example.fix_appliance_crm
 
 echo [1/6] Сборка release APK с split-per-abi...
