@@ -157,15 +157,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       SettingsTileSection(
                         title: context.tr('Компания', 'Company'),
+                        // «Реквизиты» — синяя карточка компании над разделом,
+                        // второй плитки на ту же страницу нет.
                         tiles: [
-                          SettingsHubTile(
-                            title: context.tr('Реквизиты', 'Details'),
-                            subtitle: name,
-                            icon: Icons.business,
-                            color: AppColors.primary,
-                            onTap: () =>
-                                _open(context, const CompanySettingsPage()),
-                          ),
                           SettingsHubTile(
                             title: context.tr('Прайс', 'Prices'),
                             subtitle: serviceCall > 0
@@ -243,8 +237,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           SettingsHubTile(
                             title: context.tr('Когда слать', 'When to send'),
                             subtitle: context.tr(
-                              'Запись, напоминание',
-                              'Booking, reminder',
+                              'Напоминание, отзыв',
+                              'Reminder, review',
                             ),
                             icon: Icons.schedule_send,
                             color: Colors.indigo,

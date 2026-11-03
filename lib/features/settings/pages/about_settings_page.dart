@@ -24,13 +24,6 @@ class AboutSettingsPage extends StatelessWidget {
                 onTap: () {},
               ),
               SettingsHubTile(
-                title: context.tr('Язык', 'Language'),
-                subtitle: AppLocale.instance.isEn ? 'EN' : 'RU',
-                icon: Icons.translate,
-                color: Colors.teal,
-                onTap: () => AppLocale.instance.toggle(),
-              ),
-              SettingsHubTile(
                 title: context.tr('Версия', 'Version'),
                 subtitle: '1.0.0',
                 icon: Icons.info_outline,

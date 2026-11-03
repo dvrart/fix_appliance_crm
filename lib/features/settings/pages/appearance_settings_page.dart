@@ -84,6 +84,19 @@ class _AppearanceSettingsPageState extends State<AppearanceSettingsPage> {
                   SettingsTileSection(
                     title: 'Экран'.tr,
                     tiles: [
+                      // Язык живёт здесь (раньше был в «О приложении»).
+                      ListenableBuilder(
+                        listenable: AppLocale.instance,
+                        builder: (context, _) => SettingsHubTile(
+                          title: context.tr('Язык', 'Language'),
+                          subtitle: AppLocale.instance.isEn
+                              ? 'English'
+                              : 'Русский',
+                          icon: Icons.translate,
+                          color: Colors.teal,
+                          onTap: () => AppLocale.instance.toggle(),
+                        ),
+                      ),
                       SettingsHubTile(
                         title: 'Масштаб'.tr,
                         subtitle: _scaleLabel(ui.scale),

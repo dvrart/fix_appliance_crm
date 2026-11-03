@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/constants.dart';
-import '../../../core/utils/app_time_picker.dart';
 import '../../../services/app_time_service.dart';
 import '../../../services/settings_service.dart';
 import '../widgets/settings_ui.dart';
@@ -17,8 +16,6 @@ class CalendarSettingsPage extends StatefulWidget {
 class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
   bool _loading = true;
   int _firstDayOfWeek = 1;
-  int _workStartMinutes = SettingsService.defaultWorkStartMinutes;
-  int _workEndMinutes = SettingsService.defaultWorkEndMinutes;
   int _jobDurationMinutes = SettingsService.defaultJobDurationMinutes;
   String _defaultCalendarView = SettingsService.defaultCalendarView;
   String _timeSource = SettingsService.timeSourceManual;
@@ -27,8 +24,6 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
   int? _timeOffsetSeconds;
 
   int _savedFirstDayOfWeek = 1;
-  int _savedWorkStart = SettingsService.defaultWorkStartMinutes;
-  int _savedWorkEnd = SettingsService.defaultWorkEndMinutes;
   int _savedDuration = SettingsService.defaultJobDurationMinutes;
   String _savedView = SettingsService.defaultCalendarView;
   String _savedTimeSource = SettingsService.timeSourceManual;
@@ -39,8 +34,6 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
   bool get _dirty =>
       !_loading &&
       (_firstDayOfWeek != _savedFirstDayOfWeek ||
-          _workStartMinutes != _savedWorkStart ||
-          _workEndMinutes != _savedWorkEnd ||
           _jobDurationMinutes != _savedDuration ||
           _defaultCalendarView != _savedView ||
           _timeSource != _savedTimeSource ||
@@ -60,8 +53,6 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
     if (!mounted) return;
     setState(() {
       _firstDayOfWeek = (data['firstDayOfWeek'] as num?)?.toInt() ?? 1;
-      _workStartMinutes = SettingsService.readWorkStartMinutes(data);
-      _workEndMinutes = SettingsService.readWorkEndMinutes(data);
       _jobDurationMinutes = SettingsService.readJobDurationMinutes(data);
       _defaultCalendarView = SettingsService.readDefaultCalendarView(data);
       _timeSource = SettingsService.readTimeSource(data);
@@ -69,8 +60,6 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
       _timeZoneId = data['timeZoneId'] as String?;
       _timeOffsetSeconds = (data['timeOffsetSeconds'] as num?)?.toInt();
       _savedFirstDayOfWeek = _firstDayOfWeek;
-      _savedWorkStart = _workStartMinutes;
-      _savedWorkEnd = _workEndMinutes;
       _savedDuration = _jobDurationMinutes;
       _savedView = _defaultCalendarView;
       _savedTimeSource = _timeSource;
@@ -84,8 +73,6 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
   Future<bool> _save() async {
     await SettingsService.updateConfigMap({
       'firstDayOfWeek': _firstDayOfWeek,
-      'workStartMinutes': _workStartMinutes,
-      'workEndMinutes': _workEndMinutes,
       'defaultJobDurationMinutes': _jobDurationMinutes,
       'defaultCalendarView': _defaultCalendarView,
       'timeSource': _timeSource,
@@ -100,8 +87,6 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
     if (!mounted) return true;
     setState(() {
       _savedFirstDayOfWeek = _firstDayOfWeek;
-      _savedWorkStart = _workStartMinutes;
-      _savedWorkEnd = _workEndMinutes;
       _savedDuration = _jobDurationMinutes;
       _savedView = _defaultCalendarView;
       _savedTimeSource = _timeSource;
@@ -110,43 +95,6 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
       _savedOffset = _timeOffsetSeconds;
     });
     return true;
-  }
-
-  TimeOfDay _timeFromMinutes(int minutes) {
-    if (minutes >= 24 * 60) return const TimeOfDay(hour: 0, minute: 0);
-    return TimeOfDay(hour: minutes ~/ 60, minute: minutes % 60);
-  }
-
-  Future<void> _editWorkHours() async {
-    final start = await showAppTimePicker(
-      context: context,
-      initialTime: _timeFromMinutes(_workStartMinutes),
-      helpText: 'Начало рабочего дня'.tr,
-    );
-    if (start == null || !mounted) return;
-    final end = await showAppTimePicker(
-      context: context,
-      initialTime: _timeFromMinutes(_workEndMinutes),
-      helpText: 'Конец рабочего дня'.tr,
-    );
-    if (end == null || !mounted) return;
-
-    final startMinutes = start.hour * 60 + start.minute;
-    var endMinutes = end.hour * 60 + end.minute;
-    if (endMinutes == 0) endMinutes = 24 * 60;
-    if (endMinutes <= startMinutes) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Конец рабочего дня должен быть позже начала'.tr),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-    setState(() {
-      _workStartMinutes = startMinutes;
-      _workEndMinutes = endMinutes;
-    });
   }
 
   Future<void> _editTimeSource() async {
@@ -278,16 +226,7 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
                       color: Colors.blueGrey,
                       onTap: _editTimeSource,
                     ),
-                    SettingsHubTile(
-                      title: 'Часы'.tr,
-                      subtitle: SettingsService.workHoursLabel(
-                        _workStartMinutes,
-                        _workEndMinutes,
-                      ),
-                      icon: Icons.access_time,
-                      color: Colors.indigo,
-                      onTap: _editWorkHours,
-                    ),
+                    // Рабочие часы — только в «Расписание → Рабочие дни».
                     SettingsHubTile(
                       title: 'Визит'.tr,
                       subtitle: '$_jobDurationMinutes ${'мин'.tr}',

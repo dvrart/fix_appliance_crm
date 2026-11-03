@@ -4,7 +4,6 @@ import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../services/settings_service.dart';
 import '../widgets/settings_ui.dart';
-import 'secretary_learn_page.dart';
 
 enum _SecretarySection { hub, pickup }
 
@@ -147,20 +146,8 @@ class _AiSecretarySettingsPageState extends State<AiSecretarySettingsPage> {
                 active: _enabled,
                 onTap: () => _open(_SecretarySection.pickup),
               ),
-              SettingsHubTile(
-                title: context.tr('Ошибки', 'Errors'),
-                subtitle: context.tr('Копировать', 'Copy'),
-                icon: Icons.report_outlined,
-                color: Colors.red,
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const SecretaryLearnPage(),
-                    ),
-                  );
-                },
-              ),
+              // «Ошибки секретаря» — одна плитка в общих настройках
+              // (Подключения), с числом новых разборов.
             ],
           ),
           Padding(
