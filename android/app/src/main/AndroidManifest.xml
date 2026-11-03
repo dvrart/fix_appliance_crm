@@ -48,6 +48,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Android 15+: без него «зажечь экран» на входящем система отклоняет
+         (appops TURN_SCREEN_ON: rejectTime в момент звонка, 02.11.2026). -->
+    <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
 
     <!-- Push-уведомления (входящие звонки, статусы) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

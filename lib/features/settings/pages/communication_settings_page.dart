@@ -176,6 +176,16 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     await SettingsService.updateConfig(CallRouting.routeKey, route.name);
   }
 
+  Future<void> _setOutgoingRoute(CallRoute route) async {
+    if (route != CallRoute.app && !_routing.hasCell) {
+      final saved = await _editCellNumber();
+      if (!saved || !mounted) return;
+    }
+    setState(() => _routing = _routing.copyWith(outgoingRoute: route));
+    TwilioService.routing = _routing;
+    await SettingsService.updateConfig(CallRouting.outgoingKey, route.name);
+  }
+
   /// true — номер сохранён и не пустой.
   Future<bool> _editCellNumber() async {
     final controller = TextEditingController(
@@ -230,22 +240,22 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     if (!_routing.hasCell) {
       return 'Без номера SIM звонки идут только через приложение.'.tr;
     }
-    switch (_routing.route) {
-      case CallRoute.app:
-        return 'Звонки идут через интернет в приложении. Если звук не соединится, '
-                'экран скажет об этом и предложит перевести звонок на SIM.'
-            .tr;
-      case CallRoute.cell:
-        return 'Входящие звонят на ваш номер SIM: ответьте и нажмите 1. Не нажали — '
-                'звонок уйдёт секретарю. Исходящие: телефон набирает номер мастерской, '
-                'клиент видит номер мастерской, разговор записывается.'
-            .tr;
-      case CallRoute.auto:
-        return 'Сначала приложение. Если звук не поднялся за 7 секунд, этот звонок '
-                'переходит на SIM: входящий — зазвонит обычный телефон, нажмите 1; '
-                'исходящий — наберётся через сотовую. Следующий звонок снова через приложение.'
-            .tr;
-    }
+    final incoming = switch (_routing.effective) {
+      CallRoute.app =>
+        'Входящие — в приложении; нет звука — экран предложит перевести на SIM.'.tr,
+      CallRoute.cell =>
+        'Входящие — на SIM: ответьте и нажмите 1, иначе ответит секретарь.'.tr,
+      CallRoute.auto =>
+        'Входящие — в приложении; нет звука 7 с — этот звонок сам уйдёт на SIM (нажмите 1).'.tr,
+    };
+    final outgoing = switch (_routing.effectiveOutgoing) {
+      CallRoute.app => 'Исходящие — из приложения.'.tr,
+      CallRoute.cell =>
+        'Исходящие — через SIM, клиент видит номер мастерской.'.tr,
+      CallRoute.auto =>
+        'Исходящие — из приложения; нет звука 7 с — сам перезвонит через SIM.'.tr,
+    };
+    return '$incoming\n$outgoing';
   }
 
   Future<void> _loadSmsHeader() async {
@@ -461,23 +471,82 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     return _reminderOffsets.map(_offsetLabel).join(', ');
   }
 
+  /// Утренний и вечерний брифинг в одном окне: включить/выключить и часы.
   Future<void> _editBriefingTimes() async {
-    final morning = await showAppTimePicker(
+    await showModalBottomSheet<void>(
       context: context,
-      initialTime: TimeOfDay(hour: _morningHour, minute: 0),
-      helpText: 'Утреннее уведомление'.tr,
+      useRootNavigator: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheet) {
+            Future<void> pick(bool morning) async {
+              final picked = await showAppTimePicker(
+                context: context,
+                initialTime: TimeOfDay(
+                  hour: morning ? _morningHour : _eveningHour,
+                  minute: 0,
+                ),
+                helpText: morning
+                    ? 'Утреннее уведомление'.tr
+                    : 'Вечернее уведомление'.tr,
+              );
+              if (picked == null || !mounted) return;
+              setState(() {
+                if (morning) {
+                  _morningHour = picked.hour;
+                } else {
+                  _eveningHour = picked.hour;
+                }
+              });
+              setSheet(() {});
+            }
+
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 12, 8, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SwitchListTile(
+                      value: _morning,
+                      title: Text(
+                        'Утро / вечер'.tr,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      subtitle: Text('Заявки на день и на завтра'.tr),
+                      onChanged: (value) {
+                        _setMorning(value);
+                        setSheet(() {});
+                      },
+                    ),
+                    ListTile(
+                      enabled: _morning,
+                      leading: const Icon(Icons.wb_sunny_outlined),
+                      title: Text('Утреннее уведомление'.tr),
+                      trailing: Text(
+                        _hh(_morningHour),
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      onTap: () => pick(true),
+                    ),
+                    ListTile(
+                      enabled: _morning,
+                      leading: const Icon(Icons.nights_stay_outlined),
+                      title: Text('Вечернее уведомление'.tr),
+                      trailing: Text(
+                        _hh(_eveningHour),
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      onTap: () => pick(false),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
-    if (morning == null || !mounted) return;
-    final evening = await showAppTimePicker(
-      context: context,
-      initialTime: TimeOfDay(hour: _eveningHour, minute: 0),
-      helpText: 'Вечернее уведомление'.tr,
-    );
-    if (evening == null || !mounted) return;
-    setState(() {
-      _morningHour = morning.hour;
-      _eveningHour = evening.hour;
-    });
   }
 
   Future<void> _editReminders() async {
@@ -668,6 +737,40 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     );
   }
 
+  /// Три плитки выбора: приложение / SIM / авто — одни и те же для входящих
+  /// и исходящих.
+  List<Widget> _routeTiles(
+    CallRoute current,
+    Future<void> Function(CallRoute) onPick,
+  ) {
+    return [
+      SettingsHubTile(
+        title: 'Приложение'.tr,
+        subtitle: 'Через интернет'.tr,
+        icon: Icons.wifi_calling_3,
+        color: Colors.green,
+        active: current == CallRoute.app,
+        onTap: () => onPick(CallRoute.app),
+      ),
+      SettingsHubTile(
+        title: 'Сотовая'.tr,
+        subtitle: 'Обычная связь SIM'.tr,
+        icon: Icons.sim_card,
+        color: Colors.blue,
+        active: current == CallRoute.cell,
+        onTap: () => onPick(CallRoute.cell),
+      ),
+      SettingsHubTile(
+        title: 'Авто'.tr,
+        subtitle: 'Приложение, при сбое — SIM'.tr,
+        icon: Icons.swap_calls,
+        color: Colors.deepPurple,
+        active: current == CallRoute.auto,
+        onTap: () => onPick(CallRoute.auto),
+      ),
+    ];
+  }
+
   Widget _buildCalls() {
     return SettingsPageScaffold(
       title: 'Звонки'.tr,
@@ -675,32 +778,13 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
         padding: const EdgeInsets.only(top: 12, bottom: 32),
         children: [
           SettingsTileSection(
-            title: 'Как звонить'.tr,
+            title: 'Входящие'.tr,
+            tiles: _routeTiles(_routing.effective, _setRoute),
+          ),
+          SettingsTileSection(
+            title: 'Исходящие'.tr,
             tiles: [
-              SettingsHubTile(
-                title: 'Приложение'.tr,
-                subtitle: 'Через интернет'.tr,
-                icon: Icons.wifi_calling_3,
-                color: Colors.green,
-                active: _routing.effective == CallRoute.app,
-                onTap: () => _setRoute(CallRoute.app),
-              ),
-              SettingsHubTile(
-                title: 'Сотовая'.tr,
-                subtitle: 'Обычная связь SIM'.tr,
-                icon: Icons.sim_card,
-                color: Colors.blue,
-                active: _routing.effective == CallRoute.cell,
-                onTap: () => _setRoute(CallRoute.cell),
-              ),
-              SettingsHubTile(
-                title: 'Авто'.tr,
-                subtitle: 'Приложение, при сбое — SIM'.tr,
-                icon: Icons.swap_calls,
-                color: Colors.deepPurple,
-                active: _routing.effective == CallRoute.auto,
-                onTap: () => _setRoute(CallRoute.auto),
-              ),
+              ..._routeTiles(_routing.effectiveOutgoing, _setOutgoingRoute),
               SettingsHubTile(
                 title: 'Номер SIM'.tr,
                 subtitle: _routing.hasCell
@@ -737,19 +821,14 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                     : Icons.phone_in_talk,
                 color: _phoneAccountEnabled == false ? Colors.red : Colors.green,
                 active: _phoneAccountEnabled == true,
-                onTap: _checkPhone,
+                // Одна плитка вместо двух («Twilio» и «Android → Разрешения»):
+                // открывает учётку звонков Android и сама перепроверяет её.
+                onTap: _openAndroidPhoneHelp,
               ),
               _registrationTile(
                 title: context.tr('Регистрация звонков', 'Voice registration'),
                 state: TwilioService.registrationState,
                 onRetry: () => TwilioService.refreshRegistration(),
-              ),
-              SettingsHubTile(
-                title: 'Android'.tr,
-                subtitle: 'Разрешения'.tr,
-                icon: Icons.settings_phone,
-                color: Colors.blueGrey,
-                onTap: _openAndroidPhoneHelp,
               ),
             ],
           ),
@@ -900,14 +979,8 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
                   );
                 },
               ),
-              SettingsHubTile(
-                title: 'Брифинг'.tr,
-                subtitle: _morning ? 'Вкл'.tr : 'Выкл'.tr,
-                icon: Icons.toggle_on,
-                color: Colors.orange,
-                active: _morning,
-                onTap: () => _setMorning(!_morning),
-              ),
+              // «Брифинг» отдельной плиткой больше нет: включается и
+              // выключается в «Утро / вечер» вместе с часами.
             ],
           ),
           // ─── Тест уведомлений ────────────────────────────────────────────

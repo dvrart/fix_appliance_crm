@@ -515,13 +515,13 @@ class TwilioService {
       _activeCallController.add(null);
       return;
     }
-    if (event == CallEvent.callEnded && routing.autoFallback) {
-      if (outboundNoAudio) {
+    if (event == CallEvent.callEnded) {
+      if (outboundNoAudio && routing.outboundAutoFallback) {
         // Канал до Twilio так и не поднялся: звоним этому клиенту через SIM.
         unawaited(_fallbackOutboundToCell());
         return;
       }
-      if (wasAnswering && parentCallSid() != null) {
+      if (routing.autoFallback && wasAnswering && parentCallSid() != null) {
         unawaited(moveIncomingToCell());
         return;
       }
@@ -930,21 +930,21 @@ class TwilioService {
       if (result != true) {
         placingOutgoing = false;
         lastPlaceError ??= 'Телефон не принял вызов.';
-        if (route.autoFallback) return _fallbackOutboundToCell();
+        if (route.outboundAutoFallback) return _fallbackOutboundToCell();
         _setCallStatus('failed');
       } else {
         if (pendingJobId != null) {
           unawaited(_tagLatestOutboundWithJob(phoneNumber, pendingJobId!));
         }
         // «Авто»: не поднялся канал за 7 секунд — звоним через SIM.
-        if (route.autoFallback) _startOutboundWatch();
+        if (route.outboundAutoFallback) _startOutboundWatch();
       }
       return result == true;
     } catch (e) {
       placingOutgoing = false;
       lastPlaceError = e.toString();
       debugPrint('TwilioService: ошибка исходящего звонка: $e');
-      if (route.autoFallback) return _fallbackOutboundToCell();
+      if (route.outboundAutoFallback) return _fallbackOutboundToCell();
       _setCallStatus('failed');
       return false;
     }

@@ -36,6 +36,13 @@ class CallScreen extends StatefulWidget {
   static bool _shown = false;
   static bool get isShown => _shown;
 
+  /// Мастер сам свернул экран звонка (например, чтобы посмотреть в календарь).
+  /// Пока разговор идёт, `GlobalCallListener` не должен сам возвращать экран
+  /// звонка поверх календаря при событиях связи или датчике приближения.
+  static bool _minimizedByUser = false;
+  static bool get minimizedByUser => _minimizedByUser;
+  static void clearMinimized() => _minimizedByUser = false;
+
   static Future<T?> open<T>(
     BuildContext context, {
     required String phoneNumber,
@@ -46,6 +53,7 @@ class CallScreen extends StatefulWidget {
   }) async {
     if (_shown) return null;
     _shown = true;
+    _minimizedByUser = false;
     if (!isIncoming) AppFeedback.pleasant();
     try {
       final navigator =
@@ -165,6 +173,7 @@ class _CallScreenState extends State<CallScreen> {
           unawaited(_softClose(true));
         });
       } else if (status == 'ended' || status == 'failed') {
+        CallScreen._minimizedByUser = false;
         _stopDurationTimer();
         if (status == 'failed') {
           if (_offerCellAfterFailure) return;
@@ -192,7 +201,7 @@ class _CallScreenState extends State<CallScreen> {
   bool get _offerCellAfterFailure =>
       !widget.isIncoming &&
       TwilioService.routing.hasCell &&
-      TwilioService.routing.effective == CallRoute.app;
+      TwilioService.routing.effectiveOutgoing == CallRoute.app;
 
   void _startDurationTimer() {
     // После «связь восстановлена» таймер продолжает, а не начинает с нуля.
@@ -310,6 +319,15 @@ class _CallScreenState extends State<CallScreen> {
     await _softClose(false);
   }
 
+  void _openCalendarDuringCall() {
+    HapticFeedback.lightImpact();
+    CallScreen._minimizedByUser = true;
+    _popOnce(false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      AppCommands.selectTab.value = 0;
+    });
+  }
+
   Future<void> _sendToAi() async {
     if (_handoffBusy) return;
     HapticFeedback.mediumImpact();
@@ -350,7 +368,12 @@ class _CallScreenState extends State<CallScreen> {
     return PopScope(
       canPop: true,
       onPopInvokedWithResult: (didPop, result) {
-        if (didPop) _popped = true;
+        if (didPop) {
+          _popped = true;
+          if (!isEnded) {
+            CallScreen._minimizedByUser = true;
+          }
+        }
       },
       child: AnnotatedRegion<SystemUiOverlayStyle>(
         value: SystemUiOverlayStyle.light.copyWith(
@@ -488,7 +511,7 @@ class _CallScreenState extends State<CallScreen> {
                 _fade(
                   visible: showInCallControls,
                   child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 28),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
@@ -513,6 +536,11 @@ class _CallScreenState extends State<CallScreen> {
                         fill: const Color(0xFF25D366),
                         iconColor: Colors.white,
                         onTap: _toggleSpeaker,
+                      ),
+                      _buildControlButton(
+                        icon: Icons.calendar_month,
+                        label: 'Календарь'.tr,
+                        onTap: _openCalendarDuringCall,
                       ),
                     ],
                   ),

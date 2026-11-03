@@ -36,4 +36,29 @@ void main() {
     });
     expect(unknown.effective, CallRoute.app);
   });
+
+  test('outgoing calls can have their own mode, incoming stays as chosen', () {
+    final split = CallRouting.fromConfig({
+      'callRoute': 'app',
+      'callRouteOutgoing': 'auto',
+      'masterCellNumber': '5195550123',
+    });
+    expect(split.effective, CallRoute.app);
+    expect(split.autoFallback, isFalse);
+    expect(split.effectiveOutgoing, CallRoute.auto);
+    expect(split.outboundAutoFallback, isTrue);
+    expect(split.outboundViaCell, isFalse);
+
+    // Без отдельного поля исходящие идут как входящие — как было раньше.
+    final legacy = CallRouting.fromConfig({
+      'callRoute': 'cell',
+      'masterCellNumber': '5195550123',
+    });
+    expect(legacy.effectiveOutgoing, CallRoute.cell);
+    expect(legacy.outboundViaCell, isTrue);
+
+    // Без номера SIM — всё через приложение.
+    final noSim = CallRouting.fromConfig({'callRouteOutgoing': 'auto'});
+    expect(noSim.outboundAutoFallback, isFalse);
+  });
 }

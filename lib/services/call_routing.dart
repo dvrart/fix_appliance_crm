@@ -9,10 +9,19 @@
 enum CallRoute { app, cell, auto }
 
 class CallRouting {
-  const CallRouting({this.route = CallRoute.app, this.cellNumber = ''});
+  const CallRouting({
+    this.route = CallRoute.app,
+    this.cellNumber = '',
+    this.outgoingRoute,
+  });
 
   static const routeKey = 'callRoute';
   static const cellKey = 'masterCellNumber';
+
+  /// Исходящие отдельно от входящих (решение FIX, 02.11.2026: входящие —
+  /// приложение, исходящие — «авто»). Нет поля — исходящие как входящие.
+  /// Сервер это поле не читает: звонок с SIM он узнаёт по номеру.
+  static const outgoingKey = 'callRouteOutgoing';
 
   /// Сколько ждать звук в приложении, прежде чем считать связь плохой.
   /// Обычно он приходит за 1–2 секунды; 26.10.2026 удачный звонок
@@ -21,31 +30,50 @@ class CallRouting {
 
   final CallRoute route;
   final String cellNumber;
+  final CallRoute? outgoingRoute;
+
+  static CallRoute? _parse(Object? value) {
+    final raw = (value ?? '').toString().trim();
+    for (final item in CallRoute.values) {
+      if (item.name == raw) return item;
+    }
+    return null;
+  }
 
   factory CallRouting.fromConfig(Map<String, dynamic> config) {
-    final raw = (config[routeKey] ?? '').toString().trim();
-    final route = CallRoute.values.firstWhere(
-      (value) => value.name == raw,
-      orElse: () => CallRoute.app,
-    );
     return CallRouting(
-      route: route,
+      route: _parse(config[routeKey]) ?? CallRoute.app,
       cellNumber: normalizePhone((config[cellKey] ?? '').toString()),
+      outgoingRoute: _parse(config[outgoingKey]),
     );
   }
 
   bool get hasCell => cellNumber.isNotEmpty;
 
+  /// Входящие.
   CallRoute get effective => hasCell ? route : CallRoute.app;
 
-  bool get outboundViaCell => effective == CallRoute.cell;
+  /// Исходящие.
+  CallRoute get effectiveOutgoing =>
+      hasCell ? (outgoingRoute ?? route) : CallRoute.app;
 
+  bool get outboundViaCell => effectiveOutgoing == CallRoute.cell;
+
+  /// Входящий без звука переводится на SIM сам.
   bool get autoFallback => effective == CallRoute.auto;
 
-  CallRouting copyWith({CallRoute? route, String? cellNumber}) => CallRouting(
-        route: route ?? this.route,
-        cellNumber: cellNumber ?? this.cellNumber,
-      );
+  /// Исходящий без звука перезванивается через SIM сам.
+  bool get outboundAutoFallback => effectiveOutgoing == CallRoute.auto;
+
+  CallRouting copyWith({
+    CallRoute? route,
+    String? cellNumber,
+    CallRoute? outgoingRoute,
+  }) => CallRouting(
+    route: route ?? this.route,
+    cellNumber: cellNumber ?? this.cellNumber,
+    outgoingRoute: outgoingRoute ?? this.outgoingRoute,
+  );
 
   /// E.164 для Канады/США; пустая строка, если на телефон не похоже.
   static String normalizePhone(String raw) {

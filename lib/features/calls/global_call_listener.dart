@@ -45,6 +45,7 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
 
   Future<void> _onNative(MethodCall call) async {
     if (call.method == 'resumeActiveCall') {
+      CallScreen.clearMinimized();
       await _openActiveCallScreen(resume: true);
     }
   }
@@ -116,6 +117,7 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
         event == CallEvent.missedCall ||
         event == CallEvent.declined) {
       _incomingDebounce?.cancel();
+      CallScreen.clearMinimized();
       return;
     }
 
@@ -127,6 +129,7 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
         event == CallEvent.connected || event == CallEvent.answer;
 
     if (isIncomingRing) {
+      CallScreen.clearMinimized();
       _incomingDebounce?.cancel();
       _incomingDebounce = Timer(const Duration(milliseconds: 50), () {
         unawaited(_openActiveCallScreen());
@@ -134,7 +137,7 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
       return;
     }
 
-    if (isIncomingActive) {
+    if (isIncomingActive && !CallScreen.minimizedByUser) {
       unawaited(_openActiveCallScreen());
     }
   }
@@ -143,6 +146,7 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
     if (!mounted ||
         _callScreenShown ||
         CallScreen.isShown ||
+        CallScreen.minimizedByUser ||
         !_isLive(TwilioService.callStatus)) {
       return;
     }
