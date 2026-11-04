@@ -196,9 +196,11 @@ class _GlobalCallListenerState extends State<GlobalCallListener>
           ).timeout(const Duration(milliseconds: 200), onTimeout: () => null) ??
           phone;
     }
-    final name = await _resolveContactName(
-      phone,
-    ).timeout(const Duration(milliseconds: 200), onTimeout: () => null);
+    final name = isIncoming
+        ? null
+        : await _resolveContactName(
+            phone,
+          ).timeout(const Duration(milliseconds: 200), onTimeout: () => null);
     if (!mounted || !navigator.mounted || !_isLive(TwilioService.callStatus)) {
       return;
     }

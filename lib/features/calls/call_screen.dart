@@ -1,17 +1,24 @@
 import 'dart:async';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:twilio_voice/twilio_voice.dart';
 import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/motion.dart';
 import '../../models/client.dart';
+import '../../models/job.dart';
 import '../../services/call_routing.dart';
 import '../../services/client_service.dart';
+import '../../services/firestore_service.dart';
+import '../../services/job_service.dart';
+import '../../services/sms_service.dart';
 import '../../services/twilio_service.dart';
 import '../../core/l10n/app_locale.dart';
 import '../care_plan/care_plan_widgets.dart';
+import 'caller_jobs.dart';
 
 /// Экран активного звонка (исходящего или входящего).
 class CallScreen extends StatefulWidget {
@@ -110,6 +117,13 @@ class _CallScreenState extends State<CallScreen> {
   bool _popped = false;
   bool _closing = false;
   StreamSubscription? _statusSubscription;
+  String _callerName = '';
+  String _callerPhone = '';
+  List<Job> _callerJobs = const [];
+  List<Client> _callerClients = const [];
+  List<Job> _allCallerJobs = const [];
+  StreamSubscription<List<Client>>? _callerClientsSub;
+  StreamSubscription<List<Job>>? _callerJobsSub;
 
   void _popOnce([bool? result]) {
     if (_popped || !mounted) return;
@@ -133,6 +147,41 @@ class _CallScreenState extends State<CallScreen> {
     super.initState();
     _callStatus = _initialStatus();
     _initCall();
+    _callerPhone = widget.phoneNumber;
+    if (widget.isIncoming) unawaited(_loadCaller());
+  }
+
+  Future<void> _loadCaller() async {
+    if (Firebase.apps.isEmpty) return;
+    var phone = widget.phoneNumber;
+    if (SmsService.normalizePhone(phone).length < 10) {
+      final sid = TwilioService.parentCallSid();
+      if (sid != null) {
+        try {
+          final snapshot = await FirestoreService.callsRef.doc(sid).get();
+          phone = (snapshot.data() as Map?)?['fromNumber']?.toString() ?? phone;
+        } catch (_) {}
+      }
+    }
+    if (!mounted) return;
+    setState(() => _callerPhone = phone);
+    _callerClientsSub = ClientService.streamAll().listen((clients) {
+      _callerClients = clients;
+      _updateCaller();
+    }, onError: (Object _) {});
+    _callerJobsSub = JobService.streamAll().listen((jobs) {
+      _allCallerJobs = jobs;
+      _updateCaller();
+    }, onError: (Object _) {});
+  }
+
+  void _updateCaller() {
+    if (!mounted) return;
+    final result = CallerJobs.resolve(_callerPhone, _callerClients, _allCallerJobs);
+    setState(() {
+      _callerName = result.name;
+      _callerJobs = result.jobs;
+    });
   }
 
   String _initialStatus() {
@@ -347,6 +396,8 @@ class _CallScreenState extends State<CallScreen> {
     _stopDurationTimer();
     _answerWatch?.cancel();
     _statusSubscription?.cancel();
+    _callerClientsSub?.cancel();
+    _callerJobsSub?.cancel();
     super.dispose();
   }
 
@@ -410,7 +461,9 @@ class _CallScreenState extends State<CallScreen> {
               if (!_showKeypad) const Spacer(flex: 2),
               Builder(
                 builder: (context) {
-                  final cleanName = Client.stripClientWord(widget.contactName);
+                  final cleanName = Client.stripClientWord(
+                    _callerName.isNotEmpty ? _callerName : widget.contactName,
+                  );
                   final hasRealName =
                       cleanName.isNotEmpty &&
                       !Client.isPlaceholderName(cleanName);
@@ -438,7 +491,7 @@ class _CallScreenState extends State<CallScreen> {
                           children: [
                             Flexible(
                               child: Text(
-                                hasRealName ? cleanName : widget.phoneNumber,
+                                hasRealName ? cleanName : _callerPhone,
                                 textAlign: TextAlign.center,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -464,7 +517,7 @@ class _CallScreenState extends State<CallScreen> {
                       if (hasRealName && !_showKeypad) ...[
                         const SizedBox(height: 8),
                         Text(
-                          widget.phoneNumber,
+                          _callerPhone,
                           style: const TextStyle(
                             fontSize: 16,
                             color: Colors.white70,
@@ -479,6 +532,31 @@ class _CallScreenState extends State<CallScreen> {
                           compact: _showKeypad,
                         ),
                       ),
+                      if (!_showKeypad && _callerJobs.isNotEmpty)
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 110),
+                          child: ListView(
+                            shrinkWrap: true,
+                            padding: const EdgeInsets.symmetric(horizontal: 24),
+                            children: [
+                              for (final job in _callerJobs)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(
+                                    [
+                                      job.clientName,
+                                      job.workAddress,
+                                      if (job.appliances.isNotEmpty) job.appliances.first.displayName,
+                                      if (job.scheduledAt != null)
+                                        DateFormat('dd.MM HH:mm').format(job.scheduledAt!),
+                                    ].where((value) => value.trim().isNotEmpty).join(' · '),
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
                     ],
                   );
                 },

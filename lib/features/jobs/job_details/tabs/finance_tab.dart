@@ -999,14 +999,29 @@ class _FinanceTabState extends State<FinanceTab> {
   List<Map<String, dynamic>> _coveredIfPlan(List<Map<String, dynamic>> items) =>
       _coveredByPlan ? LabourDiscount.coverLabour(items) : items;
 
+  String _discountLabel(List<Map<String, dynamic>> items) {
+    final discount = LabourDiscount.discountOf(items);
+    if (discount == null) return context.tr('Скидка', 'Discount');
+    final whole = discount['discountWholeInvoice'] == true;
+    final fixed = discount['discountFixed'] == true;
+    final value = double.tryParse(
+      '${discount['discountValue'] ?? discount['discountPercent'] ?? 0}',
+    ) ?? 0;
+    final price = double.tryParse('${discount['price'] ?? 0}') ?? 0;
+    final amount = fixed
+        ? '\$${(-price).toStringAsFixed(2)}'
+        : '${value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString()}%';
+    return '${whole ? context.tr('Скидка на весь счёт', 'Invoice discount') : context.tr('Скидка на работу', 'Labour discount')}: $amount';
+  }
+
   /// Скидка только на работу (Care Plan или любая другая): строка счёта
   /// с отрицательной ценой, база — позиции с меткой «работа».
   ///
   /// [items] — позиции конструктора или уже сохранённого счёта. null из
   /// диалога — отмена, не «убрать скидку».
-  Future<double?> _askLabourDiscount(List<Map<String, dynamic>> items) async {
+  Future<({double value, bool fixedAmount, bool wholeInvoice})?> _askLabourDiscount(List<Map<String, dynamic>> items) async {
     String pctText(double v) =>
-        v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+        v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
     final base = LabourDiscount.labourBase(items);
     final plan = CarePlanService.memberPlanFor(
       clientId: ctrl.clientId,
@@ -1016,17 +1031,22 @@ class _FinanceTabState extends State<FinanceTab> {
         plan != null && plan.repairBenefitsActive(DateTime.now())
         ? plan.discountPercent
         : null;
-    final current = LabourDiscount.percentOf(items);
+    final current = LabourDiscount.discountOf(items);
+    var fixedAmount = current?['discountFixed'] == true;
+    var wholeInvoice = current?['discountWholeInvoice'] == true;
+    final currentValue = double.tryParse(
+      '${current?['discountValue'] ?? current?['discountPercent'] ?? planPct ?? 0}',
+    ) ?? 0;
     final input = TextEditingController(
-      text: pctText(current ?? planPct ?? 0),
+      text: fixedAmount ? currentValue.toStringAsFixed(2) : pctText(currentValue),
     );
-    final result = await showDialog<double>(
+    final result = await showDialog<({double value, bool fixedAmount, bool wholeInvoice})>(
       context: context,
-      builder: (dialogContext) => DisposeOnClose(
+      builder: (dialogContext) => StatefulBuilder(builder: (context, setDialog) => DisposeOnClose(
         disposables: [input],
         child: AlertDialog(
-          title: Text(context.tr('Скидка на работу', 'Labour discount')),
-          content: Column(
+          title: Text(context.tr('Скидка', 'Discount')),
+          content: SingleChildScrollView(child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1034,10 +1054,7 @@ class _FinanceTabState extends State<FinanceTab> {
                 '${context.tr('Работа в счёте', 'Labour in this invoice')}: \$${base.toStringAsFixed(2)}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
-              Text(
-                context.tr('Запчасти не скидываются.', 'Parts are not discounted.'),
-                style: TextStyle(color: AppColors.inkMuted, fontSize: 12),
-              ),
+              Text('${context.tr('Весь счёт', 'Whole invoice')}: \$${LabourDiscount.invoiceBase(items).toStringAsFixed(2)}'),
               if (planPct != null)
                 Text(
                   planPct >= 100
@@ -1049,21 +1066,40 @@ class _FinanceTabState extends State<FinanceTab> {
                   ),
                 ),
               const SizedBox(height: 10),
+              DropdownButtonFormField<bool>(
+                initialValue: wholeInvoice,
+                decoration: InputDecoration(labelText: context.tr('Применить к', 'Apply to')),
+                items: [
+                  DropdownMenuItem(value: false, child: Text(context.tr('Только работа', 'Labour only'))),
+                  DropdownMenuItem(value: true, child: Text(context.tr('Весь счёт', 'Whole invoice'))),
+                ],
+                onChanged: (value) => setDialog(() => wholeInvoice = value ?? false),
+              ),
+              DropdownButtonFormField<bool>(
+                initialValue: fixedAmount,
+                decoration: InputDecoration(labelText: context.tr('Вид скидки', 'Discount type')),
+                items: [
+                  DropdownMenuItem(value: false, child: Text(context.tr('Процент', 'Percent'))),
+                  DropdownMenuItem(value: true, child: Text(context.tr('Сумма', 'Amount'))),
+                ],
+                onChanged: (value) => setDialog(() => fixedAmount = value ?? false),
+              ),
+              const SizedBox(height: 10),
               TextField(
                 controller: input,
                 autofocus: true,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: '%',
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  labelText: fixedAmount ? '\$' : '%',
+                  border: const OutlineInputBorder(),
                 ),
               ),
             ],
-          ),
+          )),
           actions: [
             if (current != null)
               TextButton(
-                onPressed: () => Navigator.pop(dialogContext, 0.0),
+                onPressed: () => Navigator.pop(dialogContext, (value: 0.0, fixedAmount: fixedAmount, wholeInvoice: wholeInvoice)),
                 child: Text(context.tr('Убрать', 'Remove')),
               ),
             TextButton(
@@ -1071,24 +1107,26 @@ class _FinanceTabState extends State<FinanceTab> {
               child: Text(context.tr('Отмена', 'Cancel')),
             ),
             FilledButton(
-              onPressed: () => Navigator.pop(
-                dialogContext,
-                double.tryParse(input.text.replaceAll(',', '.').trim()) ?? 0,
-              ),
+              onPressed: () {
+                final value = double.tryParse(input.text.replaceAll(',', '.').trim());
+                if (value == null || !value.isFinite || value < 0) return;
+                Navigator.pop(dialogContext,
+                  (value: value, fixedAmount: fixedAmount, wholeInvoice: wholeInvoice));
+              },
               child: Text(context.tr('Применить', 'Apply')),
             ),
           ],
         ),
-      ),
+      )),
     );
     if (result == null || !mounted) return null;
-    if (result > 0 && base <= 0) {
+    if (result.value > 0 && (result.wholeInvoice ? LabourDiscount.invoiceBase(items) : base) <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             context.tr(
-              'В счёте нет позиций с меткой «работа»',
-              'No labour lines in this invoice',
+              result.wholeInvoice ? 'В счёте нет суммы для скидки' : 'В счёте нет позиций с меткой «работа»',
+              result.wholeInvoice ? 'No invoice amount to discount' : 'No labour lines in this invoice',
             ),
           ),
         ),
@@ -1112,8 +1150,10 @@ class _FinanceTabState extends State<FinanceTab> {
     setState(() {
       final next = LabourDiscount.apply(
         items,
-        result,
-        carePlan: planPct != null && result == planPct,
+        result.value,
+        fixedAmount: result.fixedAmount,
+        wholeInvoice: result.wholeInvoice,
+        carePlan: !result.fixedAmount && !result.wholeInvoice && planPct != null && result.value == planPct,
       );
       ctrl.builderItems
         ..clear()
@@ -1143,8 +1183,10 @@ class _FinanceTabState extends State<FinanceTab> {
     final next = LabourDiscount.refresh(
       LabourDiscount.apply(
         items,
-        result,
-        carePlan: planPct != null && result == planPct,
+        result.value,
+        fixedAmount: result.fixedAmount,
+        wholeInvoice: result.wholeInvoice,
+        carePlan: !result.fixedAmount && !result.wholeInvoice && planPct != null && result.value == planPct,
       ),
     );
     setState(() => _busy = true);
@@ -1162,7 +1204,6 @@ class _FinanceTabState extends State<FinanceTab> {
         List<Map<String, dynamic>>.from(ctrl.builderItems),
       ),
     );
-    final discountPct = LabourDiscount.percentOf(shownItems);
     final subtotal = ctrl.calcSubtotal(shownItems);
     final tax = ctrl.calcTax(subtotal, ctrl.builderTaxRate);
     final total = ctrl.calcTotal(subtotal, tax);
@@ -1462,10 +1503,7 @@ class _FinanceTabState extends State<FinanceTab> {
                       onPressed: canSave ? _labourDiscountDialog : null,
                       icon: const Icon(Icons.percent, size: 18),
                       label: Text(
-                        discountPct == null
-                            ? context.tr('Скидка на работу', 'Labour discount')
-                            : '${context.tr('Скидка на работу', 'Labour discount')}: '
-                                  '${discountPct == discountPct.roundToDouble() ? discountPct.toStringAsFixed(0) : discountPct.toStringAsFixed(1)}%',
+                        _discountLabel(shownItems),
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
@@ -2497,7 +2535,6 @@ class _FinanceTabState extends State<FinanceTab> {
     // которой уже сделан счёт: правка не доедет до него.
     final itemsEditable =
         !isCancelled && payments.isEmpty && !_estimateConverted(doc);
-    final discountPct = LabourDiscount.percentOf(items);
 
     final docTitle =
         '${isEstimate ? 'ESTIMATE' : 'INVOICE'} #${doc['number'] ?? (docIndex + 1)}';
@@ -2761,13 +2798,7 @@ class _FinanceTabState extends State<FinanceTab> {
                                           size: 18,
                                         ),
                                         label: Text(
-                                          discountPct == null
-                                              ? context.tr(
-                                                  'Скидка на работу',
-                                                  'Labour discount',
-                                                )
-                                              : '${context.tr('Скидка на работу', 'Labour discount')}: '
-                                                    '${discountPct == discountPct.roundToDouble() ? discountPct.toStringAsFixed(0) : discountPct.toStringAsFixed(1)}%',
+                                          _discountLabel(items),
                                           style: const TextStyle(
                                             fontWeight: FontWeight.w700,
                                           ),

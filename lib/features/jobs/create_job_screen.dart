@@ -346,9 +346,6 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
       _showError('Заполните обязательные поля'.tr);
       return false;
     }
-    _selectedDate ??= DateTime.now();
-    _selectedTime ??= _defaultStartTime;
-
     // Другого адреса не вписали — берём адрес из карточки клиента.
     final knownClientId = (_existingClientId ?? '').trim();
     if (_clientAddressEmpty && knownClientId.isNotEmpty) {
@@ -386,13 +383,15 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         unit: _clientUnitCtrl.text.trim(),
       );
 
-      final jobDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        _selectedTime!.hour,
-        _selectedTime!.minute,
-      );
+      final jobDateTime = _selectedDate != null && _selectedTime != null
+          ? DateTime(
+              _selectedDate!.year,
+              _selectedDate!.month,
+              _selectedDate!.day,
+              _selectedTime!.hour,
+              _selectedTime!.minute,
+            )
+          : null;
 
       final appliances = _appliances
           .map(
@@ -1384,6 +1383,17 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 ),
               ),
             ),
+            if (_selectedDate != null)
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _selectedDate = null;
+                    _selectedTime = null;
+                  });
+                  _markDirty();
+                },
+                child: Text(context.tr('Без даты и времени', 'No date or time')),
+              ),
             const SizedBox(height: 16),
             DropdownButtonFormField<int>(
               key: ValueKey('visit-duration-$_calendarDefaultsLoaded'),

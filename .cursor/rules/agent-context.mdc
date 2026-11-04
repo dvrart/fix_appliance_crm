@@ -53,6 +53,9 @@ Kotlin DSL, поэтому `flutter build apk --release` **вообще не с�
 проверкой на телефоне: шторка уведомлений и звонки зовут эти классы через рефлексию, и если
 `-keep` не сработает, уведомления молча перестанут рисоваться.
 
+Flutter 3.44.4 сам включает R8 в release. Для сборки без минификации задавайте
+переменную окружения `ORG_GRADLE_PROJECT_shrink=false` перед запуском Flutter.
+
 Typical install (always do this after app UI/code changes — do not wait for FIX to say «поставь»):
 
 ```

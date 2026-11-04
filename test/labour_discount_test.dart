@@ -60,4 +60,23 @@ void main() {
     expect(refreshed.last['price'], -30);
     expect(LabourDiscount.refresh(items), same(items), reason: 'no discount — list untouched');
   });
+
+  test('fixed discounts retain their amount and are limited by the selected base', () {
+    final labour = LabourDiscount.apply(items, 75, fixedAmount: true);
+    expect(labour.last['price'], -75);
+    final invoice = LabourDiscount.apply(items, 250, fixedAmount: true, wholeInvoice: true);
+    expect(invoice.last['price'], -250);
+    expect(Job.documentSubtotal({'items': invoice}), 79);
+    final reduced = LabourDiscount.refresh([items[0], invoice.last]);
+    expect(reduced.last['price'], -99);
+    expect(LabourDiscount.refresh([...items, reduced.last]).last['price'], -250);
+  });
+
+  test('invoice percentage follows all items and preserves legacy labour discounts', () {
+    final invoice = LabourDiscount.apply(items, 10, wholeInvoice: true);
+    expect(invoice.last['price'], -32.9);
+    expect(Job.documentTotal({'items': invoice, 'taxRate': 0.13}), closeTo(296.1 * 1.13, 0.0001));
+    expect(LabourDiscount.refresh([items[0], invoice.last]).last['price'], -9.9);
+    expect(LabourDiscount.refresh(LabourDiscount.apply(items, 10)).last['price'], -20);
+  });
 }

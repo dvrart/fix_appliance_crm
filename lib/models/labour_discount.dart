@@ -34,6 +34,20 @@ class LabourDiscount {
   static double amount(List<Map> items, double percent) =>
       _round(labourBase(items) * percent.clamp(0, 100) / 100);
 
+  static double invoiceBase(List<Map> items) => _round(
+    items.where((item) => !isDiscountLine(item)).fold<double>(
+      0,
+      (total, item) => total + _num(item['qty'], 1) * _num(item['price'], 0),
+    ).clamp(0, double.infinity),
+  );
+
+  static Map? discountOf(List<Map> items) {
+    for (final item in items) {
+      if (isDiscountLine(item)) return item;
+    }
+    return null;
+  }
+
   static double? percentOf(List<Map> items) {
     for (final item in items) {
       if (isDiscountLine(item)) return _num(item['discountPercent'], 0);
@@ -62,14 +76,31 @@ class LabourDiscount {
     List<Map<String, dynamic>> items,
     double percent, {
     bool carePlan = false,
+    bool fixedAmount = false,
+    bool wholeInvoice = false,
   }) {
     final rest = [
       for (final item in items)
         if (!isDiscountLine(item)) item,
     ];
-    final value = amount(rest, percent);
+    final base = wholeInvoice ? invoiceBase(rest) : labourBase(rest);
+    final value = _round(fixedAmount
+        ? percent.clamp(0, base)
+        : base * percent.clamp(0, 100) / 100);
     if (percent <= 0 || value <= 0) return rest;
-    return [...rest, line(percent, value, carePlan: carePlan)];
+    final entry = line(percent, value, carePlan: carePlan);
+    if (fixedAmount || wholeInvoice) {
+      final valueLabel = fixedAmount
+          ? '\$${value.toStringAsFixed(2)}'
+          : '${percent.toStringAsFixed(percent == percent.roundToDouble() ? 0 : 1)}%';
+      entry.addAll({
+        'name': '${wholeInvoice ? 'Invoice' : 'Labour'} discount $valueLabel',
+        'discountFixed': fixedAmount,
+        'discountWholeInvoice': wholeInvoice,
+        'discountValue': percent,
+      });
+    }
+    return [...rest, entry];
   }
 
   /// Работа по Care Plan бесплатна, когда заявка привязана к паспорту со
@@ -86,13 +117,24 @@ class LabourDiscount {
   /// Пересчитать строку скидки по её проценту — после того как работу в
   /// счёте поменяли. Порядок и число позиций не меняются.
   static List<Map<String, dynamic>> refresh(List<Map<String, dynamic>> items) {
-    final percent = percentOf(items);
-    if (percent == null) return items;
-    final value = amount(items, percent);
+    final discount = discountOf(items);
+    if (discount == null) return items;
+    final fixed = discount['discountFixed'] == true;
+    final whole = discount['discountWholeInvoice'] == true;
+    final selected = _num(discount['discountValue'], _num(discount['discountPercent'], 0));
+    final base = whole ? invoiceBase(items) : labourBase(items);
+    final value = _round(fixed
+        ? selected.clamp(0, base)
+        : base * selected.clamp(0, 100) / 100);
     return [
       for (final item in items)
         if (isDiscountLine(item))
-          {...item, 'price': -value}
+          {
+            ...item,
+            'price': -value,
+            if (fixed)
+              'name': '${whole ? 'Invoice' : 'Labour'} discount \$${value.toStringAsFixed(2)}',
+          }
         else
           item,
     ];

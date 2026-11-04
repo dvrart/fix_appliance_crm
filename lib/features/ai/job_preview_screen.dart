@@ -291,10 +291,6 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
       _showError('Укажите тип техники'.tr);
       return false;
     }
-    if (_scheduledDate == null || _scheduledTime == null) {
-      _showError('Укажите дату и время визита'.tr);
-      return false;
-    }
 
     setState(() => _isSaving = true);
 
@@ -355,13 +351,15 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
       }
 
       // Создаём дату-время визита
-      final scheduledAt = DateTime(
-        _scheduledDate!.year,
-        _scheduledDate!.month,
-        _scheduledDate!.day,
-        _scheduledTime!.hour,
-        _scheduledTime!.minute,
-      );
+      final scheduledAt = _scheduledDate != null && _scheduledTime != null
+          ? DateTime(
+              _scheduledDate!.year,
+              _scheduledDate!.month,
+              _scheduledDate!.day,
+              _scheduledTime!.hour,
+              _scheduledTime!.minute,
+            )
+          : null;
 
       // Создаём заявку
       final job = Job(
@@ -819,6 +817,14 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
                     ),
                   ],
                 ),
+                if (_scheduledDate != null)
+                  TextButton(
+                    onPressed: () => setState(() {
+                      _scheduledDate = null;
+                      _scheduledTime = null;
+                    }),
+                    child: Text(context.tr('Без даты и времени', 'No date or time')),
+                  ),
               ],
             ),
 
