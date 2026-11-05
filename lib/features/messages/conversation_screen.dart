@@ -519,6 +519,10 @@ class ConversationScreen extends StatefulWidget {
   final List<ConversationPeer> recipients;
   final ValueChanged<ConversationPeer>? onRecipientChanged;
   final bool embedded;
+
+  /// Встроенный чат ([embedded]): выбрана ли сейчас вкладка «Чат» в карточке
+  /// заявки. У обычной карточки видимость решает маршрут — параметр не нужен.
+  final bool embeddedVisible;
   final ConversationChannel? initialChannel;
   final bool websiteInbox;
 
@@ -538,6 +542,7 @@ class ConversationScreen extends StatefulWidget {
     this.recipients = const [],
     this.onRecipientChanged,
     this.embedded = false,
+    this.embeddedVisible = true,
     this.initialChannel,
     this.websiteInbox = false,
     this.highlightMessageId,
@@ -613,7 +618,8 @@ class ConversationScreen extends StatefulWidget {
   State<ConversationScreen> createState() => _ConversationScreenState();
 }
 
-class _ConversationScreenState extends State<ConversationScreen> {
+class _ConversationScreenState extends State<ConversationScreen>
+    with WidgetsBindingObserver {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   bool _isSending = false;
@@ -642,6 +648,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final GlobalKey _highlightKey = GlobalKey();
   bool _highlightShown = false;
   Timer? _highlightTimer;
+
+  /// Приложение на переднем плане. В фоне входящее не «просмотрено» —
+  /// бейдж и шторка должны про него честно напомнить.
+  bool _appResumed = true;
+  DateTime? _lastAutoMarkAt;
 
   bool get _selecting => _selectedIds.isNotEmpty;
 
@@ -726,6 +737,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     ErrorLogService.markScreen('Переписка');
     _applyPeerFromWidget();
     _channel = widget.websiteInbox
@@ -836,6 +848,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
         oldWidget.clientId != widget.clientId) {
       _bindStreams();
     }
+    // Мастер переключился на вкладку «Чат» в карточке заявки — это тот же
+    // просмотр переписки, что и открытие карточки: помечаем прочитанным.
+    if (widget.embedded &&
+        !oldWidget.embeddedVisible &&
+        widget.embeddedVisible) {
+      _markRead();
+    }
   }
 
   void _bindStreams() {
@@ -935,9 +954,63 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appResumed = state == AppLifecycleState.resumed;
+    if (_appResumed) _markReadIfVisible();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Карточка снова стала верхней (вернулись «Назад» к уже открытому
+    // чату): если за время, пока она была под другими экранами, пришли
+    // сообщения — они не прочитаны, хотя мастер их сейчас видит.
+    _markReadIfVisible();
+  }
+
+  /// Переписка реально перед глазами: приложение на переднем плане, экран
+  /// открыт (у карточки — верхний маршрут, у встроенного чата заявки —
+  /// ещё и выбранная вкладка «Чат»). Только тогда новое входящее можно
+  /// смело отмечать прочитанным сразу.
+  bool get _conversationVisible {
+    if (!_appResumed) return false;
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) return false;
+    if (widget.embedded && !widget.embeddedVisible) return false;
+    return true;
+  }
+
+  void _markReadIfVisible() {
+    if (!_conversationVisible) return;
+    final messages = _threadCache[_threadKey] ?? const <SmsMessage>[];
+    for (final message in messages) {
+      if (!message.isOutbound && !message.read) {
+        _markReadThrottled();
+        return;
+      }
+    }
+  }
+
+  /// Отметка «прочитано» — это запрос к Firestore; на каждое событие
+  /// стрима её не жжём, но и ждать следующего сообщения не надо.
+  void _markReadThrottled() {
+    final now = DateTime.now();
+    if (_lastAutoMarkAt != null &&
+        now.difference(_lastAutoMarkAt!) < const Duration(seconds: 2)) {
+      return;
+    }
+    _lastAutoMarkAt = now;
+    _markRead();
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _translateDebounce?.cancel();
     _highlightTimer?.cancel();
+    // Вышли из переписки — всё, что в ней лежало (включая пришедшее,
+    // пока мастер её читал), считается просмотренным.
+    _markRead();
     _textController.removeListener(_onDraftChanged);
     _textController.dispose();
     _scrollController.dispose();
@@ -2011,6 +2084,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
               if (_highlightId != null && _visibleIds.contains(_highlightId)) {
                 _revealHighlight();
               }
+              // Пришло новое, пока мастер смотрит в эту переписку —
+              // отметка не ждёт выхода: бейдж и шторка не должны врать.
+              _markReadIfVisible();
 
               // Лента перевёрнута: offset 0 — это низ, последнее сообщение.
               // Так низ держится сам, и прокрутку к нему звать не надо.

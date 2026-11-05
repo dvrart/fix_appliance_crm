@@ -107,8 +107,10 @@ object CrmShadeNotifier {
             body.lines().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
         }
 
-        val launch = Intent().apply {
-            setClassName(app.packageName, "${app.packageName}.MainActivity")
+        // applicationId — ca.fixappliance.crm, а класс активности лежит в
+        // namespace com.example.fix_appliance_crm. Через packageName.MainActivity
+        // intent вёл в несуществующий класс, и тап по карточке ничего не открывал.
+        val launch = Intent(app, MainActivity::class.java).apply {
             action = "com.example.fix_appliance_crm.NOTIFICATION"
             addFlags(
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or

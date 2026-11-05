@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/l10n/app_locale.dart';
@@ -53,6 +55,9 @@ class EmailOfferPage {
             problemDescription: loaded.body,
           );
     final website = loaded.isWebsiteFormMail;
+    // Дальше мастер увидит текст самого письма — считаем его прочитанным,
+    // сам оффер (emailOfferPending) остаётся до решения «заявка / мимо».
+    unawaited(SmsService.markEmailSeen(loaded.id));
     final from = website
         ? (loaded.replyToEmail.contains('@')
             ? loaded.replyToEmail

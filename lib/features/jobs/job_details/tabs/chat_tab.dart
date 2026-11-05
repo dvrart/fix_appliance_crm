@@ -7,7 +7,15 @@ import '../../../../core/l10n/app_locale.dart';
 class ChatTab extends StatelessWidget {
   final JobDetailsController controller;
 
-  const ChatTab({super.key, required this.controller});
+  /// Выбрана ли сейчас вкладка «Чат». Нужно переписке, чтобы не считать
+  /// прочитанным то, на что мастер не смотрит.
+  final bool chatVisible;
+
+  const ChatTab({
+    super.key,
+    required this.controller,
+    this.chatVisible = true,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -51,6 +59,7 @@ class ChatTab extends StatelessWidget {
                       onRecipientChanged: (peer) =>
                           controller.setChatRole(peer.id),
                       embedded: true,
+                      embeddedVisible: chatVisible,
                     ),
             ),
           ],

@@ -198,6 +198,12 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
   @override
   void initState() {
     super.initState();
+    // Открыли запись/расшифровку звонка — он просмотрен: снимаем «новое»
+    // и карточку в шторке, как делает разбор звонка.
+    final callId = (widget.attachment['callId'] ?? '').toString().trim();
+    if (callId.isNotEmpty) {
+      unawaited(TwilioService.markReviewed(callId));
+    }
     _summary = (widget.attachment['summary'] ?? '').toString().trim();
     final stored = callTranscriptText(widget.attachment);
     final rawRu =

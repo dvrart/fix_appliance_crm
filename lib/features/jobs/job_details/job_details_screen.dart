@@ -592,7 +592,10 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
                     children: [
                       DetailsTab(controller: _controller),
                       FinanceTab(controller: _controller),
-                      ChatTab(controller: _controller),
+                      ChatTab(
+                        controller: _controller,
+                        chatVisible: _tabController.index == 2,
+                      ),
                     ],
                   ),
                 ),

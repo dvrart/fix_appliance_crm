@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants.dart';
@@ -85,6 +87,11 @@ class _SourceEmailSheetState extends State<_SourceEmailSheet> {
     try {
       _message = await SmsService.getById(id);
     } catch (_) {}
+    // Открыли само письмо — оно просмотрено: «непрочитано» и колокольчик
+    // должны погаснуть, как после чтения в переписке.
+    if (_message != null) {
+      unawaited(SmsService.markEmailSeen(_message!.id));
+    }
     if (mounted) setState(() => _loading = false);
   }
 
