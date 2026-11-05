@@ -38,11 +38,14 @@ class OdspOtherSpec {
 /// (3083E). Имена строк повторяют английскую форму, чтобы число можно было
 /// переписать напротив поля, не переводя в уме.
 ///
-/// Откуда что берётся:
-/// * доход — счета месяца: работа и выезд в service income, запчасти для
-///   клиента в sale of goods, чаевые в other business income (HST — не доход);
-/// * расход — чеки из раздела «Расходы» без HST плюс закупка запчастей по
-///   счетам; инструмент-«капитал» (CCA) сюда не входит, это не расход месяца;
+/// Откуда что берётся (решение FIX, 04.11.2026):
+/// * доход — ТОЛЬКО наличные: оплата картой (Stripe) или e-Transfer в отчёт
+///   не идёт. Внутри наличной доли работа и выезд → service income, запчасти
+///   для клиента → sale of goods, чаевые → other business income (HST — не
+///   доход), вопрос про GST/HST отвечается тоже по наличной доле;
+/// * расход — ВСЁ: чеки из раздела «Расходы» без HST плюс закупка запчастей
+///   по счетам целиком, независимо от того, как клиент расплатился;
+///   инструмент-«капитал» (CCA) сюда не входит, это не расход месяца;
 /// * километры машины в CRM не хранятся — вписываются на форму от руки.
 class OdspReportFigures {
   final String companyName;
@@ -50,13 +53,13 @@ class OdspReportFigures {
   final DateTime periodStart;
   final DateTime periodEndInclusive;
 
-  /// Запчасти, выставленные клиентам, без HST.
+  /// Запчасти, выставленные клиентам, без HST — только наличная доля.
   final double saleOfGoods;
 
-  /// Работа и выезд без HST.
+  /// Работа и выезд без HST — только наличная доля.
   final double serviceIncome;
 
-  /// Чаевые месяца.
+  /// Чаевые месяца наличными.
   final double otherIncome;
 
   /// Закупка запчастей: из счетов плюс сфотографированные чеки запчастей.
@@ -78,7 +81,7 @@ class OdspReportFigures {
   final double otherExpenses;
   final List<OdspOtherSpec> otherSpec;
 
-  /// HST с выставленных счетов месяца (ответ на вопрос формы).
+  /// HST с наличной доли счетов месяца (ответ на вопрос формы).
   final double hstCollected;
 
   /// Инструмент/оборудование CCA за месяц — подсказка, в расходы не входит.
@@ -154,13 +157,18 @@ class OdspReportFigures {
   String get dateRangeEn =>
       '${DateFormat('yyyy-MM-dd').format(periodStart)} to ${DateFormat('yyyy-MM-dd').format(periodEndInclusive)}';
 
-  /// [expenses] — уже отобранные чеки месяца (без фильтрации здесь).
+  /// [metrics] — полный отчёт месяца, из него берутся расходы (закупка
+  /// запчастей целиком). [cashMetrics] — тот же месяц, посчитанный по
+  /// наличным (`forMethod(ReportPayMethod.cash)`), из него берётся доход:
+  /// карта и e-Transfer на форму не идут. [expenses] — уже отобранные чеки
+  /// месяца (без фильтрации здесь).
   static OdspReportFigures build({
     required String companyName,
     required String hstNumber,
     required DateTime periodStart,
     required DateTime periodEndInclusive,
     required ReportMetrics metrics,
+    required ReportMetrics cashMetrics,
     required List<Expense> expenses,
   }) {
     double sumCategory(String id) {
@@ -211,9 +219,9 @@ class OdspReportFigures {
       hstNumber: hstNumber,
       periodStart: periodStart,
       periodEndInclusive: periodEndInclusive,
-      saleOfGoods: metrics.partsSales,
-      serviceIncome: metrics.labourSales,
-      otherIncome: metrics.tips,
+      saleOfGoods: cashMetrics.partsSales,
+      serviceIncome: cashMetrics.labourSales,
+      otherIncome: cashMetrics.tips,
       costOfGoodsPurchased: metrics.partsCost + partsReceipts,
       costFromInvoices: metrics.partsCost,
       costFromReceipts: partsReceipts,
@@ -229,7 +237,7 @@ class OdspReportFigures {
       businessInsurance: sumCategory(ExpenseCategories.insurance.id),
       otherExpenses: other + meals + wages,
       otherSpec: spec,
-      hstCollected: metrics.hstCollectible,
+      hstCollected: cashMetrics.hstCollectible,
       capitalTotal: capital,
       receiptCount: expenses.length,
     );
@@ -288,6 +296,7 @@ class OdspReportFigures {
       if (capitalTotal > 0.009)
         'Note: tools/equipment counted as capital (CCA), not a monthly expense: \$${_m(capitalTotal)}',
       '',
+      'Basis: income counts only payments received in CASH — card (Stripe) and e-Transfer are not included. Expenses are counted in full.',
       'Numbers from Fix Appliance CRM (invoices + receipts). Copy onto form 3083E.',
     ].join('\n');
   }
@@ -399,6 +408,7 @@ class _OdspReportPageState extends State<OdspReportPage> {
       periodStart: _start,
       periodEndInclusive: _endExclusive.subtract(const Duration(days: 1)),
       metrics: metrics,
+      cashMetrics: metrics.forMethod(ReportPayMethod.cash),
       expenses: ExpenseService.inPeriod(_expenses, _start, _endExclusive),
     );
   }
@@ -644,6 +654,10 @@ class OdspReportView extends StatelessWidget {
             ),
           pw.SizedBox(height: 10),
           pw.Text(
+            'Basis: income counts only payments received in CASH — card (Stripe) and e-Transfer are not included. Expenses are counted in full.',
+            style: const pw.TextStyle(fontSize: 9),
+          ),
+          pw.Text(
             'Numbers from Fix Appliance CRM (invoices + receipts). Not a government form.',
             style: const pw.TextStyle(fontSize: 8),
           ),
@@ -689,8 +703,8 @@ class OdspReportView extends StatelessWidget {
         'Form 3083E is monthly: pick the report month with the arrows above.',
       ),
       context.tr(
-        'Доход сложен из счетов месяца, расход — из чеков раздела «Расходы» и закупки запчастей. HST в доход не входит.',
-        'Income comes from the month’s invoices, expenses from photographed receipts and parts cost. HST is not income.',
+        'Доход — только наличные: оплата картой или e-Transfer в отчёт не идёт. Расход — все чеки раздела «Расходы» и вся закупка запчастей. HST в доход не входит.',
+        'Income is cash only: card and e-Transfer payments are not reported. Expenses are all photographed receipts and all parts cost. HST is not income.',
       ),
       context.tr(
         'Перепишите числа на бумажную форму, скопируйте текстом или скачайте PDF. Километры машины впишите от руки — их в CRM нет.',
@@ -783,7 +797,16 @@ class OdspReportView extends StatelessWidget {
             hint: context.tr('чаевые', 'tips'),
           ),
           const Divider(),
-          _moneyRow(context, 'Total Income', f.totalIncome, bold: true),
+          _moneyRow(
+            context,
+            'Total Income',
+            f.totalIncome,
+            bold: true,
+            hint: context.tr(
+              'только наличные — карта и e-Transfer в отчёт не идут',
+              'cash only — card and e-Transfer are not reported',
+            ),
+          ),
           const Divider(),
           Row(
             children: [
@@ -813,8 +836,8 @@ class OdspReportView extends StatelessWidget {
             child: Text(
               f.collectsHst
                   ? context.tr(
-                      'Ответ «Да»: в настройках указан HST-номер, сумма — налог со счетов месяца.',
-                      'Yes: an HST number is set in settings; the amount is this month’s invoiced tax.',
+                      'Ответ «Да»: в настройках указан HST-номер, сумма — налог с наличной доли счетов месяца.',
+                      'Yes: an HST number is set in settings; the amount is tax on the cash part of the month’s invoices.',
                     )
                   : context.tr(
                       'Ответ «Нет»: HST-номер в настройках не указан.',

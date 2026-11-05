@@ -1,12 +1,17 @@
 import 'package:fix_appliance_crm/features/reports/odsp_report.dart';
 import 'package:fix_appliance_crm/features/reports/report_metrics.dart';
 import 'package:fix_appliance_crm/models/expense.dart';
+import 'package:fix_appliance_crm/models/job.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Разложение цифр CRM по строкам месячной формы ODSP 3083E.
 /// Ошибка здесь уезжает прямо в отчёт для соцработника.
+///
+/// Правило FIX (04.11.2026): доход — только наличные (карта и e-Transfer не
+/// считаются), расходы — все, включая любую закупку запчастей.
 void main() {
   final start = DateTime(2026, 10, 1);
+  final endExclusive = DateTime(2026, 11, 1);
   final endInclusive = DateTime(2026, 10, 31);
 
   Expense receipt({
@@ -31,6 +36,7 @@ void main() {
 
   OdspReportFigures build({
     ReportMetrics metrics = const ReportMetrics(),
+    ReportMetrics cashMetrics = const ReportMetrics(),
     List<Expense> expenses = const [],
     String hstNumber = '',
     String companyName = 'FIX-APPLIANCE.CA',
@@ -41,14 +47,15 @@ void main() {
       periodStart: start,
       periodEndInclusive: endInclusive,
       metrics: metrics,
+      cashMetrics: cashMetrics,
       expenses: expenses,
     );
   }
 
-  group('доход', () {
+  group('доход — только наличные', () {
     test('работа, запчасти и чаевые раскладываются по своим строкам', () {
       final f = build(
-        metrics: const ReportMetrics(
+        cashMetrics: const ReportMetrics(
           partsSales: 550,
           labourSales: 450,
           tips: 20,
@@ -67,20 +74,117 @@ void main() {
       expect(f.totalIncome, 0);
       expect(f.netBusinessIncome, 0);
     });
+
+    test('оплата наличными считается, карта и e-Transfer — нет', () {
+      Map<String, dynamic> invoice({
+        required List<Map<String, dynamic>> items,
+        required List<Map<String, dynamic>> payments,
+      }) {
+        return {
+          'type': 'Invoice',
+          'number': '1001',
+          'createdAt': DateTime(2026, 10, 7).toIso8601String(),
+          'items': items,
+          'taxRate': 0.13,
+          'payments': payments,
+        };
+      }
+
+      Job job(String id, List<Map<String, dynamic>> documents) {
+        return Job.fromMap({
+          'clientId': 'c1',
+          'clientName': 'Клиент',
+          'status': 'Завершено',
+          'createdAt': DateTime(2026, 10, 5).toIso8601String(),
+          'documents': documents,
+        }, id);
+      }
+
+      // Наличными: работа 1000 + запчасть 550 (закупка 466,44), HST 13%,
+      // плюс чаевые 50 наличными.
+      final cashJob = job('cash-job', [
+        invoice(
+          items: [
+            {'name': 'Repair', 'qty': 1, 'price': 1000.0},
+            {
+              'name': 'Pump',
+              'qty': 1,
+              'price': 550.0,
+              'type': 'Part',
+              'costPrice': 466.44,
+            },
+          ],
+          payments: [
+            {
+              'amount': 1751.50,
+              'method': 'Cash',
+              'date': DateTime(2026, 10, 8).toIso8601String(),
+            },
+            {
+              'amount': 50.0,
+              'method': 'Cash Tip',
+              'date': DateTime(2026, 10, 8).toIso8601String(),
+            },
+          ],
+        ),
+      ]);
+      // Переводом: работа 500 + запчасть 100 (закупка 70), HST 13%.
+      // В доход не идёт, а закупка её запчасти остаётся расходом.
+      final transferJob = job('transfer-job', [
+        invoice(
+          items: [
+            {'name': 'Repair', 'qty': 1, 'price': 500.0},
+            {
+              'name': 'Valve',
+              'qty': 1,
+              'price': 100.0,
+              'type': 'Part',
+              'costPrice': 70.0,
+            },
+          ],
+          payments: [
+            {
+              'amount': 678.0,
+              'method': 'e-Transfer',
+              'date': DateTime(2026, 10, 9).toIso8601String(),
+            },
+          ],
+        ),
+      ]);
+
+      final full = ReportMetrics.build(
+        jobs: [cashJob, transferJob],
+        start: start,
+        endExclusive: endExclusive,
+      );
+      final f = build(
+        metrics: full,
+        cashMetrics: full.forMethod(ReportPayMethod.cash),
+      );
+
+      expect(f.saleOfGoods, closeTo(550, 0.001));
+      expect(f.serviceIncome, closeTo(1000, 0.001));
+      expect(f.otherIncome, closeTo(50, 0.001));
+      expect(f.totalIncome, closeTo(1600, 0.001));
+      expect(f.hstCollected, closeTo(201.5, 0.001));
+      // Расход — весь: закупка обеих запчастей, и из «наличного» счёта,
+      // и из счёта, оплаченного переводом.
+      expect(f.costOfGoodsPurchased, closeTo(536.44, 0.001));
+    });
   });
 
   group('вопрос про GST/HST', () {
     test('HST-номер указан — ответ Yes и сумма налога месяца', () {
       final f = build(
         hstNumber: '12345 6789 RT0001',
-        metrics: const ReportMetrics(hstCollectible: 130),
+        cashMetrics: const ReportMetrics(hstCollectible: 130),
       );
       expect(f.collectsHst, isTrue);
       expect(f.hstCollected, closeTo(130, 0.001));
     });
 
     test('без HST-номера — ответ No', () {
-      final f = build(metrics: const ReportMetrics(hstCollectible: 130));
+      final f = build(cashMetrics: const ReportMetrics(hstCollectible: 130));
       expect(f.collectsHst, isFalse);
     });
   });
@@ -152,10 +256,8 @@ void main() {
 
     test('чистый доход = доход минус расходы, как на бумажной форме', () {
       final f = build(
-        metrics: const ReportMetrics(
-          labourSales: 1000,
-          partsCost: 466.44,
-        ),
+        metrics: const ReportMetrics(partsCost: 466.44),
+        cashMetrics: const ReportMetrics(labourSales: 1000),
         expenses: [
           receipt(category: 'phone', amount: 85),
           receipt(category: 'insurance', amount: 45),
@@ -173,11 +275,11 @@ void main() {
     test('строки идут в порядке формы и с итогами', () {
       final f = build(
         hstNumber: '12345 6789 RT0001',
-        metrics: const ReportMetrics(
+        metrics: const ReportMetrics(partsCost: 466.44),
+        cashMetrics: const ReportMetrics(
           partsSales: 550,
           labourSales: 450,
           hstCollectible: 113,
-          partsCost: 466.44,
         ),
         expenses: [receipt(category: 'phone', amount: 85)],
       );
@@ -192,6 +294,7 @@ void main() {
       expect(text, contains('Total Expenses: \$551.44'));
       expect(text, contains('Net Business Income'));
       expect(text, contains('business kilometres: fill in by hand'));
+      expect(text, contains('only payments received in CASH'));
     });
 
     test('без HST-номера в тексте ответ No', () {
