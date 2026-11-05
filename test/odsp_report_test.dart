@@ -52,8 +52,8 @@ void main() {
     );
   }
 
-  group('доход — только наличные', () {
-    test('работа, запчасти и чаевые раскладываются по своим строкам', () {
+  group('доход — только наличные и без запчастей', () {
+    test('в доход идут работа и чаевые, запчасти к заработку не плюсуются', () {
       final f = build(
         cashMetrics: const ReportMetrics(
           partsSales: 550,
@@ -63,10 +63,10 @@ void main() {
         ),
       );
 
-      expect(f.saleOfGoods, closeTo(550, 0.001));
+      expect(f.saleOfGoods, 0);
       expect(f.serviceIncome, closeTo(450, 0.001));
       expect(f.otherIncome, closeTo(20, 0.001));
-      expect(f.totalIncome, closeTo(1020, 0.001));
+      expect(f.totalIncome, closeTo(470, 0.001));
     });
 
     test('пустой месяц — нулевой доход', () {
@@ -75,7 +75,7 @@ void main() {
       expect(f.netBusinessIncome, 0);
     });
 
-    test('оплата наличными считается, карта и e-Transfer — нет', () {
+    test('оплата наличными считается (только работа), карта и e-Transfer — нет', () {
       Map<String, dynamic> invoice({
         required List<Map<String, dynamic>> items,
         required List<Map<String, dynamic>> payments,
@@ -101,7 +101,7 @@ void main() {
       }
 
       // Наличными: работа 1000 + запчасть 550 (закупка 466,44), HST 13%,
-      // плюс чаевые 50 наличными.
+      // плюс чаевые 50 наличными. Запчасть 550 в доход НЕ плюсуется.
       final cashJob = job('cash-job', [
         invoice(
           items: [
@@ -162,10 +162,10 @@ void main() {
         cashMetrics: full.forMethod(ReportPayMethod.cash),
       );
 
-      expect(f.saleOfGoods, closeTo(550, 0.001));
+      expect(f.saleOfGoods, 0);
       expect(f.serviceIncome, closeTo(1000, 0.001));
       expect(f.otherIncome, closeTo(50, 0.001));
-      expect(f.totalIncome, closeTo(1600, 0.001));
+      expect(f.totalIncome, closeTo(1050, 0.001));
       expect(f.hstCollected, closeTo(201.5, 0.001));
       // Расход — весь: закупка обеих запчастей, и из «наличного» счёта,
       // и из счёта, оплаченного переводом.
@@ -278,7 +278,7 @@ void main() {
         metrics: const ReportMetrics(partsCost: 466.44),
         cashMetrics: const ReportMetrics(
           partsSales: 550,
-          labourSales: 450,
+          labourSales: 1000,
           hstCollectible: 113,
         ),
         expenses: [receipt(category: 'phone', amount: 85)],
@@ -286,8 +286,8 @@ void main() {
       final text = f.clipboardText();
 
       expect(text, contains('Report for Period: October 2026 (Month)'));
-      expect(text, contains('Sale of goods: \$550.00'));
-      expect(text, contains('Service income: \$450.00'));
+      expect(text, contains('Sale of goods: \$0.00'));
+      expect(text, contains('Service income: \$1000.00'));
       expect(text, contains('Total Income: \$1000.00'));
       expect(text, contains('Are you collecting GST/HST? Yes'));
       expect(text, contains('Telephone: \$85.00'));

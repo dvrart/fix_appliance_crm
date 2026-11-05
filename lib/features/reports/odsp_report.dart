@@ -39,9 +39,10 @@ class OdspOtherSpec {
 /// переписать напротив поля, не переводя в уме.
 ///
 /// Откуда что берётся (решение FIX, 04.11.2026):
-/// * доход — ТОЛЬКО наличные: оплата картой (Stripe) или e-Transfer в отчёт
-///   не идёт. Внутри наличной доли работа и выезд → service income, запчасти
-///   для клиента → sale of goods, чаевые → other business income (HST — не
+/// * доход — ТОЛЬКО наличные и ТОЛЬКО работа/чаевые: оплата картой (Stripe)
+///   или e-Transfer в отчёт не идёт, и то, что заработано на запчастях, к
+///   доходу не плюсуется (sale of goods = 0). Работа и выезд наличными →
+///   service income, чаевые наличными → other business income (HST — не
 ///   доход), вопрос про GST/HST отвечается тоже по наличной доле;
 /// * расход — ВСЁ: чеки из раздела «Расходы» без HST плюс закупка запчастей
 ///   по счетам целиком, независимо от того, как клиент расплатился;
@@ -53,7 +54,7 @@ class OdspReportFigures {
   final DateTime periodStart;
   final DateTime periodEndInclusive;
 
-  /// Запчасти, выставленные клиентам, без HST — только наличная доля.
+  /// На форме 0: заработок на запчастях в доход не плюсуется.
   final double saleOfGoods;
 
   /// Работа и выезд без HST — только наличная доля.
@@ -219,7 +220,7 @@ class OdspReportFigures {
       hstNumber: hstNumber,
       periodStart: periodStart,
       periodEndInclusive: periodEndInclusive,
-      saleOfGoods: cashMetrics.partsSales,
+      saleOfGoods: 0,
       serviceIncome: cashMetrics.labourSales,
       otherIncome: cashMetrics.tips,
       costOfGoodsPurchased: metrics.partsCost + partsReceipts,
@@ -703,8 +704,8 @@ class OdspReportView extends StatelessWidget {
         'Form 3083E is monthly: pick the report month with the arrows above.',
       ),
       context.tr(
-        'Доход — только наличные: оплата картой или e-Transfer в отчёт не идёт. Расход — все чеки раздела «Расходы» и вся закупка запчастей. HST в доход не входит.',
-        'Income is cash only: card and e-Transfer payments are not reported. Expenses are all photographed receipts and all parts cost. HST is not income.',
+        'Доход — только наличные за работу и выезд (запчасти к заработку не плюсуются, карта и e-Transfer не идут). Расход — все чеки раздела «Расходы» и вся закупка запчастей.',
+        'Income is cash labour and call-out only (parts are not added to income, card and e-Transfer are not reported). Expenses are all receipts and all parts cost.',
       ),
       context.tr(
         'Перепишите числа на бумажную форму, скопируйте текстом или скачайте PDF. Километры машины впишите от руки — их в CRM нет.',
@@ -772,20 +773,15 @@ class OdspReportView extends StatelessWidget {
     return _card(
       child: Column(
         children: [
-          _moneyRow(
-            context,
-            'Sale of goods',
-            f.saleOfGoods,
-            hint: context.tr(
-              'запчасти, выставленные клиентам, без HST',
-              'parts billed to clients, no HST',
-            ),
-          ),
+          _moneyRow(context, 'Sale of goods', f.saleOfGoods),
           _moneyRow(
             context,
             'Service income',
             f.serviceIncome,
-            hint: context.tr('работа и выезд без HST', 'labour and call-out, no HST'),
+            hint: context.tr(
+              'только работа и выезд наличными (без запчастей и без HST)',
+              'cash labour and call-out only (no parts, no HST)',
+            ),
           ),
           _moneyRow(context, 'Commissions, fees', 0),
           _moneyRow(context, 'Interest income', 0),
