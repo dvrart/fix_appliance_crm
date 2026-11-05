@@ -59,23 +59,26 @@ Flutter 3.44.4 сам включает R8 в release (плагин читает 
 отсутствующем R.jar. Рабочий способ — флаг проекта:
 `flutter build apk --release --split-per-abi -Pshrink=false`.
 
-**Отчёт для ODSP (форма 3083E, 04.11.2026).** На экране «Отчёты» в шапке — иконка
+**Отчёт для ODSP (форма 3083E, 04–05.11.2026).** На экране «Отчёты» в шапке — иконка
 формы (галочки в списке) открывает помесячный отчёт `OdspReportPage`
-(`lib/features/reports/odsp_report.dart`). **Доход — только наличные и без
-запчастей (решение FIX): карта/Stripe и e-Transfer в отчёт не идут, и то, что
-заработано на запчастях, к доходу не плюсуется (`saleOfGoods = 0`)** — в доход
-берётся только работа и выезд (`serviceIncome = cashMetrics.labourSales`) и чаевые
-(`otherIncome = cashMetrics.tips`) из `metrics.forMethod(ReportPayMethod.cash)`
+(`lib/features/reports/odsp_report.dart`). **Доход — только безнал (карта/Stripe и
+e-Transfer), без наличных и без запчастей (решение FIX, 05.11.2026): наличные в
+отчёт не идут, и то, что заработано на запчастях, к доходу не плюсуется
+(`saleOfGoods = 0`)** — в доход берётся только работа и выезд
+(`serviceIncome = card.labourSales + etransfer.labourSales`) и чаевые
+(`otherIncome = card.tips + etransfer.tips`) из
+`metrics.forMethod(ReportPayMethod.card)` + `forMethod(ReportPayMethod.etransfer)`
 (HST — не доход; ответ на вопрос формы — из наличия HST-номера в настройках,
-сумма — налог с наличной доли). **Расход — весь**: категории чеков разложены по
+сумма — налог с безналичной доли). **Расход — весь**: категории чеков разложены по
 строкам формы, закупка запчастей = полный partsCost со счетов (независимо от
 способа оплаты клиентом) + чеки «Запчасти с чека» (разбивка видна на экране),
 CCA-инструмент в расходы месяца не идёт. Еда берётся полностью, не 50% — это ODSP,
 не CRA. Километров в CRM нет — строка на форме вписывается от руки. Открывается на
 прошлом месяце (отчёт сдают за истекший). Копирование текстом по строкам формы и
-PDF на английском, внизу обоих пометка «income counts only cash». Расчёт —
-`OdspReportFigures.build`, тесты `test/odsp_report_test.dart` (в т.ч. живой
-счёт «наличными vs перевод» и бумажный расклад октября 1000 − 896,44 = 103,56).
+PDF на английском, внизу обоих пометка «income counts only card and e-Transfer».
+Расчёт — `OdspReportFigures.build`, тесты `test/odsp_report_test.dart` (в т.ч.
+живой счёт «карта + перевод vs наличные» и бумажный расклад октября
+1000 − (766,44 + 85 + 45) = 103,56).
 
 Typical install (always do this after app UI/code changes — do not wait for FIX to say «поставь»):
 

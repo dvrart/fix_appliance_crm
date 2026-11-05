@@ -38,12 +38,12 @@ class OdspOtherSpec {
 /// (3083E). Имена строк повторяют английскую форму, чтобы число можно было
 /// переписать напротив поля, не переводя в уме.
 ///
-/// Откуда что берётся (решение FIX, 04.11.2026):
-/// * доход — ТОЛЬКО наличные и ТОЛЬКО работа/чаевые: оплата картой (Stripe)
-///   или e-Transfer в отчёт не идёт, и то, что заработано на запчастях, к
-///   доходу не плюсуется (sale of goods = 0). Работа и выезд наличными →
-///   service income, чаевые наличными → other business income (HST — не
-///   доход), вопрос про GST/HST отвечается тоже по наличной доле;
+/// Откуда что берётся (решение FIX, 05.11.2026):
+/// * доход — ТОЛЬКО безнал (карта / Stripe и e-Transfer), наличные в отчёт
+///   не идут, и то, что заработано на запчастях, к доходу не плюсуется
+///   (sale of goods = 0). Работа и выезд по карте и e-Transfer → service
+///   income, чаевые безналом → other business income (HST — не доход),
+///   вопрос про GST/HST отвечается тоже по безналичной доле;
 /// * расход — ВСЁ: чеки из раздела «Расходы» без HST плюс закупка запчастей
 ///   по счетам целиком, независимо от того, как клиент расплатился;
 ///   инструмент-«капитал» (CCA) сюда не входит, это не расход месяца;
@@ -57,10 +57,10 @@ class OdspReportFigures {
   /// На форме 0: заработок на запчастях в доход не плюсуется.
   final double saleOfGoods;
 
-  /// Работа и выезд без HST — только наличная доля.
+  /// Работа и выезд без HST — только оплата картой и e-Transfer (без наличных).
   final double serviceIncome;
 
-  /// Чаевые месяца наличными.
+  /// Чаевые месяца по карте и e-Transfer (без наличных).
   final double otherIncome;
 
   /// Закупка запчастей: из счетов плюс сфотографированные чеки запчастей.
@@ -82,7 +82,7 @@ class OdspReportFigures {
   final double otherExpenses;
   final List<OdspOtherSpec> otherSpec;
 
-  /// HST с наличной доли счетов месяца (ответ на вопрос формы).
+  /// HST с безналичной доли счетов месяца (ответ на вопрос формы).
   final double hstCollected;
 
   /// Инструмент/оборудование CCA за месяц — подсказка, в расходы не входит.
@@ -159,19 +159,22 @@ class OdspReportFigures {
       '${DateFormat('yyyy-MM-dd').format(periodStart)} to ${DateFormat('yyyy-MM-dd').format(periodEndInclusive)}';
 
   /// [metrics] — полный отчёт месяца, из него берутся расходы (закупка
-  /// запчастей целиком). [cashMetrics] — тот же месяц, посчитанный по
-  /// наличным (`forMethod(ReportPayMethod.cash)`), из него берётся доход:
-  /// карта и e-Transfer на форму не идут. [expenses] — уже отобранные чеки
-  /// месяца (без фильтрации здесь).
+  /// запчастей целиком). В доход идут только оплаты картой и e-Transfer
+  /// (`forMethod(ReportPayMethod.card)` + `forMethod(ReportPayMethod.etransfer)`);
+  /// наличные в доход не входят. [expenses] — уже отобранные чеки месяца.
   static OdspReportFigures build({
     required String companyName,
     required String hstNumber,
     required DateTime periodStart,
     required DateTime periodEndInclusive,
     required ReportMetrics metrics,
-    required ReportMetrics cashMetrics,
+    ReportMetrics? cardMetrics,
+    ReportMetrics? etransferMetrics,
     required List<Expense> expenses,
   }) {
+    final card = cardMetrics ?? metrics.forMethod(ReportPayMethod.card);
+    final etransfer =
+        etransferMetrics ?? metrics.forMethod(ReportPayMethod.etransfer);
     double sumCategory(String id) {
       var total = 0.0;
       for (final item in expenses) {
@@ -221,8 +224,8 @@ class OdspReportFigures {
       periodStart: periodStart,
       periodEndInclusive: periodEndInclusive,
       saleOfGoods: 0,
-      serviceIncome: cashMetrics.labourSales,
-      otherIncome: cashMetrics.tips,
+      serviceIncome: card.labourSales + etransfer.labourSales,
+      otherIncome: card.tips + etransfer.tips,
       costOfGoodsPurchased: metrics.partsCost + partsReceipts,
       costFromInvoices: metrics.partsCost,
       costFromReceipts: partsReceipts,
@@ -238,7 +241,7 @@ class OdspReportFigures {
       businessInsurance: sumCategory(ExpenseCategories.insurance.id),
       otherExpenses: other + meals + wages,
       otherSpec: spec,
-      hstCollected: cashMetrics.hstCollectible,
+      hstCollected: card.hstCollectible + etransfer.hstCollectible,
       capitalTotal: capital,
       receiptCount: expenses.length,
     );
@@ -297,7 +300,7 @@ class OdspReportFigures {
       if (capitalTotal > 0.009)
         'Note: tools/equipment counted as capital (CCA), not a monthly expense: \$${_m(capitalTotal)}',
       '',
-      'Basis: income counts only payments received in CASH — card (Stripe) and e-Transfer are not included. Expenses are counted in full.',
+      'Basis: income counts only card (Stripe) and e-Transfer payments — cash is not included, and parts are not added to income. Expenses are counted in full.',
       'Numbers from Fix Appliance CRM (invoices + receipts). Copy onto form 3083E.',
     ].join('\n');
   }
@@ -409,7 +412,6 @@ class _OdspReportPageState extends State<OdspReportPage> {
       periodStart: _start,
       periodEndInclusive: _endExclusive.subtract(const Duration(days: 1)),
       metrics: metrics,
-      cashMetrics: metrics.forMethod(ReportPayMethod.cash),
       expenses: ExpenseService.inPeriod(_expenses, _start, _endExclusive),
     );
   }
@@ -655,7 +657,7 @@ class OdspReportView extends StatelessWidget {
             ),
           pw.SizedBox(height: 10),
           pw.Text(
-            'Basis: income counts only payments received in CASH — card (Stripe) and e-Transfer are not included. Expenses are counted in full.',
+            'Basis: income counts only card (Stripe) and e-Transfer payments — cash is not included, and parts are not added to income. Expenses are counted in full.',
             style: const pw.TextStyle(fontSize: 9),
           ),
           pw.Text(
@@ -704,8 +706,8 @@ class OdspReportView extends StatelessWidget {
         'Form 3083E is monthly: pick the report month with the arrows above.',
       ),
       context.tr(
-        'Доход — только наличные за работу и выезд (запчасти к заработку не плюсуются, карта и e-Transfer не идут). Расход — все чеки раздела «Расходы» и вся закупка запчастей.',
-        'Income is cash labour and call-out only (parts are not added to income, card and e-Transfer are not reported). Expenses are all receipts and all parts cost.',
+        'Доход — только безнал (карта и e-Transfer) за работу и выезд: наличные в отчёт не идут, запчасти к заработку не плюсуются. Расход — все чеки раздела «Расходы» и вся закупка запчастей.',
+        'Income is card and e-Transfer labour and call-out only: cash is not reported, and parts are not added to income. Expenses are all receipts and all parts cost.',
       ),
       context.tr(
         'Перепишите числа на бумажную форму, скопируйте текстом или скачайте PDF. Километры машины впишите от руки — их в CRM нет.',
@@ -779,8 +781,8 @@ class OdspReportView extends StatelessWidget {
             'Service income',
             f.serviceIncome,
             hint: context.tr(
-              'только работа и выезд наличными (без запчастей и без HST)',
-              'cash labour and call-out only (no parts, no HST)',
+              'работа и выезд по карте и e-Transfer (без наличных, без запчастей и без HST)',
+              'card and e-Transfer labour and call-out (no cash, no parts, no HST)',
             ),
           ),
           _moneyRow(context, 'Commissions, fees', 0),
@@ -790,7 +792,7 @@ class OdspReportView extends StatelessWidget {
             context,
             'Other business income',
             f.otherIncome,
-            hint: context.tr('чаевые', 'tips'),
+            hint: context.tr('чаевые по карте и e-Transfer', 'card and e-Transfer tips'),
           ),
           const Divider(),
           _moneyRow(
@@ -799,8 +801,8 @@ class OdspReportView extends StatelessWidget {
             f.totalIncome,
             bold: true,
             hint: context.tr(
-              'только наличные — карта и e-Transfer в отчёт не идут',
-              'cash only — card and e-Transfer are not reported',
+              'только карта и e-Transfer — наличные в отчёт не идут',
+              'card and e-Transfer only — cash is not reported',
             ),
           ),
           const Divider(),
@@ -832,8 +834,8 @@ class OdspReportView extends StatelessWidget {
             child: Text(
               f.collectsHst
                   ? context.tr(
-                      'Ответ «Да»: в настройках указан HST-номер, сумма — налог с наличной доли счетов месяца.',
-                      'Yes: an HST number is set in settings; the amount is tax on the cash part of the month’s invoices.',
+                      'Ответ «Да»: в настройках указан HST-номер, сумма — налог с безналичной доли счетов месяца.',
+                      'Yes: an HST number is set in settings; the amount is tax on the card and e-Transfer part of the month’s invoices.',
                     )
                   : context.tr(
                       'Ответ «Нет»: HST-номер в настройках не указан.',
