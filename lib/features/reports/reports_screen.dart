@@ -18,6 +18,7 @@ import '../../services/job_service.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import 'classify_items_page.dart';
+import 'odsp_report.dart';
 import 'report_breakdown_page.dart';
 import 'report_metrics.dart';
 import 'tax_workbook_view.dart';
@@ -287,6 +288,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
         foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
         actions: [
+          IconButton(
+            tooltip: context.tr('Отчёт для ODSP', 'ODSP report'),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const OdspReportPage()),
+            ),
+            icon: const Icon(Icons.fact_check_outlined),
+          ),
           IconButton(
             tooltip: context.tr('Лайфхак', 'Lifehack'),
             onPressed: () => TaxWriteoffGuidePage.open(context),
