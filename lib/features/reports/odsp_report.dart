@@ -39,11 +39,12 @@ class OdspOtherSpec {
 /// переписать напротив поля, не переводя в уме.
 ///
 /// Откуда что берётся (решение FIX, 05.11.2026):
-/// * доход — ТОЛЬКО безнал (карта / Stripe и e-Transfer), наличные в отчёт
-///   не идут, и то, что заработано на запчастях, к доходу не плюсуется
-///   (sale of goods = 0). Работа и выезд по карте и e-Transfer → service
-///   income, чаевые безналом → other business income (HST — не доход),
-///   вопрос про GST/HST отвечается тоже по безналичной доле;
+/// * доход — ТОЛЬКО безналичные поступления (кредитные/дебетовые карты,
+///   e-Transfer, оплата по ссылке Stripe). Наличные платежи и заработок
+///   (наценка) с продажи запчастей полностью исключаются (sale of goods = 0).
+///   Работа и выезд безналом → service income, чаевые безналом → other
+///   business income (HST — не доход), вопрос про GST/HST отвечается тоже по
+///   безналичной доле;
 /// * расход — ВСЁ: чеки из раздела «Расходы» без HST плюс закупка запчастей
 ///   по счетам целиком, независимо от того, как клиент расплатился;
 ///   инструмент-«капитал» (CCA) сюда не входит, это не расход месяца;
@@ -300,7 +301,7 @@ class OdspReportFigures {
       if (capitalTotal > 0.009)
         'Note: tools/equipment counted as capital (CCA), not a monthly expense: \$${_m(capitalTotal)}',
       '',
-      'Basis: income counts only card (Stripe) and e-Transfer payments — cash is not included, and parts are not added to income. Expenses are counted in full.',
+      'Basis: income counts only cashless payments (credit/debit cards, e-Transfer, payment link) — cash payments and parts sales/markup are excluded. Expenses are counted in full.',
       'Numbers from Fix Appliance CRM (invoices + receipts). Copy onto form 3083E.',
     ].join('\n');
   }
@@ -657,7 +658,7 @@ class OdspReportView extends StatelessWidget {
             ),
           pw.SizedBox(height: 10),
           pw.Text(
-            'Basis: income counts only card (Stripe) and e-Transfer payments — cash is not included, and parts are not added to income. Expenses are counted in full.',
+            'Basis: income counts only cashless payments (credit/debit cards, e-Transfer, payment link) — cash payments and parts sales/markup are excluded. Expenses are counted in full.',
             style: const pw.TextStyle(fontSize: 9),
           ),
           pw.Text(
@@ -706,8 +707,8 @@ class OdspReportView extends StatelessWidget {
         'Form 3083E is monthly: pick the report month with the arrows above.',
       ),
       context.tr(
-        'Доход — только безнал (карта и e-Transfer) за работу и выезд: наличные в отчёт не идут, запчасти к заработку не плюсуются. Расход — все чеки раздела «Расходы» и вся закупка запчастей.',
-        'Income is card and e-Transfer labour and call-out only: cash is not reported, and parts are not added to income. Expenses are all receipts and all parts cost.',
+        'Доход — только безналичные поступления (карты, e-Transfer, оплата по ссылке) за работу и выезд: наличные платежи и заработок (наценка) на запчастях полностью исключены. Расход — все чеки раздела «Расходы» и вся закупка запчастей.',
+        'Income is cashless payments only (cards, e-Transfer, payment link) for labour and call-out: cash payments and parts markup are excluded. Expenses are all receipts and all parts cost.',
       ),
       context.tr(
         'Перепишите числа на бумажную форму, скопируйте текстом или скачайте PDF. Километры машины впишите от руки — их в CRM нет.',
@@ -775,14 +776,22 @@ class OdspReportView extends StatelessWidget {
     return _card(
       child: Column(
         children: [
-          _moneyRow(context, 'Sale of goods', f.saleOfGoods),
+          _moneyRow(
+            context,
+            'Sale of goods',
+            f.saleOfGoods,
+            hint: context.tr(
+              'доход и наценка с продажи запчастей исключены',
+              'parts sales and markup are excluded',
+            ),
+          ),
           _moneyRow(
             context,
             'Service income',
             f.serviceIncome,
             hint: context.tr(
-              'работа и выезд по карте и e-Transfer (без наличных, без запчастей и без HST)',
-              'card and e-Transfer labour and call-out (no cash, no parts, no HST)',
+              'безнал за работу и выезд: карты, e-Transfer, оплата по ссылке (без наличных, без запчастей и без HST)',
+              'cashless labour and call-out: cards, e-Transfer, payment link (no cash, no parts, no HST)',
             ),
           ),
           _moneyRow(context, 'Commissions, fees', 0),
@@ -792,7 +801,10 @@ class OdspReportView extends StatelessWidget {
             context,
             'Other business income',
             f.otherIncome,
-            hint: context.tr('чаевые по карте и e-Transfer', 'card and e-Transfer tips'),
+            hint: context.tr(
+              'безналичные чаевые (карты, e-Transfer, оплата по ссылке)',
+              'cashless tips (cards, e-Transfer, payment link)',
+            ),
           ),
           const Divider(),
           _moneyRow(
@@ -801,8 +813,8 @@ class OdspReportView extends StatelessWidget {
             f.totalIncome,
             bold: true,
             hint: context.tr(
-              'только карта и e-Transfer — наличные в отчёт не идут',
-              'card and e-Transfer only — cash is not reported',
+              'только безнал (карты, e-Transfer, оплата по ссылке) — без наличных и без наценки на запчастях',
+              'cashless only (cards, e-Transfer, payment link) — no cash and no parts markup',
             ),
           ),
           const Divider(),

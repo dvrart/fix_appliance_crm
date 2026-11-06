@@ -498,8 +498,13 @@ class ReportMetrics {
     if (method.contains('stripe') ||
         method.contains('card') ||
         method.contains('credit') ||
+        method.contains('debit') ||
+        method.contains('link') ||
+        method.contains('checkout') ||
         method.contains('карт') ||
         method.contains('кредит') ||
+        method.contains('дебет') ||
+        method.contains('ссылк') ||
         method.contains('tap to pay') ||
         method.contains('terminal')) {
       return ReportPayMethod.card;

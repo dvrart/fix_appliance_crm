@@ -181,21 +181,58 @@ void main() {
         ),
       ]);
 
+      // Оплата по ссылке и дебетовой картой, даже если в том же счёте был
+      // наличный аванс: работа 200 + запчасть 100 (закупка 60, наценка 40),
+      // HST 13% -> всего 339. Наличными заплатили треть (113), остальное
+      // (226 = две трети) — по ссылке и дебетовой картой. В доход пойдёт
+      // только 2/3 от работы (200 * 2/3 = 133.333...), без наличной трети и
+      // без запчасти / её наценки.
+      final mixedLinkDebitJob = job('mixed-link-debit-job', [
+        invoice(
+          items: [
+            {'name': 'Repair', 'qty': 1, 'price': 200.0},
+            {
+              'name': 'Sensor',
+              'qty': 1,
+              'price': 100.0,
+              'type': 'Part',
+              'costPrice': 60.0,
+            },
+          ],
+          payments: [
+            {
+              'amount': 113.0,
+              'method': 'Cash',
+              'date': DateTime(2026, 10, 11).toIso8601String(),
+            },
+            {
+              'amount': 113.0,
+              'method': 'Payment link',
+              'date': DateTime(2026, 10, 11).toIso8601String(),
+            },
+            {
+              'amount': 113.0,
+              'method': 'Debit',
+              'date': DateTime(2026, 10, 11).toIso8601String(),
+            },
+          ],
+        ),
+      ]);
+
       final full = ReportMetrics.build(
-        jobs: [cashJob, transferJob, cardJob],
+        jobs: [cashJob, transferJob, cardJob, mixedLinkDebitJob],
         start: start,
         endExclusive: endExclusive,
       );
       final f = build(metrics: full);
 
       expect(f.saleOfGoods, 0);
-      expect(f.serviceIncome, closeTo(800, 0.001));
+      expect(f.serviceIncome, closeTo(800 + 200 * 2 / 3, 0.001));
       expect(f.otherIncome, closeTo(25, 0.001));
-      expect(f.totalIncome, closeTo(825, 0.001));
-      expect(f.hstCollected, closeTo(117, 0.001));
-      // Расход — весь: закупка обеих запчастей, и из «наличного» счёта,
-      // и из счёта, оплаченного переводом.
-      expect(f.costOfGoodsPurchased, closeTo(536.44, 0.001));
+      expect(f.totalIncome, closeTo(825 + 200 * 2 / 3, 0.001));
+      expect(f.hstCollected, closeTo(117 + 39 * 2 / 3, 0.001));
+      // Расход — весь: закупка всех запчастей, независимо от способа оплаты.
+      expect(f.costOfGoodsPurchased, closeTo(596.44, 0.001));
     });
   });
 
@@ -319,7 +356,7 @@ void main() {
       expect(text, contains('Total Expenses: \$551.44'));
       expect(text, contains('Net Business Income'));
       expect(text, contains('business kilometres: fill in by hand'));
-      expect(text, contains('only card (Stripe) and e-Transfer'));
+      expect(text, contains('only cashless payments'));
     });
 
     test('без HST-номера в тексте ответ No', () {
