@@ -402,8 +402,14 @@ class JobDetailsController extends ChangeNotifier {
         pendingSuggestComplete = true;
       }
       if (data['suggestCancel'] == true &&
-          !JobStatuses.isCancelledStatus(currentStatus)) {
+          !JobStatuses.isCancelledStatus(currentStatus) &&
+          _shouldShowSuggestCancel()) {
         pendingSuggestCancel = true;
+      } else {
+        pendingSuggestCancel = false;
+        if (data['suggestCancel'] == true) {
+          unawaited(JobService.update(jobId, {'suggestCancel': false}));
+        }
       }
       if (!_disposed) notifyListeners();
     });
@@ -1668,10 +1674,27 @@ class JobDetailsController extends ChangeNotifier {
     await updateStatus(JobStatuses.deposit, persistNow: true);
   }
 
+  /// Нужна ли красная плашка «Полный возврат. Пометить заявку как отменённую?».
+  /// Если возвратный счёт удалён в корзину или по заявке есть живой оплаченный
+  /// счёт — отменять заявку не за что.
+  bool _shouldShowSuggestCancel() {
+    var hasActiveRefunded = false;
+    for (final doc in documents) {
+      if (Job.isDocumentTrashed(doc)) continue;
+      if (!Job.isInvoice(doc)) continue;
+      final mark = Job.documentPayMark(doc);
+      if (mark == 'paid' || mark == 'deposit') return false;
+      if (mark == 'refunded') hasActiveRefunded = true;
+    }
+    return hasActiveRefunded;
+  }
+
   /// Полная оплата инвойса любым способом → статус «Готово» сразу, без
   /// вопросов (просьба FIX 24.10.2026). Отменённую заявку не трогаем.
   Future<void> completeAfterInvoicePaid({String remoteStatus = ''}) async {
     openFinanceMainList();
+    pendingSuggestCancel = false;
+    jobData['suggestCancel'] = false;
     // Тем же обновлением «Готово» мог поставить сервер (вебхук Stripe) —
     // второй раз в базу не пишем.
     final status = remoteStatus.trim().isEmpty ? currentStatus : remoteStatus;
@@ -1680,29 +1703,53 @@ class JobDetailsController extends ChangeNotifier {
       return;
     }
     pendingSuggestComplete = false;
-    await updateStatus(JobStatuses.completed, persistNow: true);
+    await updateStatus(
+      JobStatuses.completed,
+      extra: {'suggestComplete': false, 'suggestCancel': false},
+      persistNow: true,
+    );
   }
 
   void dismissSuggestComplete() {
     pendingSuggestComplete = false;
+    jobData['suggestComplete'] = false;
+    unawaited(JobService.update(jobId, {'suggestComplete': false}));
     notifyListeners();
   }
 
   void dismissSuggestCancel() {
     pendingSuggestCancel = false;
+    jobData['suggestCancel'] = false;
+    unawaited(JobService.update(jobId, {'suggestCancel': false}));
     notifyListeners();
   }
 
   Future<void> confirmSuggestComplete() async {
     pendingSuggestComplete = false;
-    if (JobStatuses.isCompletedStatus(currentStatus)) return;
-    await updateStatus(JobStatuses.completed, persistNow: true);
+    jobData['suggestComplete'] = false;
+    if (JobStatuses.isCompletedStatus(currentStatus)) {
+      await JobService.update(jobId, {'suggestComplete': false});
+      return;
+    }
+    await updateStatus(
+      JobStatuses.completed,
+      extra: {'suggestComplete': false},
+      persistNow: true,
+    );
   }
 
   Future<void> confirmSuggestCancel() async {
     pendingSuggestCancel = false;
-    if (JobStatuses.isCancelledStatus(currentStatus)) return;
-    await updateStatus(JobStatuses.cancelled, persistNow: true);
+    jobData['suggestCancel'] = false;
+    if (JobStatuses.isCancelledStatus(currentStatus)) {
+      await JobService.update(jobId, {'suggestCancel': false});
+      return;
+    }
+    await updateStatus(
+      JobStatuses.cancelled,
+      extra: {'suggestCancel': false},
+      persistNow: true,
+    );
   }
 
   void notifyBuilderChanged() {
@@ -1719,6 +1766,11 @@ class JobDetailsController extends ChangeNotifier {
       await WarehouseService.applyDocumentStock(doc, reverse: false);
     }
     documents.add(doc);
+    if (!_shouldShowSuggestCancel()) {
+      pendingSuggestCancel = false;
+      jobData['suggestCancel'] = false;
+      unawaited(JobService.update(jobId, {'suggestCancel': false}));
+    }
     await saveDocuments();
     notifyListeners();
   }
@@ -1727,6 +1779,11 @@ class JobDetailsController extends ChangeNotifier {
     if (index >= 0 && index < documents.length) {
       final wasDeposit = Job.documentDepositTaken(documents[index]);
       documents[index] = doc;
+      if (!_shouldShowSuggestCancel() && pendingSuggestCancel) {
+        pendingSuggestCancel = false;
+        jobData['suggestCancel'] = false;
+        unawaited(JobService.update(jobId, {'suggestCancel': false}));
+      }
       await saveDocuments();
       notifyListeners();
       if (!wasDeposit && Job.documentDepositTaken(doc)) {
@@ -1749,6 +1806,11 @@ class JobDetailsController extends ChangeNotifier {
       if (viewingDocumentIndex == index) {
         viewingDocumentIndex = null;
         financeMode = 'main';
+      }
+      if (!_shouldShowSuggestCancel()) {
+        pendingSuggestCancel = false;
+        jobData['suggestCancel'] = false;
+        unawaited(JobService.update(jobId, {'suggestCancel': false}));
       }
       await saveDocuments();
       notifyListeners();
