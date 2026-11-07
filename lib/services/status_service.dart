@@ -437,6 +437,13 @@ class StatusService {
         );
       }
     }
+    if (item.id == JobStatuses.rescheduled) {
+      if (item.label.trim().isEmpty || item.label == JobStatuses.rescheduled) {
+        return item.copyWith(
+          label: JobStatuses.defaultLabel(JobStatuses.rescheduled),
+        );
+      }
+    }
     if (item.id == JobStatuses.install && _isOldInstallPink(item.colorValue)) {
       return item.copyWith(colorValue: _builtinColors[JobStatuses.install]!);
     }
@@ -462,8 +469,10 @@ class StatusService {
                   label == JobStatuses.completed)) {
             completedLooksLikeInstall = true;
           }
-          if (id == JobStatuses.repeat &&
-              (label.trim().isEmpty || label == JobStatuses.repeat)) {
+          if ((id == JobStatuses.repeat || id == JobStatuses.rescheduled) &&
+              (label.trim().isEmpty ||
+                  label == JobStatuses.repeat ||
+                  label == JobStatuses.rescheduled)) {
             repeatNeedsRename = true;
           }
           if (id == JobStatuses.install) {

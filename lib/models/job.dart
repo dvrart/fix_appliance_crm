@@ -1066,13 +1066,14 @@ class Job {
     });
   }
 
-  /// Старые выезды показываем как «Перенос», последний — текущий статус заявки.
+  /// Старые выезды показываем как «Перенесено», последний — текущий статус заявки.
   String displayStatusForVisit(JobVisit? visit) {
     if (JobStatuses.isCancelledStatus(status)) return status;
     final items = coalescedVisits;
     if (visit == null || items.length < 2) return status;
     final latest = latestVisit;
     if (latest == null) return status;
+    if (visit.startAt.isBefore(latest.startAt)) return JobStatuses.rescheduled;
     if (visit.id == latest.id || visit.startAt == latest.startAt) return status;
     return JobStatuses.rescheduled;
   }

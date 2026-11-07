@@ -126,6 +126,7 @@ class JobStatuses {
       case cancelled:
         return 'Отмена';
       case repeat:
+      case rescheduled:
         return 'Перенесено';
       default:
         return status;

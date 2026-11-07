@@ -179,9 +179,9 @@ String? calendarStatusEmoji(String status) {
     case JobStatuses.inProgress:
       return '\u{1F6E0}';
     case JobStatuses.rescheduled:
-      return '\u{1F6A7}';
     case JobStatuses.repeat:
-      return '\u{1F6A7}';
+    case 'Перенесено':
+      return '\u{1F504}';
   }
   final n = key.toLowerCase();
   if (n == 'вызов') return '\u{1F477}';
@@ -191,7 +191,10 @@ String? calendarStatusEmoji(String status) {
   if (n.contains('запчаст') || n.contains('part')) return '\u{1F4E6}';
   if (n.contains('ожидан') || n.contains('wait')) return '\u{23F3}';
   if (n.contains('звон') || n.contains('call')) return '\u{260E}\u{FE0F}';
-  if (n.contains('повтор') || n.contains('перенос') || n.contains('reschedul')) {
+  if (n.contains('перенос') || n.contains('reschedul')) {
+    return '\u{1F504}';
+  }
+  if (n.contains('повтор')) {
     return '\u{1F6A7}';
   }
   if (n.contains('гарант') || n.contains('warranty')) return '\u{1F6E1}';
