@@ -78,6 +78,7 @@ class RegularClientStar extends StatelessWidget {
 /// Статусы заявок
 class JobStatuses {
   static const String call = 'Вызов';
+  static const String waiting = 'Ожидание';
   static const String inProgress = 'В работе';
   static const String deposit = 'Депозит';
   static const String rescheduled = 'Перенос';
@@ -92,9 +93,10 @@ class JobStatuses {
 
   static const List<String> all = [
     call,
+    waiting,
+    waitingPayment,
     deposit,
     waitingPart,
-    waitingPayment,
     install,
     repeatVisit,
     callBack,
@@ -112,6 +114,13 @@ class JobStatuses {
 
   static String defaultLabel(String status) {
     switch (status) {
+      case waiting:
+      case 'ОЖИДАНИЕ':
+        return 'Ожидание';
+      case waitingPayment:
+        return 'Ожидание Оплаты';
+      case waitingPart:
+        return 'Запчасти';
       case completed:
         return 'Готово';
       case cancelled:

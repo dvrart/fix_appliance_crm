@@ -80,8 +80,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
   DateTime? _selectedDate;
   TimeOfDay? _selectedTime;
   int _workStartMinutes = SettingsService.defaultWorkStartMinutes;
-  int _durationMinutes = kDefaultVisitMinutes;
-  bool _calendarDefaultsLoaded = false;
+  final int _durationMinutes = kDefaultVisitMinutes;
   final _packingCtrl = TextEditingController();
   bool _isSaving = false;
 
@@ -103,15 +102,12 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
   Future<void> _loadCalendarDefaults() async {
     final config = await SettingsService.loadConfig();
     if (!mounted) return;
-    final minutes = SettingsService.readJobDurationMinutes(config);
     final workStart = SettingsService.readWorkStartMinutes(config);
     setState(() {
-      _durationMinutes = minutes;
       _workStartMinutes = workStart;
       if (widget.preselectedDate == null && !_dirty) {
         _selectedTime = _defaultStartTime;
       }
-      _calendarDefaultsLoaded = true;
     });
   }
 
@@ -1394,33 +1390,6 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 },
                 child: Text(context.tr('Без даты и времени', 'No date or time')),
               ),
-            const SizedBox(height: 16),
-            DropdownButtonFormField<int>(
-              key: ValueKey('visit-duration-$_calendarDefaultsLoaded'),
-              initialValue: _durationMinutes,
-              decoration: InputDecoration(
-                labelText: 'Длительность визита'.tr,
-                helperText: 'По умолчанию из настроек календаря'.tr,
-                prefixIcon: const Icon(Icons.timer_outlined, color: Colors.grey),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                filled: true,
-                fillColor: AppColors.cardMuted,
-              ),
-              items: [
-                DropdownMenuItem(value: 30, child: Text('30 минут'.tr)),
-                DropdownMenuItem(value: 45, child: Text('45 минут'.tr)),
-                DropdownMenuItem(value: 60, child: Text('1 час'.tr)),
-                DropdownMenuItem(value: 90, child: Text('1.5 часа'.tr)),
-                DropdownMenuItem(value: 120, child: Text('2 часа'.tr)),
-                DropdownMenuItem(value: 180, child: Text('3 часа'.tr)),
-              ],
-              onChanged: (value) {
-                if (value != null) {
-                  setState(() => _durationMinutes = value);
-                  _markDirty();
-                }
-              },
-            ),
             const SizedBox(height: 12),
             TextField(
               controller: _packingCtrl,

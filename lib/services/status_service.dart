@@ -53,6 +53,7 @@ class StatusService {
 
   static const Map<String, int> _builtinColors = {
     JobStatuses.call: 0xFF1E88E5,
+    JobStatuses.waiting: 0xFF8E24AA,
     JobStatuses.inProgress: 0xFFFCC520,
     JobStatuses.deposit: 0xFFFFB300,
     JobStatuses.rescheduled: 0xFF7E57C2,
@@ -355,6 +356,15 @@ class StatusService {
       }
     }
     byId.remove(JobStatuses.inProgress);
+    final upperWaiting = byId.remove('ОЖИДАНИЕ');
+    if (upperWaiting != null && !byId.containsKey(JobStatuses.waiting)) {
+      byId[JobStatuses.waiting] = JobStatusDef(
+        id: JobStatuses.waiting,
+        label: 'Ожидание',
+        colorValue: upperWaiting.colorValue,
+        builtin: true,
+      );
+    }
     final result = <JobStatusDef>[];
     for (final id in builtins) {
       result.add(
@@ -380,6 +390,30 @@ class StatusService {
   }
 
   static JobStatusDef _normalizeBuiltin(JobStatusDef item) {
+    if (item.id == JobStatuses.waiting) {
+      if (item.label.trim().isEmpty ||
+          item.label.toUpperCase() == 'ОЖИДАНИЕ') {
+        return item.copyWith(
+          label: JobStatuses.defaultLabel(JobStatuses.waiting),
+        );
+      }
+    }
+    if (item.id == JobStatuses.waitingPayment) {
+      if (item.label.trim().isEmpty ||
+          item.label == JobStatuses.waitingPayment) {
+        return item.copyWith(
+          label: JobStatuses.defaultLabel(JobStatuses.waitingPayment),
+        );
+      }
+    }
+    if (item.id == JobStatuses.waitingPart) {
+      if (item.label.trim().isEmpty ||
+          item.label == JobStatuses.waitingPart) {
+        return item.copyWith(
+          label: JobStatuses.defaultLabel(JobStatuses.waitingPart),
+        );
+      }
+    }
     if (item.id == JobStatuses.completed) {
       if (item.label.trim().isEmpty ||
           item.label == JobStatuses.completed ||
@@ -448,6 +482,8 @@ class StatusService {
     if (repeatNeedsRename) return true;
     if (installNeedsRecolor) return true;
     if (rawIds.contains(JobStatuses.inProgress)) return true;
+    if (rawIds.contains('ОЖИДАНИЕ')) return true;
+    if (!rawIds.contains(JobStatuses.waiting)) return true;
     if (!rawIds.contains(JobStatuses.install)) return true;
     if (!rawIds.contains(JobStatuses.callBack)) return true;
     if (!rawIds.contains(JobStatuses.repeatVisit)) return true;
@@ -455,6 +491,7 @@ class StatusService {
     if (!rawIds.contains(JobStatuses.deposit)) return true;
     if (!rawIds.contains(JobStatuses.waitingPayment)) return true;
     final parsedIds = {for (final item in parsed) item.id};
+    if (!parsedIds.contains(JobStatuses.waiting)) return true;
     if (!parsedIds.contains(JobStatuses.install)) return true;
     if (!parsedIds.contains(JobStatuses.callBack)) return true;
     if (!parsedIds.contains(JobStatuses.repeatVisit)) return true;

@@ -26,6 +26,7 @@ import '../../../../shared/widgets/app_bar_save.dart';
 import '../../../../shared/widgets/dispose_on_close.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
 import '../../../../shared/widgets/appliance_picture.dart';
+import '../../../../shared/widgets/calendar_hatch.dart';
 import '../../../../widgets/smart_address_picker.dart';
 import '../../../../shared/widgets/email_field.dart';
 import '../../../../shared/widgets/confirm_action_sheet.dart';
@@ -291,6 +292,8 @@ class _DetailsTabState extends State<DetailsTab> {
                         itemBuilder: (context, index) {
                           final status = statuses[index];
                           final isSelected = ctrl.currentStatus == status;
+                          final emoji = calendarStatusEmoji(status) ?? '';
+                          final label = trAny(StatusService.labelOf(status));
                           return ListTile(
                             leading: Icon(
                               isSelected
@@ -299,7 +302,7 @@ class _DetailsTabState extends State<DetailsTab> {
                               color: StatusService.colorOf(status),
                             ),
                             title: Text(
-                              trAny(StatusService.labelOf(status)),
+                              emoji.isEmpty ? label : '$label $emoji',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w700,

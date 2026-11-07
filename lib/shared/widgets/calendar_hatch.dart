@@ -137,25 +137,9 @@ class CalendarStatusBadge extends StatelessWidget {
     final closed =
         hatch == CalendarHatchStyle.completed ||
         hatch == CalendarHatchStyle.cancelled;
-    if (closed) {
-      final cancelled = hatch == CalendarHatchStyle.cancelled;
-      return Container(
-        width: size,
-        height: size,
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          shape: BoxShape.circle,
-        ),
-        alignment: Alignment.center,
-        child: Icon(
-          cancelled ? Icons.close_rounded : Icons.check_rounded,
-          size: size * 0.84,
-          color: cancelled ? kCalendarCancelRed : kCalendarDoneGreen,
-          weight: 900,
-        ),
-      );
-    }
-    final mark = emoji;
+    final mark = closed
+        ? (hatch == CalendarHatchStyle.cancelled ? '\u{274C}' : '\u{2705}')
+        : emoji;
     if (mark == null || mark.isEmpty) return const SizedBox.shrink();
     return Text(mark, style: TextStyle(fontSize: size * 0.92, height: 1));
   }
@@ -165,40 +149,51 @@ class CalendarStatusBadge extends StatelessWidget {
 /// открытые работы читались первыми. Штриховки больше нет.
 const double kCalendarClosedOpacity = 0.55;
 
-/// Эмодзи статуса. «Завершено» и «Отменено» его не имеют —
-/// у них галочка и крест.
+/// Эмодзи статуса:
+/// Вызов: 👷, Ожидание: ⏳, Ожидание Оплаты: 💰, Депозит: 🤝,
+/// Запчасти: 📦, Установка: 🛠, Повторный визит: 🚧, Позвонить: ☎️,
+/// Готово: ✅, Отмена: ❌.
 String? calendarStatusEmoji(String status) {
   final key = status.trim();
   if (key.isEmpty) return null;
-  if (JobStatuses.isCompletedStatus(key) ||
-      JobStatuses.isCancelledStatus(key)) {
-    return null;
-  }
-  if (JobStatuses.isDepositStatus(key)) return '\u{1F4B2}';
-  if (JobStatuses.isInstallStatus(key)) return '\u{1F50C}';
+  if (JobStatuses.isCompletedStatus(key)) return '\u{2705}';
+  if (JobStatuses.isCancelledStatus(key)) return '\u{274C}';
+  if (JobStatuses.isDepositStatus(key)) return '\u{1F91D}';
+  if (JobStatuses.isInstallStatus(key)) return '\u{1F6E0}';
   switch (key) {
     case JobStatuses.call:
-      return '\u{1F9F0}';
-    case JobStatuses.inProgress:
-      return '\u{1F527}';
-    case JobStatuses.rescheduled:
-      return '\u{1F504}';
+      return '\u{1F477}';
+    case JobStatuses.waiting:
+    case 'ОЖИДАНИЕ':
+      return '\u{23F3}';
+    case JobStatuses.waitingPayment:
+    case 'Ожидание Оплаты':
+      return '\u{1F4B0}';
     case JobStatuses.waitingPart:
+    case 'Запчасти':
       return '\u{1F4E6}';
-    case JobStatuses.callBack:
-      return '\u{1F4DE}';
     case JobStatuses.repeatVisit:
-      return '\u{1F501}';
+      return '\u{1F6A7}';
+    case JobStatuses.callBack:
+      return '\u{260E}\u{FE0F}';
+    case JobStatuses.inProgress:
+      return '\u{1F6E0}';
+    case JobStatuses.rescheduled:
+      return '\u{1F6A7}';
     case JobStatuses.repeat:
-      return '\u{1F4C5}';
+      return '\u{1F6A7}';
   }
   final n = key.toLowerCase();
-  if (n.contains('звон') || n.contains('call')) return '\u{1F4DE}';
-  if (n.contains('запчаст') || n.contains('part')) return '\u{1F4E6}';
+  if (n == 'вызов') return '\u{1F477}';
   if (n.contains('оплат') || n.contains('деньг') || n.contains('pay')) {
-    return '\u{1F4B2}';
+    return '\u{1F4B0}';
+  }
+  if (n.contains('запчаст') || n.contains('part')) return '\u{1F4E6}';
+  if (n.contains('ожидан') || n.contains('wait')) return '\u{23F3}';
+  if (n.contains('звон') || n.contains('call')) return '\u{260E}\u{FE0F}';
+  if (n.contains('повтор') || n.contains('перенос') || n.contains('reschedul')) {
+    return '\u{1F6A7}';
   }
   if (n.contains('гарант') || n.contains('warranty')) return '\u{1F6E1}';
-  if (n.contains('перенос') || n.contains('reschedul')) return '\u{1F504}';
-  return '\u{1F4CC}';
+  return '\u{1F477}';
 }
