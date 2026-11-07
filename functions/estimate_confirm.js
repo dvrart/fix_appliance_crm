@@ -103,8 +103,9 @@ exports.estimateConfirm = functions.https.onRequest(async (req, res) => {
       })
       .join('');
     const total = items.reduce((sum, item) => sum + Number(item.qty || 1) * Number(item.price || 0), 0);
-    const taxRate = Number(doc.taxRate || 0);
-    const tax = total * (taxRate / 100);
+    const rawTaxRate = Number(doc.taxRate || 0);
+    const taxRate = rawTaxRate > 1 ? rawTaxRate / 100 : rawTaxRate;
+    const tax = total * taxRate;
     const grand = total + tax;
     const name = escapeHtml(job.clientName || 'there');
     const already = String(doc.estimateStatus || '') === 'approved';

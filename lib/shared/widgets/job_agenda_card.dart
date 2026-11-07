@@ -265,7 +265,7 @@ class JobAgendaCard extends StatelessWidget {
                       child: Stack(
                         children: [
                           AppliancePicture(
-                            type: job.applianceType,
+                            type: job.appliancePictureType,
                             fillSlot: true,
                           ),
                           if (job.appliances.length > 1)
@@ -526,7 +526,7 @@ class JobAgendaCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 6),
-              AppliancePicture(type: job.applianceType, size: 34),
+              AppliancePicture(type: job.appliancePictureType, size: 34),
             ],
           ),
         ),
@@ -574,7 +574,7 @@ class JobAgendaCard extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
           child: Row(
             children: [
-              AppliancePicture(type: job.applianceType, size: 34),
+              AppliancePicture(type: job.appliancePictureType, size: 34),
               const SizedBox(width: 8),
               if (timeLabel.isNotEmpty) ...[
                 Container(

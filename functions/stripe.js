@@ -640,13 +640,6 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
           locale: 'en',
           success_url: `${base}/stripePaymentComplete?status=success&session_id={CHECKOUT_SESSION_ID}`,
           cancel_url: `${base}/stripePaymentComplete?status=cancel&session_id={CHECKOUT_SESSION_ID}`,
-          invoice_creation: {
-            enabled: true,
-            invoice_data: {
-              description: label,
-              metadata,
-            },
-          },
           line_items: lineItems,
           ...(optionalItems ? { optional_items: optionalItems } : {}),
         });
@@ -661,13 +654,6 @@ exports.createStripePayment = functions.https.onRequest(async (req, res) => {
           locale: 'en',
           success_url: `${base}/stripePaymentComplete?status=success&session_id={CHECKOUT_SESSION_ID}`,
           cancel_url: `${base}/stripePaymentComplete?status=cancel&session_id={CHECKOUT_SESSION_ID}`,
-          invoice_creation: {
-            enabled: true,
-            invoice_data: {
-              description: label,
-              metadata,
-            },
-          },
           line_items: lineItems,
         });
       }

@@ -31,6 +31,8 @@ class EditClientSheet extends StatefulWidget {
 class _EditClientSheetState extends State<EditClientSheet> {
   late final TextEditingController nameController;
   late final TextEditingController phoneController;
+  final List<TextEditingController> extraPhoneControllers = [];
+  final List<TextEditingController> _retiredPhoneControllers = [];
   late final TextEditingController emailController;
   late final TextEditingController companyController;
   late final TextEditingController notesController;
@@ -42,6 +44,7 @@ class _EditClientSheetState extends State<EditClientSheet> {
   late bool isRegular;
   late final String _initialName;
   late final String _initialPhone;
+  late final List<String> _initialExtraPhones;
   late final String _initialEmail;
   late final String _initialCompany;
   late final String _initialNotes;
@@ -58,6 +61,18 @@ class _EditClientSheetState extends State<EditClientSheet> {
     final currentData = widget.currentData;
     _initialName = widget.extractName(currentData);
     _initialPhone = (currentData['phone'] ?? '').toString();
+    final rawExtras = currentData['extraPhones'];
+    _initialExtraPhones = [
+      if (rawExtras is List)
+        for (final item in rawExtras)
+          if ((item ?? '').toString().trim().isNotEmpty &&
+              (item ?? '').toString().trim() != _initialPhone.trim())
+            (item ?? '').toString().trim(),
+    ];
+    for (final p in _initialExtraPhones) {
+      final ctrl = TextEditingController(text: p)..addListener(_onEdit);
+      extraPhoneControllers.add(ctrl);
+    }
     _initialEmail = (currentData['email'] ?? '').toString();
     _initialCompany =
         (currentData['companyName'] ?? currentData['company'] ?? '').toString();
@@ -112,6 +127,8 @@ class _EditClientSheetState extends State<EditClientSheet> {
       streetController,
       cityController,
       postalController,
+      ...extraPhoneControllers,
+      ..._retiredPhoneControllers,
     ]) {
       controller.removeListener(_onEdit);
       controller.dispose();
@@ -119,9 +136,48 @@ class _EditClientSheetState extends State<EditClientSheet> {
     super.dispose();
   }
 
+  List<String> _cleanedExtraPhones() {
+    final mainPhone = phoneController.text.trim();
+    final seen = <String>{
+      if (mainPhone.isNotEmpty) ClientService.normalizePhone(mainPhone),
+    };
+    final out = <String>[];
+    for (final c in extraPhoneControllers) {
+      final t = c.text.trim();
+      if (t.isEmpty) continue;
+      final norm = ClientService.normalizePhone(t);
+      if (norm.isEmpty || !seen.add(norm)) continue;
+      out.add(t);
+    }
+    return out;
+  }
+
+  bool get _extraPhonesDirty {
+    final current = _cleanedExtraPhones();
+    if (current.length != _initialExtraPhones.length) return true;
+    for (var i = 0; i < current.length; i++) {
+      if (current[i] != _initialExtraPhones[i]) return true;
+    }
+    return false;
+  }
+
+  void _addExtraPhone() {
+    final ctrl = TextEditingController()..addListener(_onEdit);
+    setState(() => extraPhoneControllers.add(ctrl));
+  }
+
+  void _removeExtraPhone(int index) {
+    if (index < 0 || index >= extraPhoneControllers.length) return;
+    final ctrl = extraPhoneControllers.removeAt(index);
+    ctrl.removeListener(_onEdit);
+    _retiredPhoneControllers.add(ctrl);
+    setState(() {});
+  }
+
   bool get _dirty {
     return nameController.text.trim() != _initialName.trim() ||
         phoneController.text.trim() != _initialPhone.trim() ||
+        _extraPhonesDirty ||
         emailController.text.trim() != _initialEmail.trim() ||
         companyController.text.trim() != _initialCompany.trim() ||
         notesController.text.trim() != _initialNotes.trim() ||
@@ -140,6 +196,7 @@ class _EditClientSheetState extends State<EditClientSheet> {
       'fullName': name,
       'name': name,
       'phone': phone,
+      'extraPhones': _cleanedExtraPhones(),
       'email': emailController.text.trim(),
       'companyName': companyController.text.trim(),
       'notes': notesController.text.trim(),
@@ -248,7 +305,32 @@ class _EditClientSheetState extends State<EditClientSheet> {
                             prefixIcon: const Icon(Icons.phone),
                           ),
                         ),
-                        const SizedBox(height: 16),
+                        for (var i = 0; i < extraPhoneControllers.length; i++) ...[
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: extraPhoneControllers[i],
+                            keyboardType: TextInputType.phone,
+                            decoration: InputDecoration(
+                              labelText: '${'Доп. телефон'.tr} ${i + 1}',
+                              border: const OutlineInputBorder(),
+                              prefixIcon: const Icon(Icons.phone_android),
+                              suffixIcon: IconButton(
+                                tooltip: 'Удалить'.tr,
+                                icon: const Icon(Icons.close),
+                                onPressed: () => _removeExtraPhone(i),
+                              ),
+                            ),
+                          ),
+                        ],
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            onPressed: _addExtraPhone,
+                            icon: const Icon(Icons.add, size: 18),
+                            label: Text('Добавить телефон'.tr),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
                         GestureDetector(
                           onTap: () {
                             showSmartAddressPicker(

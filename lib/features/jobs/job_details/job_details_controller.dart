@@ -96,6 +96,8 @@ class JobDetailsController extends ChangeNotifier {
   String jobSitePhone = '';
   String jobSiteAddress = '';
   String jobSiteEmail = '';
+  List<String> extraPhones = [];
+  List<String> clientExtraPhones = [];
 
   String financeMode = 'main'; // 'main', 'builder', 'view_document'
   String builderDocType = 'Invoice';
@@ -210,6 +212,7 @@ class JobDetailsController extends ChangeNotifier {
     _dropPhoneSavedAsName();
     jobSiteAddress = jobData['jobSiteAddress'] ?? '';
     jobSiteEmail = (jobData['jobSiteEmail'] ?? '').toString();
+    extraPhones = _parseExtraPhones(jobData['extraPhones']);
     clientEmail = (jobData['clientEmail'] ?? '').toString().trim();
 
     if (jobData['documents'] != null) {
@@ -345,6 +348,10 @@ class JobDetailsController extends ChangeNotifier {
         }
         if (data.containsKey('jobSiteEmail')) {
           jobSiteEmail = (data['jobSiteEmail'] ?? '').toString();
+        }
+        if (data.containsKey('extraPhones')) {
+          extraPhones = _parseExtraPhones(data['extraPhones']);
+          jobData['extraPhones'] = extraPhones;
         }
         if (data.containsKey('clientEmail') &&
             (data['clientEmail'] ?? '').toString().trim().isNotEmpty) {
@@ -730,6 +737,20 @@ class JobDetailsController extends ChangeNotifier {
         : (jobData['clientPhone'] ?? '').toString();
   }
 
+  List<String> _parseExtraPhones(dynamic raw) {
+    if (raw is! List) return <String>[];
+    final seen = <String>{};
+    final out = <String>[];
+    for (final item in raw) {
+      final s = (item ?? '').toString().trim();
+      if (s.isEmpty) continue;
+      final norm = SmsService.normalizePhone(s);
+      if (norm.isEmpty || !seen.add(norm)) continue;
+      out.add(s);
+    }
+    return out;
+  }
+
   List<JobChatContact> get chatContacts {
     final result = <JobChatContact>[];
     final seenPhones = <String>{};
@@ -758,18 +779,31 @@ class JobDetailsController extends ChangeNotifier {
     }
 
     final clientPhone = (jobData['clientPhone'] ?? '').toString().trim();
+    final ownerName = Client.stripClientWord(
+      jobData['clientName']?.toString(),
+      clientPhone,
+    );
     add(
       JobChatContact(
         id: 'client',
         label: 'Хозяин'.tr,
-        name: Client.stripClientWord(
-          jobData['clientName']?.toString(),
-          clientPhone,
-        ),
+        name: ownerName,
         phone: clientPhone,
         email: clientEmail.trim(),
       ),
     );
+    for (var i = 0; i < clientExtraPhones.length; i++) {
+      final extra = clientExtraPhones[i].trim();
+      if (extra.isEmpty) continue;
+      add(
+        JobChatContact(
+          id: 'owner-extra-$i',
+          label: 'Хозяин'.tr,
+          name: ownerName.isEmpty ? 'Хозяин'.tr : ownerName,
+          phone: extra,
+        ),
+      );
+    }
 
     final sitePhone = effectiveJobSitePhone;
     final siteName = effectiveJobSiteName;
@@ -783,6 +817,22 @@ class JobDetailsController extends ChangeNotifier {
           name: siteName.isEmpty ? 'Арендатор'.tr : siteName,
           phone: sitePhone,
           email: jobSiteEmail.trim(),
+        ),
+      );
+    }
+
+    for (var i = 0; i < extraPhones.length; i++) {
+      final extra = extraPhones[i].trim();
+      if (extra.isEmpty) continue;
+      final isTenant = hasJobSite;
+      add(
+        JobChatContact(
+          id: 'job-extra-$i',
+          label: isTenant ? 'Арендатор'.tr : 'Хозяин'.tr,
+          name: isTenant
+              ? (siteName.isEmpty ? 'Арендатор'.tr : siteName)
+              : (ownerName.isEmpty ? 'Хозяин'.tr : ownerName),
+          phone: extra,
         ),
       );
     }
@@ -876,8 +926,16 @@ class JobDetailsController extends ChangeNotifier {
       final address = (data['address'] ?? '').toString().trim();
       final email = (data['email'] ?? '').toString().trim();
       final isRegular = data['isRegular'] == true;
+      final nextClientExtras = _parseExtraPhones(data['extraPhones']);
       ClientService.noteClientMap(clientId, data);
-      var changed = chatContacts.length != prevContactsCount;
+      var changed = false;
+      if (nextClientExtras.join('|') != clientExtraPhones.join('|')) {
+        clientExtraPhones = nextClientExtras;
+        changed = true;
+      }
+      if (chatContacts.length != prevContactsCount) {
+        changed = true;
+      }
       if ((jobData['clientIsRegular'] == true) != isRegular) {
         jobData['clientIsRegular'] = isRegular;
         changed = true;
@@ -1411,17 +1469,30 @@ class JobDetailsController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> updateExtraPhones(List<String> phones) async {
+    final cleaned = _parseExtraPhones(phones);
+    extraPhones = cleaned;
+    jobData['extraPhones'] = cleaned;
+    _queue({'extraPhones': cleaned});
+    _listenClientCalls();
+  }
+
   Future<void> updateJobSite({
     required String name,
     required String phone,
     required String address,
     String email = '',
+    List<String>? extraPhones,
   }) async {
     hasJobSite = true;
     jobSiteName = name.trim();
     jobSitePhone = phone.trim();
     jobSiteAddress = address.trim();
     jobSiteEmail = email.trim();
+    if (extraPhones != null) {
+      this.extraPhones = _parseExtraPhones(extraPhones);
+      jobData['extraPhones'] = this.extraPhones;
+    }
     jobData['hasJobSite'] = true;
     jobData['jobSiteName'] = jobSiteName;
     jobData['jobSitePhone'] = jobSitePhone;
@@ -1433,18 +1504,24 @@ class JobDetailsController extends ChangeNotifier {
       'jobSitePhone': jobSitePhone,
       'jobSiteAddress': jobSiteAddress,
       'jobSiteEmail': jobSiteEmail,
+      if (extraPhones != null) 'extraPhones': this.extraPhones,
     });
+    _listenClientCalls();
     isLoadingTime = true;
     notifyListeners();
     await _calculateTravelTime();
   }
 
-  Future<void> clearJobSite() async {
+  Future<void> clearJobSite({List<String>? extraPhones}) async {
     hasJobSite = false;
     jobSiteName = '';
     jobSitePhone = '';
     jobSiteAddress = '';
     jobSiteEmail = '';
+    if (extraPhones != null) {
+      this.extraPhones = _parseExtraPhones(extraPhones);
+      jobData['extraPhones'] = this.extraPhones;
+    }
     jobData['hasJobSite'] = false;
     jobData['jobSiteName'] = '';
     jobData['jobSitePhone'] = '';
@@ -1456,7 +1533,9 @@ class JobDetailsController extends ChangeNotifier {
       'jobSitePhone': '',
       'jobSiteAddress': '',
       'jobSiteEmail': '',
+      if (extraPhones != null) 'extraPhones': this.extraPhones,
     });
+    _listenClientCalls();
     isLoadingTime = true;
     notifyListeners();
     await _calculateTravelTime();

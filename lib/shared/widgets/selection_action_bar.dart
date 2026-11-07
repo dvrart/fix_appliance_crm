@@ -40,6 +40,8 @@ class SelectionActionBar extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback? onSelectAll;
   final VoidCallback? onCopy;
+  final VoidCallback? onCreateJob;
+  final bool creatingJob;
 
   const SelectionActionBar({
     super.key,
@@ -48,6 +50,8 @@ class SelectionActionBar extends StatelessWidget {
     required this.onDelete,
     this.onSelectAll,
     this.onCopy,
+    this.onCreateJob,
+    this.creatingJob = false,
   });
 
   @override
@@ -76,6 +80,41 @@ class SelectionActionBar extends StatelessWidget {
                   ),
                 ),
               ),
+              if (onCreateJob != null)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: FilledButton.icon(
+                    onPressed: count == 0 || creatingJob ? null : onCreateJob,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.accent,
+                      foregroundColor: Colors.black,
+                      disabledBackgroundColor: Colors.white24,
+                      disabledForegroundColor: Colors.white54,
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                    ),
+                    icon: creatingJob
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.black,
+                            ),
+                          )
+                        : const Icon(Icons.add_circle_outline, size: 17),
+                    label: Text(
+                      'Создать заявку'.tr,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ),
               if (onSelectAll != null)
                 IconButton(
                   tooltip: 'Выбрать все'.tr,

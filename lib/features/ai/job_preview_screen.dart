@@ -143,8 +143,9 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
     final loc = client.primaryLocation;
     // Адрес клиента подставляется, только если другого адреса в форме нет:
     // названное в звонке или переписке место работы не затираем.
+    final extractedStreet = _addressController.text.trim();
     final hasClientAddr = client.address.trim().isNotEmpty &&
-        _addressController.text.trim().isEmpty;
+        extractedStreet.isEmpty;
     if (hasClientAddr) {
       if (loc != null &&
           (loc.street.trim().isNotEmpty ||
@@ -165,6 +166,12 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         _cityController.text = parts[1];
         _postalController.text = parts[2];
       }
+    } else if (client.address.trim().isNotEmpty &&
+        extractedStreet.isNotEmpty &&
+        !client.address.toLowerCase().contains(extractedStreet.toLowerCase())) {
+      // У существующего клиента уже есть свой адрес, а в сообщении назван
+      // другой объект (арендатор / второй дом) — ставим «Другой адрес работы».
+      _hasJobSite = true;
     }
   }
 
@@ -362,12 +369,18 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
           : null;
 
       // Создаём заявку
+      final ownerAddress = existing != null &&
+              !_editingExistingClient &&
+              _hasJobSite &&
+              existing.address.trim().isNotEmpty
+          ? existing.address.trim()
+          : resolvedAddress;
       final job = Job(
         id: '',
         clientId: clientId,
         clientName: _nameController.text.trim(),
         clientPhone: phone,
-        clientAddress: resolvedAddress,
+        clientAddress: ownerAddress,
         hasJobSite: _hasJobSite,
         // Номер телефона в имя на месте не пишем — оно берётся из карточки.
         jobSiteName: _hasJobSite &&

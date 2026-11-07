@@ -444,7 +444,7 @@ class _ResultsCard extends StatelessWidget {
           phone: job.clientPhone,
         );
     return ListTile(
-      leading: AppliancePicture(type: job.applianceType, size: 40),
+      leading: AppliancePicture(type: job.appliancePictureType, size: 40),
       title: Row(
         children: [
           Flexible(

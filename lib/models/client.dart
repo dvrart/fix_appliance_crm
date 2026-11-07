@@ -8,6 +8,7 @@ class Client {
   final String id;
   final String fullName;
   final String phone;
+  final List<String> extraPhones;
   final String? email;
   final String? companyName;
   final String? notes;
@@ -23,6 +24,7 @@ class Client {
     required this.id,
     required this.fullName,
     required this.phone,
+    this.extraPhones = const [],
     this.email,
     this.companyName,
     this.notes,
@@ -34,6 +36,25 @@ class Client {
     this.lastActiveAt,
     this.deletedAt,
   });
+
+  List<String> get allPhones {
+    final result = <String>[];
+    final seen = <String>{};
+    void add(String raw) {
+      final t = raw.trim();
+      if (t.isEmpty) return;
+      final digits = t.replaceAll(RegExp(r'\D'), '');
+      final key = digits.length > 10 ? digits.substring(digits.length - 10) : digits;
+      if (key.isEmpty || !seen.add(key)) return;
+      result.add(t);
+    }
+
+    add(phone);
+    for (final p in extraPhones) {
+      add(p);
+    }
+    return result;
+  }
 
   /// Основной адрес (первый в списке)
   Location? get primaryLocation => locations.isNotEmpty ? locations.first : null;
@@ -159,10 +180,29 @@ class Client {
       ));
     }
 
+    final extraPhonesList = <String>[];
+    final rawExtraPhones = map['extraPhones'] ?? map['phones'];
+    if (rawExtraPhones is List) {
+      final primaryDigits = phone.replaceAll(RegExp(r'\D'), '');
+      final primaryKey = primaryDigits.length > 10
+          ? primaryDigits.substring(primaryDigits.length - 10)
+          : primaryDigits;
+      final seen = <String>{if (primaryKey.isNotEmpty) primaryKey};
+      for (final item in rawExtraPhones) {
+        final s = (item ?? '').toString().trim();
+        if (s.isEmpty) continue;
+        final digits = s.replaceAll(RegExp(r'\D'), '');
+        final key = digits.length > 10 ? digits.substring(digits.length - 10) : digits;
+        if (key.isEmpty || !seen.add(key)) continue;
+        extraPhonesList.add(s);
+      }
+    }
+
     return Client(
       id: docId,
       fullName: fullName,
       phone: phone,
+      extraPhones: extraPhonesList,
       email: map['email'],
       companyName: map['companyName'] ?? map['company'],
       notes: map['notes'] ?? map['description'],
@@ -188,6 +228,7 @@ class Client {
       'fullName': fullName,
       'name': fullName,
       'phone': phone,
+      'extraPhones': extraPhones,
       'email': email,
       'companyName': companyName,
       'company': companyName,
@@ -203,6 +244,7 @@ class Client {
     return {
       'fullName': fullName,
       'phone': phone,
+      'extraPhones': extraPhones,
       'email': email,
       'companyName': companyName,
       'notes': notes,
@@ -220,6 +262,7 @@ class Client {
     String? id,
     String? fullName,
     String? phone,
+    List<String>? extraPhones,
     String? email,
     String? companyName,
     String? notes,
@@ -235,6 +278,7 @@ class Client {
       id: id ?? this.id,
       fullName: fullName ?? this.fullName,
       phone: phone ?? this.phone,
+      extraPhones: extraPhones ?? this.extraPhones,
       email: email ?? this.email,
       companyName: companyName ?? this.companyName,
       notes: notes ?? this.notes,

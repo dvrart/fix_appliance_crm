@@ -29,6 +29,7 @@ class DocumentSendData {
   final String clientPhone;
   final String clientAddress;
   final int documentNumber;
+  final int? documentIndex;
   final List<dynamic> items;
   final double subtotal;
   final double tax;
@@ -54,6 +55,7 @@ class DocumentSendData {
     required this.clientPhone,
     required this.clientAddress,
     required this.documentNumber,
+    this.documentIndex,
     required this.items,
     required this.subtotal,
     required this.tax,
@@ -219,8 +221,9 @@ class DocumentTemplateService {
       'estimateStatus': 'sent',
       'confirmSentAt': DateTime.now().toIso8601String(),
     });
+    final docIdx = data.documentIndex ?? (data.documentNumber - 1);
     final longUrl =
-        '$kFirebaseFunctionsUrl/estimateConfirm?jobId=${Uri.encodeQueryComponent(data.jobId)}&doc=${data.documentNumber - 1}&token=${Uri.encodeQueryComponent(token)}';
+        '$kFirebaseFunctionsUrl/estimateConfirm?jobId=${Uri.encodeQueryComponent(data.jobId)}&doc=$docIdx&token=${Uri.encodeQueryComponent(token)}';
     final shortened = await ShortLinkService.ensure(
       targetUrl: longUrl,
       code: data.pdfShortCode,

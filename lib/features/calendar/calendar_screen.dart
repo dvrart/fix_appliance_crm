@@ -1550,6 +1550,9 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     );
     final timeStr = DateFormat('HH:mm').format(app.startTime);
     final cityStr = (parsedJob?.city ?? '').trim();
+    final logoType = (parsedJob != null && parsedJob.appliances.length > 1)
+        ? 'Техника'
+        : type;
     final minimalSubtitle = [
       timeStr,
       if (cityStr.isNotEmpty) cityStr,
@@ -1566,7 +1569,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
             child: showName
                 ? Row(
                     children: [
-                      ApplianceLogo(type: type, size: logoSize, onDark: true),
+                      ApplianceLogo(type: logoType, size: logoSize, onDark: true),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Column(
@@ -1642,7 +1645,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                   )
                 : Center(
                     child: ApplianceLogo(
-                      type: type,
+                      type: logoType,
                       size: logoSize,
                       onDark: true,
                     ),

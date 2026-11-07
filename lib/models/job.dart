@@ -589,6 +589,7 @@ class Job {
   final String? jobSitePhone;
   final String? jobSiteAddress;
   final String? jobSiteEmail;
+  final List<String> extraPhones;
 
   final List<JobAppliance> appliances;
   final String description;
@@ -663,6 +664,7 @@ class Job {
     this.jobSitePhone,
     this.jobSiteAddress,
     this.jobSiteEmail,
+    this.extraPhones = const [],
     this.appliances = const [],
     this.description = '',
     this.solution = '',
@@ -936,11 +938,16 @@ class Job {
   /// Тип техники для отображения
   String get applianceType => primaryAppliance?.type ?? 'Техника';
 
+  /// Тип для картинки/иконки: если приборов несколько — общая картинка «Техника»
+  String get appliancePictureType =>
+      appliances.length > 1 ? 'Техника' : applianceType;
+
   /// Бренд техники для отображения
   String get applianceBrand => primaryAppliance?.brand ?? '';
 
   /// Иконка техники
-  IconData get applianceIcon => ApplianceCategories.getIcon(applianceType);
+  IconData get applianceIcon =>
+      ApplianceCategories.getIcon(appliancePictureType);
 
   /// Что взять с собой: техника + позиции из счетов/смет.
   List<String> get packingList {
@@ -1392,6 +1399,25 @@ class Job {
     final clientPhone = (map['clientPhone'] ?? '').toString();
     final rawSitePhone = map['jobSitePhone']?.toString();
     final rawSiteName = map['jobSiteName']?.toString();
+    final extraPhonesList = <String>[];
+    final rawExtraPhones = map['extraPhones'];
+    if (rawExtraPhones is List) {
+      final seen = <String>{};
+      for (final base in [clientPhone, rawSitePhone ?? '']) {
+        final d = base.replaceAll(RegExp(r'\D'), '');
+        if (d.isNotEmpty) {
+          seen.add(d.length > 10 ? d.substring(d.length - 10) : d);
+        }
+      }
+      for (final item in rawExtraPhones) {
+        final s = (item ?? '').toString().trim();
+        if (s.isEmpty) continue;
+        final d = s.replaceAll(RegExp(r'\D'), '');
+        final key = d.length > 10 ? d.substring(d.length - 10) : d;
+        if (key.isEmpty || !seen.add(key)) continue;
+        extraPhonesList.add(s);
+      }
+    }
 
     return Job(
       id: docId,
@@ -1415,6 +1441,7 @@ class Job {
       jobSiteEmail: (map['jobSiteEmail'] ?? '').toString().trim().isEmpty
           ? null
           : (map['jobSiteEmail'] ?? '').toString().trim(),
+      extraPhones: extraPhonesList,
       appliances: appliancesList,
       description: map['description'] ?? '',
       solution: (map['solution'] ?? '').toString(),
@@ -1486,6 +1513,7 @@ class Job {
       'jobSitePhone': jobSitePhone,
       'jobSiteAddress': jobSiteAddress,
       'jobSiteEmail': jobSiteEmail,
+      if (extraPhones.isNotEmpty) 'extraPhones': extraPhones,
       'appliances': appliances.map((a) => a.toMap()).toList(),
       // Для обратной совместимости
       'applianceType': applianceType,
@@ -1550,6 +1578,7 @@ class Job {
     String? jobSitePhone,
     String? jobSiteAddress,
     String? jobSiteEmail,
+    List<String>? extraPhones,
     List<JobAppliance>? appliances,
     String? description,
     String? solution,
@@ -1606,6 +1635,7 @@ class Job {
       jobSitePhone: jobSitePhone ?? this.jobSitePhone,
       jobSiteAddress: jobSiteAddress ?? this.jobSiteAddress,
       jobSiteEmail: jobSiteEmail ?? this.jobSiteEmail,
+      extraPhones: extraPhones ?? this.extraPhones,
       appliances: appliances ?? this.appliances,
       description: description ?? this.description,
       solution: solution ?? this.solution,

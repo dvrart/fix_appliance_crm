@@ -26,8 +26,17 @@ class AssistantTools {
       'id': job.id,
       'client_id': job.clientId,
       'client_name': job.clientName,
+      'client_phone': job.clientPhone,
       'phone': job.contactPhone,
       'address': job.workAddress,
+      'client_address': job.clientAddress,
+      if (job.hasJobSite) 'has_job_site': true,
+      if ((job.jobSiteAddress ?? '').trim().isNotEmpty)
+        'job_site_address': job.jobSiteAddress,
+      if ((job.jobSiteName ?? '').trim().isNotEmpty)
+        'job_site_name': job.jobSiteName,
+      if ((job.jobSitePhone ?? '').trim().isNotEmpty)
+        'job_site_phone': job.jobSitePhone,
       'city': job.city ?? '',
       'appliance': '${job.applianceType} ${job.applianceBrand}'.trim(),
       'problem': job.description,

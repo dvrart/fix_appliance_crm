@@ -43,6 +43,10 @@ class ClientService {
   ) {
     final p = normalizePhone(client.phone);
     if (p.length >= 7) phones.add(p);
+    for (final extra in client.extraPhones) {
+      final ep = normalizePhone(extra);
+      if (ep.length >= 7) phones.add(ep);
+    }
     final e = (client.email ?? '').trim().toLowerCase();
     if (e.contains('@')) emails.add(e);
     for (final loc in client.locations) {
@@ -288,6 +292,9 @@ class ClientService {
     }
 
     if (match(client.phone)) return true;
+    for (final extra in client.extraPhones) {
+      if (match(extra)) return true;
+    }
     for (final location in client.locations) {
       for (final contact in location.contacts) {
         if (match(contact.phone)) return true;
@@ -765,6 +772,7 @@ class ClientService {
     final parts = <String>[
       client.fullName,
       client.phone,
+      ...client.extraPhones,
       client.email ?? '',
       client.companyName ?? '',
       client.notes ?? '',

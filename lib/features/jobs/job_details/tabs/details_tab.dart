@@ -225,6 +225,7 @@ class _DetailsTabState extends State<DetailsTab> {
       key: AppNav.chatKey(
         phone: contact.phone,
         email: contact.email.contains('@') ? contact.email : null,
+        jobId: ctrl.jobId,
       ),
       builder: (context) => ConversationScreen(
         phoneNumber: contact.phone,
@@ -857,6 +858,10 @@ class _DetailsTabState extends State<DetailsTab> {
     final phoneCtrl = TextEditingController(
       text: orClient(ctrl.effectiveJobSitePhone, clientPhone),
     );
+    final extraPhoneCtrls = <TextEditingController>[
+      for (final p in ctrl.extraPhones) TextEditingController(text: p),
+    ];
+    final allPhoneCtrls = <TextEditingController>[...extraPhoneCtrls];
     final emailCtrl = TextEditingController(
       text: orClient(ctrl.jobSiteEmail, clientEmail),
     );
@@ -891,6 +896,7 @@ class _DetailsTabState extends State<DetailsTab> {
             streetCtrl,
             cityCtrl,
             postalCtrl,
+            ...allPhoneCtrls,
           ],
           child: KeyboardAvoidingSheet(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
@@ -939,7 +945,42 @@ class _DetailsTabState extends State<DetailsTab> {
                                 border: const OutlineInputBorder(),
                               ),
                             ),
-                            const SizedBox(height: 12),
+                            for (var i = 0; i < extraPhoneCtrls.length; i++) ...[
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: extraPhoneCtrls[i],
+                                keyboardType: TextInputType.phone,
+                                decoration: InputDecoration(
+                                  labelText: '${'Доп. телефон'.tr} ${i + 1}',
+                                  prefixIcon: const Icon(Icons.phone_android),
+                                  border: const OutlineInputBorder(),
+                                  suffixIcon: IconButton(
+                                    tooltip: 'Удалить'.tr,
+                                    icon: const Icon(Icons.close),
+                                    onPressed: () {
+                                      setSheet(() {
+                                        extraPhoneCtrls.removeAt(i);
+                                      });
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ],
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton.icon(
+                                onPressed: () {
+                                  final next = TextEditingController();
+                                  allPhoneCtrls.add(next);
+                                  setSheet(() {
+                                    extraPhoneCtrls.add(next);
+                                  });
+                                },
+                                icon: const Icon(Icons.add, size: 18),
+                                label: Text('Добавить телефон'.tr),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
                             GestureDetector(
                               onTap: () {
                                 showSmartAddressPicker(
@@ -1068,17 +1109,27 @@ class _DetailsTabState extends State<DetailsTab> {
                           final siteAddress = _sameAddress(address, clientAddress)
                               ? ''
                               : address;
+                          final cleanedExtra = <String>[
+                            for (final c in extraPhoneCtrls)
+                              if (c.text.trim().isNotEmpty &&
+                                  SmsService.normalizePhone(c.text) !=
+                                      SmsService.normalizePhone(phoneCtrl.text) &&
+                                  SmsService.normalizePhone(c.text) !=
+                                      SmsService.normalizePhone(clientPhone))
+                                c.text.trim(),
+                          ];
                           if (siteName.isEmpty &&
                               sitePhone.isEmpty &&
                               siteEmail.isEmpty &&
                               siteAddress.isEmpty) {
-                            ctrl.clearJobSite();
+                            ctrl.clearJobSite(extraPhones: cleanedExtra);
                           } else {
                             ctrl.updateJobSite(
                               name: siteName,
                               phone: sitePhone,
                               address: siteAddress,
                               email: siteEmail,
+                              extraPhones: cleanedExtra,
                             );
                           }
                           Navigator.pop(sheetContext);
@@ -1535,7 +1586,10 @@ class _DetailsTabState extends State<DetailsTab> {
             children: [
               Stack(
                 children: [
-                  AppliancePicture(type: appliance.type, size: 54),
+                  AppliancePicture(
+                    type: appliances.length > 1 ? 'Техника' : appliance.type,
+                    size: 54,
+                  ),
                   if (appliances.length > 1)
                     Positioned(
                       top: 0,
@@ -3155,7 +3209,11 @@ class _DetailsTabState extends State<DetailsTab> {
             SmsService.normalizePhone(clientPhone);
     final hasDistinctEmail =
         siteEmail.isNotEmpty && !_sameText(siteEmail, ctrl.clientEmail);
-    if (!hasDistinctName && !hasDistinctPhone && !hasDistinctEmail) {
+    final extraPhones = ctrl.extraPhones;
+    if (!hasDistinctName &&
+        !hasDistinctPhone &&
+        !hasDistinctEmail &&
+        extraPhones.isEmpty) {
       return '';
     }
     return [
@@ -3164,6 +3222,7 @@ class _DetailsTabState extends State<DetailsTab> {
       else if (clientName.isNotEmpty)
         clientName,
       if (hasDistinctPhone) sitePhone,
+      ...extraPhones,
       if (hasDistinctEmail && !hasDistinctPhone) siteEmail,
     ].where((p) => p.isNotEmpty).join(' · ');
   }

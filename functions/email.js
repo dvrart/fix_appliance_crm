@@ -484,6 +484,7 @@ const PARTS_SUPPLIERS = [
   { id: 'amazon', label: 'Amazon', match: /amazon\.(ca|com)|shipment-tracking@|auto-confirm@amazon|order-update@amazon|marketplace\.amazon/i },
   { id: 'reliable_parts', label: 'Reliable Parts', match: /reliableparts\.(ca|com)|reliable.?parts/i },
   { id: 'partselect', label: 'PartSelect', match: /partselect\.(ca|com)/i },
+  { id: 'parts_of_canada', label: 'partsofcanada.com', match: /partsofcanada\.(com|ca)|parts\s*of\s*canada/i },
   { id: 'encompass', label: 'Encompass', match: /encompass\.com|repairclinic\.com|appliancepartspros/i },
   { id: 'marcone', label: 'Marcone', match: /marcone\.com/i },
   { id: 'ebay', label: 'eBay', match: /ebay\.(ca|com)|@ebay\./i },

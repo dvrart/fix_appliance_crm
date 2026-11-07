@@ -805,6 +805,7 @@ const Map<String, String> kEnglishUi = {
   'Запчасти с Amazon': 'Parts from Amazon',
   'Запчасти с Reliable Parts': 'Parts from Reliable Parts',
   'Запчасти с PartSelect': 'Parts from PartSelect',
+  'Запчасти с partsofcanada.com': 'Parts from partsofcanada.com',
   'Запчасти с Encompass': 'Parts from Encompass',
   'Запчасти с Marcone': 'Parts from Marcone',
   'Запчасти с eBay': 'Parts from eBay',

@@ -1647,12 +1647,26 @@ async function jobsForContact(from, clientId) {
   const phone = email ? '' : normalizePhone(from);
   if (!clientId && !email && !phone) return [];
   const snap = await jobsRef().get();
-  return snap.docs.filter((doc) => {
+  const matched = snap.docs.filter((doc) => {
     const data = doc.data() || {};
     return (clientId && data.clientId === clientId) ||
       (email && emailsOfJob(data).includes(email)) ||
       (phone && [data.clientPhone, data.jobSitePhone].some((value) => normalizePhone(value) === phone));
   });
+  // Если у клиента (управляющей компании / лендлорда) несколько объектов, а SMS
+  // пришло с личного номера арендатора (`jobSitePhone`), берём только заявку
+  // этого арендатора, не трогая другие адреса хозяина.
+  if (phone && matched.length > 1) {
+    const tenantOnly = matched.filter((doc) => {
+      const data = doc.data() || {};
+      return (
+        normalizePhone(data.jobSitePhone) === phone &&
+        normalizePhone(data.clientPhone) !== phone
+      );
+    });
+    if (tenantOnly.length) return tenantOnly;
+  }
+  return matched;
 }
 
 async function findPendingJob(from, clientId, { includeConfirmed = false } = {}) {
@@ -1693,7 +1707,7 @@ async function findPendingJob(from, clientId, { includeConfirmed = false } = {})
 
 function looksLikeRescheduleIntent(body) {
   const t = String(body || '').toLowerCase();
-  return /\b(postpone|reschedule|another day|different (day|time)|push (it|back)|move (it|the (visit|appointment|booking))|change (the )?(visit|appointment|time|day)|can (we|i) (postpone|reschedule|move|change)|is it possible to (postpone|reschedule)|later (day|date|time)|earlier|sooner|hours? (earlier|before|later|after)|minutes? (earlier|before|later|after)|can'?t make|cannot make|won'?t (be|make)|not going to (make|be there)|doesn'?t work|not working|can'?t come|cannot come|instead|switch to|make it|set (it|the visit) (to|for)|come (on|at)|works better|rather|перенос|перенести|отложить|другое время|другой день|вместо|не получается|раньше|позже)\b/i.test(
+  return /\b(postpone|reschedule|another day|different (day|time)|push (it|back)|move (it|the (visit|appointment|booking))|change (the )?(visit|appointment|time|day)|can (we|i) (postpone|reschedule|move|change)|is it possible to (postpone|reschedule)|later (day|date|time)|earlier|sooner|hours? (earlier|before|later|after)|minutes? (earlier|before|later|after)|can'?t make|cannot make|won'?t (be|make)|not going to (make|be there)|(?:time|day|date|slot|schedule|appointment|visit)\s+(?:is\s+)?(?:not working|doesn'?t work)|(?:doesn'?t|not)\s+work(?:ing)?\s+for\s+(?:me|us)|can'?t come|cannot come|instead|switch to|make it|set (it|the visit) (to|for)|come (on|at)|works better|rather|перенос|перенести|отложить|другое время|другой день|вместо|не получается|раньше|позже)\b/i.test(
     t
   );
 }
@@ -2174,6 +2188,18 @@ async function handleDialogReply(match, body, from, clientId) {
     const pool = picking.length ? picking : upcoming;
     const chosen = matchVisitFromText(body, pool);
     if (!chosen) {
+      // Если клиент с несколькими адресами просто ведёт живую переписку с
+      // мастером («Perfect thanks I've forwarded it to be paid», «This is wade»,
+      // «Yes»), а не выбирает заявку для отмены/переноса — снимаем диалог
+      // выбора и пропускаем сообщение в обычный чат, не спамя «Please reply 1 or 2».
+      const stillTryingToPick =
+        /^\s*[1-9]\b/i.test(String(body || '').trim()) ||
+        looksLikeRescheduleIntent(body) ||
+        looksLikeCancelIntent(body);
+      if (!stillTryingToPick) {
+        await clearPickDialog(pool);
+        return false;
+      }
       await sendSms({
         to: from,
         body: 'Please reply 1 or 2, the name, or the address of the visit.',
@@ -2480,6 +2506,36 @@ exports.sendOwnerReminders = onSchedule(
   }
 );
 
+async function clearClientDialogs({ jobId, clientId, phone } = {}) {
+  const docs = await jobsForContact(phone || '', clientId || '');
+  if (jobId && !docs.some((d) => d.id === jobId)) {
+    const snap = await jobsRef().doc(String(jobId)).get();
+    if (snap.exists) docs.push(snap);
+  }
+  for (const doc of docs) {
+    const job = doc.data() || {};
+    const visits = coalesceVisits(job);
+    let changed = false;
+    const next = visits.map((visit) => {
+      const dialog = String((visit && visit.smsDialog) || '');
+      if (!dialog || dialog === 'no_auto') return visit;
+      changed = true;
+      return {
+        ...visit,
+        smsDialog: '',
+        smsPickKind: '',
+        smsPickIndex: null,
+      };
+    });
+    if (changed) {
+      await doc.ref.update({
+        visits: next,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  }
+}
+
 exports.sendOwnerVisitSoon = sendOwnerVisitSoon;
 exports.sendDayBeforeReminders = sendDayBeforeReminders;
 exports.stripConfirmAsk = stripConfirmAsk;
@@ -2487,3 +2543,4 @@ exports.sameDayWording = sameDayWording;
 exports.tryHandleConfirmReply = tryHandleConfirmReply;
 exports.sendApprovedBookingSms = sendApprovedBookingSms;
 exports.recordBookingDelivery = recordBookingDelivery;
+exports.clearClientDialogs = clearClientDialogs;

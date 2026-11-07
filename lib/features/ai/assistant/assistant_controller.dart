@@ -68,6 +68,7 @@ class AssistantController extends ChangeNotifier {
 Если мастер говорит перенести визит на день и время — вызови reschedule_visit (date=YYYY-MM-DD, time=HH:mm). Инструмент сам запишет новую дату на заявку и отправит клиенту SMS с этой датой и временем. Не говори, что перенёс, пока инструмент не вернул ok и scheduled_at.
 После действия коротко скажи, что сделал и кому.
 Сегодняшняя дата и время приходят из инструментов. Не выдумывай заявки: сначала вызови list_jobs или get_job.
+ВАЖНО про клиентов с несколькими объектами: у одного клиента (лендлорда, управляющего недвижимостью, например Kyle Malinouski) может быть несколько мест проведения работ (разные адреса и разные арендаторы), при этом мастер переписывается с ним с одного и того же номера телефона. Поэтому в одной переписке по одному номеру могут обсуждаться разные адреса и заявки. Всегда различай заявки одного клиента по адресу объекта (address / job_site_address) и контакту на месте (contact_name), проверяй все открытые заявки этого клиента через list_jobs или get_job и не путай один адрес клиента с другим.
 ''';
 
   static String _systemPromptEn(String name) => '''
@@ -121,6 +122,7 @@ If they want you to text the client a custom reply (reschedule, "I'll be there t
 If they ask to move a visit to a day and time — call reschedule_visit (date=YYYY-MM-DD, time=HH:mm). The tool writes the new date on the job and texts the client with that date and time. Do not say it was moved until the tool returns ok and scheduled_at.
 After an action, say briefly what you did and for whom.
 Today's date and time come from tools. Do not invent jobs: call list_jobs or get_job first.
+IMPORTANT about multi-property clients: one client (landlord or property manager, e.g. Kyle Malinouski) can have multiple job sites / properties at different addresses while texting and calling from a single phone number. In the same SMS thread with that phone number, different messages may refer to different addresses and jobs. Always distinguish a client's jobs by their work address (address / job_site_address) and on-site tenant (contact_name), check all open jobs for that client via list_jobs or get_job, and never mix up one property address with another.
 ''';
 
   static const _holdAfterSpeech = Duration(milliseconds: 1200);

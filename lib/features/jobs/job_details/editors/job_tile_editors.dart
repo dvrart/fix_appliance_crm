@@ -44,6 +44,7 @@ const _kTrackingSuppliers = <String, String>{
   'amazon': 'Amazon',
   'reliable_parts': 'Reliable Parts',
   'partselect': 'PartSelect',
+  'parts_of_canada': 'partsofcanada.com',
   'encompass': 'Encompass / RepairClinic',
   'marcone': 'Marcone',
   'ebay': 'eBay',
@@ -91,6 +92,10 @@ String trackingPartsFromLabel(String carrier) {
       return 'Запчасти с Reliable Parts'.tr;
     case 'partselect':
       return 'Запчасти с PartSelect'.tr;
+    case 'parts_of_canada':
+    case 'partsofcanada':
+    case 'partsofcanada.com':
+      return 'Запчасти с partsofcanada.com'.tr;
     case 'encompass':
       return 'Запчасти с Encompass'.tr;
     case 'marcone':

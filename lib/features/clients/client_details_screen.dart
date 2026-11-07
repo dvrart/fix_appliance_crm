@@ -291,7 +291,14 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         final isRegular = _optimisticRegular ??
             ClientService.isRegularMap(data, widget.clientId);
         final name = _extractClientName(data);
-        final phone = data['phone'] ?? '';
+        final phone = (data['phone'] ?? '').toString();
+        final extraPhones = [
+          if (data['extraPhones'] is List)
+            for (final item in data['extraPhones'] as List)
+              if ((item ?? '').toString().trim().isNotEmpty &&
+                  (item ?? '').toString().trim() != phone.trim())
+                (item ?? '').toString().trim(),
+        ];
         final address = data['address'] ?? '';
         final company = data['companyName'] ?? data['company'] ?? '';
         final email = (data['email'] ?? '').toString();
@@ -523,6 +530,12 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                         title: 'Телефон'.tr,
                         value: phone.isEmpty ? 'Не указан'.tr : phone,
                       ),
+                      for (final extraPhone in extraPhones)
+                        _buildInfoCard(
+                          icon: Icons.phone_android,
+                          title: 'Доп. телефон'.tr,
+                          value: extraPhone,
+                        ),
                       _buildInfoCard(
                         icon: Icons.email_outlined,
                         title: 'Электронный адрес'.tr,
@@ -739,6 +752,12 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     }
 
     add((data['phone'] ?? '').toString());
+    final extraPhones = data['extraPhones'];
+    if (extraPhones is List) {
+      for (final item in extraPhones) {
+        add((item ?? '').toString());
+      }
+    }
     final locations = data['locations'];
     if (locations is List) {
       for (final loc in locations) {
@@ -933,7 +952,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                   padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
                   child: Row(
                     children: [
-                      AppliancePicture(type: applianceType, size: 40),
+                      AppliancePicture(type: job.appliancePictureType, size: 40),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Column(

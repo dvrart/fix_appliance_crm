@@ -4190,6 +4190,13 @@ class _FinanceTabState extends State<FinanceTab> {
     final due = ctrl.calcDue(total, paid);
     final type = (doc['type'] ?? 'Invoice').toString();
     final kind = type == 'Estimate' ? 'estimate' : 'invoice';
+    final rawDocNum = doc['number'];
+    final docNum = rawDocNum is num
+        ? rawDocNum.toInt()
+        : (int.tryParse(
+                (rawDocNum ?? '').toString().replaceAll(RegExp(r'\D'), ''),
+              ) ??
+              (documentIndex + 1));
 
     await DocumentTemplateService.showSendSheet(
       context: context,
@@ -4204,11 +4211,12 @@ class _FinanceTabState extends State<FinanceTab> {
             ? recipient.phone
             : (chosen?.phone ?? _smsPhone).trim(),
         clientAddress: recipient.address,
-        documentNumber: (doc['number'] as num?)?.toInt() ?? (documentIndex + 1),
+        documentNumber: docNum,
+        documentIndex: documentIndex,
         items: items,
         subtotal: subtotal,
         tax: tax,
-        taxRate: (doc['taxRate'] as num?)?.toDouble() ?? 0,
+        taxRate: _money(doc['taxRate']),
         total: total,
         paid: paid,
         due: due,

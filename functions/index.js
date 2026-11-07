@@ -5393,6 +5393,8 @@ exports.approveOutbox = functions.https.onRequest(async (req, res) => {
   const docRef = messagesRef.doc(id);
 
   if (action === 'reject') {
+    const snap = await docRef.get();
+    const msg = snap.exists ? snap.data() || {} : {};
     await docRef.set(
       {
         approval: 'rejected',
@@ -5401,6 +5403,15 @@ exports.approveOutbox = functions.https.onRequest(async (req, res) => {
       },
       { merge: true }
     );
+    try {
+      await visitSms.clearClientDialogs({
+        jobId: msg.jobId || '',
+        clientId: msg.clientId || '',
+        phone: msg.to || '',
+      });
+    } catch (error) {
+      console.warn('approveOutbox clearClientDialogs:', error.message);
+    }
     res.json({ success: true, state: 'rejected' });
     return;
   }
@@ -5972,9 +5983,66 @@ async function findRecentEmailIntakeJob({ from, messageId, fingerprint }) {
   return fallback;
 }
 
-async function findOpenJobForContact({ phone, clientId, email }) {
-  const pickLatest = (items) => {
-    items.sort((a, b) => {
+async function findOpenJobForContact({ phone, clientId, email, text, extracted }) {
+  const fold = (v) =>
+    String(v || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9а-яё]+/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const pickBest = (items) => {
+    const open = items.filter((item) => !schedule.isClosedJob(item));
+    if (!open.length) return null;
+    if (open.length > 1 && (text || extracted)) {
+      const blob = fold(
+        [
+          text,
+          extracted && extracted.address,
+          extracted && extracted.city,
+          extracted && extracted.contact_on_site_name,
+          extracted && extracted.contact_on_site_phone,
+          extracted && extracted.appliance_type,
+        ]
+          .filter(Boolean)
+          .join(' ')
+      );
+      const exAddr = String((extracted && extracted.address) || '').trim();
+      if (blob) {
+        let bestJob = null;
+        let bestScore = 0;
+        for (const item of open) {
+          let score = 0;
+          const addr = jobWorkAddress(item);
+          const addrWords = fold(addr.split(',')[0]).split(' ').filter((w) => w.length >= 2);
+          for (const w of addrWords) {
+            if (blob.includes(w)) score += /^\d+$/.test(w) ? 5 : 3;
+          }
+          const siteName = fold(item.jobSiteName);
+          if (siteName.length >= 3 && blob.includes(siteName)) score += 5;
+          const sitePhone = normalizePhone(item.jobSitePhone);
+          const exSitePhone = normalizePhone(extracted && extracted.contact_on_site_phone);
+          if (sitePhone && exSitePhone && sitePhone === exSitePhone) score += 6;
+          if (score > bestScore) {
+            bestScore = score;
+            bestJob = item;
+          }
+        }
+        if (bestJob && bestScore >= 4) return bestJob;
+      }
+      // Если у клиента несколько открытых заявок, у всех уже указан свой адрес,
+      // а в сообщении назван совсем другой новый адрес с поломкой — не затираем
+      // чужую открытую заявку, пусть предложится новая заявка на этот адрес.
+      if (exAddr.length >= 4 && hasRepairData(extracted)) {
+        const nextFull = buildFullAddress(extracted, null);
+        const allHaveDifferentAddress = open.every((item) => {
+          const cur = jobWorkAddress(item);
+          return cur && voiceFacts.addressesLookDifferent(cur, nextFull);
+        });
+        if (allHaveDifferentAddress) return null;
+      }
+    }
+    open.sort((a, b) => {
       const millis = (v) =>
         v && typeof v.toMillis === 'function'
           ? v.toMillis()
@@ -5983,7 +6051,7 @@ async function findOpenJobForContact({ phone, clientId, email }) {
             : 0;
       return millis(b.createdAt) - millis(a.createdAt);
     });
-    return items.find((item) => !schedule.isClosedJob(item)) || null;
+    return open[0] || null;
   };
 
   const normalized = normalizePhone(phone);
@@ -5998,10 +6066,10 @@ async function findOpenJobForContact({ phone, clientId, email }) {
           normalizePhone(item.jobSitePhone) === normalized &&
           normalizePhone(item.clientPhone) !== normalized
       );
-      const pickedSite = pickLatest(siteMatched);
+      const pickedSite = pickBest(siteMatched);
       if (pickedSite) return pickedSite;
     }
-    const picked = pickLatest(items);
+    const picked = pickBest(items);
     if (picked) return picked;
   }
 
@@ -6018,7 +6086,7 @@ async function findOpenJobForContact({ phone, clientId, email }) {
       ].map((value) => String(value || '').trim().toLowerCase());
       if (emails.includes(needle)) byEmail.push({ id: doc.id, ...data });
     }
-    const picked = pickLatest(byEmail);
+    const picked = pickBest(byEmail);
     if (picked) return picked;
   }
 
@@ -6032,7 +6100,7 @@ async function findOpenJobForContact({ phone, clientId, email }) {
     if (!phones.includes(normalized)) continue;
     all.push({ id: doc.id, ...data });
   }
-  return pickLatest(all);
+  return pickBest(all);
 }
 
 async function findJobByPhone(phone) {
@@ -6624,6 +6692,7 @@ async function processSmsWithAi({
 - Если на фото шильдик/бирка — обязательно прочитай model, brand, serial_number
 - Тип техники на русском: Холодильник, Стиральная машина, Сушилка, Посудомойка, Плита, Духовка, Микроволновка
 - Если клиент прислал улицу, дом, город или индекс — заполни address / city / postal_code
+- У одного клиента (лендлорда или управляющей компании) может быть несколько объектов и адресов ремонта, при этом переписка идёт с одного и того же номера телефона. Если в сообщении указан адрес объекта или имя/телефон арендатора (жильца на месте), обязательно извлеки address, contact_on_site_name, contact_on_site_phone и поставь has_job_site: true
 - Если это только адрес без техники — relevant: false, но адрес всё равно заполни
 - Если это обычное сообщение без данных о технике и без адреса (ок, спасибо, когда приедете) — все поля null, relevant: false
 - Телефон форматируй как 10 цифр
@@ -6733,6 +6802,8 @@ async function processSmsWithAi({
       : fromIsEmail
         ? from
         : (extracted && extracted.client_email) || '',
+    text: body,
+    extracted,
   });
   let addressResult = { mode: null, full: '' };
   if (extractedHasAddress(extracted) && resolvedClientId) {
@@ -6809,6 +6880,8 @@ async function processSmsWithAi({
         : fromIsEmail
           ? from
           : (extracted && extracted.client_email) || '',
+      text: body,
+      extracted,
     });
   }
   if (!job && channel === 'email') {

@@ -200,6 +200,7 @@ class ConversationPeer {
   final String name;
   final String phone;
   final String email;
+  final String address;
 
   const ConversationPeer({
     required this.id,
@@ -207,6 +208,7 @@ class ConversationPeer {
     required this.name,
     this.phone = '',
     this.email = '',
+    this.address = '',
   });
 
   String get displayName {
@@ -225,12 +227,16 @@ class ConversationPeer {
   bool get hasChannel => hasPhone || hasEmail;
 
   bool get isOwner =>
-      id == 'owner' || id == 'client' || label == 'Хозяин'.tr;
+      id == 'owner' ||
+      id == 'client' ||
+      id.startsWith('owner-') ||
+      label == 'Хозяин'.tr;
 
   String get subtitleLine => [
     label,
     if (hasPhone) phone.trim(),
     if (hasEmail) email.trim(),
+    if (address.trim().isNotEmpty) address.trim(),
   ].join(' · ');
 
   static Future<ConversationPeer?> pick(
@@ -248,40 +254,76 @@ class ConversationPeer {
     return showModalBottomSheet<ConversationPeer>(
       context: context,
       useRootNavigator: true,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (sheetContext) {
+        final maxHeight = MediaQuery.of(sheetContext).size.height * 0.72;
         return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(
-                  title ?? 'Кому написать?'.tr,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    title ?? 'Кому написать?'.tr,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                    ),
                   ),
                 ),
-              ),
-              for (final peer in available)
-                ListTile(
-                  leading: Icon(
-                    peer.isOwner ? Icons.person : Icons.location_on,
-                    color: AppColors.primary,
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final peer in available)
+                        ListTile(
+                          leading: Icon(
+                            peer.isOwner ? Icons.person : Icons.location_on,
+                            color: AppColors.primary,
+                          ),
+                          title: Text(peer.displayName),
+                          subtitle: Text(peer.subtitleLine),
+                          onTap: () => Navigator.pop(sheetContext, peer),
+                        ),
+                    ],
                   ),
-                  title: Text(peer.displayName),
-                  subtitle: Text(peer.subtitleLine),
-                  onTap: () => Navigator.pop(sheetContext, peer),
                 ),
-              const SizedBox(height: 8),
-            ],
+                const SizedBox(height: 8),
+              ],
+            ),
           ),
         );
       },
     );
+  }
+
+  static bool _isGenericTenantName(String value) {
+    final lower = value.trim().toLowerCase();
+    return lower.isEmpty ||
+        lower == 'арендатор' ||
+        lower == 'tenant' ||
+        lower == 'хозяин' ||
+        lower == 'owner' ||
+        Client.isPlaceholderName(value);
+  }
+
+  static bool _addressesMatch(String a, String b) {
+    String norm(String s) => s
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9а-яё]+'), ' ')
+        .trim();
+    final na = norm(a);
+    final nb = norm(b);
+    if (na.isEmpty || nb.isEmpty) return false;
+    if (na == nb || na.contains(nb) || nb.contains(na)) return true;
+    final sa = norm(a.split(',').first);
+    final sb = norm(b.split(',').first);
+    return sa.length >= 4 && sb.length >= 4 && (sa == sb || sa.contains(sb) || sb.contains(sa));
   }
 
   /// Хозяин и люди на объекте (арендатор) для переключения нити.
@@ -302,7 +344,35 @@ class ConversationPeer {
       final normEmail = peer.normalizedEmail;
       final newPhone = peer.hasPhone && !seenPhones.contains(normPhone);
       final newEmail = peer.hasEmail && !seenEmails.contains(normEmail);
-      if (!newPhone && !newEmail) return;
+      if (!newPhone && !newEmail) {
+        final idx = peers.indexWhere(
+          (p) =>
+              (peer.hasPhone && p.normalizedPhone == normPhone) ||
+              (peer.hasEmail && p.normalizedEmail == normEmail),
+        );
+        if (idx >= 0) {
+          final existing = peers[idx];
+          final betterName =
+              _isGenericTenantName(existing.name) && !_isGenericTenantName(peer.name)
+                  ? peer.name
+                  : existing.name;
+          final betterAddr = existing.address.trim().isEmpty &&
+                  peer.address.trim().isNotEmpty
+              ? peer.address.trim()
+              : existing.address;
+          if (betterName != existing.name || betterAddr != existing.address) {
+            peers[idx] = ConversationPeer(
+              id: existing.id,
+              label: existing.label,
+              name: betterName,
+              phone: existing.phone,
+              email: existing.email,
+              address: betterAddr,
+            );
+          }
+        }
+        return;
+      }
       if (newPhone) seenPhones.add(normPhone);
       if (newEmail) seenEmails.add(normEmail);
       peers.add(
@@ -312,6 +382,7 @@ class ConversationPeer {
           name: peer.name,
           phone: newPhone ? peer.phone.trim() : '',
           email: newEmail ? peer.email.trim() : '',
+          address: peer.address.trim(),
         ),
       );
     }
@@ -352,11 +423,16 @@ class ConversationPeer {
             doc.data() as Map<String, dynamic>,
             doc.id,
           );
-          if (!parsed.isDeleted && !JobStatuses.isClosed(parsed.status)) {
+          if (!parsed.isDeleted) {
             jobs.add(parsed);
           }
         }
-        jobs.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        jobs.sort((a, b) {
+          final aClosed = JobStatuses.isClosed(a.status);
+          final bClosed = JobStatuses.isClosed(b.status);
+          if (aClosed != bClosed) return aClosed ? 1 : -1;
+          return b.createdAt.compareTo(a.createdAt);
+        });
       }
 
       final String ownerName;
@@ -397,35 +473,87 @@ class ConversationPeer {
           name: ownerName.isEmpty ? 'Хозяин'.tr : ownerName,
           phone: ownerPhone,
           email: ownerEmail,
+          address: client?.address ?? job?.clientAddress ?? '',
         ),
       );
+      if (client != null) {
+        for (var i = 0; i < client.extraPhones.length; i++) {
+          final extra = client.extraPhones[i].trim();
+          if (extra.isEmpty) continue;
+          add(
+            ConversationPeer(
+              id: 'owner-extra-$i',
+              label: 'Хозяин'.tr,
+              name: ownerName.isEmpty ? 'Хозяин'.tr : ownerName,
+              phone: extra,
+              address: client.address,
+            ),
+          );
+        }
+      }
 
-      if (job != null &&
-          (job.hasJobSite ||
-              (job.jobSitePhone ?? '').trim().isNotEmpty ||
-              (job.jobSiteEmail ?? '').trim().isNotEmpty)) {
+      if (job != null) {
         final sName = (job.jobSiteName ?? '').trim();
-        add(
-          ConversationPeer(
-            id: 'job-${job.id}',
-            label: 'Арендатор'.tr,
-            name: sName.isEmpty ? 'Арендатор'.tr : sName,
-            phone: job.jobSitePhone ?? '',
-            email: job.jobSiteEmail ?? '',
-          ),
-        );
+        final sAddr = (job.jobSiteAddress ?? '').trim().isNotEmpty
+            ? job.jobSiteAddress!.trim()
+            : job.workAddress.trim();
+        if (job.hasJobSite ||
+            (job.jobSitePhone ?? '').trim().isNotEmpty ||
+            (job.jobSiteEmail ?? '').trim().isNotEmpty) {
+          add(
+            ConversationPeer(
+              id: 'job-${job.id}',
+              label: 'Арендатор'.tr,
+              name: sName.isEmpty ? 'Арендатор'.tr : sName,
+              phone: job.jobSitePhone ?? '',
+              email: job.jobSiteEmail ?? '',
+              address: sAddr,
+            ),
+          );
+        }
+        for (var i = 0; i < job.extraPhones.length; i++) {
+          final extra = job.extraPhones[i].trim();
+          if (extra.isEmpty) continue;
+          add(
+            ConversationPeer(
+              id: 'job-extra-$i',
+              label: job.hasJobSite ? 'Арендатор'.tr : 'Хозяин'.tr,
+              name: (job.hasJobSite && sName.isNotEmpty)
+                  ? sName
+                  : (ownerName.isEmpty ? 'Контакт'.tr : ownerName),
+              phone: extra,
+              address: sAddr,
+            ),
+          );
+        }
+        if (client != null && sAddr.isNotEmpty) {
+          for (final location in client.locations) {
+            final locAddr = location.fullAddress.trim();
+            if (!_addressesMatch(locAddr, sAddr)) continue;
+            for (final contact in location.contacts) {
+              if (contact.role == 'owner') continue;
+              final cName = contact.name.trim().isNotEmpty
+                  ? contact.name.trim()
+                  : (sName.isNotEmpty ? sName : 'Арендатор'.tr);
+              add(
+                ConversationPeer(
+                  id: 'loc-${contact.id.isEmpty ? contact.phone : contact.id}',
+                  label: contact.role == 'manager'
+                      ? contact.roleLabel
+                      : 'Арендатор'.tr,
+                  name: cName,
+                  phone: contact.phone,
+                  address: locAddr,
+                ),
+              );
+            }
+          }
+        }
       }
 
       if (client != null && job == null) {
-        var fallbackSiteName = '';
-        for (final item in jobs) {
-          final jn = (item.jobSiteName ?? '').trim();
-          if (jn.isNotEmpty) {
-            fallbackSiteName = jn;
-            break;
-          }
-        }
         for (final location in client.locations) {
+          final locAddr = location.fullAddress.trim();
           for (final contact in location.contacts) {
             final isFirstOwner = peers.isEmpty && contact.role == 'owner';
             final label = isFirstOwner
@@ -433,37 +561,61 @@ class ConversationPeer {
                 : (contact.role == 'manager'
                     ? contact.roleLabel
                     : 'Арендатор'.tr);
-            final cName = contact.name.trim().isNotEmpty
+            final cName = contact.name.trim().isNotEmpty &&
+                    contact.name.trim().toLowerCase() !=
+                        ownerName.toLowerCase()
                 ? contact.name.trim()
-                : (fallbackSiteName.isNotEmpty ? fallbackSiteName : label);
+                : (locAddr.isNotEmpty ? locAddr.split(',').first.trim() : label);
             add(
               ConversationPeer(
                 id: 'loc-${contact.id.isEmpty ? contact.phone : contact.id}',
                 label: label,
                 name: cName,
                 phone: contact.phone,
+                address: locAddr,
               ),
             );
           }
         }
       }
 
-      for (final item in jobs) {
-        if (!item.hasJobSite &&
-            (item.jobSitePhone ?? '').trim().isEmpty &&
-            (item.jobSiteEmail ?? '').trim().isEmpty) {
-          continue;
+      if (job == null) {
+        for (final item in jobs) {
+          final sName = (item.jobSiteName ?? '').trim();
+          final sAddr = (item.jobSiteAddress ?? '').trim().isNotEmpty
+              ? item.jobSiteAddress!.trim()
+              : item.workAddress.trim();
+          final displayTenant = !_isGenericTenantName(sName)
+              ? sName
+              : (sAddr.isNotEmpty ? sAddr.split(',').first.trim() : 'Арендатор'.tr);
+          if (item.hasJobSite ||
+              (item.jobSitePhone ?? '').trim().isNotEmpty ||
+              (item.jobSiteEmail ?? '').trim().isNotEmpty) {
+            add(
+              ConversationPeer(
+                id: 'job-${item.id}',
+                label: 'Арендатор'.tr,
+                name: displayTenant,
+                phone: item.jobSitePhone ?? '',
+                email: item.jobSiteEmail ?? '',
+                address: sAddr,
+              ),
+            );
+          }
+          for (var i = 0; i < item.extraPhones.length; i++) {
+            final extra = item.extraPhones[i].trim();
+            if (extra.isEmpty) continue;
+            add(
+              ConversationPeer(
+                id: 'job-${item.id}-extra-$i',
+                label: item.hasJobSite ? 'Арендатор'.tr : 'Хозяин'.tr,
+                name: item.hasJobSite ? displayTenant : ownerName,
+                phone: extra,
+                address: sAddr,
+              ),
+            );
+          }
         }
-        final sName = (item.jobSiteName ?? '').trim();
-        add(
-          ConversationPeer(
-            id: 'job-${item.id}',
-            label: 'Арендатор'.tr,
-            name: sName.isEmpty ? 'Арендатор'.tr : sName,
-            phone: item.jobSitePhone ?? '',
-            email: item.jobSiteEmail ?? '',
-          ),
-        );
       }
 
       for (final item in jobs) {
@@ -480,12 +632,18 @@ class ConversationPeer {
         final cName = (ex['contact_on_site_name'] ?? item.jobSiteName ?? '')
             .toString()
             .trim();
+        final sAddr = (item.jobSiteAddress ?? '').trim().isNotEmpty
+            ? item.jobSiteAddress!.trim()
+            : item.workAddress.trim();
         add(
           ConversationPeer(
             id: 'call-$callId',
             label: 'Арендатор'.tr,
-            name: cName.isEmpty ? 'Арендатор'.tr : cName,
+            name: cName.isEmpty
+                ? (sAddr.isNotEmpty ? sAddr.split(',').first.trim() : 'Арендатор'.tr)
+                : cName,
             phone: cPhone,
+            address: sAddr,
           ),
         );
       }
@@ -596,6 +754,7 @@ class ConversationScreen extends StatefulWidget {
       key: AppNav.chatKey(
         phone: targetPhone,
         email: targetEmail,
+        jobId: jobId,
         websiteInbox: websiteInbox,
       ),
       builder: (_) => ConversationScreen(
@@ -715,7 +874,26 @@ class _ConversationScreenState extends State<ConversationScreen>
       final normEmail = peer.normalizedEmail;
       final newPhone = peer.hasPhone && !seenPhones.contains(normPhone);
       final newEmail = peer.hasEmail && !seenEmails.contains(normEmail);
-      if (!newPhone && !newEmail) continue;
+      if (!newPhone && !newEmail) {
+        final idx = result.indexWhere(
+          (p) =>
+              (peer.hasPhone && p.normalizedPhone == normPhone) ||
+              (peer.hasEmail && p.normalizedEmail == normEmail),
+        );
+        if (idx >= 0 &&
+            result[idx].address.trim().isEmpty &&
+            peer.address.trim().isNotEmpty) {
+          result[idx] = ConversationPeer(
+            id: result[idx].id,
+            label: result[idx].label,
+            name: result[idx].name,
+            phone: result[idx].phone,
+            email: result[idx].email,
+            address: peer.address.trim(),
+          );
+        }
+        continue;
+      }
       if (newPhone) seenPhones.add(normPhone);
       if (newEmail) seenEmails.add(normEmail);
       result.add(
@@ -725,6 +903,7 @@ class _ConversationScreenState extends State<ConversationScreen>
           name: peer.name,
           phone: newPhone ? peer.phone.trim() : '',
           email: newEmail ? peer.email.trim() : '',
+          address: peer.address.trim(),
         ),
       );
     }
@@ -1320,15 +1499,22 @@ class _ConversationScreenState extends State<ConversationScreen>
     return lines.join('\n');
   }
 
-  /// «Создать заявку» из переписки. Вся переписка разбирается ИИ: имя,
-  /// адрес, техника, поломка и дата визита подставляются в экран
-  /// «Проверьте данные», который сам заводит карточку клиента (если её
-  /// ещё нет) и заявку.
-  Future<void> _createJob() async {
+  Future<void> _createJobFromSelected() => _createJob(onlySelected: true);
+
+  /// «Создать заявку» из переписки (всей или только выделенных сообщений).
+  /// Сообщения разбираются ИИ: имя, адрес, техника, поломка и дата визита
+  /// подставляются в экран «Проверьте данные», который сам заводит карточку
+  /// клиента (если её ещё нет) и заявку.
+  Future<void> _createJob({bool onlySelected = false}) async {
     if (_creatingJob) return;
     final allMessages =
         _threadCache[_threadKey] ?? await _messagesStream.first;
-    final inbound = allMessages.where((m) => !m.isOutbound).toList();
+    final selectedSet = Set<String>.from(_selectedIds);
+    final sourceMessages = onlySelected && selectedSet.isNotEmpty
+        ? [for (final m in allMessages) if (selectedSet.contains(m.id)) m]
+        : allMessages;
+    if (sourceMessages.isEmpty) return;
+    final inbound = sourceMessages.where((m) => !m.isOutbound).toList();
 
     // SMS, которую ИИ пометил как заявку на ремонт: у неё уже разобраны
     // техника и неисправность, и после создания заявки она помечается
@@ -1340,8 +1526,29 @@ class _ConversationScreenState extends State<ConversationScreen>
         break;
       }
     }
+    if (offer == null && onlySelected) {
+      for (final message in inbound) {
+        if (message.extractedData != null &&
+            message.extractedData!.isNotEmpty) {
+          offer = message;
+          break;
+        }
+      }
+    }
 
-    final conversationText = _buildConversationTranscript(allMessages);
+    final conversationText = _buildConversationTranscript(sourceMessages);
+    final plainSelectedBody = onlySelected
+        ? [
+            for (final m in sourceMessages)
+              if ((m.body.trim().isNotEmpty ? m.body.trim() : m.bodyRu.trim())
+                  .isNotEmpty)
+                m.isOutbound
+                    ? _stripSmsHeader(
+                        m.body.trim().isNotEmpty ? m.body.trim() : m.bodyRu.trim(),
+                      )
+                    : (m.body.trim().isNotEmpty ? m.body.trim() : m.bodyRu.trim()),
+          ].where((s) => s.isNotEmpty).join('\n')
+        : '';
 
     // Найти существующего клиента в базе: по id, по телефону переписки,
     // по email или по контактам в переписке.
@@ -1448,7 +1655,9 @@ class _ConversationScreenState extends State<ConversationScreen>
       brand: fromAi?.brand ?? offerData?.brand,
       model: fromAi?.model ?? offerData?.model,
       problemDescription:
-          fromAi?.problemDescription ?? offerData?.problemDescription,
+          fromAi?.problemDescription ??
+          offerData?.problemDescription ??
+          (plainSelectedBody.isNotEmpty ? plainSelectedBody : null),
       scheduledDate: fromAi?.scheduledDate ?? offerData?.scheduledDate,
       scheduledTime: fromAi?.scheduledTime ?? offerData?.scheduledTime,
       contactOnSiteName:
@@ -1477,6 +1686,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       ),
     );
     if (result == true && mounted) {
+      if (onlySelected) _clearSelection();
       setState(() => _jobLinkRevision++);
     }
   }
@@ -2118,6 +2328,8 @@ class _ConversationScreenState extends State<ConversationScreen>
             child: SelectionActionBar(
               count: _selectedIds.length,
               onCancel: _clearSelection,
+              onCreateJob: widget.websiteInbox ? null : _createJobFromSelected,
+              creatingJob: _creatingJob,
               onSelectAll: _selectAllVisible,
               onCopy: _copySelected,
               onDelete: _deleteSelected,
@@ -2746,18 +2958,31 @@ class _ConversationScreenState extends State<ConversationScreen>
         ? _peerId
         : peers.first.id;
 
-    Widget buildChip(ConversationPeer peer) {
-      final selected = peer.id == activeId;
-      final title = peer.displayName == peer.label
-          ? peer.label
-          : '${peer.label} · ${peer.displayName}';
-      final contact = peer.hasPhone ? peer.phone.trim() : peer.email.trim();
+    Widget buildChip(
+      ConversationPeer peer, {
+      bool? forceSelected,
+      String? customTitle,
+      String? customSubtitle,
+      bool showDropdown = false,
+      VoidCallback? onTapOverride,
+    }) {
+      final selected = forceSelected ?? (peer.id == activeId);
+      final title = customTitle ??
+          (peer.displayName == peer.label
+              ? peer.label
+              : '${peer.label} · ${peer.displayName}');
+      final defaultSub = [
+        if (peer.hasPhone) peer.phone.trim() else if (peer.hasEmail) peer.email.trim(),
+        if (!peer.isOwner && peer.address.trim().isNotEmpty)
+          peer.address.split(',').first.trim(),
+      ].where((s) => s.isNotEmpty).join(' · ');
+      final contact = customSubtitle ?? defaultSub;
       return Material(
         color: selected ? AppColors.primary : AppColors.card,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
-          onTap: () => _selectPeer(peer),
+          onTap: onTapOverride ?? () => _selectPeer(peer),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
             decoration: BoxDecoration(
@@ -2777,7 +3002,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                   color: selected ? Colors.white : AppColors.primaryOnCard,
                 ),
                 const SizedBox(width: 6),
-                Flexible(
+                Expanded(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -2806,10 +3031,64 @@ class _ConversationScreenState extends State<ConversationScreen>
                     ],
                   ),
                 ),
+                if (showDropdown)
+                  Icon(
+                    Icons.arrow_drop_down,
+                    size: 20,
+                    color: selected ? Colors.white : AppColors.primaryOnCard,
+                  ),
               ],
             ),
           ),
         ),
+      );
+    }
+
+    final ownerPeers = [for (final p in peers) if (p.isOwner) p];
+    final tenantPeers = [for (final p in peers) if (!p.isOwner) p];
+
+    Widget buildGroupChip(
+      List<ConversationPeer> group, {
+      required String fallbackTitle,
+      required String pickerTitle,
+    }) {
+      if (group.length == 1) {
+        return buildChip(group.first);
+      }
+      final activeInGroup = group.where((p) => p.id == activeId).firstOrNull;
+      final displayPeer = activeInGroup ?? group.first;
+      final selected = activeInGroup != null;
+      final title = selected
+          ? (displayPeer.displayName == displayPeer.label
+              ? '${displayPeer.label} (${group.length})'
+              : '${displayPeer.label} · ${displayPeer.displayName}')
+          : '$fallbackTitle (${group.length})';
+      final subtitle = selected
+          ? [
+              if (displayPeer.hasPhone)
+                displayPeer.phone.trim()
+              else if (displayPeer.hasEmail)
+                displayPeer.email.trim(),
+              if (!displayPeer.isOwner && displayPeer.address.trim().isNotEmpty)
+                displayPeer.address.split(',').first.trim(),
+            ].where((s) => s.isNotEmpty).join(' · ')
+          : group.map((p) => p.displayName).take(3).join(', ');
+      return buildChip(
+        displayPeer,
+        forceSelected: selected,
+        customTitle: title,
+        customSubtitle: subtitle,
+        showDropdown: true,
+        onTapOverride: () async {
+          final chosen = await ConversationPeer.pick(
+            context,
+            group,
+            title: pickerTitle,
+          );
+          if (chosen != null && mounted) {
+            _selectPeer(chosen);
+          }
+        },
       );
     }
 
@@ -2820,28 +3099,33 @@ class _ConversationScreenState extends State<ConversationScreen>
         color: AppColors.card,
         border: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      child: peers.length <= 2
+      child: ownerPeers.isNotEmpty && tenantPeers.isNotEmpty
           ? Row(
+              children: [
+                Expanded(
+                  child: buildGroupChip(
+                    ownerPeers,
+                    fallbackTitle: 'Хозяин'.tr,
+                    pickerTitle: 'Хозяин'.tr,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: buildGroupChip(
+                    tenantPeers,
+                    fallbackTitle: 'Арендатор'.tr,
+                    pickerTitle: 'Выберите арендатора'.tr,
+                  ),
+                ),
+              ],
+            )
+          : Row(
               children: [
                 for (var i = 0; i < peers.length; i++) ...[
                   if (i > 0) const SizedBox(width: 8),
                   Expanded(child: buildChip(peers[i])),
                 ],
               ],
-            )
-          : SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  for (var i = 0; i < peers.length; i++) ...[
-                    if (i > 0) const SizedBox(width: 8),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 220),
-                      child: buildChip(peers[i]),
-                    ),
-                  ],
-                ],
-              ),
             ),
     );
   }

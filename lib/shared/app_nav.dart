@@ -70,16 +70,21 @@ class AppNav {
   static String clientKey(String id) => '${_cardPrefix}client:${id.trim()}';
 
   /// Переписка узнаётся по собеседнику: телефон (последние 10 цифр, как в
-  /// [SmsService.normalizePhone]), иначе почта.
+  /// [SmsService.normalizePhone]), иначе почта. Если переписка открыта из
+  /// конкретной заявки ([jobId]), ключ включает заявку, чтобы выбор
+  /// «Хозяин / Арендатор адреса» не смешивался с карточкой клиента.
   static String chatKey({
     String phone = '',
     String? email,
+    String? jobId,
     bool websiteInbox = false,
   }) {
     if (websiteInbox) return '${_cardPrefix}chat:website';
+    final jid = (jobId ?? '').trim();
+    final scope = jid.isEmpty ? '' : ':job:$jid';
     final digits = SmsService.normalizePhone(phone);
-    if (digits.isNotEmpty) return '${_cardPrefix}chat:$digits';
-    return '${_cardPrefix}chat:${(email ?? '').trim().toLowerCase()}';
+    if (digits.isNotEmpty) return '${_cardPrefix}chat:$digits$scope';
+    return '${_cardPrefix}chat:${(email ?? '').trim().toLowerCase()}$scope';
   }
 
   static bool isCard(Route<dynamic> route) =>
