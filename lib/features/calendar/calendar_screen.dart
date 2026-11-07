@@ -25,7 +25,6 @@ import 'calendar_top_icons.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/widgets/animated_app_logo.dart';
-import '../../shared/widgets/appliance_logo.dart';
 import '../../shared/widgets/calendar_hatch.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
 import 'calendar_card_shape.dart';
@@ -1529,30 +1528,21 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     final statusEmoji = resultMark == null
         ? calendarStatusEmoji(displayStatus)
         : null;
-    final logoSize = cardSize.width < 56
-        ? (cardSize.shortestSide - 6).clamp(14.0, 72.0)
-        : (cardSize.height - 6).clamp(32.0, 64.0);
     final showName =
         !fiveDay && cardSize.width >= 56 && cardSize.height >= 26;
-    final showBadge =
-        CalendarStatusBadge.has(hatch: resultMark, emoji: statusEmoji) &&
-        cardSize.width >= 20 &&
-        cardSize.height >= 16;
-    final badge = showBadge
-        ? CalendarStatusBadge(
-            hatch: resultMark,
-            emoji: statusEmoji,
-            size: cardSize.width <= kCalendarCardSide + 1 ? 11 : 13,
-          )
-        : null;
+    final iconSize = showName
+        ? (cardSize.height * 0.58).clamp(16.0, 28.0)
+        : (cardSize.shortestSide * 0.62).clamp(11.0, 30.0);
+    final statusIcon = CalendarStatusBadge(
+      hatch: resultMark,
+      emoji: statusEmoji,
+      size: iconSize,
+    );
     final radius = BorderRadius.circular(
       _calendarController.view == CalendarView.month ? 4 : 8,
     );
     final timeStr = DateFormat('HH:mm').format(app.startTime);
     final cityStr = (parsedJob?.city ?? '').trim();
-    final logoType = (parsedJob != null && parsedJob.appliances.length > 1)
-        ? 'Техника'
-        : type;
     final minimalSubtitle = [
       timeStr,
       if (cityStr.isNotEmpty) cityStr,
@@ -1562,98 +1552,82 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     Widget cardBody = HatchedCalendarCard(
       color: app.color,
       borderRadius: radius,
-      child: Stack(
-        children: [
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: showName ? 8 : 2),
-            child: showName
-                ? Row(
-                    children: [
-                      ApplianceLogo(type: logoType, size: logoSize, onDark: true),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: showName ? 8 : 2),
+        child: showName
+            ? Row(
+                children: [
+                  statusIcon,
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
                           children: [
-                            Row(
-                              children: [
-                                Flexible(
-                                  child: Text(
-                                    clientName.isEmpty
-                                        ? 'Клиент'.tr
-                                        : clientName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w800,
-                                      fontSize: 13.5,
-                                      height: 1.1,
-                                      decoration:
-                                          hatch == CalendarHatchStyle.cancelled
-                                          ? TextDecoration.lineThrough
-                                          : null,
-                                    ),
-                                  ),
+                            Flexible(
+                              child: Text(
+                                clientName.isEmpty
+                                    ? 'Клиент'.tr
+                                    : clientName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 13.5,
+                                  height: 1.1,
+                                  decoration:
+                                      hatch == CalendarHatchStyle.cancelled
+                                      ? TextDecoration.lineThrough
+                                      : null,
                                 ),
-                                if (jobData['clientIsRegular'] == true ||
-                                    ClientService.isRegularClient(
-                                      clientId: (jobData['clientId'] ?? '')
-                                          .toString(),
-                                      phone: (jobData['clientPhone'] ?? '')
-                                          .toString(),
-                                    ))
-                                  const RegularClientStar(
-                                    size: 13,
-                                    onDark: true,
-                                    padding: EdgeInsets.only(left: 3),
-                                  ),
-                                CarePlanMark(
+                              ),
+                            ),
+                            if (jobData['clientIsRegular'] == true ||
+                                ClientService.isRegularClient(
                                   clientId: (jobData['clientId'] ?? '')
                                       .toString(),
                                   phone: (jobData['clientPhone'] ?? '')
                                       .toString(),
-                                  planId: (jobData['carePlanId'] ?? '')
-                                      .toString(),
-                                  size: 14,
-                                  onDark: true,
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              minimalSubtitle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.88),
-                                fontWeight: FontWeight.w600,
-                                fontSize: 11.5,
-                                height: 1.1,
+                                ))
+                              const RegularClientStar(
+                                size: 13,
+                                onDark: true,
+                                padding: EdgeInsets.only(left: 3),
                               ),
+                            CarePlanMark(
+                              clientId: (jobData['clientId'] ?? '')
+                                  .toString(),
+                              phone: (jobData['clientPhone'] ?? '')
+                                  .toString(),
+                              planId: (jobData['carePlanId'] ?? '')
+                                  .toString(),
+                              size: 14,
+                              onDark: true,
                             ),
                           ],
                         ),
-                      ),
-                      if (badge != null) ...[
-                        const SizedBox(width: 6),
-                        badge,
+                        const SizedBox(height: 2),
+                        Text(
+                          minimalSubtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.88),
+                            fontWeight: FontWeight.w600,
+                            fontSize: 11.5,
+                            height: 1.1,
+                          ),
+                        ),
                       ],
-                    ],
-                  )
-                : Center(
-                    child: ApplianceLogo(
-                      type: logoType,
-                      size: logoSize,
-                      onDark: true,
                     ),
                   ),
-          ),
-          if (badge != null && !showName)
-            Positioned(left: 2, top: 2, child: badge),
-        ],
+                ],
+              )
+            : Center(child: statusIcon),
       ),
     );
 
