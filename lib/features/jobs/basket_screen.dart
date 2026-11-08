@@ -47,6 +47,20 @@ class _BasketScreenState extends State<BasketScreen>
     super.dispose();
   }
 
+  /// Нажатие на карточку открывает заявку на просмотр. Вернуть её из корзины
+  /// можно кнопкой «Восстановить» под карточкой.
+  void _openJob(Job job) {
+    AppNav.openCard(
+      context,
+      key: AppNav.jobKey(job.id),
+      builder: (_) => JobDetailsScreen(
+        jobId: job.id,
+        clientId: job.clientId,
+        jobData: job.toMap(),
+      ),
+    );
+  }
+
   Future<void> _restoreJob(Job job) async {
     await JobService.restore(job.id);
     if (!mounted) return;
@@ -350,8 +364,8 @@ class _BasketScreenState extends State<BasketScreen>
             stream: JobService.streamTrashed(),
             builder: (context, snap) {
               final jobs = [...(snap.data ?? const <Job>[])]
-                ..sort((a, b) => (b.scheduledAt ?? b.createdAt)
-                    .compareTo(a.scheduledAt ?? a.createdAt));
+                ..sort((a, b) => (b.deletedAt ?? b.createdAt)
+                    .compareTo(a.deletedAt ?? a.createdAt));
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -374,7 +388,7 @@ class _BasketScreenState extends State<BasketScreen>
                       child: JobAgendaCard(
                         job: job,
                         footer: _trashNote(job.deletedAt, job.trashDaysLeft),
-                        onTap: () => _restoreJob(job),
+                        onTap: () => _openJob(job),
                       ),
                     ),
                     Align(
@@ -411,8 +425,8 @@ class _BasketScreenState extends State<BasketScreen>
             builder: (context, snap) {
               final clients = [...(snap.data ?? const <Client>[])]
                 ..sort(
-                  (a, b) => (b.createdAt ?? DateTime(0))
-                      .compareTo(a.createdAt ?? DateTime(0)),
+                  (a, b) => (b.deletedAt ?? b.createdAt ?? DateTime(0))
+                      .compareTo(a.deletedAt ?? a.createdAt ?? DateTime(0)),
                 );
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
@@ -464,14 +478,7 @@ class _BasketScreenState extends State<BasketScreen>
           StreamBuilder<List<({Job job, int index, Map<String, dynamic> doc})>>(
             stream: JobService.streamTrashedDocuments(),
             builder: (context, snap) {
-              final rows = [...?snap.data]
-                ..sort(
-                  (a, b) =>
-                      (Job.documentCreatedAt(b.doc) ?? b.job.createdAt)
-                          .compareTo(
-                    Job.documentCreatedAt(a.doc) ?? a.job.createdAt,
-                  ),
-                );
+              final rows = snap.data ?? const [];
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -544,11 +551,7 @@ class _BasketScreenState extends State<BasketScreen>
           StreamBuilder<List<WarehouseItem>>(
             stream: WarehouseService.streamTrashed(),
             builder: (context, snap) {
-              final items = [...(snap.data ?? const <WarehouseItem>[])]
-                ..sort(
-                  (a, b) => (b.createdAt ?? DateTime(0))
-                      .compareTo(a.createdAt ?? DateTime(0)),
-                );
+              final items = snap.data ?? const <WarehouseItem>[];
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -604,8 +607,8 @@ class _BasketScreenState extends State<BasketScreen>
             builder: (context, snap) {
               final messages = [...(snap.data ?? const <SmsMessage>[])]
                 ..sort(
-                  (a, b) => (b.createdAt ?? DateTime(0))
-                      .compareTo(a.createdAt ?? DateTime(0)),
+                  (a, b) => (b.deletedAt ?? b.createdAt ?? DateTime(0))
+                      .compareTo(a.deletedAt ?? a.createdAt ?? DateTime(0)),
                 );
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
@@ -674,11 +677,7 @@ class _BasketScreenState extends State<BasketScreen>
           StreamBuilder<List<CallRecord>>(
             stream: TwilioService.streamTrashed(),
             builder: (context, snap) {
-              final calls = [...(snap.data ?? const <CallRecord>[])]
-                ..sort(
-                  (a, b) => (b.startTime ?? DateTime(0))
-                      .compareTo(a.startTime ?? DateTime(0)),
-                );
+              final calls = snap.data ?? const <CallRecord>[];
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
