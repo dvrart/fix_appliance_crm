@@ -463,6 +463,8 @@ Future<DateTime?> showAppDateTimeSheet({
   String? title,
   bool optionalTime = false,
   bool initialWithTime = true,
+  VoidCallback? onClear,
+  String? clearLabel,
 }) {
   final now = DateTime.now();
   final first = firstDate ?? DateTime(now.year - 1);
@@ -548,6 +550,34 @@ Future<DateTime?> showAppDateTimeSheet({
                       : DateTime(value.year, value.month, value.day),
                 ),
               ),
+              if (onClear != null) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 46,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      HapticFeedback.mediumImpact();
+                      Navigator.pop(sheetContext);
+                      onClear();
+                    },
+                    icon: const Icon(Icons.close_rounded, size: 20),
+                    label: Text(
+                      clearLabel ?? 'Отключить'.tr,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFC62828),
+                      side: const BorderSide(color: Color(0xFFC62828)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),

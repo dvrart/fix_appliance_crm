@@ -855,7 +855,11 @@ class _ConversationScreenState extends State<ConversationScreen>
     _clearSelection();
   }
 
-  static const List<String> _reactionEmojis = ['👍', '❤️', '😊', '🙏', '👌', '✅'];
+  static const List<String> _reactionEmojis = ['👍', '❤️', '😂', '😊', '🙏', '❗'];
+  final Map<String, String> _optimisticReactions = {};
+
+  String _effectiveReaction(SmsMessage message) =>
+      _optimisticReactions[message.id] ?? message.reaction;
 
   SmsMessage? _singleSelectedMessage() {
     if (_selectedIds.length != 1) return null;
@@ -868,25 +872,26 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   Future<void> _applyReaction(SmsMessage message, String emoji) async {
-    final next = message.reaction == emoji ? '' : emoji;
+    final current = _effectiveReaction(message);
+    final next = current == emoji ? '' : emoji;
     AppFeedback.selection();
-    if (_selecting) _clearSelection();
+    setState(() {
+      _optimisticReactions[message.id] = next;
+      _selectedIds.clear();
+    });
     final targetPhone = _hasPhone
         ? _phone
         : (message.isOutbound ? message.to : message.from);
-    final ok = await SmsService.reactToMessage(
+    await SmsService.reactToMessage(
       message: message,
       emoji: next,
       toPhone: targetPhone,
       clientId: widget.clientId,
     );
-    if (!mounted) return;
-    if (next.isNotEmpty && ok) {
-      AppFeedback.toast(context, next);
-    }
   }
 
   Future<void> _pickMessageReaction(SmsMessage message) async {
+    final current = _effectiveReaction(message);
     final chosen = await showModalBottomSheet<String>(
       sheetAnimationStyle: AppMotion.sheet,
       context: context,
@@ -910,10 +915,10 @@ class _ConversationScreenState extends State<ConversationScreen>
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: message.reaction == emoji
+                      color: current == emoji
                           ? AppColors.accent.withValues(alpha: 0.35)
                           : AppColors.cardMuted,
-                      border: message.reaction == emoji
+                      border: current == emoji
                           ? Border.all(color: AppColors.primary, width: 1.5)
                           : null,
                     ),
@@ -930,6 +935,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   Widget _buildSelectionReactionBar(SmsMessage message) {
+    final current = _effectiveReaction(message);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
@@ -949,7 +955,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: message.reaction == emoji
+                  color: current == emoji
                       ? AppColors.accent.withValues(alpha: 0.35)
                       : AppColors.cardMuted,
                 ),
@@ -962,39 +968,47 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   Widget _buildReactionButton(SmsMessage message, bool onDark) {
-    final hasReaction = message.reaction.trim().isNotEmpty;
+    final current = _effectiveReaction(message).trim();
+    final hasReaction = current.isNotEmpty;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _selecting ? null : () => _pickMessageReaction(message),
       child: Container(
         padding: EdgeInsets.symmetric(
-          horizontal: hasReaction ? 7 : 5,
-          vertical: 2,
+          horizontal: hasReaction ? 9 : 6,
+          vertical: hasReaction ? 3 : 2,
         ),
         decoration: BoxDecoration(
           color: hasReaction
-              ? (onDark
-                  ? Colors.white.withValues(alpha: 0.18)
-                  : Colors.white.withValues(alpha: 0.85))
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
-          border: hasReaction
-              ? Border.all(
-                  color: onDark
-                      ? Colors.white30
-                      : Colors.black.withValues(alpha: 0.12),
-                )
+              ? (onDark ? const Color(0xFF263238) : Colors.white)
+              : (onDark
+                  ? Colors.white.withValues(alpha: 0.08)
+                  : Colors.black.withValues(alpha: 0.05)),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: hasReaction
+                ? AppColors.primary.withValues(alpha: 0.35)
+                : (onDark ? Colors.white24 : Colors.black12),
+          ),
+          boxShadow: hasReaction
+              ? const [
+                  BoxShadow(
+                    color: Colors.black12,
+                    blurRadius: 3,
+                    offset: Offset(0, 1),
+                  ),
+                ]
               : null,
         ),
         child: hasReaction
             ? Text(
-                message.reaction,
-                style: const TextStyle(fontSize: 14, height: 1.1),
+                current,
+                style: const TextStyle(fontSize: 17, height: 1.1),
               )
             : Icon(
-                Icons.thumb_up_alt_outlined,
-                size: 14,
-                color: onDark ? Colors.white54 : Colors.grey.shade500,
+                Icons.add_reaction_outlined,
+                size: 16,
+                color: onDark ? Colors.white70 : Colors.grey.shade600,
               ),
       ),
     );

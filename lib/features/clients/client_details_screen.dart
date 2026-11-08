@@ -588,13 +588,22 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                 ),
               ),
             ],
-            body: TabBarView(
-              controller: _historyTabs,
-              children: [
-                _buildJobsHistory(),
-                _buildCallHistory(data),
-                _buildDocumentsHistory(),
-              ],
+            body: StreamBuilder<List<Job>>(
+              stream: _jobsStream,
+              builder: (context, jobsSnapshot) {
+                final loadingJobs =
+                    jobsSnapshot.connectionState == ConnectionState.waiting &&
+                    !jobsSnapshot.hasData;
+                final jobs = jobsSnapshot.data ?? const <Job>[];
+                return TabBarView(
+                  controller: _historyTabs,
+                  children: [
+                    _buildJobsHistory(jobs, loading: loadingJobs),
+                    _buildCallHistory(data),
+                    _buildDocumentsHistory(jobs, loading: loadingJobs),
+                  ],
+                );
+              },
             ),
           ),
         );
@@ -879,192 +888,187 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     );
   }
 
-  Widget _buildJobsHistory() {
-    return StreamBuilder<List<Job>>(
-      stream: _jobsStream,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
+  Widget _buildJobsHistory(List<Job> rawJobs, {required bool loading}) {
+    if (loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
 
-        final jobs = [...(snapshot.data ?? [])]
-          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final jobs = [...rawJobs]
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-        if (jobs.isEmpty) {
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(16, 24, 16, 88),
-            children: [
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: AppColors.cardMuted,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Center(
-                  child: Text(
-                    'Нет заявок'.tr,
-                    style: TextStyle(color: AppColors.inkMuted),
-                  ),
-                ),
+    if (jobs.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 24, 16, 88),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: AppColors.cardMuted,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Center(
+              child: Text(
+                'Нет заявок'.tr,
+                style: TextStyle(color: AppColors.inkMuted),
               ),
-            ],
-          );
-        }
+            ),
+          ),
+        ],
+      );
+    }
 
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
-          children: jobs.map((job) {
-            final status = job.status;
-            final applianceType = job.applianceType;
-            final visits = job.coalescedVisits;
-            final nextVisit = job.scheduledAt ??
-                (visits.isNotEmpty ? visits.last.startAt : null);
-            final visitLabel = visits.length > 1
-                ? '${visits.length} ${'визитов'.tr}'
-                : visits.length == 1
-                    ? '1 ${'визит'.tr}'
-                    : '';
-            final dateLabel = nextVisit == null
-                ? 'Дата не указана'.tr
-                : DateFormat('dd.MM.yyyy').format(nextVisit);
-            final notes = [
-              if (nextVisit != null) _ago(nextVisit),
-              if (job.isUnpaid) 'Неоплачено'.tr,
-              if (job.status == JobStatuses.completed) 'Прошлый визит'.tr,
-            ].join(' · ');
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
+      children: jobs.map((job) {
+        final status = job.status;
+        final applianceType = job.applianceType;
+        final visits = job.coalescedVisits;
+        final nextVisit = job.scheduledAt ??
+            (visits.isNotEmpty ? visits.last.startAt : null);
+        final visitLabel = visits.length > 1
+            ? '${visits.length} ${'визитов'.tr}'
+            : visits.length == 1
+                ? '1 ${'визит'.tr}'
+                : '';
+        final dateLabel = nextVisit == null
+            ? 'Дата не указана'.tr
+            : DateFormat('dd.MM.yyyy').format(nextVisit);
+        final notes = [
+          if (nextVisit != null) _ago(nextVisit),
+          if (job.isUnpaid) 'Неоплачено'.tr,
+          if (job.status == JobStatuses.completed) 'Прошлый визит'.tr,
+        ].join(' · ');
 
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: StatusService.colorOf(status).withOpacity(0.3)),
-              ),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () {
-                  AppNav.openCard(
-                    context,
-                    key: AppNav.jobKey(job.id),
-                    builder: (context) => JobDetailsScreen(
-                      jobId: job.id,
-                      clientId: widget.clientId,
-                      jobData: job.toMap(),
-                    ),
-                  );
-                },
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
-                  child: Row(
-                    children: [
-                      AppliancePicture(type: job.appliancePictureType, size: 40),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
+        return Card(
+          margin: const EdgeInsets.only(bottom: 8),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: StatusService.colorOf(status).withOpacity(0.3)),
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () {
+              AppNav.openCard(
+                context,
+                key: AppNav.jobKey(job.id),
+                builder: (context) => JobDetailsScreen(
+                  jobId: job.id,
+                  clientId: widget.clientId,
+                  jobData: job.toMap(),
+                ),
+              );
+            },
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+              child: Row(
+                children: [
+                  AppliancePicture(type: job.appliancePictureType, size: 40),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    trAny(applianceType),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14,
-                                    ),
-                                  ),
+                            Expanded(
+                              child: Text(
+                                trAny(applianceType),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
                                 ),
-                                const SizedBox(width: 8),
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    Text(
-                                      dateLabel,
-                                      style: TextStyle(
-                                        color: AppColors.inkMuted,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                    if (visitLabel.isNotEmpty)
-                                      Text(
-                                        visitLabel,
-                                        style: TextStyle(
-                                          color: AppColors.inkMuted,
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ],
+                              ),
                             ),
-                            const SizedBox(height: 4),
-                            Row(
+                            const SizedBox(width: 8),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
-                                Flexible(
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: StatusService.colorOf(status).withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: Text(
-                                      trAny(status),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        color: StatusService.colorOf(status),
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 11,
-                                      ),
-                                    ),
+                                Text(
+                                  dateLabel,
+                                  style: TextStyle(
+                                    color: AppColors.inkMuted,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
-                                if (notes.isNotEmpty) ...[
-                                  const SizedBox(width: 6),
-                                  Flexible(
-                                    child: Text(
-                                      notes,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        color: AppColors.inkMuted,
-                                        fontSize: 11,
-                                      ),
+                                if (visitLabel.isNotEmpty)
+                                  Text(
+                                    visitLabel,
+                                    style: TextStyle(
+                                      color: AppColors.inkMuted,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
                                     ),
                                   ),
-                                ],
                               ],
                             ),
                           ],
                         ),
-                      ),
-                      IconButton(
-                        tooltip: 'Удалить заявку'.tr,
-                        onPressed: () => _deleteJob(job),
-                        padding: EdgeInsets.zero,
-                        visualDensity: VisualDensity.compact,
-                        constraints: const BoxConstraints(
-                          minWidth: 36,
-                          minHeight: 36,
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: StatusService.colorOf(status).withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  trAny(status),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: StatusService.colorOf(status),
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (notes.isNotEmpty) ...[
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(
+                                  notes,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: AppColors.inkMuted,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
-                        color: Colors.red,
-                        icon: const Icon(Icons.delete_outline, size: 20),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
+                  IconButton(
+                    tooltip: 'Удалить заявку'.tr,
+                    onPressed: () => _deleteJob(job),
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(
+                      minWidth: 36,
+                      minHeight: 36,
+                    ),
+                    color: Colors.red,
+                    icon: const Icon(Icons.delete_outline, size: 20),
+                  ),
+                ],
               ),
-            );
-          }).toList(),
+            ),
+          ),
         );
-      },
+      }).toList(),
     );
   }
 
@@ -1083,178 +1087,171 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     );
   }
 
-  Widget _buildDocumentsHistory() {
-    return StreamBuilder<List<Job>>(
-      stream: _jobsStream,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting &&
-            !snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        final jobs = snapshot.data ?? const <Job>[];
-        final rows = <_ClientDocRow>[];
-        for (final job in jobs) {
-          for (var i = 0; i < job.documents.length; i++) {
-            final doc = job.documents[i];
-            if (Job.isDocumentTrashed(doc)) continue;
-            rows.add(_ClientDocRow(job: job, doc: doc, index: i));
-          }
-        }
-        rows.sort((a, b) => b.sortKey.compareTo(a.sortKey));
+  Widget _buildDocumentsHistory(List<Job> jobs, {required bool loading}) {
+    if (loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final rows = <_ClientDocRow>[];
+    for (final job in jobs) {
+      for (var i = 0; i < job.documents.length; i++) {
+        final doc = job.documents[i];
+        if (Job.isDocumentTrashed(doc)) continue;
+        rows.add(_ClientDocRow(job: job, doc: doc, index: i));
+      }
+    }
+    rows.sort((a, b) => b.sortKey.compareTo(a.sortKey));
 
-        if (rows.isEmpty) {
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(16, 24, 16, 88),
-            children: [
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: AppColors.cardMuted,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Center(
-                  child: Text(
-                    'Нет счетов'.tr,
-                    style: TextStyle(color: AppColors.inkMuted),
-                  ),
-                ),
+    if (rows.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 24, 16, 88),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: AppColors.cardMuted,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Center(
+              child: Text(
+                'Нет счетов'.tr,
+                style: TextStyle(color: AppColors.inkMuted),
               ),
-            ],
-          );
-        }
+            ),
+          ),
+        ],
+      );
+    }
 
-        return ListView.separated(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
-          itemCount: rows.length,
-          separatorBuilder: (context, index) => const SizedBox(height: 8),
-          itemBuilder: (context, i) {
-            final row = rows[i];
-            final total = Job.documentTotal(row.doc);
-            final paid = Job.documentPaid(row.doc);
-            final due = (total - paid).clamp(0.0, double.infinity);
-            final number = row.doc['number'];
-            final title = number == null
-                ? '${row.doc['type'] ?? 'Invoice'} #${row.index + 1}'
-                : '${row.doc['type'] ?? 'Invoice'} #$number';
-            final stamp = Formatters.messageStamp(row.createdAt);
-            final mark = row.isEstimate ? '' : Job.documentPayMark(row.doc);
-            final look = _clientDocPayLook(mark, estimate: row.isEstimate);
-            var chipText = look.label;
-            if (mark == 'deposit' && paid > 0.009) {
-              chipText = '${look.label} · ${Formatters.formatCurrency(paid)}';
-            } else if (mark == 'unpaid' && due > 0.009) {
-              chipText = '${look.label} · ${Formatters.formatCurrency(due)}';
-            }
-            return Card(
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap: () => _openJobDocument(row.job, row.index),
-                child: IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Container(width: 7, color: look.bar),
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 8, 12),
-                          child: Row(
-                            children: [
-                              CircleAvatar(
-                                backgroundColor: look.avatar,
-                                child: Icon(look.icon, color: look.iconColor),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
+      itemCount: rows.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 8),
+      itemBuilder: (context, i) {
+        final row = rows[i];
+        final total = Job.documentTotal(row.doc);
+        final paid = Job.documentPaid(row.doc);
+        final due = (total - paid).clamp(0.0, double.infinity);
+        final number = row.doc['number'];
+        final title = number == null
+            ? '${row.doc['type'] ?? 'Invoice'} #${row.index + 1}'
+            : '${row.doc['type'] ?? 'Invoice'} #$number';
+        final stamp = Formatters.messageStamp(row.createdAt);
+        final mark = row.isEstimate ? '' : Job.documentPayMark(row.doc);
+        final look = _clientDocPayLook(mark, estimate: row.isEstimate);
+        var chipText = look.label;
+        if (mark == 'deposit' && paid > 0.009) {
+          chipText = '${look.label} · ${Formatters.formatCurrency(paid)}';
+        } else if (mark == 'unpaid' && due > 0.009) {
+          chipText = '${look.label} · ${Formatters.formatCurrency(due)}';
+        }
+        return Card(
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () => _openJobDocument(row.job, row.index),
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(width: 7, color: look.bar),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 8, 12),
+                      child: Row(
+                        children: [
+                          CircleAvatar(
+                            backgroundColor: look.avatar,
+                            child: Icon(look.icon, color: look.iconColor),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.baseline,
+                                  textBaseline: TextBaseline.alphabetic,
                                   children: [
-                                    Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.baseline,
-                                      textBaseline: TextBaseline.alphabetic,
-                                      children: [
-                                        Expanded(
-                                          child: Text(
-                                            title,
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.w800,
-                                              fontSize: 16,
-                                            ),
-                                          ),
+                                    Expanded(
+                                      child: Text(
+                                        title,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 16,
                                         ),
-                                        if (stamp.isNotEmpty)
-                                          Text(
-                                            stamp,
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w600,
-                                              color: AppColors.inkMuted,
-                                            ),
-                                          ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      trAny(row.job.applianceType),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        color: AppColors.inkMuted,
-                                        fontSize: 13,
                                       ),
                                     ),
-                                    const SizedBox(height: 4),
-                                    Row(
-                                      children: [
-                                        Text(
-                                          Formatters.formatCurrency(total),
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w900,
-                                            fontSize: 17,
-                                            color: AppColors.primaryOnCard,
-                                          ),
+                                    if (stamp.isNotEmpty)
+                                      Text(
+                                        stamp,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: AppColors.inkMuted,
                                         ),
-                                        if (mark.isNotEmpty || row.isEstimate) ...[
-                                          const SizedBox(width: 8),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 8,
-                                              vertical: 3,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: look.chipBg,
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                            ),
-                                            child: Text(
-                                              chipText,
-                                              style: TextStyle(
-                                                color: look.chipFg,
-                                                fontWeight: FontWeight.w800,
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
+                                      ),
                                   ],
                                 ),
-                              ),
-                              const Icon(
-                                Icons.chevron_right,
-                                color: Colors.grey,
-                              ),
-                            ],
+                                const SizedBox(height: 2),
+                                Text(
+                                  trAny(row.job.applianceType),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: AppColors.inkMuted,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Text(
+                                      Formatters.formatCurrency(total),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 17,
+                                        color: AppColors.primaryOnCard,
+                                      ),
+                                    ),
+                                    if (mark.isNotEmpty || row.isEstimate) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 3,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: look.chipBg,
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: Text(
+                                          chipText,
+                                          style: TextStyle(
+                                            color: look.chipFg,
+                                            fontWeight: FontWeight.w800,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
+                          const Icon(
+                            Icons.chevron_right,
+                            color: Colors.grey,
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
-                ),
+                ],
               ),
-            );
-          },
+            ),
+          ),
         );
       },
     );

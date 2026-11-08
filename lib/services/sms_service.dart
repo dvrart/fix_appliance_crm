@@ -322,6 +322,49 @@ class SmsMessage {
     );
   }
 
+  SmsMessage copyWith({String? reaction}) {
+    return SmsMessage(
+      id: id,
+      sid: sid,
+      from: from,
+      to: to,
+      body: body,
+      direction: direction,
+      status: status,
+      clientId: clientId,
+      createdAt: createdAt,
+      read: read,
+      mediaUrls: mediaUrls,
+      aiStatus: aiStatus,
+      extractedData: extractedData,
+      jobId: jobId,
+      hasPendingMedia: hasPendingMedia,
+      channel: channel,
+      fromEmail: fromEmail,
+      toEmail: toEmail,
+      subject: subject,
+      emailMessageId: emailMessageId,
+      crmThread: crmThread,
+      emailOfferPending: emailOfferPending,
+      emailBellPending: emailBellPending,
+      emailOfferDismissed: emailOfferDismissed,
+      watchedSender: watchedSender,
+      websiteForm: websiteForm,
+      fromName: fromName,
+      replyToEmail: replyToEmail,
+      emailIntake: emailIntake,
+      applianceRepair: applianceRepair,
+      smsOfferPending: smsOfferPending,
+      errorCode: errorCode,
+      failureDismissed: failureDismissed,
+      bodyRu: bodyRu,
+      deletedAt: deletedAt,
+      approval: approval,
+      reaction: reaction ?? this.reaction,
+      isReactionEcho: isReactionEcho,
+    );
+  }
+
   /// SMS всегда. Письма — только исходящие из CRM и ответы в этих цепочках.
   bool get visibleInCrm {
     if (isReactionEcho) return false;
@@ -765,8 +808,68 @@ class SmsService {
     } catch (_) {}
   }
 
-  /// Поставить (или снять) реакцию на SMS и отправить её клиенту по SMS,
-  /// чтобы клиент увидел смайлик / лайк у себя в телефоне.
+  /// Стандартная строка Tapback для iOS и Google Messages (Android):
+  /// без шапки компании и с точной цитатой сообщения в кавычках “...”,
+  /// чтобы телефон собеседника прикрепил реакцию к пузырю сообщения, а не
+  /// показал отдельную SMS.
+  static String buildTapbackBody(String emoji, String originalBody) {
+    final quote = originalBody;
+    switch (emoji) {
+      case '👍':
+        return 'Liked “$quote”';
+      case '❤️':
+        return 'Loved “$quote”';
+      case '😂':
+        return 'Laughed at “$quote”';
+      case '❗':
+        return 'Emphasized “$quote”';
+      case '❓':
+        return 'Questioned “$quote”';
+      default:
+        return '\u200a$emoji\u200ato “$quote”';
+    }
+  }
+
+  /// Распознать входящий Tapback от клиента (например `Liked “...”` или
+  /// `Loved “...”`), чтобы повесить значок на сообщение в CRM, а не
+  /// показывать отдельным пузырём.
+  static ({String emoji, String quoted})? parseTapback(String rawBody) {
+    final text = rawBody.trim();
+    if (text.isEmpty) return null;
+    final apple = RegExp(
+      r'^(Liked|Loved|Laughed at|Emphasized|Questioned|Disliked)\s+[“"]([\s\S]+)[”"]$',
+    ).firstMatch(text);
+    if (apple != null) {
+      final verb = apple.group(1)!;
+      final quoted = apple.group(2)!;
+      final emoji = switch (verb) {
+        'Liked' => '👍',
+        'Loved' => '❤️',
+        'Laughed at' => '😂',
+        'Emphasized' => '❗',
+        'Questioned' => '❓',
+        'Disliked' => '👎',
+        _ => '👍',
+      };
+      return (emoji: emoji, quoted: quoted);
+    }
+    final google = RegExp(
+      r'^\u200a?(\S+)\u200a?\s*to\s+[“"]([\s\S]+)[”"]$',
+    ).firstMatch(text);
+    if (google != null) {
+      return (emoji: google.group(1)!, quoted: google.group(2)!);
+    }
+    final reacted = RegExp(
+      r'^Reacted\s+(\S+)\s+to\s+[“"]([\s\S]+)[”"]$',
+    ).firstMatch(text);
+    if (reacted != null) {
+      return (emoji: reacted.group(1)!, quoted: reacted.group(2)!);
+    }
+    return null;
+  }
+
+  /// Поставить (или снять) реакцию на SMS и отправить Tapback клиенту,
+  /// чтобы реакция прикрепилась к сообщению.
   static Future<bool> reactToMessage({
     required SmsMessage message,
     required String emoji,
@@ -785,17 +888,9 @@ class SmsService {
     if (trimmed.isEmpty) return true;
     final phone = toPhone.trim();
     if (phone.isEmpty || message.isEmail) return true;
-    var quote = message.body.replaceAll('\r\n', '\n').trim();
-    final parts = quote.split('\n\n');
-    if (parts.length >= 2 &&
-        parts.first.toLowerCase().contains('fix-appliance')) {
-      quote = parts.sublist(1).join(' ').trim();
-    }
-    quote = quote.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (quote.length > 60) {
-      quote = '${quote.substring(0, 57)}...';
-    }
-    final smsText = quote.isEmpty ? trimmed : '$trimmed "$quote"';
+    final original = message.body;
+    if (original.trim().isEmpty) return true;
+    final tapback = buildTapbackBody(trimmed, original);
     try {
       final response = await http
           .post(
@@ -803,23 +898,18 @@ class SmsService {
             headers: await AuthService.headers(),
             body: json.encode({
               'to': toE164(phone),
-              'body': smsText,
+              'body': tapback,
               'clientId': clientId,
+              'isReactionEcho': true,
             }),
           )
           .timeout(const Duration(seconds: 40));
       if (response.statusCode == 200) {
         try {
           final payload = json.decode(response.body);
-          final id = payload['id']?.toString();
-          if (id != null && id.isNotEmpty) {
-            await _ref.doc(id).set(
-              {
-                'isReactionEcho': true,
-                'reactionForId': message.id,
-              },
-              SetOptions(merge: true),
-            );
+          final id = payload['id']?.toString() ?? '';
+          if (id.isNotEmpty) {
+            await _ref.doc(id).delete();
           }
         } catch (_) {}
         return true;
@@ -1031,8 +1121,46 @@ class SmsService {
         return false;
       }).toList();
       filtered.sort((a, b) => (a.createdAt ?? DateTime(0)).compareTo(b.createdAt ?? DateTime(0)));
-      return filtered;
+      return _foldTapbacks(filtered);
     });
+  }
+
+  static String _normTapbackText(String text) =>
+      text.replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
+
+  /// Сворачивает SMS-реакции (`Liked “...”`, `Loved “...”` и т.п.) в поле
+  /// `reaction` того сообщения, к которому они относятся, чтобы лайк стоял
+  /// на самом сообщении, а не висел отдельным пузырём.
+  static List<SmsMessage> _foldTapbacks(List<SmsMessage> sorted) {
+    if (sorted.length < 2) return sorted;
+    final out = <SmsMessage>[];
+    for (final msg in sorted) {
+      final parsed = parseTapback(msg.body);
+      if (parsed != null) {
+        final targetNorm = _normTapbackText(parsed.quoted);
+        var matchedIndex = -1;
+        for (var i = out.length - 1; i >= 0; i--) {
+          final candidateNorm = _normTapbackText(out[i].body);
+          if (candidateNorm.isNotEmpty &&
+              (candidateNorm == targetNorm ||
+                  candidateNorm.endsWith(targetNorm) ||
+                  targetNorm.endsWith(candidateNorm))) {
+            matchedIndex = i;
+            break;
+          }
+        }
+        if (matchedIndex >= 0) {
+          if (out[matchedIndex].reaction.trim().isEmpty) {
+            out[matchedIndex] = out[matchedIndex].copyWith(
+              reaction: parsed.emoji,
+            );
+          }
+          continue;
+        }
+      }
+      out.add(msg);
+    }
+    return out;
   }
 
   static List<SmsConversation> buildConversations(

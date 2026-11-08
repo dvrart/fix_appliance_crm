@@ -5264,7 +5264,7 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
     return;
   }
 
-    const { to, body, clientId, bodyRu, fallbackBody, visitBooking } = req.body || {};
+    const { to, body, clientId, bodyRu, fallbackBody, visitBooking, isReactionEcho } = req.body || {};
   const mediaUrls = Array.isArray((req.body || {}).mediaUrls)
     ? (req.body.mediaUrls)
         .map((url) => String(url || '').trim())
@@ -5290,6 +5290,21 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
   }
 
   try {
+    if (isReactionEcho === true) {
+      const tapbackText = String(body || '');
+      const message = await client.messages.create({
+        from: TWILIO_PHONE_NUMBER,
+        to: e164,
+        body: tapbackText,
+      });
+      console.log('sendSms reaction tapback', {
+        to: e164.slice(-4),
+        sid: message.sid,
+        status: message.status,
+      });
+      res.json({ success: true, sid: message.sid, id: '' });
+      return;
+    }
     const header = await getSmsHeader();
     let sendBody = body || '';
     let storedRu = typeof bodyRu === 'string' ? bodyRu.trim() : '';

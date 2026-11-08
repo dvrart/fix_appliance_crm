@@ -33,6 +33,7 @@ const Map<String, String> kEnglishUi = {
   'Обещал к': 'Promised by',
   'срок прошёл': 'overdue',
   'Только дата': 'Date only',
+  'Отключить': 'Turn off',
   'Сегодня обещанный день по заявке': 'Promised date for this job is today',
   'Чат': 'Chat',
   'Свободно': 'Free',

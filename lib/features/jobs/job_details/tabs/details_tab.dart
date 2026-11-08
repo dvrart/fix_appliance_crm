@@ -1485,6 +1485,13 @@ class _DetailsTabState extends State<DetailsTab> {
       title: 'Пообещал к'.tr,
       optionalTime: true,
       initialWithTime: current == null ? true : hasCurrentTime,
+      onClear: current == null
+          ? null
+          : () async {
+              await ctrl.updatePromisedPartAt(null);
+              if (!mounted) return;
+              await ctrl.commitChanges();
+            },
     );
     if (picked == null) return;
     await ctrl.updatePromisedPartAt(picked);
