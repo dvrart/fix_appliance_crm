@@ -49,7 +49,7 @@ class ChangeLogService {
   static Stream<List<JobChangeEvent>> streamChanges(String jobId) {
     if (jobId.isEmpty) return const Stream.empty();
     return _changesRef(jobId)
-        .orderBy('at', descending: false)
+        .orderBy('at', descending: true)
         .snapshots()
         .map((snapshot) => snapshot.docs
             .map((doc) => JobChangeEvent.fromMap(

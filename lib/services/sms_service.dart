@@ -1027,7 +1027,11 @@ class SmsService {
           (snapshot) => snapshot.docs
               .map((doc) => SmsMessage.fromMap(doc.data() as Map<String, dynamic>, doc.id))
               .where((message) => message.isDeleted)
-              .toList(),
+              .toList()
+            ..sort(
+              (a, b) => (b.deletedAt ?? b.createdAt ?? DateTime(0))
+                  .compareTo(a.deletedAt ?? a.createdAt ?? DateTime(0)),
+            ),
         );
   }
 

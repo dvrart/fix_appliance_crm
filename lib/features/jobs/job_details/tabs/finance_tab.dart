@@ -353,7 +353,7 @@ class _FinanceTabState extends State<FinanceTab> {
 
   Widget _buildMainView() {
     final visibleIndices = <int>[
-      for (var index = 0; index < ctrl.documents.length; index++)
+      for (var index = ctrl.documents.length - 1; index >= 0; index--)
         if (!Job.isDocumentTrashed(ctrl.documents[index]) &&
             !_isEstimateHiddenInJobTab(ctrl.documents[index]))
           index,

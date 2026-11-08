@@ -1697,10 +1697,14 @@ class _PhotosEditorPageState extends State<_PhotosEditorPage> {
   }
 
   void _open(int index) {
+    final newestFirst = _items.reversed.toList();
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => FullScreenGallery(images: _items, initialIndex: index),
+        builder: (_) => FullScreenGallery(
+          images: newestFirst,
+          initialIndex: _items.length - 1 - index,
+        ),
       ),
     );
   }
@@ -1832,7 +1836,7 @@ class _PhotosEditorPageState extends State<_PhotosEditorPage> {
                 if (index == 0) {
                   return Center(child: _addPhotoPlus(size: 72));
                 }
-                return _photoCell(index - 1);
+                return _photoCell(_items.length - index);
               },
             ),
     );
