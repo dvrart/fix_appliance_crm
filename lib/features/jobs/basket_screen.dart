@@ -125,6 +125,15 @@ class _BasketScreenState extends State<BasketScreen>
     return context.tr('Ещё $days дн.', '$days days left');
   }
 
+  /// Список идёт по дате самой записи, поэтому когда её выбросили видно
+  /// только из подписи.
+  String _trashNote(DateTime? deletedAt, int days) {
+    final left = _daysLeft(days);
+    if (deletedAt == null) return left;
+    final when = Formatters.formatDayTime(deletedAt);
+    return '${context.tr('Удалено', 'Deleted')} $when · $left';
+  }
+
   Widget _empty(String text) {
     return Center(
       child: Padding(
@@ -341,8 +350,8 @@ class _BasketScreenState extends State<BasketScreen>
             stream: JobService.streamTrashed(),
             builder: (context, snap) {
               final jobs = [...(snap.data ?? const <Job>[])]
-                ..sort((a, b) => (b.deletedAt ?? b.createdAt)
-                    .compareTo(a.deletedAt ?? a.createdAt));
+                ..sort((a, b) => (b.scheduledAt ?? b.createdAt)
+                    .compareTo(a.scheduledAt ?? a.createdAt));
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -364,7 +373,7 @@ class _BasketScreenState extends State<BasketScreen>
                       padding: const EdgeInsets.only(bottom: 2),
                       child: JobAgendaCard(
                         job: job,
-                        footer: _daysLeft(job.trashDaysLeft),
+                        footer: _trashNote(job.deletedAt, job.trashDaysLeft),
                         onTap: () => _restoreJob(job),
                       ),
                     ),
@@ -402,8 +411,8 @@ class _BasketScreenState extends State<BasketScreen>
             builder: (context, snap) {
               final clients = [...(snap.data ?? const <Client>[])]
                 ..sort(
-                  (a, b) => (b.deletedAt ?? b.createdAt ?? DateTime(0))
-                      .compareTo(a.deletedAt ?? a.createdAt ?? DateTime(0)),
+                  (a, b) => (b.createdAt ?? DateTime(0))
+                      .compareTo(a.createdAt ?? DateTime(0)),
                 );
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
@@ -439,7 +448,7 @@ class _BasketScreenState extends State<BasketScreen>
                         subtitle: Text(
                           [
                             if (client.phone.trim().isNotEmpty) client.phone.trim(),
-                            _daysLeft(client.trashDaysLeft),
+                            _trashNote(client.deletedAt, client.trashDaysLeft),
                           ].join(' · '),
                         ),
                         trailing: _actions(
@@ -455,7 +464,14 @@ class _BasketScreenState extends State<BasketScreen>
           StreamBuilder<List<({Job job, int index, Map<String, dynamic> doc})>>(
             stream: JobService.streamTrashedDocuments(),
             builder: (context, snap) {
-              final rows = snap.data ?? const [];
+              final rows = [...?snap.data]
+                ..sort(
+                  (a, b) =>
+                      (Job.documentCreatedAt(b.doc) ?? b.job.createdAt)
+                          .compareTo(
+                    Job.documentCreatedAt(a.doc) ?? a.job.createdAt,
+                  ),
+                );
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -493,7 +509,10 @@ class _BasketScreenState extends State<BasketScreen>
                           [
                             row.job.clientName,
                             Formatters.formatCurrency(Job.documentTotal(row.doc)),
-                            _daysLeft(Job.documentTrashDaysLeft(row.doc)),
+                            _trashNote(
+                              Job.documentDeletedAt(row.doc),
+                              Job.documentTrashDaysLeft(row.doc),
+                            ),
                           ].join(' · '),
                         ),
                         trailing: _actions(
@@ -525,7 +544,11 @@ class _BasketScreenState extends State<BasketScreen>
           StreamBuilder<List<WarehouseItem>>(
             stream: WarehouseService.streamTrashed(),
             builder: (context, snap) {
-              final items = snap.data ?? const <WarehouseItem>[];
+              final items = [...(snap.data ?? const <WarehouseItem>[])]
+                ..sort(
+                  (a, b) => (b.createdAt ?? DateTime(0))
+                      .compareTo(a.createdAt ?? DateTime(0)),
+                );
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -563,7 +586,7 @@ class _BasketScreenState extends State<BasketScreen>
                               item.partNumber.trim(),
                             '${context.tr('Кол-во', 'Qty')}: ${item.quantity}',
                             Formatters.formatCurrency(item.price),
-                            _daysLeft(item.trashDaysLeft),
+                            _trashNote(item.deletedAt, item.trashDaysLeft),
                           ].where((part) => part.trim().isNotEmpty).join(' · '),
                         ),
                         trailing: _actions(
@@ -579,7 +602,11 @@ class _BasketScreenState extends State<BasketScreen>
           StreamBuilder<List<SmsMessage>>(
             stream: SmsService.streamTrashed(),
             builder: (context, snap) {
-              final messages = snap.data ?? const <SmsMessage>[];
+              final messages = [...(snap.data ?? const <SmsMessage>[])]
+                ..sort(
+                  (a, b) => (b.createdAt ?? DateTime(0))
+                      .compareTo(a.createdAt ?? DateTime(0)),
+                );
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -621,7 +648,7 @@ class _BasketScreenState extends State<BasketScreen>
                               (message.isOutbound ? message.toEmail : message.fromEmail)
                             else
                               (message.isOutbound ? message.to : message.from),
-                            _daysLeft(message.trashDaysLeft),
+                            _trashNote(message.deletedAt, message.trashDaysLeft),
                           ].where((part) => part.trim().isNotEmpty).join(' · '),
                         ),
                         trailing: _actions(
@@ -647,7 +674,11 @@ class _BasketScreenState extends State<BasketScreen>
           StreamBuilder<List<CallRecord>>(
             stream: TwilioService.streamTrashed(),
             builder: (context, snap) {
-              final calls = snap.data ?? const <CallRecord>[];
+              final calls = [...(snap.data ?? const <CallRecord>[])]
+                ..sort(
+                  (a, b) => (b.startTime ?? DateTime(0))
+                      .compareTo(a.startTime ?? DateTime(0)),
+                );
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -687,7 +718,7 @@ class _BasketScreenState extends State<BasketScreen>
                                 : context.tr('Исходящий', 'Outgoing'),
                             if (call.startTime != null)
                               Formatters.formatDateTime(call.startTime),
-                            _daysLeft(call.trashDaysLeft),
+                            _trashNote(call.deletedAt, call.trashDaysLeft),
                           ].where((part) => part.toString().trim().isNotEmpty).join(' · '),
                         ),
                         trailing: _actions(
