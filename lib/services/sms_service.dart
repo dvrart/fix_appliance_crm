@@ -71,6 +71,8 @@ class SmsMessage {
   /// мастера и клиенту ещё не ушло, `approved` — отправлено по кнопке,
   /// `rejected` — мастер отказался. Пусто у всего, что мастер отправил сам.
   final String approval;
+  final String reaction;
+  final bool isReactionEcho;
 
   SmsMessage({
     required this.id,
@@ -109,6 +111,8 @@ class SmsMessage {
     this.bodyRu = '',
     this.deletedAt,
     this.approval = '',
+    this.reaction = '',
+    this.isReactionEcho = false,
   });
 
   bool get isDeleted => deletedAt != null;
@@ -308,6 +312,8 @@ class SmsMessage {
       failureDismissed: map['failureDismissed'] == true,
       bodyRu: (map['bodyRu'] ?? '').toString(),
       approval: (map['approval'] ?? '').toString(),
+      reaction: (map['reaction'] ?? '').toString(),
+      isReactionEcho: map['isReactionEcho'] == true,
       deletedAt: map['deletedAt'] is Timestamp
           ? (map['deletedAt'] as Timestamp).toDate()
           : (map['deletedAt'] is DateTime
@@ -318,6 +324,7 @@ class SmsMessage {
 
   /// SMS всегда. Письма — только исходящие из CRM и ответы в этих цепочках.
   bool get visibleInCrm {
+    if (isReactionEcho) return false;
     if (!isEmail) return true;
     if (isOutbound) return true;
     return crmThread;
@@ -756,6 +763,69 @@ class SmsService {
         SetOptions(merge: true),
       );
     } catch (_) {}
+  }
+
+  /// Поставить (или снять) реакцию на SMS и отправить её клиенту по SMS,
+  /// чтобы клиент увидел смайлик / лайк у себя в телефоне.
+  static Future<bool> reactToMessage({
+    required SmsMessage message,
+    required String emoji,
+    required String toPhone,
+    String? clientId,
+  }) async {
+    final trimmed = emoji.trim();
+    try {
+      await _ref.doc(message.id).set(
+        {'reaction': trimmed},
+        SetOptions(merge: true),
+      );
+    } catch (_) {
+      return false;
+    }
+    if (trimmed.isEmpty) return true;
+    final phone = toPhone.trim();
+    if (phone.isEmpty || message.isEmail) return true;
+    var quote = message.body.replaceAll('\r\n', '\n').trim();
+    final parts = quote.split('\n\n');
+    if (parts.length >= 2 &&
+        parts.first.toLowerCase().contains('fix-appliance')) {
+      quote = parts.sublist(1).join(' ').trim();
+    }
+    quote = quote.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (quote.length > 60) {
+      quote = '${quote.substring(0, 57)}...';
+    }
+    final smsText = quote.isEmpty ? trimmed : '$trimmed "$quote"';
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$kFirebaseFunctionsUrl/sendSms'),
+            headers: await AuthService.headers(),
+            body: json.encode({
+              'to': toE164(phone),
+              'body': smsText,
+              'clientId': clientId,
+            }),
+          )
+          .timeout(const Duration(seconds: 40));
+      if (response.statusCode == 200) {
+        try {
+          final payload = json.decode(response.body);
+          final id = payload['id']?.toString();
+          if (id != null && id.isNotEmpty) {
+            await _ref.doc(id).set(
+              {
+                'isReactionEcho': true,
+                'reactionForId': message.id,
+              },
+              SetOptions(merge: true),
+            );
+          }
+        } catch (_) {}
+        return true;
+      }
+    } catch (_) {}
+    return false;
   }
 
   static String toE164(String phone) {

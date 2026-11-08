@@ -22,14 +22,21 @@ class PartsQueueScreen extends StatelessWidget {
         automaticallyImplyLeading: false,
       ),
       body: StreamBuilder<List<Job>>(
-        stream: JobService.streamByStatus(JobStatuses.waitingPart),
+        stream: JobService.streamAll(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
             return Center(
               child: CircularProgressIndicator(color: AppColors.accent),
             );
           }
-          final jobs = snapshot.data!;
+          final jobs = [
+            for (final job in snapshot.data!)
+              if (!job.isDeleted &&
+                  !JobStatuses.isClosed(job.status) &&
+                  (job.status == JobStatuses.waitingPart ||
+                      job.promisedPartAt != null))
+                job,
+          ];
           if (jobs.isEmpty) {
             return Center(
               child: Padding(
@@ -42,13 +49,12 @@ class PartsQueueScreen extends StatelessWidget {
               ),
             );
           }
-          final today = DateTime.now();
-          final startOfToday = DateTime(today.year, today.month, today.day);
+          final now = DateTime.now();
           // 0 — срок прошёл, 1 — срок ещё впереди, 2 — день не обещан.
           int rank(Job job) {
             final promised = job.promisedPartAt;
             if (promised == null) return 2;
-            return promised.isBefore(startOfToday) ? 0 : 1;
+            return Job.isPromisedOverdue(promised, now) ? 0 : 1;
           }
 
           jobs.sort((a, b) {
@@ -68,8 +74,7 @@ class PartsQueueScreen extends StatelessWidget {
                   ? 'Запчасть не указана'.tr
                   : parts.join(', ');
               final promised = job.promisedPartAt;
-              final overdue =
-                  promised != null && promised.isBefore(startOfToday);
+              final overdue = Job.isPromisedOverdue(promised, now);
               return Card(
                 elevation: 0,
                 shape: RoundedRectangleBorder(

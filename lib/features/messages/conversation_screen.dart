@@ -855,6 +855,151 @@ class _ConversationScreenState extends State<ConversationScreen>
     _clearSelection();
   }
 
+  static const List<String> _reactionEmojis = ['👍', '❤️', '😊', '🙏', '👌', '✅'];
+
+  SmsMessage? _singleSelectedMessage() {
+    if (_selectedIds.length != 1) return null;
+    final id = _selectedIds.first;
+    final messages = _threadCache[_threadKey] ?? const <SmsMessage>[];
+    for (final m in messages) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  Future<void> _applyReaction(SmsMessage message, String emoji) async {
+    final next = message.reaction == emoji ? '' : emoji;
+    AppFeedback.selection();
+    if (_selecting) _clearSelection();
+    final targetPhone = _hasPhone
+        ? _phone
+        : (message.isOutbound ? message.to : message.from);
+    final ok = await SmsService.reactToMessage(
+      message: message,
+      emoji: next,
+      toPhone: targetPhone,
+      clientId: widget.clientId,
+    );
+    if (!mounted) return;
+    if (next.isNotEmpty && ok) {
+      AppFeedback.toast(context, next);
+    }
+  }
+
+  Future<void> _pickMessageReaction(SmsMessage message) async {
+    final chosen = await showModalBottomSheet<String>(
+      sheetAnimationStyle: AppMotion.sheet,
+      context: context,
+      backgroundColor: AppColors.card,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              for (final emoji in _reactionEmojis)
+                InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => Navigator.pop(sheetContext, emoji),
+                  child: Container(
+                    width: 46,
+                    height: 46,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: message.reaction == emoji
+                          ? AppColors.accent.withValues(alpha: 0.35)
+                          : AppColors.cardMuted,
+                      border: message.reaction == emoji
+                          ? Border.all(color: AppColors.primary, width: 1.5)
+                          : null,
+                    ),
+                    child: Text(emoji, style: const TextStyle(fontSize: 24)),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    await _applyReaction(message, chosen);
+  }
+
+  Widget _buildSelectionReactionBar(SmsMessage message) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        border: Border(top: BorderSide(color: AppColors.border)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          for (final emoji in _reactionEmojis)
+            InkWell(
+              customBorder: const CircleBorder(),
+              onTap: () => _applyReaction(message, emoji),
+              child: Container(
+                width: 40,
+                height: 40,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: message.reaction == emoji
+                      ? AppColors.accent.withValues(alpha: 0.35)
+                      : AppColors.cardMuted,
+                ),
+                child: Text(emoji, style: const TextStyle(fontSize: 21)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReactionButton(SmsMessage message, bool onDark) {
+    final hasReaction = message.reaction.trim().isNotEmpty;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _selecting ? null : () => _pickMessageReaction(message),
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: hasReaction ? 7 : 5,
+          vertical: 2,
+        ),
+        decoration: BoxDecoration(
+          color: hasReaction
+              ? (onDark
+                  ? Colors.white.withValues(alpha: 0.18)
+                  : Colors.white.withValues(alpha: 0.85))
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          border: hasReaction
+              ? Border.all(
+                  color: onDark
+                      ? Colors.white30
+                      : Colors.black.withValues(alpha: 0.12),
+                )
+              : null,
+        ),
+        child: hasReaction
+            ? Text(
+                message.reaction,
+                style: const TextStyle(fontSize: 14, height: 1.1),
+              )
+            : Icon(
+                Icons.thumb_up_alt_outlined,
+                size: 14,
+                color: onDark ? Colors.white54 : Colors.grey.shade500,
+              ),
+      ),
+    );
+  }
+
   List<ConversationPeer> _loadedPeers = const [];
 
   /// После создания заявки из переписки значок в шапке должен её найти:
@@ -2325,14 +2470,22 @@ class _ConversationScreenState extends State<ConversationScreen>
         if (_selecting)
           SafeArea(
             top: false,
-            child: SelectionActionBar(
-              count: _selectedIds.length,
-              onCancel: _clearSelection,
-              onCreateJob: widget.websiteInbox ? null : _createJobFromSelected,
-              creatingJob: _creatingJob,
-              onSelectAll: _selectAllVisible,
-              onCopy: _copySelected,
-              onDelete: _deleteSelected,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (!widget.websiteInbox && _singleSelectedMessage() != null)
+                  _buildSelectionReactionBar(_singleSelectedMessage()!),
+                SelectionActionBar(
+                  count: _selectedIds.length,
+                  onCancel: _clearSelection,
+                  onCreateJob:
+                      widget.websiteInbox ? null : _createJobFromSelected,
+                  creatingJob: _creatingJob,
+                  onSelectAll: _selectAllVisible,
+                  onCopy: _copySelected,
+                  onDelete: _deleteSelected,
+                ),
+              ],
             ),
           )
         else if (!widget.websiteInbox)
@@ -2671,6 +2824,10 @@ class _ConversationScreenState extends State<ConversationScreen>
               mainAxisAlignment: MainAxisAlignment.end,
               mainAxisSize: MainAxisSize.max,
               children: [
+                if (!widget.websiteInbox && !waiting && !refused) ...[
+                  _buildReactionButton(message, onDark),
+                  const SizedBox(width: 8),
+                ],
                 Text(
                   Formatters.messageStamp(message.createdAt),
                   style: TextStyle(

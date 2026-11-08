@@ -412,6 +412,104 @@ class LocalNotificationService {
     await cancelTags(['job_reminder_$jobId']);
   }
 
+  static int promisedPartId(String jobId) {
+    var hash = 2166136261;
+    for (final unit in 'promised|$jobId'.codeUnits) {
+      hash ^= unit;
+      hash = (hash * 16777619) & 0x7fffffff;
+    }
+    return 990000 + (hash % 80000);
+  }
+
+  static Future<void> schedulePromisedPartReminder({
+    required String jobId,
+    required String clientId,
+    required DateTime promisedAt,
+    String clientName = '',
+    String applianceType = '',
+    String city = '',
+  }) async {
+    await initialize();
+    await ensureInboxChannels();
+    final id = promisedPartId(jobId);
+    final tag = 'promised_part_$jobId';
+    await _cancelIfPending(id);
+    await cancelTags([tag]);
+
+    final fireAt = (promisedAt.hour == 0 && promisedAt.minute == 0)
+        ? DateTime(promisedAt.year, promisedAt.month, promisedAt.day, 9, 0)
+        : promisedAt;
+    final when = tz.TZDateTime.from(fireAt, tz.local);
+    final now = tz.TZDateTime.now(tz.local);
+    final who = clientName.trim().isNotEmpty
+        ? clientName.trim()
+        : 'Рабочая карточка'.tr;
+    final title = '${'Пообещал к'.tr}: $who';
+    final parts = <String>[
+      if (applianceType.trim().isNotEmpty &&
+          applianceType.trim() != 'Техника')
+        trAny(applianceType.trim()),
+      if (city.trim().isNotEmpty) city.trim(),
+    ];
+    final body = parts.isEmpty
+        ? 'Сегодня обещанный день по заявке'.tr
+        : parts.join(' · ');
+
+    if (!when.isAfter(now)) {
+      final sameDay = promisedAt.year == now.year &&
+          promisedAt.month == now.month &&
+          promisedAt.day == now.day;
+      if (sameDay) {
+        await showInboxAlert(
+          title: title,
+          body: body,
+          tag: tag,
+          channelId: jobReminderChannelId,
+          channelName: 'Напоминание о заявке'.tr,
+          channelDescription: 'Личные напоминания по рабочим карточкам'.tr,
+          applianceType: applianceType,
+          clientName: clientName,
+          city: city,
+          data: {
+            'type': 'job_reminder',
+            'jobId': jobId,
+            if (clientId.isNotEmpty) 'clientId': clientId,
+          },
+        );
+      }
+      return;
+    }
+
+    await _scheduleZoned(
+      id: id,
+      title: title,
+      body: body,
+      when: when,
+      details: _headsUpDetails(
+        channelId: jobReminderChannelId,
+        channelName: 'Напоминание о заявке'.tr,
+        channelDescription: 'Личные напоминания по рабочим карточкам'.tr,
+        title: title,
+        body: body,
+        tag: tag,
+        persist: true,
+        largeIcon: await _badgeFor('reminder'),
+      ),
+      payloadValue: payload({
+        'type': 'job_reminder',
+        'jobId': jobId,
+        if (clientId.isNotEmpty) 'clientId': clientId,
+        'tag': tag,
+      }),
+    );
+  }
+
+  static Future<void> cancelPromisedPartReminder(String jobId) async {
+    await initialize();
+    await _cancelIfPending(promisedPartId(jobId));
+    await cancelTags(['promised_part_$jobId']);
+  }
+
   static Future<void> _cancelIfPending(int id) async {
     final pending = await _plugin.pendingNotificationRequests();
     if (pending.any((item) => item.id == id)) {

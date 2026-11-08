@@ -1093,6 +1093,10 @@ class JobDetailsController extends ChangeNotifier {
       if (JobStatuses.isCancelledStatus(status)) 'needsReview': false,
       if (extra != null) ...extra,
     });
+    if (JobStatuses.isCompletedStatus(status) ||
+        JobStatuses.isCancelledStatus(status)) {
+      unawaited(LocalNotificationService.cancelPromisedPartReminder(jobId));
+    }
     if (persistNow) await commitChanges();
   }
 
@@ -1242,6 +1246,20 @@ class JobDetailsController extends ChangeNotifier {
       'agreedReturnAt': FieldValue.delete(),
       'agreedReturnNote': FieldValue.delete(),
     });
+    if (next == null) {
+      unawaited(LocalNotificationService.cancelPromisedPartReminder(jobId));
+    } else {
+      unawaited(
+        LocalNotificationService.schedulePromisedPartReminder(
+          jobId: jobId,
+          clientId: clientId,
+          promisedAt: next,
+          clientName: (jobData['clientName'] ?? '').toString(),
+          applianceType: (jobData['applianceType'] ?? '').toString(),
+          city: (jobData['city'] ?? '').toString(),
+        ),
+      );
+    }
   }
 
   Future<void> updatePackingNotes(String notes) async {

@@ -1470,17 +1470,21 @@ class _DetailsTabState extends State<DetailsTab> {
     final now = DateTime.now();
     final defaultInitial = DateTime(now.year, now.month, now.day + 2, 10, 0);
     final current = ctrl.promisedPartAt;
+    final hasCurrentTime =
+        current != null && (current.hour != 0 || current.minute != 0);
     final initial = current == null
         ? defaultInitial
-        : (current.hour == 0 && current.minute == 0
-              ? DateTime(current.year, current.month, current.day, 10, 0)
-              : current);
+        : (hasCurrentTime
+              ? current
+              : DateTime(current.year, current.month, current.day, 10, 0));
     final picked = await showAppDateTimeSheet(
       context: context,
       initial: initial,
       firstDate: DateTime(now.year - 1),
       lastDate: DateTime(now.year + 2),
       title: 'Пообещал к'.tr,
+      optionalTime: true,
+      initialWithTime: current == null ? true : hasCurrentTime,
     );
     if (picked == null) return;
     await ctrl.updatePromisedPartAt(picked);
@@ -1513,9 +1517,7 @@ class _DetailsTabState extends State<DetailsTab> {
   /// нажатие убирает дату.
   Widget _buildPromisedTile() {
     final at = ctrl.promisedPartAt;
-    final today = DateTime.now();
-    final startOfToday = DateTime(today.year, today.month, today.day);
-    final overdue = at != null && at.isBefore(startOfToday);
+    final overdue = Job.isPromisedOverdue(at);
     final color = overdue ? const Color(0xFFC62828) : const Color(0xFFEF6C00);
     final caption = at == null
         ? context.tr('Когда пообещал', 'Promised by')

@@ -49,13 +49,12 @@ class _CalendarTopIconsState extends State<CalendarTopIcons> {
         var overdue = 0;
         var noDate = 0;
         final now = DateTime.now();
-        final today = DateTime(now.year, now.month, now.day);
         for (final job in snapshot.data ?? const <Job>[]) {
           if (job.isDeleted || JobStatuses.isClosed(job.status)) continue;
-          if (job.status == JobStatuses.waitingPart) {
+          final promised = job.promisedPartAt;
+          if (job.status == JobStatuses.waitingPart || promised != null) {
             parts++;
-            final promised = job.promisedPartAt;
-            if (promised != null && promised.isBefore(today)) overdue++;
+            if (Job.isPromisedOverdue(promised, now)) overdue++;
           }
           if (job.isUnscheduled) noDate++;
         }

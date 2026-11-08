@@ -651,6 +651,18 @@ class Job {
   final DateTime? promisedPartAt;
   final DateTime? reminderAt;
 
+  /// Просрочена ли дата «Когда обещал»: если выбрана только дата (00:00) —
+  /// со следующего дня; если выбраны дата и время — сразу после этого времени.
+  static bool isPromisedOverdue(DateTime? promised, [DateTime? now]) {
+    if (promised == null) return false;
+    final current = now ?? DateTime.now();
+    if (promised.hour == 0 && promised.minute == 0) {
+      final startOfToday = DateTime(current.year, current.month, current.day);
+      return promised.isBefore(startOfToday);
+    }
+    return promised.isBefore(current);
+  }
+
   Job({
     required this.id,
     required this.clientId,

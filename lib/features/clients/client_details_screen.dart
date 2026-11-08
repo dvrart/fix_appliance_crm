@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../core/utils/formatters.dart';
 import '../../services/services.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import '../jobs/job_details/editors/call_recording_page.dart';
@@ -51,7 +52,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
   @override
   void initState() {
     super.initState();
-    _historyTabs = TabController(length: 2, vsync: this);
+    _historyTabs = TabController(length: 3, vsync: this);
     _bindClient();
   }
 
@@ -573,6 +574,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                 delegate: _HistoryTabBarDelegate(
                   TabBar(
                     controller: _historyTabs,
+                    labelPadding: const EdgeInsets.symmetric(horizontal: 6),
                     labelColor: AppColors.primary,
                     unselectedLabelColor: Colors.grey.shade600,
                     indicatorColor: AppColors.primary,
@@ -580,6 +582,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                     tabs: [
                       Tab(text: 'История заявок'.tr),
                       Tab(text: 'История звонков'.tr),
+                      Tab(text: 'Документы'.tr),
                     ],
                   ),
                 ),
@@ -590,6 +593,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
               children: [
                 _buildJobsHistory(),
                 _buildCallHistory(data),
+                _buildDocumentsHistory(),
               ],
             ),
           ),
@@ -1062,6 +1066,288 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         );
       },
     );
+  }
+
+  void _openJobDocument(Job job, int index) {
+    final data = Map<String, dynamic>.from(job.toMap())..remove('updatedAt');
+    AppNav.openCard(
+      context,
+      key: AppNav.jobKey(job.id),
+      builder: (_) => JobDetailsScreen(
+        jobId: job.id,
+        clientId: widget.clientId,
+        jobData: data,
+        initialTab: 1,
+        openDocumentIndex: index,
+      ),
+    );
+  }
+
+  Widget _buildDocumentsHistory() {
+    return StreamBuilder<List<Job>>(
+      stream: _jobsStream,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            !snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final jobs = snapshot.data ?? const <Job>[];
+        final rows = <_ClientDocRow>[];
+        for (final job in jobs) {
+          for (var i = 0; i < job.documents.length; i++) {
+            final doc = job.documents[i];
+            if (Job.isDocumentTrashed(doc)) continue;
+            rows.add(_ClientDocRow(job: job, doc: doc, index: i));
+          }
+        }
+        rows.sort((a, b) => b.sortKey.compareTo(a.sortKey));
+
+        if (rows.isEmpty) {
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 24, 16, 88),
+            children: [
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: AppColors.cardMuted,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Center(
+                  child: Text(
+                    'Нет счетов'.tr,
+                    style: TextStyle(color: AppColors.inkMuted),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+
+        return ListView.separated(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
+          itemCount: rows.length,
+          separatorBuilder: (context, index) => const SizedBox(height: 8),
+          itemBuilder: (context, i) {
+            final row = rows[i];
+            final total = Job.documentTotal(row.doc);
+            final paid = Job.documentPaid(row.doc);
+            final due = (total - paid).clamp(0.0, double.infinity);
+            final number = row.doc['number'];
+            final title = number == null
+                ? '${row.doc['type'] ?? 'Invoice'} #${row.index + 1}'
+                : '${row.doc['type'] ?? 'Invoice'} #$number';
+            final stamp = Formatters.messageStamp(row.createdAt);
+            final mark = row.isEstimate ? '' : Job.documentPayMark(row.doc);
+            final look = _clientDocPayLook(mark, estimate: row.isEstimate);
+            var chipText = look.label;
+            if (mark == 'deposit' && paid > 0.009) {
+              chipText = '${look.label} · ${Formatters.formatCurrency(paid)}';
+            } else if (mark == 'unpaid' && due > 0.009) {
+              chipText = '${look.label} · ${Formatters.formatCurrency(due)}';
+            }
+            return Card(
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: () => _openJobDocument(row.job, row.index),
+                child: IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Container(width: 7, color: look.bar),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 12, 8, 12),
+                          child: Row(
+                            children: [
+                              CircleAvatar(
+                                backgroundColor: look.avatar,
+                                child: Icon(look.icon, color: look.iconColor),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.baseline,
+                                      textBaseline: TextBaseline.alphabetic,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            title,
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w800,
+                                              fontSize: 16,
+                                            ),
+                                          ),
+                                        ),
+                                        if (stamp.isNotEmpty)
+                                          Text(
+                                            stamp,
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                              color: AppColors.inkMuted,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      trAny(row.job.applianceType),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: AppColors.inkMuted,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Row(
+                                      children: [
+                                        Text(
+                                          Formatters.formatCurrency(total),
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w900,
+                                            fontSize: 17,
+                                            color: AppColors.primaryOnCard,
+                                          ),
+                                        ),
+                                        if (mark.isNotEmpty || row.isEstimate) ...[
+                                          const SizedBox(width: 8),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                              vertical: 3,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: look.chipBg,
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                            ),
+                                            child: Text(
+                                              chipText,
+                                              style: TextStyle(
+                                                color: look.chipFg,
+                                                fontWeight: FontWeight.w800,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const Icon(
+                                Icons.chevron_right,
+                                color: Colors.grey,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _ClientDocRow {
+  final Job job;
+  final Map<String, dynamic> doc;
+  final int index;
+
+  _ClientDocRow({required this.job, required this.doc, required this.index});
+
+  bool get isEstimate => (doc['type'] ?? '') == 'Estimate';
+
+  DateTime? get createdAt => Job.documentCreatedAt(doc);
+
+  DateTime get sortKey => createdAt ?? job.createdAt;
+}
+
+class _ClientDocPayLook {
+  final Color bar;
+  final Color avatar;
+  final Color iconColor;
+  final Color chipBg;
+  final Color chipFg;
+  final IconData icon;
+  final String label;
+
+  const _ClientDocPayLook({
+    required this.bar,
+    required this.avatar,
+    required this.iconColor,
+    required this.chipBg,
+    required this.chipFg,
+    required this.icon,
+    required this.label,
+  });
+}
+
+_ClientDocPayLook _clientDocPayLook(String mark, {required bool estimate}) {
+  if (estimate) {
+    return _ClientDocPayLook(
+      bar: Colors.orange.shade400,
+      avatar: Colors.orange.shade50,
+      iconColor: Colors.orange.shade800,
+      chipBg: Colors.orange.shade50,
+      chipFg: Colors.orange.shade800,
+      icon: Icons.description,
+      label: 'Смета'.tr,
+    );
+  }
+  switch (mark) {
+    case 'paid':
+      return _ClientDocPayLook(
+        bar: const Color(0xFF16A34A),
+        avatar: const Color(0xFFDCFCE7),
+        iconColor: const Color(0xFF15803D),
+        chipBg: const Color(0xFFDCFCE7),
+        chipFg: const Color(0xFF15803D),
+        icon: Icons.check_circle,
+        label: 'Оплачен'.tr,
+      );
+    case 'deposit':
+      return _ClientDocPayLook(
+        bar: const Color(0xFFF59E0B),
+        avatar: const Color(0xFFFEF3C7),
+        iconColor: const Color(0xFFB45309),
+        chipBg: const Color(0xFFFEF3C7),
+        chipFg: const Color(0xFFB45309),
+        icon: Icons.savings_outlined,
+        label: 'Депозит'.tr,
+      );
+    case 'refunded':
+      return _ClientDocPayLook(
+        bar: const Color(0xFF64748B),
+        avatar: const Color(0xFFF1F5F9),
+        iconColor: const Color(0xFF475569),
+        chipBg: const Color(0xFFF1F5F9),
+        chipFg: const Color(0xFF475569),
+        icon: Icons.undo,
+        label: 'Возврат'.tr,
+      );
+    default:
+      return _ClientDocPayLook(
+        bar: const Color(0xFFEF4444),
+        avatar: const Color(0xFFFEE2E2),
+        iconColor: const Color(0xFFB91C1C),
+        chipBg: const Color(0xFFFEE2E2),
+        chipFg: const Color(0xFFB91C1C),
+        icon: Icons.circle_outlined,
+        label: 'Неоплачен'.tr,
+      );
   }
 }
 

@@ -461,6 +461,8 @@ Future<DateTime?> showAppDateTimeSheet({
   DateTime? firstDate,
   DateTime? lastDate,
   String? title,
+  bool optionalTime = false,
+  bool initialWithTime = true,
 }) {
   final now = DateTime.now();
   final first = firstDate ?? DateTime(now.year - 1);
@@ -470,6 +472,7 @@ Future<DateTime?> showAppDateTimeSheet({
       : initial.isAfter(last)
       ? last
       : initial;
+  var withTime = !optionalTime || initialWithTime;
   return showModalBottomSheet<DateTime>(
     context: context,
     useRootNavigator: true,
@@ -486,16 +489,64 @@ Future<DateTime?> showAppDateTimeSheet({
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _sheetTitle(title ?? 'Дата и время'.tr, appDateTimeLabel(value)),
+              _sheetTitle(
+                title ?? 'Дата и время'.tr,
+                appDateTimeLabel(value, withTime: withTime),
+              ),
+              if (optionalTime) ...[
+                Padding(
+                  padding: const EdgeInsets.only(top: 6, bottom: 4),
+                  child: SegmentedButton<bool>(
+                    showSelectedIcon: false,
+                    segments: [
+                      ButtonSegment<bool>(
+                        value: false,
+                        icon: const Icon(Icons.calendar_today, size: 16),
+                        label: Text('Только дата'.tr),
+                      ),
+                      ButtonSegment<bool>(
+                        value: true,
+                        icon: const Icon(Icons.access_time, size: 16),
+                        label: Text('Дата и время'.tr),
+                      ),
+                    ],
+                    selected: {withTime},
+                    onSelectionChanged: (sel) {
+                      final next = sel.first;
+                      HapticFeedback.selectionClick();
+                      setSheet(() {
+                        withTime = next;
+                        if (withTime &&
+                            value.hour == 0 &&
+                            value.minute == 0) {
+                          value = DateTime(
+                            value.year,
+                            value.month,
+                            value.day,
+                            10,
+                            0,
+                          );
+                        }
+                      });
+                    },
+                  ),
+                ),
+              ],
               AppDateTimePanel(
                 value: value,
                 firstDate: first,
                 lastDate: last,
+                showTime: withTime,
                 onChanged: (v) => setSheet(() => value = v),
               ),
               const SizedBox(height: 8),
               AppSheetConfirmButton(
-                onPressed: () => Navigator.pop(sheetContext, value),
+                onPressed: () => Navigator.pop(
+                  sheetContext,
+                  withTime
+                      ? value
+                      : DateTime(value.year, value.month, value.day),
+                ),
               ),
             ],
           ),

@@ -1,4 +1,5 @@
 import 'package:fix_appliance_crm/core/utils/app_date_picker.dart';
+import 'package:fix_appliance_crm/models/job.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -81,5 +82,57 @@ void main() {
         pickers[1].childDelegate as ListWheelChildListDelegate;
     expect(hourDelegate.children.length, 24);
     expect(minuteDelegate.children.length, 60);
+  });
+
+  testWidgets('optionalTime позволяет выбрать только дату без времени', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1080, 2400);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    DateTime? result;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => ElevatedButton(
+              onPressed: () async {
+                result = await showAppDateTimeSheet(
+                  context: context,
+                  initial: DateTime(2026, 11, 10, 14, 30),
+                  firstDate: DateTime(2026, 1, 1),
+                  lastDate: DateTime(2027, 12, 31),
+                  optionalTime: true,
+                  initialWithTime: true,
+                );
+              },
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppTimeWheel), findsOneWidget);
+
+    await tester.tap(find.text('Только дата'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppTimeWheel), findsNothing);
+
+    await tester.tap(find.byType(AppSheetConfirmButton));
+    await tester.pumpAndSettle();
+    expect(result, DateTime(2026, 11, 10));
+  });
+
+  test('Job.isPromisedOverdue учитывает дату без времени и дату со временем', () {
+    final now = DateTime(2026, 11, 7, 15, 0);
+    expect(Job.isPromisedOverdue(null, now), isFalse);
+    // Только дата (00:00): сегодня ещё не просрочено, вчера — просрочено.
+    expect(Job.isPromisedOverdue(DateTime(2026, 11, 7), now), isFalse);
+    expect(Job.isPromisedOverdue(DateTime(2026, 11, 6), now), isTrue);
+    // С временем сегодня: 14:00 уже просрочено в 15:00, а 16:00 — ещё нет.
+    expect(Job.isPromisedOverdue(DateTime(2026, 11, 7, 14, 0), now), isTrue);
+    expect(Job.isPromisedOverdue(DateTime(2026, 11, 7, 16, 0), now), isFalse);
   });
 }
