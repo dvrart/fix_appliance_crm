@@ -46,6 +46,10 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen>
     with UiSettingsAware, SingleTickerProviderStateMixin {
   int _currentIndex = 0;
+  /// Вкладка с карточкой, из которой ушли по нижнему меню. Её стек не
+  /// сбрасывается сразу: «Назад» с чужой вкладки возвращает в ту самую
+  /// заявку или карточку клиента, а не выбрасывает на главную.
+  int? _cardReturnTab;
   bool _onRoot = true;
   bool _handlingBack = false;
   bool _composeOpen = false;
@@ -175,6 +179,7 @@ class _MainScreenState extends State<MainScreen>
     if (!mounted) return;
     AppFeedback.pleasant();
     final leaving = _currentIndex;
+    final keepCard = _onCardTab(leaving);
     setState(() {
       _currentIndex = index;
       _composeOpen = false;
@@ -187,9 +192,32 @@ class _MainScreenState extends State<MainScreen>
         _ => 'Главная',
       },
     );
-    _forgetTab(leaving);
+    _dropCardReturn(except: index);
+    if (keepCard) {
+      _cardReturnTab = leaving;
+    } else {
+      _forgetTab(leaving);
+    }
     _syncRoot();
     _markCallsSeenIfVisible();
+  }
+
+  /// Наверху вкладки — карточка (заявка, клиент, переписка), открытая через
+  /// [AppNav.openCard].
+  bool _onCardTab(int index) {
+    final navigator = _navigatorKeys[index].currentState;
+    if (navigator == null || !navigator.canPop()) return false;
+    final pages = AppNav.pagesOf(navigator);
+    return pages.isNotEmpty && AppNav.isCard(pages.last);
+  }
+
+  /// Отложенный возврат больше не нужен: вкладка с карточкой сбрасывается на
+  /// корень, как при обычном уходе с неё.
+  void _dropCardReturn({int? except}) {
+    final index = _cardReturnTab;
+    _cardReturnTab = null;
+    if (index == null || index == except || index == _currentIndex) return;
+    _forgetTab(index);
   }
 
   /// Вкладку, с которой ушли, возвращаем на корень: нажал «Календарь» —
@@ -216,6 +244,7 @@ class _MainScreenState extends State<MainScreen>
 
   Future<void> _goDefaultHome() async {
     PanelReturn.cancel();
+    _dropCardReturn();
     if (_currentIndex != 0) {
       if (!await UnsavedNavigationGate.allowLeave(host: context)) return;
       if (!mounted) return;
@@ -250,6 +279,13 @@ class _MainScreenState extends State<MainScreen>
     if (navigator != null && navigator.canPop()) {
       await navigator.maybePop();
       _syncRoot();
+      return;
+    }
+
+    // Ушли из карточки по нижнему меню — «Назад» возвращает в неё.
+    final card = _cardReturnTab;
+    if (card != null && card != _currentIndex && _onCardTab(card)) {
+      await _selectTab(card);
       return;
     }
 
