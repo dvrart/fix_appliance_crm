@@ -21,7 +21,6 @@ import '../../../../shared/widgets/dispose_on_close.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
 import '../../../../shared/widgets/unsaved_changes_dialog.dart';
 import '../job_details_controller.dart';
-import '../widgets/client_tip_sheet.dart';
 import '../../job_review_offer.dart';
 import '../../../reports/classify_items_page.dart';
 import '../../../reports/report_breakdown_page.dart';
@@ -4252,7 +4251,7 @@ class _FinanceTabState extends State<FinanceTab> {
     );
   }
 
-  Future<void> _runTapToPay(int documentIndex, {double? amount, double tip = 0}) async {
+  Future<void> _runTapToPay(int documentIndex, {double? amount}) async {
     if (_busy) return;
     if (documentIndex < 0 || documentIndex >= ctrl.documents.length) return;
     final doc = ctrl.documents[documentIndex];
@@ -4263,7 +4262,9 @@ class _FinanceTabState extends State<FinanceTab> {
     final due = ctrl.calcDue(total, paid);
     final repair = (amount ?? due);
     if (repair <= 0) return;
-    final charge = repair + tip;
+    // Терминал считает проценты чаевых от этой суммы: та же оплата, но без
+    // HST. Частичный платёж берёт свою долю работы без налога.
+    final tipEligible = total > 0 ? repair * subtotal / total : repair;
 
     setState(() => _busy = true);
     _inPayResult = true;
@@ -4273,14 +4274,14 @@ class _FinanceTabState extends State<FinanceTab> {
         jobId: ctrl.jobId,
         documentIndex: documentIndex,
         amount: repair,
-        tip: tip,
+        tipEligibleAmount: tipEligible,
       );
       if (!mounted) return;
       await _showPayResult(
         success: error == null,
         message: error,
         documentIndex: documentIndex,
-        amount: charge,
+        amount: repair,
       );
     } catch (e) {
       if (!mounted) return;
@@ -4482,8 +4483,8 @@ class _FinanceTabState extends State<FinanceTab> {
                       const SizedBox(height: 8),
                       Text(
                         context.tr(
-                          'После выбора способа клиент сам оставит чаевые — до оплаты.',
-                          'After you pick a method, the customer adds a tip before payment.',
+                          'Чаевые клиент выбирает на экране терминала при оплате картой.',
+                          'The customer picks a tip on the terminal screen when paying by card.',
                         ),
                         style: TextStyle(color: Colors.grey.shade700, fontSize: 13, height: 1.3),
                       ),
@@ -4493,7 +4494,7 @@ class _FinanceTabState extends State<FinanceTab> {
                           final amount = parsedAmount();
                           Navigator.pop(sheetContext);
                           if (amount > 0) {
-                            _payAfterClientTip(
+                            _payWithMethod(
                               documentIndex: documentIndex,
                               repair: amount,
                               method: 'card',
@@ -4515,7 +4516,7 @@ class _FinanceTabState extends State<FinanceTab> {
                           Navigator.pop(sheetContext);
                           if (amount <= 0) return;
                           final isDeposit = amount < maxAmount - 0.009;
-                          _payAfterClientTip(
+                          _payWithMethod(
                             documentIndex: documentIndex,
                             repair: amount,
                             method: isDeposit ? 'deposit' : 'checkout',
@@ -4534,7 +4535,7 @@ class _FinanceTabState extends State<FinanceTab> {
                           final amount = parsedAmount();
                           Navigator.pop(sheetContext);
                           if (amount > 0) {
-                            _payAfterClientTip(
+                            _payWithMethod(
                               documentIndex: documentIndex,
                               repair: amount,
                               method: 'Cash',
@@ -4555,7 +4556,7 @@ class _FinanceTabState extends State<FinanceTab> {
                           final amount = parsedAmount();
                           Navigator.pop(sheetContext);
                           if (amount > 0) {
-                            _payAfterClientTip(
+                            _payWithMethod(
                               documentIndex: documentIndex,
                               repair: amount,
                               method: 'e-Transfer',
@@ -4603,17 +4604,16 @@ class _FinanceTabState extends State<FinanceTab> {
     );
   }
 
-  Future<void> _payAfterClientTip({
+  /// Чаевые в приложении больше не спрашиваем: их предлагает терминал на
+  /// своём экране во время оплаты картой.
+  Future<void> _payWithMethod({
     required int documentIndex,
     required double repair,
     required String method,
   }) async {
     if (!mounted) return;
-    final tip = await ClientTipPage.ask(context, due: repair);
-    if (!mounted || tip == null) return;
-    final total = repair + tip;
     if (method == 'card') {
-      await _runTapToPay(documentIndex, amount: repair, tip: tip);
+      await _runTapToPay(documentIndex, amount: repair);
       return;
     }
     if (method == 'checkout' || method == 'deposit') {
@@ -4621,15 +4621,14 @@ class _FinanceTabState extends State<FinanceTab> {
         kind: method,
         documentIndex: documentIndex,
         amount: repair,
-        tip: tip,
       );
       return;
     }
-    await _addLocalPayment(documentIndex, repair, method, tip: tip);
+    await _addLocalPayment(documentIndex, repair, method);
     await _showPayResult(
       success: true,
       documentIndex: documentIndex,
-      amount: total,
+      amount: repair,
     );
   }
 

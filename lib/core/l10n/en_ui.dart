@@ -1646,8 +1646,8 @@ const Map<String, String> kEnglishUi = {
   'Ищу терминал…': 'Looking for the terminal…',
   'Купить терминал в Stripe': 'Buy a terminal in Stripe',
   'Терминал подключён': 'Terminal connected',
-  'Вставьте, приложите или проведите карту на терминале Stripe':
-      'Insert, tap, or swipe the card on the Stripe terminal',
+  'Клиент выбирает чаевые на терминале, потом прикладывает карту':
+      'The customer picks a tip on the terminal, then taps the card',
   'Ищу терминал Stripe по Bluetooth. Включите его.':
       'Looking for the Stripe terminal over Bluetooth. Turn it on.',
   'Ищу тестовый терминал Stripe...': 'Looking for the test Stripe terminal...',

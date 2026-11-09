@@ -41,7 +41,7 @@ class StripeTerminalService {
     required String jobId,
     required int documentIndex,
     double? amount,
-    double tip = 0,
+    double tipEligibleAmount = 0,
     void Function(String status)? onStatus,
     void Function(CancelableFuture<PaymentIntent> processing)? onProcessing,
   }) async {
@@ -78,22 +78,28 @@ class StripeTerminalService {
       final created = await StripeService.createTerminalPaymentIntent(
         jobId: jobId,
         documentIndex: documentIndex,
-        amount: (amount ?? 0) + tip,
-        tip: tip,
+        amount: amount ?? 0,
       );
 
       onStatus?.call(
         simulated
             ? 'Тестовый режим: сейчас будет симулятор карты'.tr
             : useTerminal
-                ? 'Вставьте, приложите или проведите карту на терминале Stripe'.tr
+                ? 'Клиент выбирает чаевые на терминале, потом прикладывает карту'.tr
                 : 'Поднесите карту клиента к задней панели телефона'.tr,
       );
 
       final intent = await Terminal.instance.retrievePaymentIntent(created.clientSecret);
+      // Чаевые предлагает сам терминал на своём экране, и процент считается
+      // от работы без HST: [tipEligibleAmount] — сумма без налога. У телефона
+      // (Tap to Pay) такого экрана нет, поэтому там чаевые выключены совсем.
+      final eligibleCents = (tipEligibleAmount * 100).round();
       final processing = Terminal.instance.processPaymentIntent(
         intent,
-        skipTipping: true,
+        skipTipping: !useTerminal,
+        tippingConfiguration: useTerminal && eligibleCents > 0
+            ? TippingConfiguration(eligibleAmount: eligibleCents)
+            : null,
       );
       onProcessing?.call(processing);
 
@@ -256,7 +262,7 @@ class StripeTerminalService {
     required String jobId,
     required int documentIndex,
     required double amount,
-    double tip = 0,
+    double tipEligibleAmount = 0,
   }) async {
     final config = await SettingsService.loadConfig();
     if (!context.mounted) return 'Экран закрыт'.tr;
@@ -322,7 +328,7 @@ class StripeTerminalService {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        '\$${(amount + tip).toStringAsFixed(2)}',
+                        '\$${amount.toStringAsFixed(2)}',
                         style: const TextStyle(
                           fontSize: 28,
                           fontWeight: FontWeight.bold,
@@ -358,7 +364,7 @@ class StripeTerminalService {
         jobId: jobId,
         documentIndex: documentIndex,
         amount: amount,
-        tip: tip,
+        tipEligibleAmount: tipEligibleAmount,
         onStatus: (text) => status.value = text,
         onProcessing: (future) => processing = future,
       );
