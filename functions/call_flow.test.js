@@ -115,7 +115,11 @@ const fakeTwilio = Object.assign(() => ({
 }), realTwilio);
 const load = Module._load;
 Module._load = function (name) {
-  if (name === 'firebase-admin') return { initializeApp: () => ({}), firestore, storage: () => ({ bucket: () => ({}) }) };
+  if (name === 'firebase-admin/app') return { initializeApp: () => ({}) };
+  if (name === 'firebase-admin/firestore') return {
+    getFirestore: firestore, FieldValue: firestore.FieldValue, Timestamp: firestore.Timestamp,
+  };
+  if (name === 'firebase-admin/storage') return { getStorage: () => ({ bucket: () => ({}) }) };
   if (name === 'firebase-functions') return { https: { onRequest: handler }, scheduler: { onSchedule: handler } };
   if (name === 'firebase-functions/v2/https') return { onRequest: handler };
   if (name === 'firebase-functions/v2/firestore') return { onDocumentWritten: handler };

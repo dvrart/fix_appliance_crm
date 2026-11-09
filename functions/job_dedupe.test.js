@@ -49,7 +49,9 @@ const firestore = Object.assign(() => ({ collection: (name) => ref(name) }), {
 
 const load = Module._load;
 Module._load = function (name) {
-  if (name === 'firebase-admin') return { firestore };
+  if (name === 'firebase-admin/firestore') return {
+    getFirestore: firestore, FieldValue: firestore.FieldValue, Timestamp: firestore.Timestamp,
+  };
   return load.apply(this, arguments);
 };
 const dedupe = require('./job_dedupe');

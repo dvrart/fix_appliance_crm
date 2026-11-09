@@ -9,7 +9,7 @@
  *    с предупреждением в логах (чтобы не уронить прод до настройки).
  */
 
-const admin = require('firebase-admin');
+const { getAuth } = require('firebase-admin/auth');
 const twilio = require('twilio');
 
 const APP_OWNER_UIDS = new Set(['Ew8vDgXvuMMwt9gYQUOi7rujNxO2']);
@@ -51,7 +51,7 @@ async function verifyAppUser(req) {
   const token = bearerToken(req);
   if (!token) return null;
   try {
-    return await admin.auth().verifyIdToken(token);
+    return await getAuth().verifyIdToken(token);
   } catch (error) {
     console.warn('auth_guard verifyIdToken:', error.message);
     return null;

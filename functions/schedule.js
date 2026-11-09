@@ -2,7 +2,7 @@
  * Shop calendar for the phone secretary and SMS reschedule.
  * One visit = 2 hours. Never book a window that overlaps another job.
  */
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 const voiceFacts = require('./voice_facts');
 const carePlanLookup = require('./care_plan_lookup');
 
@@ -24,7 +24,7 @@ const WEEKDAYS = [
 const WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function companyRef() {
-  return admin.firestore().collection('companies').doc(COMPANY_ID);
+  return getFirestore().collection('companies').doc(COMPANY_ID);
 }
 
 function jobsRef() {
@@ -583,7 +583,7 @@ function cancelVisitFields(job, visitId, callSid = '') {
     smsPickKind: '',
     smsPickIndex: null,
     smsBookingPending: false,
-    ...(callSid ? { cancelledByCallId: callSid, cancelledAt: admin.firestore.Timestamp.now() } : {}),
+    ...(callSid ? { cancelledByCallId: callSid, cancelledAt: Timestamp.now() } : {}),
   };
   const remaining = activeJobVisits({ ...job, visits });
   const next = remaining.at(-1);
@@ -594,7 +594,7 @@ function cancelVisitFields(job, visitId, callSid = '') {
     durationMinutes: next ? occupyMinutes(next, job) : job.durationMinutes || BOOKING_MINUTES,
     status: remaining.length ? job.status : 'Отменено',
     needsReview: remaining.length ? job.needsReview === true : false,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   };
 }
 
@@ -603,7 +603,7 @@ async function cancelCallerVisit(caller, { jobId, visitId, expectedStartAt } = {
   if (!caller || !validId(caller.callSid) || !validId(jobId) || !validId(visitId) || !toDate(expectedStartAt)) {
     return { ok: false, error: 'invalid_request' };
   }
-  return admin.firestore().runTransaction(async (tx) => {
+  return getFirestore().runTransaction(async (tx) => {
     const jobRef = jobsRef().doc(jobId);
     const callRef = companyRef().collection('calls').doc(caller.callSid);
     const [jobSnap, callSnap] = await Promise.all([tx.get(jobRef), tx.get(callRef)]);
@@ -632,7 +632,7 @@ async function cancelCallerVisit(caller, { jobId, visitId, expectedStartAt } = {
     tx.update(jobRef, cancelVisitFields(job, visitId, caller.callSid));
     tx.update(callRef, {
       calendarActions: [...(Array.isArray(call.calendarActions) ? call.calendarActions : []), {
-        action: 'cancel', jobId, visitId, startAt: visit.startAt, at: admin.firestore.Timestamp.now(),
+        action: 'cancel', jobId, visitId, startAt: visit.startAt, at: Timestamp.now(),
       }],
     });
     return { ok: true, changed: true, status: 'cancelled', appointment: appointmentDetails(job, visit) };

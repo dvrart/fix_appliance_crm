@@ -12,7 +12,7 @@
  */
 
 const functions = require('firebase-functions');
-const admin = require('firebase-admin');
+const { getStorage } = require('firebase-admin/storage');
 const crypto = require('crypto');
 const { requireAppUser } = require('./auth_guard');
 
@@ -531,7 +531,7 @@ module.exports = function createPartImageHandlers({
   function bucket() {
     const project =
       process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || 'fix-appliance-crm';
-    return admin.storage().bucket(`${project}.firebasestorage.app`);
+    return getStorage().bucket(`${project}.firebasestorage.app`);
   }
 
   async function storeImage(part, picked) {

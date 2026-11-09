@@ -66,7 +66,9 @@ const firestore = Object.assign(() => ({
 
 const load = Module._load;
 Module._load = function (name, parent, isMain) {
-  if (name === 'firebase-admin') return { firestore };
+  if (name === 'firebase-admin/firestore') return {
+    getFirestore: firestore, FieldValue: firestore.FieldValue, Timestamp: firestore.Timestamp,
+  };
   return load.apply(this, arguments);
 };
 const schedule = require('./schedule');

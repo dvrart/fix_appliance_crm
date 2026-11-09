@@ -44,7 +44,7 @@ const firestore = Object.assign(() => ({ collection: (name) => ref(name) }), {
 });
 const load = Module._load;
 Module._load = function (name) {
-  if (name === 'firebase-admin') return { firestore };
+  if (name === 'firebase-admin/firestore') return { getFirestore: firestore, FieldValue: firestore.FieldValue };
   if (name === 'firebase-functions/v2/scheduler') return { onSchedule: (_, handler) => handler };
   if (name === './notify') return { notifyMaster: async (...args) => pushes.push(args) };
   return load.apply(this, arguments);

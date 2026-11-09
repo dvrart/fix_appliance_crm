@@ -94,7 +94,9 @@ const firestore = Object.assign(() => ({
 
 const load = Module._load;
 Module._load = function (name, parent, isMain) {
-  if (name === 'firebase-admin') return { firestore };
+  if (name === 'firebase-admin/firestore') return {
+    getFirestore: firestore, FieldValue: firestore.FieldValue, Timestamp: firestore.Timestamp,
+  };
   if (name === 'twilio') return () => ({
     messages: {
       create: async () => {

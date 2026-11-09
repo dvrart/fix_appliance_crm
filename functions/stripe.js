@@ -6,7 +6,7 @@
  */
 
 const functions = require('firebase-functions');
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { requireAppUser } = require('./auth_guard');
 
 const COMPANY_ID = 'fix_appliance_ca';
@@ -35,7 +35,7 @@ const { withSmsHeader, sanitizeSmsHeader } = require('./sms_header');
 const { shortenPayUrl } = require('./short_links');
 const { notifyMaster } = require('./notify');
 
-const db = admin.firestore();
+const db = getFirestore();
 const jobsRef = db.collection('companies').doc(COMPANY_ID).collection('jobs');
 const clientsRef = db.collection('companies').doc(COMPANY_ID).collection('clients');
 const messagesRef = db.collection('companies').doc(COMPANY_ID).collection('messages');
@@ -142,7 +142,7 @@ async function patchJobDocument(jobId, index, mutate) {
     documents[index] = doc;
     tx.update(jobRef, {
       documents,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
     patched = doc;
   });
@@ -215,7 +215,7 @@ async function sendPaymentSms({ to, body, clientId, fallbackBody }) {
       direction: 'outbound',
       status: message.status,
       clientId: clientId || null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       read: true,
     });
     console.log('sendPaymentSms', {
@@ -1180,7 +1180,7 @@ async function recordDocumentRefund({
 
     const updates = {
       documents,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     };
 
     if (
@@ -1189,7 +1189,7 @@ async function recordDocumentRefund({
       isCompletedJobStatus(job.status)
     ) {
       updates.suggestCancel = true;
-      updates.suggestCancelAt = admin.firestore.FieldValue.serverTimestamp();
+      updates.suggestCancelAt = FieldValue.serverTimestamp();
       shouldSuggestCancel = true;
     }
 
@@ -1272,17 +1272,17 @@ async function recordStripePayment({ jobId, documentIndex, amount, ids, methodLa
     documents[index] = doc;
     const updates = {
       documents,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     };
     if (isInvoiceFullyPaid(doc) && !isCompletedJobStatus(job.status)) {
       updates.suggestComplete = true;
-      updates.suggestCompleteAt = admin.firestore.FieldValue.serverTimestamp();
+      updates.suggestCompleteAt = FieldValue.serverTimestamp();
       shouldSuggestComplete = true;
       // Счёт оплачен целиком → «Готово» сразу (просьба FIX 24.10.2026), как
       // делает приложение при оплате наличными. Отменённую заявку не поднимаем.
       if (!isCancelledJobStatus(job.status)) {
         updates.status = COMPLETED_JOB_STATUS;
-        updates.completedAt = admin.firestore.FieldValue.serverTimestamp();
+        updates.completedAt = FieldValue.serverTimestamp();
         updates.needsReview = false;
         const visits = markJobVisitsDone(job);
         if (visits) updates.visits = visits;
@@ -1701,7 +1701,7 @@ async function handleCarePlanCheckoutCompleted(session) {
       lastPaymentAt: new Date().toISOString(),
       lastPaymentAmount: amount,
     },
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   if (!wasActive) {
     await notifyMaster(
@@ -1734,7 +1734,7 @@ async function handleCarePlanInvoice(invoice, paid) {
         lastPaymentAmount: fromCents(invoice.amount_paid),
         lastInvoiceId: invoice.id || '',
       },
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
     return true;
   }
@@ -1746,7 +1746,7 @@ async function handleCarePlanInvoice(invoice, paid) {
       failedAt: new Date().toISOString(),
       failedInvoiceId: invoice.id || '',
     },
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   const amount = fromCents(invoice.amount_due || invoice.total || 0);
   await notifyMaster(
@@ -1774,12 +1774,12 @@ async function handleCarePlanSubscription(subscription, deleted) {
       cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
       ...(periodEnd ? { currentPeriodEnd: new Date(periodEnd * 1000).toISOString() } : {}),
     },
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   };
   const cancelledNow = mapped === 'cancelled' && plan.status !== 'cancelled';
   if (cancelledNow) {
     updates.status = 'cancelled';
-    updates.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+    updates.cancelledAt = FieldValue.serverTimestamp();
     updates.cancelReason = 'stripe';
   } else if (mapped && mapped !== 'cancelled' && !['paused', 'cancelled'].includes(plan.status)) {
     updates.status = mapped;
@@ -1895,7 +1895,7 @@ exports.createCarePlanCheckout = functions.https.onRequest(async (req, res) => {
           checkoutCreatedAt: new Date().toISOString(),
           monthlyTotalCents: amounts.totalCents,
         },
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
     }
     if (!url) {

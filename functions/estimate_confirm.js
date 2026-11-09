@@ -2,12 +2,12 @@
  * Клиент открывает ссылку из SMS и подтверждает смету / ремонт.
  */
 const functions = require('firebase-functions');
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
 const COMPANY_ID = 'fix_appliance_ca';
 
 function jobsRef() {
-  return admin.firestore().collection('companies').doc(COMPANY_ID).collection('jobs');
+  return getFirestore().collection('companies').doc(COMPANY_ID).collection('jobs');
 }
 
 function escapeHtml(value) {
@@ -119,7 +119,7 @@ exports.estimateConfirm = functions.https.onRequest(async (req, res) => {
       };
       await jobsRef().doc(jobId).update({
         documents,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
       // Подтверждение сметы в шторку не выносим (решение FIX, 21.10.2026):
       // в шторке только звонки и SMS и то, что требует решения. Согласие

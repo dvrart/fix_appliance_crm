@@ -10,7 +10,9 @@
 const functions = require('firebase-functions');
 const { onRequest: onRequestV2 } = require('firebase-functions/v2/https');
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
-const admin = require('firebase-admin');
+const { initializeApp } = require('firebase-admin/app');
+const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
+const { getStorage } = require('firebase-admin/storage');
 const twilio = require('twilio');
 const crypto = require('crypto');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -31,7 +33,7 @@ const { createCallTranscriber } = require('./call_transcribe');
 const { createCallDubber } = require('./call_dub');
 const { withProcessingLease } = require('./processing_lease');
 
-admin.initializeApp();
+initializeApp();
 
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
@@ -64,7 +66,7 @@ const client =
     ? twilio(REST_AUTH_USER, REST_AUTH_SECRET, { accountSid: TWILIO_ACCOUNT_SID })
     : null;
 
-const db = admin.firestore();
+const db = getFirestore();
 const callsRef = db.collection('companies').doc(COMPANY_ID).collection('calls');
 const secretaryLearnApi = {
   proposeFromCall: async () => {},
@@ -345,7 +347,7 @@ async function upsertClientJobSite(clientId, existingClient, extracted, ownerNam
   await clientsRef.doc(clientId).set(
     {
       locations,
-      lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastActiveAt: FieldValue.serverTimestamp(),
     },
     { merge: true }
   );
@@ -353,7 +355,7 @@ async function upsertClientJobSite(clientId, existingClient, extracted, ownerNam
 
 function parseScheduledAt(extracted) {
   const date = voiceFacts.parseScheduledAtDate(extracted);
-  return date ? admin.firestore.Timestamp.fromDate(date) : null;
+  return date ? Timestamp.fromDate(date) : null;
 }
 
 const jobFillScore = jobDedupe.jobFillScore;
@@ -509,7 +511,7 @@ async function applyPersonNameToClient(clientId, name) {
   });
   if (locChanged) updates.locations = nextLocations;
   if (!Object.keys(updates).length) return;
-  updates.lastActiveAt = admin.firestore.FieldValue.serverTimestamp();
+  updates.lastActiveAt = FieldValue.serverTimestamp();
   await clientsRef.doc(clientId).set(updates, { merge: true });
 }
 
@@ -573,7 +575,7 @@ async function closeCloneJob(job, keepId, { force = false } = {}) {
       needsReview: false,
       cloneOfJobId: keepId || null,
       visits,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true }
   );
@@ -779,14 +781,14 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
         ? String(extracted.owner_address || '').trim() || ''
         : address,
       locations: [initialLocation],
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
+      lastActiveAt: FieldValue.serverTimestamp(),
       createdByAi: true,
     });
     clientId = clientDoc.id;
   } else {
     const updates = {
-      lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastActiveAt: FieldValue.serverTimestamp(),
     };
     if (extractedName) {
       await applyPersonNameToClient(clientId, extractedName);
@@ -900,8 +902,8 @@ async function createDraftJobFromCall(callId, extracted, knownClient) {
     city,
     documents: [],
     attachments: [],
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   });
 
   await callsRef.doc(callId).set(
@@ -1042,7 +1044,7 @@ async function patchDraftJobFromCall(jobId, extracted, { noBooking = false } = {
   // Если мастер подтвердил заявку (needsReview=false), звонок клиента по
   // этой же заявке не должен возвращать её в «требует проверки».
   if (job.needsReview === true) updates.needsReview = true;
-  updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+  updates.updatedAt = FieldValue.serverTimestamp();
   await jobsRef.doc(jobId).update(updates);
   const spoken = name || voiceFacts.usableClientName(updates.clientName || job.clientName);
   if (spoken && job.clientId) await applyPersonNameToClient(job.clientId, spoken);
@@ -1100,7 +1102,7 @@ async function attachCallRecordingToJob({
   await jobsRef.doc(jobId).set(
     {
       attachments,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true }
   );
@@ -1380,7 +1382,7 @@ async function resolveCallRecordingSource(callId, data = {}) {
 }
 
 const { cacheRecordingToStorage, cachedRecordingUrl, downloadRecordingBuffer } = createRecordingStore({
-  storage: () => admin.storage(),
+  storage: () => getStorage(),
   callsRef,
   companyId: COMPANY_ID,
   projectId: process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || 'fix-appliance-crm',
@@ -1810,7 +1812,7 @@ async function getAiAnswerSettings() {
             rulesVersion: 14,
             hoursPolicyVersion: HOURS_POLICY_VERSION,
             liveIgnoresAppRules: true,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }
         )
@@ -1828,7 +1830,7 @@ async function getAiAnswerSettings() {
           {
             workStartMinutes: hours.startMinutes,
             workEndMinutes: hours.endMinutes,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }
         )
@@ -2055,7 +2057,7 @@ async function logCall(callSid, data) {
       if (!previous.startTime) {
         const parsed = twilioTime ? new Date(twilioTime) : null;
         payload.startTime = parsed && !Number.isNaN(parsed.getTime())
-          ? parsed : admin.firestore.FieldValue.serverTimestamp();
+          ? parsed : FieldValue.serverTimestamp();
       }
       tx.set(ref, payload, { merge: true });
     });
@@ -2161,7 +2163,7 @@ async function takePendingCellCall(callSid) {
       const phone = callRoute.pendingCellDestination(data, Date.now());
       if (!phone) return null;
       tx.set(ref, {
-        consumedAt: admin.firestore.FieldValue.serverTimestamp(),
+        consumedAt: FieldValue.serverTimestamp(),
         consumedBy: String(callSid || ''),
       }, { merge: true });
       return { phone, jobId: String(data.jobId || '').trim() };
@@ -2257,7 +2259,7 @@ exports.callStatusCallback = functions.https.onRequest(async (req, res) => {
       if (duration != null) updates.durationSeconds = duration;
 
       if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(callStatus)) {
-        updates.endTime = admin.firestore.FieldValue.serverTimestamp();
+        updates.endTime = FieldValue.serverTimestamp();
         updates.status = callStatus === 'completed' ? 'completed' : callStatus;
       }
 
@@ -2619,7 +2621,7 @@ async function saveRelayHost(wss) {
       .collection('settings')
       .doc('voice_infra')
       .set(
-        { wss: cachedRelayWss, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+        { wss: cachedRelayWss, updatedAt: FieldValue.serverTimestamp() },
         { merge: true }
       );
   } catch (error) {
@@ -2981,7 +2983,7 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
   const silent = options.silent === true;
   const updates = {
     status: 'completed',
-    endTime: admin.firestore.FieldValue.serverTimestamp(),
+    endTime: FieldValue.serverTimestamp(),
     answeredBy: 'ai',
     aiReception: {
       ...(callData.aiReception || {}),
@@ -3251,11 +3253,11 @@ async function markCellScreen(parentSid, accepted, legSid) {
   try {
     await callsRef.doc(parentSid).set(accepted
       ? {
-        cellAcceptedAt: admin.firestore.FieldValue.serverTimestamp(),
+        cellAcceptedAt: FieldValue.serverTimestamp(),
         answeredVia: 'cell',
         masterCellLegSid: String(legSid || ''),
       }
-      : { cellDeclinedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      : { cellDeclinedAt: FieldValue.serverTimestamp() }, { merge: true });
   } catch (error) {
     console.warn('markCellScreen:', error.message);
   }
@@ -3265,7 +3267,7 @@ async function markPeerAnswered(parentSid) {
   if (!parentSid) return;
   try {
     const ref = callsRef.doc(parentSid);
-    await ref.set({ peerAnsweredAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    await ref.set({ peerAnsweredAt: FieldValue.serverTimestamp() }, { merge: true });
     const snap = await ref.get();
     // У звонка из приложения вибрирует само приложение по этой отметке.
     // У звонка через SIM приложение не на экране — шлём сигнал.
@@ -3316,7 +3318,7 @@ async function moveLiveCallToCell(req, callSid) {
     if (current.movedToCellAt) return null;
     tx.set(ref, {
       moveToCellRequested: true,
-      movedToCellAt: admin.firestore.FieldValue.serverTimestamp(),
+      movedToCellAt: FieldValue.serverTimestamp(),
       movedToCellBy: 'rest',
     }, { merge: true });
     return current;
@@ -3329,8 +3331,8 @@ async function moveLiveCallToCell(req, callSid) {
     return { moved: true };
   } catch (error) {
     await ref.set({
-      movedToCellAt: admin.firestore.FieldValue.delete(),
-      movedToCellBy: admin.firestore.FieldValue.delete(),
+      movedToCellAt: FieldValue.delete(),
+      movedToCellBy: FieldValue.delete(),
       moveToCellError: String((error && error.message) || error).slice(0, 300),
     }, { merge: true });
     return { moved: false, reason: 'twilio' };
@@ -3393,7 +3395,7 @@ exports.dialAction = functions.https.onRequest(voiceDialRuntime, async (req, res
       const routing = await getCallRouting();
       if (routing.cell) {
         await callsRef.doc(callSid).set({
-          movedToCellAt: data.movedToCellAt || admin.firestore.FieldValue.serverTimestamp(),
+          movedToCellAt: data.movedToCellAt || FieldValue.serverTimestamp(),
           movedToCellBy: data.movedToCellBy || 'dialAction',
         }, { merge: true });
         console.log(`dialAction ${callSid}: moving to master cell`);
@@ -3427,7 +3429,7 @@ exports.dialAction = functions.https.onRequest(voiceDialRuntime, async (req, res
       const updates = {};
       if (duration != null) updates.durationSeconds = duration;
       if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(dialStatus)) {
-        updates.endTime = admin.firestore.FieldValue.serverTimestamp();
+        updates.endTime = FieldValue.serverTimestamp();
         updates.status = dialStatus === 'completed' ? 'completed' : dialStatus;
       }
       if (Object.keys(updates).length) {
@@ -3636,7 +3638,7 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
 
     await callsRef.doc(callSid).set({
       status: 'completed',
-      endTime: data.endTime || admin.firestore.FieldValue.serverTimestamp(),
+      endTime: data.endTime || FieldValue.serverTimestamp(),
     }, { merge: true });
 
     if (data.aiReception && LIVE_ENGINES.has(data.aiReception.engine) && !data.aiReception.done) {
@@ -3781,7 +3783,7 @@ exports.recordingComplete = functions.https.onRequest(recordingRuntime, async (r
         recordingProcessingVersion: 2,
         recordingRequestId: String(recordingSid || `${rawSid}:${duration}`),
         ...(!callAiBlocked(previous) ? {
-          aiStatus: 'processing', aiStartedAt: admin.firestore.FieldValue.serverTimestamp(),
+          aiStatus: 'processing', aiStartedAt: FieldValue.serverTimestamp(),
         } : {}),
       }, { merge: true });
     });
@@ -3811,7 +3813,7 @@ exports.processQueuedCallRecording = onDocumentWritten({
   const current = latest.exists ? latest.data() || {} : {};
   if (!latest.exists || callAiBlocked(current)) return;
   await after.ref.set({
-    status: 'completed', endTime: current.endTime || admin.firestore.FieldValue.serverTimestamp(),
+    status: 'completed', endTime: current.endTime || FieldValue.serverTimestamp(),
   }, { merge: true });
   let source = current.twilioRecordingUrl || current.recordingUrl || '';
   if (isCallRecordingProxyUrl(source)) source = '';
@@ -4204,7 +4206,7 @@ async function processRecordingWithAi(callId, recordingUrl, { force = false } = 
     }
     if (completed && latest.exists && latest.data()?.aiStatus === 'done') {
       await ref.set({
-        aiError: admin.firestore.FieldValue.delete(),
+        aiError: FieldValue.delete(),
         aiProcessedRecordingSid: sourceSid,
       }, { merge: true });
     }
@@ -4230,8 +4232,8 @@ async function processRecordingWithAiLeased(callId, recordingUrl) {
   await callsRef.doc(callId).set(
     {
       aiStatus: 'processing',
-      aiStartedAt: admin.firestore.FieldValue.serverTimestamp(),
-      aiRetryCount: admin.firestore.FieldValue.increment(1),
+      aiStartedAt: FieldValue.serverTimestamp(),
+      aiRetryCount: FieldValue.increment(1),
     },
     { merge: true }
   );
@@ -4863,7 +4865,7 @@ exports.processCallRecording = functions.https.onRequest(
     }
     await callsRef.doc(resolvedId).set({
       aiStatus: 'processing',
-      aiStartedAt: admin.firestore.FieldValue.serverTimestamp(),
+      aiStartedAt: FieldValue.serverTimestamp(),
       recordingProcessingVersion: 2,
       recordingManualRequestId: crypto.randomUUID(),
     }, { merge: true });
@@ -4919,7 +4921,7 @@ async function recoverJobsMissingVisits(limit = 15) {
     }
     if (!Object.keys(updates).length) continue;
 
-    updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+    updates.updatedAt = FieldValue.serverTimestamp();
     await doc.ref.set(updates, { merge: true });
     fixed.push(doc.id);
     console.log(
@@ -4975,7 +4977,7 @@ async function healJobClientNames(limit = 10) {
     await doc.ref.set(
       {
         clientName: known,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -5003,7 +5005,7 @@ async function cancelResurrectedDraft(jobDoc) {
       status: 'Отменено',
       needsReview: false,
       visits,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true }
   );
@@ -5107,7 +5109,7 @@ async function recoverAiCallsMissingJobs(limit = 12) {
     if (Number(data.jobRecoverCount || 0) >= 3) continue;
 
     await callsRef.doc(doc.id).set(
-      { jobRecoverCount: admin.firestore.FieldValue.increment(1) },
+      { jobRecoverCount: FieldValue.increment(1) },
       { merge: true }
     );
 
@@ -5374,7 +5376,7 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
       clientId: clientId || null,
       channel: 'sms',
       mediaUrls,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       read: true,
     });
 
@@ -5414,7 +5416,7 @@ exports.approveOutbox = functions.https.onRequest(async (req, res) => {
       {
         approval: 'rejected',
         status: 'rejected',
-        decidedAt: admin.firestore.FieldValue.serverTimestamp(),
+        decidedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -5471,7 +5473,7 @@ exports.approveOutbox = functions.https.onRequest(async (req, res) => {
       {
         sid: message.sid,
         status: message.status,
-        decidedAt: admin.firestore.FieldValue.serverTimestamp(),
+        decidedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -5621,7 +5623,7 @@ exports.incomingSms = functions.https.onRequest(
             : '',
           mediaUrls: [], twilioMedia, channel: 'sms',
           aiStatus: twilioMedia.length || body.trim() ? 'processing' : 'none',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(), read: false,
+          createdAt: FieldValue.serverTimestamp(), read: false,
         });
       } catch (error) {
         if (Number(error.code) !== 6 && error.code !== 'already-exists') throw error;
@@ -5805,10 +5807,10 @@ exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
         if (settled || (rank[status] || 0) >= (rank[current] || 0)) {
           const statusUpdate = { status };
           if (status === 'delivered' && current !== 'read') {
-            statusUpdate.deliveredAt = admin.firestore.FieldValue.serverTimestamp();
+            statusUpdate.deliveredAt = FieldValue.serverTimestamp();
           }
           if (status === 'read') {
-            statusUpdate.readAt = admin.firestore.FieldValue.serverTimestamp();
+            statusUpdate.readAt = FieldValue.serverTimestamp();
           }
           await doc.ref.update(statusUpdate);
         }
@@ -5841,7 +5843,7 @@ exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
               kind: data.kind || null,
               channel: 'sms',
               retried30007: true,
-              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              createdAt: FieldValue.serverTimestamp(),
               read: true,
             });
             console.warn('smsStatus retried 30007', {
@@ -5860,7 +5862,7 @@ exports.smsStatusCallback = functions.https.onRequest(async (req, res) => {
           await doc.ref.update({
             deliveryFailed: true,
             errorCode,
-            failedAt: admin.firestore.FieldValue.serverTimestamp(),
+            failedAt: FieldValue.serverTimestamp(),
           });
           try {
             await notifyMaster('SMS не доставлено', `${phone} · ${smsFailureReason(errorCode)}`, {
@@ -5939,7 +5941,7 @@ async function uploadSmsMedia(sid, index, buffer, mime) {
       process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT
         ? `${process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT}.firebasestorage.app`
         : 'fix-appliance-crm.firebasestorage.app';
-    const bucket = admin.storage().bucket(bucketName);
+    const bucket = getStorage().bucket(bucketName);
     const ext = (mime.split('/')[1] || 'jpg').split(';')[0].replace('+xml', '');
     const path = `companies/${COMPANY_ID}/sms/${sid || 'unknown'}/${index}.${ext}`;
     const file = bucket.file(path);
@@ -6219,7 +6221,7 @@ async function applyInboundEmailToClient(clientId, rawEmail) {
   if (!snap.exists) return;
   if (String((snap.data() || {}).email || '').trim()) return;
   await clientsRef.doc(clientId).set(
-    { email, lastActiveAt: admin.firestore.FieldValue.serverTimestamp() },
+    { email, lastActiveAt: FieldValue.serverTimestamp() },
     { merge: true }
   );
 }
@@ -6247,7 +6249,7 @@ async function applyInboundUnit({ clientId, client, existingFull, job, unitLabel
       {
         [jobUsesSite ? 'jobSiteAddress' : 'clientAddress']: merged,
         clientId,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -6268,7 +6270,7 @@ async function applyInboundUnit({ clientId, client, existingFull, job, unitLabel
       {
         address: voiceFacts.addressWithUnit(existingFull, unitLabel),
         ...(locations.length ? { locations } : {}),
-        lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastActiveAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -6341,7 +6343,7 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
       {
         address: nextFull,
         locations,
-        lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastActiveAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -6350,7 +6352,7 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
         {
           clientAddress: nextFull,
           clientId,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -6367,7 +6369,7 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
         {
           clientAddress: existingFull.length >= nextFull.length ? existingFull : nextFull,
           clientId,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -6414,7 +6416,7 @@ async function applyInboundAddressToClient({ clientId, extracted, job }) {
               ? site.phone
               : job.jobSitePhone || site.phone || '',
         clientId,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -6520,15 +6522,15 @@ async function ensureClientFromEmailIntake({ extracted, fromEmail, existingClien
           ],
         },
       ],
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
+      lastActiveAt: FieldValue.serverTimestamp(),
       createdByAi: true,
       createdFromEmail: true,
     });
     return { id: clientDoc.id, fullName: name, phone, email, address };
   }
 
-  const updates = { lastActiveAt: admin.firestore.FieldValue.serverTimestamp() };
+  const updates = { lastActiveAt: FieldValue.serverTimestamp() };
   if (name && !client.fullName) updates.fullName = name;
   if (phone && !client.phone) updates.phone = phone;
   if (email.includes('@') && !client.email) updates.email = email;
@@ -6929,7 +6931,7 @@ async function processSmsWithAi({
       model: appliance.model,
       serialNumber: appliance.serialNumber,
       description: mergeJobDescription(job.description, smsNote),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     };
     // Клиент представился в переписке, а заявка подписана номером телефона —
     // ставим настоящее имя. Живое имя на заявке не трогаем.
@@ -6956,7 +6958,7 @@ async function processSmsWithAi({
         source: channel === 'email' ? 'email' : 'sms',
         createdAt: new Date().toISOString(),
       }));
-      jobUpdates.attachments = admin.firestore.FieldValue.arrayUnion(...attachments);
+      jobUpdates.attachments = FieldValue.arrayUnion(...attachments);
     }
     await jobsRef.doc(job.id).update(jobUpdates);
     updates.jobId = job.id;
@@ -7056,8 +7058,8 @@ async function processSmsWithAi({
           source: channel === 'email' ? 'email' : 'sms',
           createdAt: new Date().toISOString(),
         })),
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
       updates.jobId = created.id;
       try {
@@ -7210,7 +7212,7 @@ async function sendScheduledSms(data) {
     clientId: data.clientId || null,
     channel: 'sms',
     mediaUrls,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
     read: true,
   });
 }
@@ -7230,7 +7232,7 @@ exports.processScheduledMessages = functions.scheduler.onSchedule(
     retryCount: 0,
   },
   async () => {
-    const now = admin.firestore.Timestamp.now();
+    const now = Timestamp.now();
     // Берём все pending — фильтр по sendAt делаем в коде, чтобы не требовать составной индекс
     const pendingQuery = scheduledMessagesRef
       .where('status', '==', 'pending')
@@ -7289,7 +7291,7 @@ exports.processScheduledMessages = functions.scheduler.onSchedule(
         }
         await doc.ref.update({
           status: 'sent',
-          sentAt: admin.firestore.FieldValue.serverTimestamp(),
+          sentAt: FieldValue.serverTimestamp(),
         });
       } catch (error) {
         console.error('processScheduledMessages: failed to send', doc.id, error.message);
@@ -7309,7 +7311,7 @@ const secretaryLearn = require('./secretary_learn')({
   generateContentWithModelFallback,
   notifyMaster,
   callsRef,
-  FieldValue: admin.firestore.FieldValue,
+  FieldValue: FieldValue,
 });
 secretaryLearnApi.proposeFromCall = secretaryLearn.proposeFromCall;
 
@@ -7363,7 +7365,6 @@ exports.weeklyCloudBackup = functions.scheduler.onSchedule(
   },
   async () => {
     const result = await cloudBackup.runCloudBackup({
-      admin,
       db,
       companyId: COMPANY_ID,
       senders: backupSenders(),
@@ -7425,7 +7426,6 @@ exports.runCloudBackupNow = onRequestV2(
     if (!(await requireAppUser(req, res))) return;
     try {
       const result = await cloudBackup.runCloudBackup({
-        admin,
         db,
         companyId: COMPANY_ID,
         senders: backupSenders(),
@@ -7500,7 +7500,7 @@ Return STRICT JSON: {"say":"ответ по-русски","ownerBrief":"updated 
           .set(
             {
               ownerBrief,
-              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
             },
             { merge: true }
           );

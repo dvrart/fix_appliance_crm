@@ -4,14 +4,15 @@
  * и шторка появляется только когда FIX открывает приложение.
  * Twilio Voice остаётся data-only — его шлёт Twilio, не notifyMaster.
  */
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { getMessaging } = require('firebase-admin/messaging');
 const crypto = require('node:crypto');
 const { findMemberPlan } = require('./care_plan_lookup');
 
 const COMPANY_ID = 'fix_appliance_ca';
 
 function tokensRef() {
-  return admin.firestore().collection('companies').doc(COMPANY_ID).collection('fcm_tokens');
+  return getFirestore().collection('companies').doc(COMPANY_ID).collection('fcm_tokens');
 }
 
 function channelFor(data) {
@@ -127,7 +128,7 @@ function cityOf(job) {
 
 async function attachShadeFields(stringData) {
   try {
-    const company = admin.firestore().collection('companies').doc(COMPANY_ID);
+    const company = getFirestore().collection('companies').doc(COMPANY_ID);
     if (stringData.jobId) {
       const snap = await company.collection('jobs').doc(stringData.jobId).get();
       if (snap.exists) {
@@ -208,7 +209,7 @@ async function registerDeviceToken({ token, platform, deviceId, userId, previous
     ? `device_${crypto.createHash('sha256').update(`${userId}:${deviceId}`).digest('hex')}`
     : String(token).replace(/\//g, '_').slice(0, 700);
   const ref = tokensRef().doc(id);
-  await admin.firestore().runTransaction(async (tx) => {
+  await getFirestore().runTransaction(async (tx) => {
     const previous = await tx.get(ref);
     const oldTokens = new Set([token, previousToken, previous.data()?.token].filter((value) => typeof value === 'string' && value));
     const legacy = [];
@@ -222,7 +223,7 @@ async function registerDeviceToken({ token, platform, deviceId, userId, previous
       token, platform: platform || 'unknown', userId,
       ...(deviceId ? { deviceId } : {}),
       disabled: false,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
     for (const old of legacy) {
       if (old.exists) tx.set(old.ref, { disabled: true, replacedBy: id }, { merge: true });
@@ -280,7 +281,7 @@ async function notifyMaster(title, body, data = {}) {
 
   for (let offset = 0; offset < registrations.length; offset += 500) {
     const batch = registrations.slice(offset, offset + 500);
-    const response = await admin.messaging().sendEachForMulticast({
+    const response = await getMessaging().sendEachForMulticast({
       tokens: batch.map((entry) => entry.token),
       data: stringData,
       android: { priority: 'high', ttl: 86400000 },
@@ -307,7 +308,7 @@ async function notifyMaster(title, body, data = {}) {
       }
     });
     await Promise.all(snapshot.docs.filter((doc) => stale.has(doc.data()?.token)).map((doc) =>
-      admin.firestore().runTransaction(async (tx) => {
+      getFirestore().runTransaction(async (tx) => {
         const current = await tx.get(doc.ref);
         if (current.exists && stale.has(current.data().token)) tx.delete(doc.ref);
       })
@@ -328,7 +329,7 @@ async function pingMaster(data = {}) {
     payload[key] = String(value ?? '');
   }
   sanitizeFcmData(payload);
-  await admin.messaging().sendEachForMulticast({
+  await getMessaging().sendEachForMulticast({
     tokens: registrations.map((entry) => entry.token),
     data: payload,
     android: { priority: 'high', ttl: 30000 },

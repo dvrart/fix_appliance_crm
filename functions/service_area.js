@@ -10,7 +10,7 @@
  * `SERVICE_TOWNS` — сразу, всё остальное — геокодирование Google и проверка
  * попадания точки в полигон из настроек.
  */
-const admin = require('firebase-admin');
+const { getFirestore } = require('firebase-admin/firestore');
 const voiceFacts = require('./voice_facts.js');
 
 const COMPANY_ID = 'fix_appliance_ca';
@@ -31,8 +31,7 @@ const VAGUE_TYPES = new Set([
 
 let deps = {
   loadConfig: async () => {
-    const snap = await admin
-      .firestore()
+    const snap = await getFirestore()
       .collection('companies')
       .doc(COMPANY_ID)
       .collection('settings')

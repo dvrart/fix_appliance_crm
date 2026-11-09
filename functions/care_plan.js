@@ -11,7 +11,7 @@
  * (`lastReminderKey`). Платёж, который не прошёл, приходит сразу из вебхука
  * Stripe, а не здесь.
  */
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { notifyMaster } = require('./notify');
 const { isMember } = require('./care_plan_lookup');
@@ -20,7 +20,7 @@ const COMPANY_ID = 'fix_appliance_ca';
 const TORONTO = 'America/Toronto';
 
 function companyRef() {
-  return admin.firestore().collection('companies').doc(COMPANY_ID);
+  return getFirestore().collection('companies').doc(COMPANY_ID);
 }
 
 function toDate(value) {
@@ -133,7 +133,7 @@ async function runReminders(now = new Date()) {
     });
     await doc.ref.set({
       lastReminderKey: reminder.key,
-      lastReminderAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastReminderAt: FieldValue.serverTimestamp(),
     }, { merge: true });
     sent++;
   }

@@ -8,14 +8,14 @@
  * техника, Care Plan и история работ. Всё по-английски: это видит клиент.
  * Код — 10 знаков из 31 (≈50 бит), перебором не найти.
  */
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
 const COMPANY_ID = 'fix_appliance_ca';
 const CODE_RE = /^[2-9a-hjkmnp-z]{6,16}$/;
 const SHOP_SITE = 'https://fix-appliance.ca';
 
 function companyRef() {
-  return admin.firestore().collection('companies').doc(COMPANY_ID);
+  return getFirestore().collection('companies').doc(COMPANY_ID);
 }
 
 function cleanPath(path) {
@@ -469,7 +469,7 @@ async function addOutsideNote(code, body, ip) {
     items: [],
   };
   await ref.set(
-    { serviceLog: admin.firestore.FieldValue.arrayUnion(entry), updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+    { serviceLog: FieldValue.arrayUnion(entry), updatedAt: FieldValue.serverTimestamp() },
     { merge: true },
   );
   await company.collection('passport_notes').add({

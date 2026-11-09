@@ -1,4 +1,4 @@
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 const nodemailer = require('nodemailer');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
@@ -8,7 +8,7 @@ const jobDedupe = require('./job_dedupe');
 const COMPANY_ID = 'fix_appliance_ca';
 
 function refs() {
-  const db = admin.firestore();
+  const db = getFirestore();
   const company = db.collection('companies').doc(COMPANY_ID);
   return {
     db,
@@ -431,7 +431,7 @@ async function sendCrmEmail({
     jobId: jobId || null,
     kind: kind || null,
     phone: phone || null,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
     read: true,
     emailMessageId: storedId,
     crmThread: true,
@@ -614,7 +614,7 @@ module.exports = function createEmailModule({
         clientId: resolvedClientId,
         phone: phone || null,
         mediaUrls,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
         read: true,
         emailMessageId: storedId,
         crmThread: true,
@@ -709,7 +709,7 @@ module.exports = function createEmailModule({
       clientId: resolvedClientId,
       phone,
       mediaUrls,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       read: true,
       emailMessageId: storedId,
       crmThread: true,
@@ -787,7 +787,7 @@ module.exports = function createEmailModule({
       amazonOrderId: orderId,
       jobId: matched ? matched.id : null,
       subject,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
     });
 
     let matchedPartName = '';
@@ -812,7 +812,7 @@ module.exports = function createEmailModule({
         trackingNumber: tracking || matched.trackingNumber || '',
         amazonOrderId: orderId || matched.amazonOrderId || '',
         trackingCarrier: supplier.id,
-        trackingUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        trackingUpdatedAt: FieldValue.serverTimestamp(),
       };
       if (existingOrders.length > 0) {
         patch.trackingOrders = existingOrders;
@@ -1028,7 +1028,7 @@ module.exports = function createEmailModule({
       if (!website) continue;
       batch.update(doc.ref, {
         websiteForm: true,
-        clientId: admin.firestore.FieldValue.delete(),
+        clientId: FieldValue.delete(),
       });
       patched += 1;
       inBatch += 1;
@@ -1158,7 +1158,7 @@ module.exports = function createEmailModule({
       channel: 'email',
       status: 'received',
       clientId,
-      createdAt: admin.firestore.Timestamp.fromDate(created),
+      createdAt: Timestamp.fromDate(created),
       read: confirmHandled,
       emailMessageId: messageId,
       emailFingerprint: fingerprint,

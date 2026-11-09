@@ -98,7 +98,9 @@ function fakeStripe() {
 
 const load = Module._load;
 Module._load = function (name) {
-  if (name === 'firebase-admin') return { firestore };
+  if (name === 'firebase-admin/firestore') return {
+    getFirestore: firestore, FieldValue: firestore.FieldValue, Timestamp: firestore.Timestamp,
+  };
   if (name === 'firebase-functions') return { https: { onRequest: (...args) => args.at(-1) } };
   if (name === './auth_guard') return { requireAppUser: async () => ({ uid: 'owner' }) };
   if (name === './notify') return { notifyMaster: async (...args) => notifications.push(args) };

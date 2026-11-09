@@ -10,8 +10,8 @@ const load = Module._load;
 let guard;
 try {
   Module._load = function (name) {
-    if (name === 'firebase-admin') return {
-      auth: () => ({
+    if (name === 'firebase-admin/auth') return {
+      getAuth: () => ({
         verifyIdToken: async (token) => {
           verifiedTokens.push(token);
           if (verificationError) throw verificationError;

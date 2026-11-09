@@ -14,7 +14,7 @@
  * Соединение = перелить данные в главную заявку и закрыть дубль. След остаётся
  * только в истории заявки (changes), в описание служебных строк не пишем.
  */
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 const schedule = require('./schedule');
 const voiceFacts = require('./voice_facts');
 
@@ -23,7 +23,7 @@ const DUPLICATE_WINDOW_MS = 48 * 60 * 60 * 1000;
 const INCOMING_SOURCES = new Set(['phone', 'secretary', 'sms', 'email', 'website']);
 
 function companyRef() {
-  return admin.firestore().collection('companies').doc(COMPANY_ID);
+  return getFirestore().collection('companies').doc(COMPANY_ID);
 }
 
 function jobsRef() {
@@ -332,8 +332,8 @@ function buildMergeUpdates(keep, drop) {
     if (!hasVisit(keep)) {
       const first = toDate(visits[0] && visits[0].startAt);
       if (first) {
-        updates.scheduledAt = admin.firestore.Timestamp.fromDate(first);
-        updates.scheduledDate = admin.firestore.Timestamp.fromDate(first);
+        updates.scheduledAt = Timestamp.fromDate(first);
+        updates.scheduledDate = Timestamp.fromDate(first);
       }
     }
   }
@@ -373,7 +373,7 @@ async function addHistory(jobId, docId, entry) {
     .doc(jobId)
     .collection('changes')
     .doc(docId)
-    .set({ at: admin.firestore.Timestamp.now(), ...entry }, { merge: true });
+    .set({ at: Timestamp.now(), ...entry }, { merge: true });
 }
 
 /** Звонки и сообщения дубля должны показывать главную заявку. */
@@ -412,7 +412,7 @@ async function mergeJobs(keepId, dropId, { by = 'owner', force = false } = {}) {
   if (!isOpenJob(keepJob)) return false;
   if (!force && !isOpenJob(dropJob)) return false;
 
-  const now = admin.firestore.FieldValue.serverTimestamp();
+  const now = FieldValue.serverTimestamp();
   await jobsRef()
     .doc(keep)
     .set({ ...buildMergeUpdates(keepJob, dropJob), updatedAt: now }, { merge: true });
@@ -442,7 +442,7 @@ async function flagPossibleDuplicate(newer, older) {
   await jobsRef().doc(newer.id).set(
     {
       possibleDuplicateOfJobId: older.id,
-      possibleDuplicateAt: admin.firestore.FieldValue.serverTimestamp(),
+      possibleDuplicateAt: FieldValue.serverTimestamp(),
     },
     { merge: true }
   );

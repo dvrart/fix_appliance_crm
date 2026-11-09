@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const zlib = require('zlib');
+const { getStorage } = require('firebase-admin/storage');
 
 /// Еженедельная копия базы в Storage. Работает на сервере, поэтому не зависит
 /// от того, включён ли телефон и есть ли на нём интернет.
@@ -65,15 +66,15 @@ function jsonSafe(value) {
   return String(value);
 }
 
-function resolveBuckets(admin) {
+function resolveBuckets() {
   const project =
     process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || 'fix-appliance-crm';
   const candidates = [];
   try {
-    candidates.push(admin.storage().bucket());
+    candidates.push(getStorage().bucket());
   } catch (_) {}
-  candidates.push(admin.storage().bucket(`${project}.firebasestorage.app`));
-  candidates.push(admin.storage().bucket(`${project}.appspot.com`));
+  candidates.push(getStorage().bucket(`${project}.firebasestorage.app`));
+  candidates.push(getStorage().bucket(`${project}.appspot.com`));
   const seen = new Set();
   return candidates.filter((bucket) => {
     const name = bucket && bucket.name;
@@ -194,7 +195,7 @@ async function sendTelegramDocument({ token, chatId, fileName, content, caption,
 }
 
 /// Делает копию и возвращает { url, path, bytes, counts } либо null.
-async function runCloudBackup({ admin, db, companyId, senders }) {
+async function runCloudBackup({ db, companyId, senders }) {
   const payload = await buildBackupPayload(db, companyId);
   const isPartial = payload.partial === true;
   const body = Buffer.from(JSON.stringify(payload), 'utf8');
@@ -205,7 +206,7 @@ async function runCloudBackup({ admin, db, companyId, senders }) {
     : `${prefix}fix-backup-${today}.json`;
   const token = crypto.randomUUID();
 
-  for (const bucket of resolveBuckets(admin)) {
+  for (const bucket of resolveBuckets()) {
     try {
       await bucket.file(path).save(body, {
         resumable: false,

@@ -10,7 +10,7 @@
  */
 
 const functions = require('firebase-functions');
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const crypto = require('crypto');
 const { requireAppUser } = require('./auth_guard');
 const passport = require('./passport');
@@ -21,8 +21,7 @@ const SHOP_BASE = 'https://fix-appliance.ca';
 const PATH_SKIP = new Set(['p', 'e', 'i', 'pay', 'estimate', 'invoice']);
 
 function linksRef() {
-  return admin
-    .firestore()
+  return getFirestore()
     .collection('companies')
     .doc(COMPANY_ID)
     .collection('short_links');
@@ -104,7 +103,7 @@ async function ensureShortLink({ url, code, type, jobId, reserveCode }) {
           url,
           type: linkType,
           jobId: jobId || snap.data().jobId || '',
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -117,7 +116,7 @@ async function ensureShortLink({ url, code, type, jobId, reserveCode }) {
         url,
         type: type || '',
         jobId: jobId || '',
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
       });
       return packLink(existingCode, type);
     }
@@ -132,7 +131,7 @@ async function ensureShortLink({ url, code, type, jobId, reserveCode }) {
       url,
       type: type || '',
       jobId: jobId || '',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
     });
     return packLink(next, type);
   }

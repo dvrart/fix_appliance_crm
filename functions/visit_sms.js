@@ -2,7 +2,7 @@
  * SMS-цепочка визитов: запись, напоминание, ответ на отмену и перенос,
  * скидка 10–25% при отмене. Подтверждение визита ответом отключено.
  */
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 const twilio = require('twilio');
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
@@ -39,7 +39,7 @@ const DEFAULTS = {
 };
 
 function db() {
-  return admin.firestore();
+  return getFirestore();
 }
 
 function companyRef() {
@@ -654,7 +654,7 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody, au
           kind: kind || null,
           channel: 'sms',
           mediaUrls: [],
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdAt: FieldValue.serverTimestamp(),
           read: true,
         });
         console.log(
@@ -689,7 +689,7 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody, au
       kind: kind || null,
       channel: 'sms',
       mediaUrls: [],
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       read: true,
     });
     console.log(`sendTwilioSms queued kind=${kind || ''} job=${jobId || ''} id=${doc.id}`);
@@ -816,7 +816,7 @@ async function recordBookingDelivery(requestId, { sid = '', status, errorCode = 
     if (sid && message.sid === sid && message.status === status && String(message.errorCode || '') === errorCode) return message;
     const failed = ['failed', 'undelivered', 'canceled', 'unknown'].includes(status);
     const state = failed ? 'error' : 'sent';
-    const now = admin.firestore.Timestamp.now();
+    const now = Timestamp.now();
     const next = {
       ...message,
       sid: sid || message.sid || '',
@@ -862,7 +862,7 @@ async function persistBookingDelivery(requestId, result) {
     } catch (error) {
       if (attempt === 1) {
         await bookingRequestRef(requestId).set({
-          bookingReceipt: { ...result, recordedAt: admin.firestore.Timestamp.now() },
+          bookingReceipt: { ...result, recordedAt: Timestamp.now() },
         }, { merge: true });
         console.warn('booking SMS result saved for reconciliation', requestId);
       }
@@ -895,7 +895,7 @@ async function sendApprovedBookingSms({ jobId, visitId, slotKey, requestId, to, 
     if (state === 'approved' || state === 'sending' || (state === 'error' && visit.smsBooking.retryAllowed === false)) {
       throw bookingError('Предыдущая отправка ещё не подтверждена. Проверьте переписку, чтобы не отправить SMS дважды');
     }
-    const now = admin.firestore.Timestamp.now();
+    const now = Timestamp.now();
     visit.smsBooking = { state: 'approved', slotKey, requestId, approvedAt: now };
     visit.smsBookingPending = false;
     delete visit.smsBookingPendingAt;
@@ -929,7 +929,7 @@ async function sendApprovedBookingSms({ jobId, visitId, slotKey, requestId, to, 
       }
       return false;
     }
-    const now = admin.firestore.Timestamp.now();
+    const now = Timestamp.now();
     selected.visit.smsBooking = { ...selected.visit.smsBooking, state: 'sending', startedAt: now };
     tx.update(jobRef, { visits: selected.visits, updatedAt: now });
     tx.update(messageRef, { bookingState: 'sending', status: 'sending', updatedAt: now });
@@ -992,7 +992,7 @@ async function queueManualBooking(jobId) {
           if (state === 'sent') {
             visit.smsBookingSlotKey = slotKey;
             visit.smsBookingDayKey = dayKey;
-            visit.smsBookingSentAt = message.createdAt || admin.firestore.Timestamp.now();
+            visit.smsBookingSentAt = message.createdAt || Timestamp.now();
             visit.smsBookingSentSms = true;
             visit.smsBookingVia = 'sms';
           }
@@ -1019,7 +1019,7 @@ async function queueManualBooking(jobId) {
     }
     for (const [requestRef, patch] of messageUpdates) tx.update(requestRef, patch);
     if (changed) {
-      tx.update(jobRef, { visits, scheduleUnconfirmed: false, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      tx.update(jobRef, { visits, scheduleUnconfirmed: false, updatedAt: FieldValue.serverTimestamp() });
     }
   });
 }
@@ -1076,9 +1076,9 @@ async function sendReviewIfNeeded(jobId, before, after, config, templates) {
   const phone = jobPhone(after);
   if (!normalizePhone(phone)) {
     await jobsRef().doc(jobId).update({
-      reviewSmsSentAt: admin.firestore.FieldValue.serverTimestamp(),
-      requestReviewSms: admin.firestore.FieldValue.delete(),
-      reviewSmsDueAt: admin.firestore.FieldValue.delete(),
+      reviewSmsSentAt: FieldValue.serverTimestamp(),
+      requestReviewSms: FieldValue.delete(),
+      reviewSmsDueAt: FieldValue.delete(),
     });
     return;
   }
@@ -1106,9 +1106,9 @@ async function sendReviewIfNeeded(jobId, before, after, config, templates) {
   });
   if (sent) {
     await jobsRef().doc(jobId).update({
-      reviewSmsSentAt: admin.firestore.FieldValue.serverTimestamp(),
-      requestReviewSms: admin.firestore.FieldValue.delete(),
-      reviewSmsDueAt: admin.firestore.FieldValue.delete(),
+      reviewSmsSentAt: FieldValue.serverTimestamp(),
+      requestReviewSms: FieldValue.delete(),
+      reviewSmsDueAt: FieldValue.delete(),
     });
   }
 }
@@ -1180,7 +1180,7 @@ async function restoreStripePaymentsIfLost(before, after, jobId) {
     if (!fixed.restored.length) return;
     tx.update(jobRef, {
       documents: fixed.documents,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
     repaired = { after: { ...current, documents: fixed.documents }, restored: fixed.restored };
   });
@@ -1287,7 +1287,7 @@ async function translateReportIfNeeded(jobId, before, after) {
 async function recordJobChanges(before, after, jobId) {
   if (!after || !jobId) return;
   const changesRef = companyRef().collection('jobs').doc(jobId).collection('changes');
-  const now = admin.firestore.Timestamp.now();
+  const now = Timestamp.now();
   const changes = [];
 
   // Determine who made the change
@@ -1445,7 +1445,7 @@ async function sendDayBeforeReminders() {
           job,
         });
         if (!ok) continue;
-        sent[offset] = admin.firestore.Timestamp.now();
+        sent[offset] = Timestamp.now();
         visit.smsReminders = sent;
         visit.smsReminderSentAt = sent[offset];
         changed = true;
@@ -1454,7 +1454,7 @@ async function sendDayBeforeReminders() {
     if (changed) {
       await doc.ref.update({
         visits,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
     }
   }
@@ -1496,13 +1496,13 @@ async function sendOwnerVisitSoon(config) {
         applianceType: appliance,
         clientName: String(job.clientName || '').trim(),
       });
-      visit.ownerSoonAt = admin.firestore.Timestamp.now();
+      visit.ownerSoonAt = Timestamp.now();
       changed = true;
     }
     if (changed) {
       await doc.ref.update({
         visits,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
     }
   }
@@ -1820,7 +1820,7 @@ async function markPickDialog(matches, kind) {
     }
     await group.doc.ref.update({
       visits,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
   }
 }
@@ -1843,7 +1843,7 @@ async function clearPickDialog(matches) {
     });
     await item.doc.ref.update({
       visits,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
   }
 }
@@ -1923,7 +1923,7 @@ async function beginRescheduleAsk(match, from, clientId, body) {
   await match.doc.ref.update({
     visits,
     status: rescheduleStatus(match.job),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   });
   const vars = visitVars(match.job, visits[idx]);
   await sendSms({
@@ -1959,7 +1959,7 @@ async function beginCancelSave(match, from, clientId) {
   };
   await match.doc.ref.update({
     visits,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   });
   const templates = await loadTemplates();
   const vars = visitVars(match.job, visits[idx]);
@@ -2044,7 +2044,7 @@ async function confirmVisitMatch(match, from, clientId) {
     tx.update(match.doc.ref, {
       visits,
       ...(nextStatus && nextStatus !== jobData.status ? { status: nextStatus } : {}),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
   });
   if (alreadyConfirmed) return true;
@@ -2085,7 +2085,7 @@ async function tryMoveVisit(match, slot, from, clientId, notifyTitle, opts = {})
       await match.doc.ref.update({
         visits,
         status: rescheduleStatus(match.job),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
     }
     await sendSms({
@@ -2144,7 +2144,7 @@ async function sendVisitChangeConflict(match, from, clientId) {
 }
 
 async function applyVisitSlot(match, nextDate, extra = {}) {
-  return admin.firestore().runTransaction(async (tx) => {
+  return getFirestore().runTransaction(async (tx) => {
     const snapshot = await tx.get(match.doc.ref);
     if (!snapshot.exists || isClosedJob(snapshot.data())) return null;
     const visits = coalesceVisits(snapshot.data());
@@ -2153,23 +2153,23 @@ async function applyVisitSlot(match, nextDate, extra = {}) {
         toDate(visits[idx].startAt)?.getTime() !== toDate(match.visit.startAt)?.getTime()) return null;
     visits[idx] = {
       ...visits[idx],
-      startAt: admin.firestore.Timestamp.fromDate(nextDate),
+      startAt: Timestamp.fromDate(nextDate),
       durationMinutes: schedule.BOOKING_MINUTES,
       smsDialog: '',
       smsConfirmStatus: 'confirmed',
       smsConfirmNotifiedStatus: 'confirmed',
       smsBookingDayKey: torontoDayKey(nextDate),
       smsBookingSlotKey: visitSlotKey(nextDate),
-      smsBookingSentAt: admin.firestore.Timestamp.now(),
+      smsBookingSentAt: Timestamp.now(),
       ...extra,
     };
     tx.update(match.doc.ref, {
       visits,
-      scheduledAt: admin.firestore.Timestamp.fromDate(nextDate),
-      scheduledDate: admin.firestore.Timestamp.fromDate(nextDate),
+      scheduledAt: Timestamp.fromDate(nextDate),
+      scheduledDate: Timestamp.fromDate(nextDate),
       durationMinutes: schedule.BOOKING_MINUTES,
       status: 'Вызов',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
     return visits[idx];
   });
@@ -2233,7 +2233,7 @@ async function handleDialogReply(match, body, from, clientId) {
   });
 
   if (dialog === 'save_offer' && kind === 'cancelled') {
-    const cancelled = await admin.firestore().runTransaction(async (tx) => {
+    const cancelled = await getFirestore().runTransaction(async (tx) => {
       const snapshot = await tx.get(match.doc.ref);
       if (!snapshot.exists || isClosedJob(snapshot.data())) return false;
       const current = snapshot.data();
@@ -2286,7 +2286,7 @@ async function handleDialogReply(match, body, from, clientId) {
       await match.doc.ref.update({
         visits,
         status: rescheduleStatus(match.job),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
     }
     await sendSms({
@@ -2368,7 +2368,7 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
           visits[idx] = { ...visits[idx], smsDialog: 'save_offer', smsConfirmStatus: 'pending' };
           await match.doc.ref.update({
             visits,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
           });
           await sendSms({
             to: from,
@@ -2395,7 +2395,7 @@ async function tryHandleConfirmReply({ from, body, clientId }) {
         await match.doc.ref.update({
           visits,
           status: rescheduleStatus(match.job),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
         });
         await sendSms({
           to: from,
@@ -2438,7 +2438,7 @@ async function keepVisit(match) {
     await match.doc.ref.update({
       visits,
       status: 'Вызов',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
   }
   // Клиент оставил визит у себя. Отдельного SMS больше нет: визит ответом
@@ -2530,7 +2530,7 @@ async function clearClientDialogs({ jobId, clientId, phone } = {}) {
     if (changed) {
       await doc.ref.update({
         visits: next,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
     }
   }

@@ -7,7 +7,7 @@
  * всех номеров клиента (их ведёт приложение). Ответ кэшируется на 5 минут:
  * пуш по звонку не должен ждать лишний запрос к базе.
  */
-const admin = require('firebase-admin');
+const { getFirestore } = require('firebase-admin/firestore');
 
 const COMPANY_ID = 'fix_appliance_ca';
 const MEMBER_STATUSES = new Set(['active', 'past_due']);
@@ -15,7 +15,7 @@ const CACHE_MS = 5 * 60 * 1000;
 const cache = new Map();
 
 function plansRef() {
-  return admin.firestore().collection('companies').doc(COMPANY_ID).collection('care_plans');
+  return getFirestore().collection('companies').doc(COMPANY_ID).collection('care_plans');
 }
 
 function last10(phone) {

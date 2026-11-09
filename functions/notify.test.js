@@ -54,9 +54,9 @@ const firestore = Object.assign(() => ({
 
 const load = Module._load;
 Module._load = function (name) {
-  if (name === 'firebase-admin') return {
-    firestore,
-    messaging: () => ({
+  if (name === 'firebase-admin/firestore') return { getFirestore: firestore, FieldValue: firestore.FieldValue };
+  if (name === 'firebase-admin/messaging') return {
+    getMessaging: () => ({
       sendEachForMulticast: async (message) => {
         assert.ok(message.tokens.length <= 500, 'FCM accepts at most 500 tokens per multicast');
         sent.push(structuredClone(message));

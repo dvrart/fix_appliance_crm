@@ -14,7 +14,7 @@
  * безнал за текущий месяц вырос. Уведомление одно на месяц: метка
  * `settings/noncash_alert.notifiedMonth` ставится транзакцией.
  */
-const admin = require('firebase-admin');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { notifyMaster } = require('./notify');
 
@@ -25,7 +25,7 @@ const STRIPE_ID_FIELDS = ['stripePaymentIntentId', 'stripeSessionId', 'stripeInv
 const NONCASH_HINT = /transfer|interac|перевод|stripe|card|credit|карт|кредит|tap to pay|terminal/;
 
 function companyRef() {
-  return admin.firestore().collection('companies').doc(COMPANY_ID);
+  return getFirestore().collection('companies').doc(COMPANY_ID);
 }
 
 /** 'cash' | 'noncash' | null (способ в строке не указан). */
@@ -123,7 +123,7 @@ async function handleJobWrite(before, after, jobId, now = new Date()) {
   const total = nonCashTotalForMonth([...jobs.values()], monthKey);
   if (total <= NONCASH_MONTH_LIMIT) return { checked: true, total, notified: false };
 
-  const claimed = await admin.firestore().runTransaction(async (tx) => {
+  const claimed = await getFirestore().runTransaction(async (tx) => {
     const current = await tx.get(alertRef);
     if (current.exists && (current.data() || {}).notifiedMonth === monthKey) return false;
     tx.set(alertRef, {
@@ -131,7 +131,7 @@ async function handleJobWrite(before, after, jobId, now = new Date()) {
       total,
       limit: NONCASH_MONTH_LIMIT,
       jobId,
-      notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+      notifiedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
     return true;
   });
