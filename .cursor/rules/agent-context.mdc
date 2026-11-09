@@ -2810,3 +2810,36 @@ Job site», а заявка получила `hasJobSite: true, jobSiteAddress: 
   you?» — `clear` через 240 мс.
 - Выкачено `firebase deploy --only functions:aiVoiceRelay`. Тест — «a click on the line
   reaches Gemini as silence…» в `voice_relay.test.js`.
+
+## Сервер: firebase-admin 14, только модульные вызовы (08.11.2026)
+
+Четырнадцатая версия **вырезала старый namespace целиком**, поэтому `const admin =
+require('firebase-admin')` в проекте больше нет ни одного. Вместо него — точечные импорты:
+`getFirestore`, `FieldValue`, `Timestamp` из `firebase-admin/firestore`, `getStorage` из
+`firebase-admin/storage`, `getMessaging` из `firebase-admin/messaging`, `getAuth` из
+`firebase-admin/auth`, `initializeApp` из `firebase-admin/app`. Переведено 166 обращений в
+16 файлах.
+
+- **Тесты подменяют модули по новым именам.** Одиннадцать тестов перехватывают загрузку
+  модулей; раньше ловили `'firebase-admin'` и отдавали объект с `firestore`, теперь ловят
+  `'firebase-admin/firestore'` и отдают `getFirestore` плюс `FieldValue`/`Timestamp`.
+  Добавляете обращение к новой службе — добавьте и её подмену, иначе тест уйдёт в настоящую
+  библиотеку.
+- `runCloudBackup` больше не принимает `admin` параметром: копия сама берёт хранилище через
+  `getStorage`. Передавать туда что-либо из `index.js` не нужно.
+- `firebase-functions-test` удалён из зависимостей — он нигде не использовался и при этом
+  держал firebase-admin на 13-й версии.
+- **Выкладка падает на разборе кода с лимитом по умолчанию:** «Cannot determine backend
+  specification. Timeout after 10000». Код грузится за 1,4 с, дело в холодном старте.
+  Рабочая команда — `FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions`.
+- Проверка после выкладки без побочных действий: короткая ссылка с выдуманным кодом
+  (`/p/zzzzzz`) должна отдать 404 «Link expired» — это живой поход в Firestore.
+
+### Что осталось в `npm audit` и почему это не чинят
+
+После обновления осталось 6 умеренных пометок: `glob`, `minimatch`, `rimraf` и три пакета,
+которые на них ссылаются (`gaxios`, `gcp-metadata`, `google-gax`). Они приходят из
+гугловского слоя внутри firebase-admin, **в рабочем коде не загружаются вообще** (ни
+`google-gax`, ни `gaxios` не требуют rimraf в поставляемых файлах), а починить их можно
+только насильно подсунув мажорные версии, вышедшие на этой же неделе, мимо объявленных
+диапазонов. Это опаснее самой пометки. Ждём, пока Google обновит свои зависимости.
