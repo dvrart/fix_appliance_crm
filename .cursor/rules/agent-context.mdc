@@ -1374,6 +1374,27 @@ tap-to-pay `pi_3UEvK5…` на **$350** (`NlQfKX9dlwmbuqYyBT0J`, 12.09). Tap to 
 (`null` = успех), и окно «The payment did not go through» показывает её под заголовком —
 раньше причина уходила только в `debugPrint`.
 
+## Чаевые: их спрашивает терминал, а не телефон (08.11.2026)
+
+Решение FIX: экран чаевых в приложении убран совсем (`client_tip_sheet.dart` удалён,
+`_payWithMethod` в `finance_tab.dart` сразу ведёт к оплате), чаевые предлагает **WisePad 3
+на своём экране** — 5 / 10 / 20 %.
+
+- Проценты живут в Stripe, в конфигурации терминалов: `tmc_61VFXidPePO1zWZTU41DQIfQpflrNY5Q`
+  («Default configuration», account default, у локации `tml_GoJ2RwiCdTubm7` переопределения
+  нет), `tipping.cad.percentages = [5, 10, 20]`. Без этой конфигурации ридер экран чаевых
+  **не покажет**. WisePad забирает её при следующем подключении к приложению.
+- **Процент считается от суммы без HST.** Это не настройка дашборда, а
+  `TippingConfiguration(eligibleAmount:)` в `StripeTerminalService.collectPayment`: берётся
+  доля оплаты без налога (`repair * subtotal / total`, чтобы частичный платёж тоже считался
+  правильно) и уходит в центах.
+- `skipTipping: !useTerminal` — у Tap to Pay экрана чаевых нет, поэтому на телефоне чаевые
+  выключены. **`eligibleAmount` > 0 вместе со `skipTipping: true` — ошибка Stripe**, поэтому
+  `tippingConfiguration` передаётся только в режиме терминала.
+- PaymentIntent создаётся на сумму **без** чаевых; ридер поднимает её сам. Сервер это уже
+  умеет: `completeTerminalPayment` читает `pi.amount_details.tip.amount`, вебхук —
+  `amount − metadata.dueCents`, и «Чаевые» пишутся отдельной строкой платежей.
+
 ## UI notes
 
 - Client card call / SMS / route: white circles, bright colored icons (`client_details_screen.dart`).
