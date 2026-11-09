@@ -550,12 +550,12 @@ class _InvoiceBuilderPageState extends State<InvoiceBuilderPage> {
           ),
           const Divider(),
           const Text('Refrigerator Repair     \$150.00'),
-          Row(
+          const Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
-                children: const [
+                children: [
                   Text('Subtotal  \$150.00', style: TextStyle(fontSize: 11)),
                   Text(
                     'Total Paid  \$169.50',

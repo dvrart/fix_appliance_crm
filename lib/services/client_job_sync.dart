@@ -22,7 +22,7 @@ class ClientJobSync {
       if (phone != null) 'clientPhone': phone.trim(),
       if (address != null) 'clientAddress': address.trim(),
       if (email != null) 'clientEmail': email.trim(),
-      if (isRegular != null) 'clientIsRegular': isRegular,
+      'clientIsRegular': ?isRegular,
       'updatedAt': FieldValue.serverTimestamp(),
     };
     if (updates.length <= 1) return;

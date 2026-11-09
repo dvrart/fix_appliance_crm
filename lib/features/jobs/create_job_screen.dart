@@ -528,13 +528,13 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+              border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
             ),
             child: Row(
               children: [
                 CircleAvatar(
                   backgroundColor: AppColors.primary,
-                  child: Icon(Icons.person, color: Colors.white),
+                  child: const Icon(Icons.person, color: Colors.white),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -1209,7 +1209,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
       appBar: AppBar(
         title: Text(
           'Новая заявка'.tr,
-          style: TextStyle(fontWeight: FontWeight.bold),
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -1223,7 +1223,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
           children: [
             Text(
               'ДАННЫЕ ВЛАДЕЛЬЦА (BILL TO)'.tr,
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.bold,
                 color: Colors.grey,
@@ -1236,7 +1236,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
 
             Text(
               'ТЕХНИКА И ПРОБЛЕМА'.tr,
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.bold,
                 color: Colors.grey,
@@ -1347,7 +1347,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
 
             Text(
               'ДАТА И ВРЕМЯ'.tr,
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.bold,
                 color: Colors.grey,

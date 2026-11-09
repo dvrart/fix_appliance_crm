@@ -562,7 +562,7 @@ class OdspReportView extends StatelessWidget {
             style: pw.TextStyle(
               font: bold,
               fontSize: 15,
-              color: PdfColor.fromInt(0xFF14557F),
+              color: const PdfColor.fromInt(0xFF14557F),
             ),
           ),
           pw.SizedBox(height: 6),

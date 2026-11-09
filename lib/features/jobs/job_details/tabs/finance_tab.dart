@@ -17,7 +17,6 @@ import '../../../../models/labour_discount.dart';
 import '../../../../models/warehouse_item.dart';
 import '../../../../services/services.dart';
 import '../../../../shared/widgets/app_bar_save.dart';
-import '../../../../shared/widgets/confirm_action_sheet.dart';
 import '../../../../shared/widgets/dispose_on_close.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
 import '../../../../shared/widgets/unsaved_changes_dialog.dart';
@@ -484,10 +483,10 @@ class _FinanceTabState extends State<FinanceTab> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Padding(
-                padding: EdgeInsets.all(16),
+                padding: const EdgeInsets.all(16),
                 child: Text(
                   'Создать документ'.tr,
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                 ),
               ),
               ListTile(

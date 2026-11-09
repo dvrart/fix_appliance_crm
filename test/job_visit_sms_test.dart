@@ -473,7 +473,7 @@ void main() {
           'id': 'visit',
           'startAt': startAt,
           'smsBookingPending': true,
-          if (legacySlot != null) 'smsBookingSlotKey': legacySlot,
+          'smsBookingSlotKey': ?legacySlot,
         });
 
         expect(visit.bookingSmsState, 'pending');
@@ -493,7 +493,7 @@ void main() {
             'id': 'visit',
             'startAt': startAt,
             'smsBookingSentAt': startAt,
-            if (legacySlot != null) 'smsBookingSlotKey': legacySlot,
+            'smsBookingSlotKey': ?legacySlot,
             ...smsFields,
           });
 

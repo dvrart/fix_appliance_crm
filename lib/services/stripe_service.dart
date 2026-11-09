@@ -111,7 +111,7 @@ class StripeService {
     final body = await _postJson('/createTerminalPaymentIntent', {
       'jobId': jobId,
       'documentIndex': documentIndex,
-      if (amount != null) 'amount': amount,
+      'amount': ?amount,
       if (tip > 0) 'tip': tip,
     });
     return StripeTerminalPaymentIntent(
@@ -157,7 +157,7 @@ class StripeService {
     final body = await _postJson('/createStripeRefund', {
       'jobId': jobId,
       'documentIndex': documentIndex,
-      if (amount != null) 'amount': amount,
+      'amount': ?amount,
     });
     return StripeRefundResult(
       refunded: (body['refunded'] as num?)?.toDouble() ?? 0,

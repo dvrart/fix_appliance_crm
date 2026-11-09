@@ -342,7 +342,7 @@ class _PostCallScreenState extends State<PostCallScreen>
       appBar: AppBar(
         title: Text(
           'Новая заявка из звонка'.tr,
-          style: TextStyle(fontWeight: FontWeight.bold),
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -353,7 +353,7 @@ class _PostCallScreenState extends State<PostCallScreen>
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
-            color: AppColors.accent.withOpacity(0.1),
+            color: AppColors.accent.withValues(alpha: 0.1),
             child: Column(
               children: [
                 Icon(
@@ -364,7 +364,7 @@ class _PostCallScreenState extends State<PostCallScreen>
                 const SizedBox(height: 8),
                 Text(
                   'Просто расскажите о звонке'.tr,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 16,
                   ),
@@ -487,7 +487,7 @@ class _PostCallScreenState extends State<PostCallScreen>
                           ),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: _isProcessing
-                                ? AppColors.primary.withOpacity(0.6)
+                                ? AppColors.primary.withValues(alpha: 0.6)
                                 : (_isListening ? Colors.red : AppColors.primary),
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(vertical: 16),

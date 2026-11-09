@@ -249,7 +249,7 @@ class _ClientsMapScreenState extends State<ClientsMapScreen> {
             LinearProgressIndicator(
               value: _pending == 0 ? null : _done / _pending,
               color: AppColors.accent,
-              backgroundColor: AppColors.accent.withOpacity(0.2),
+              backgroundColor: AppColors.accent.withValues(alpha: 0.2),
             ),
           if (_failed > 0 && !geocoding)
             Container(

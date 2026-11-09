@@ -487,7 +487,7 @@ class JobService {
     final updates = <String, dynamic>{
       'status': status,
       'updatedAt': FieldValue.serverTimestamp(),
-      if (extra != null) ...extra,
+      ...?extra,
     };
 
     if (JobStatuses.isCompletedStatus(status)) {
@@ -536,7 +536,7 @@ class JobService {
     await settleWrite(
       _ref.doc(id).update({
         'description': description,
-        if (solution != null) 'solution': solution,
+        'solution': ?solution,
         'updatedAt': FieldValue.serverTimestamp(),
       }),
     );

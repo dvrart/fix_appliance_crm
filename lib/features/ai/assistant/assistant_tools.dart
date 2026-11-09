@@ -278,9 +278,7 @@ class AssistantTools {
       args['job_query'] as String?,
       includeClosed: true,
     );
-    if (job == null) {
-      job = await resolveJob(args['query'] as String?, includeClosed: true);
-    }
+    job ??= await resolveJob(args['query'] as String?, includeClosed: true);
     if (job == null) {
       return {'ok': false, 'error': 'Не нашёл, кому отправлять SMS'};
     }

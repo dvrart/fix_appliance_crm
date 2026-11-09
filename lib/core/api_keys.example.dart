@@ -1,5 +1,6 @@
 /// API keys — copy this file to `api_keys.dart` and fill in real values.
 /// `api_keys.dart` is gitignored and must never be committed.
+library;
 
 const String kGoogleMapsApiKey = 'YOUR_GOOGLE_MAPS_API_KEY';
 

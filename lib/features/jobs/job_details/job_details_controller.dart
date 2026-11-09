@@ -1091,7 +1091,7 @@ class JobDetailsController extends ChangeNotifier {
         'needsReview': false,
       },
       if (JobStatuses.isCancelledStatus(status)) 'needsReview': false,
-      if (extra != null) ...extra,
+      ...?extra,
     });
     if (JobStatuses.isCompletedStatus(status) ||
         JobStatuses.isCancelledStatus(status)) {

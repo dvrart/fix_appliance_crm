@@ -1110,7 +1110,7 @@ class Job {
     var total = 0.0;
     for (final item in items) {
       if (item is! Map) continue;
-      final qty = _toDouble(item['qty'] == null ? 1 : item['qty']);
+      final qty = _toDouble(item['qty'] ?? 1);
       total += qty * _toDouble(item['price']);
     }
     return total;

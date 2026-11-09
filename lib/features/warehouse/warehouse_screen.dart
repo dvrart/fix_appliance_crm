@@ -372,7 +372,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
 
     // Флаг: диалог закрыт — async-колбэки не должны вызывать setDialogState
     // на уже деактивированном StatefulBuilder (→ «inactive element» error).
-    bool _gone = false;
+    bool gone = false;
     bool openSearchDone = false;
 
     showDialog(
@@ -381,10 +381,10 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       barrierDismissible: false,
       builder: (context) {
         return StatefulBuilder(
-          builder: (context, _rawSetState) {
+          builder: (context, rawSetState) {
             // Безопасная замена: игнорирует вызов, если диалог уже закрыт.
             void setDialogState(VoidCallback fn) {
-              if (!_gone && context.mounted) _rawSetState(fn);
+              if (!gone && context.mounted) rawSetState(fn);
             }
             void markDirty() {
               if (formDirty) return;
@@ -817,7 +817,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 model: modelController.text.trim(),
                 skip: webSkip,
               );
-              if (_gone || !context.mounted) {
+              if (gone || !context.mounted) {
                 // Окно закрыли, пока искали — файл никому не нужен.
                 if (found != null) unawaited(PartImageService.discard(found.imageUrl));
                 return;
@@ -903,7 +903,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 imageQuality: 70,
               );
               for (final file in files) {
-                if (_gone || !context.mounted) return;
+                if (gone || !context.mounted) return;
                 await uploadPhotoFile(File(file.path), asExtra: true);
               }
             }
@@ -1071,8 +1071,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                               .trim()
                                               .split(' ')
                                               .first;
-                                          if (possiblePart.isNotEmpty)
+                                          if (possiblePart.isNotEmpty) {
                                             parsedPart = possiblePart;
+                                          }
                                         }
                                         if (parsedPart.isEmpty &&
                                             partRegex.hasMatch(upperLine)) {
@@ -1105,8 +1106,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                               .split(' ')
                                               .first;
                                           if (possibleModel.isNotEmpty &&
-                                              possibleModel.length > 4)
+                                              possibleModel.length > 4) {
                                             parsedModel = possibleModel;
+                                          }
                                         }
 
                                         // Если явного слова MODEL нет, ищем по специфической структуре номера модели
@@ -1137,8 +1139,9 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                                 '',
                                               )
                                               .trim();
-                                          if (cleanName.length > 3)
+                                          if (cleanName.length > 3) {
                                             parsedName = cleanName;
+                                          }
                                         }
                                       }
 
@@ -1171,15 +1174,19 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                       );
 
                                       setDialogState(() {
-                                        if (parsedName.isNotEmpty)
+                                        if (parsedName.isNotEmpty) {
                                           nameController.text = parsedName;
-                                        if (parsedPart.isNotEmpty)
+                                        }
+                                        if (parsedPart.isNotEmpty) {
                                           partNumController.text = parsedPart;
-                                        if (parsedModel.isNotEmpty)
+                                        }
+                                        if (parsedModel.isNotEmpty) {
                                           modelController.text = parsedModel;
-                                        if (parsedBarcode.isNotEmpty)
+                                        }
+                                        if (parsedBarcode.isNotEmpty) {
                                           barcodeController.text =
                                               parsedBarcode;
+                                        }
                                         formDirty = true;
                                       });
 
@@ -1196,7 +1203,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                         ),
                                       );
 
-                                      if (context.mounted)
+                                      if (context.mounted) {
                                         ScaffoldMessenger.of(
                                           context,
                                         ).showSnackBar(
@@ -1207,6 +1214,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                             backgroundColor: Colors.green,
                                           ),
                                         );
+                                      }
 
                                       await checkDuplicate(
                                         partNumController.text,
@@ -1214,7 +1222,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                       await suggestReplacements();
                                       await findWebImage();
                                     } else {
-                                      if (context.mounted)
+                                      if (context.mounted) {
                                         ScaffoldMessenger.of(
                                           context,
                                         ).showSnackBar(
@@ -1224,6 +1232,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                             ),
                                           ),
                                         );
+                                      }
                                     }
                                     setDialogState(() => isAiThinking = false);
                                   }
@@ -1234,13 +1243,14 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                                     kind: 'сканер этикетки',
                                   );
                                   setDialogState(() => isAiThinking = false);
-                                  if (context.mounted)
+                                  if (context.mounted) {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
                                         content: Text('${'Ошибка сканера'.tr}: $e'),
                                         backgroundColor: Colors.red,
                                       ),
                                     );
+                                  }
                                 }
 
             }
@@ -1620,7 +1630,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               dirty: formDirty,
               onSave: () => saveItem(pop: false),
               onDispose: () {
-                _gone = true;
+                gone = true;
                 debounce?.cancel();
                 categoryDebounce?.cancel();
                 nameController.dispose();
@@ -1724,7 +1734,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                     const SizedBox(height: 8),
 
                     DropdownButtonFormField<String>(
-                      value: _categories.any((c) => c['name'] == itemCategory)
+                      initialValue: _categories.any((c) => c['name'] == itemCategory)
                           ? itemCategory
                           : 'Универсальное',
                       isDense: true,
@@ -1988,7 +1998,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       },
     ).whenComplete(() {
       // Диалог закрыт — блокируем все async setDialogState до отмены таймеров.
-      _gone = true;
+      gone = true;
       // Отложенный поиск дубля не должен стрелять по закрытому окну.
       debounce?.cancel();
       categoryDebounce?.cancel();
@@ -2134,7 +2144,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                 height: 56,
                 width: double.infinity,
                 fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                errorBuilder: (_, _, _) => const SizedBox.shrink(),
               ),
             ),
           if (imageUrl != null && imageUrl.isNotEmpty)
@@ -2323,7 +2333,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             itemCount: urls.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
             itemBuilder: (_, index) => thumb(index),
           ),
         ),
@@ -2581,7 +2591,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
       appBar: AppBar(
         title: Text(
           'Склад'.tr,
-          style: TextStyle(fontWeight: FontWeight.bold),
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -2687,17 +2697,19 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
             child: StreamBuilder<QuerySnapshot>(
               stream: _itemsStream,
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting)
+                if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(
                     child: CircularProgressIndicator(color: Color(0xFFFCC520)),
                   );
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty)
+                }
+                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                   return Center(
                     child: Text(
                       'Склад пуст.'.tr,
-                      style: TextStyle(color: Colors.grey),
+                      style: const TextStyle(color: Colors.grey),
                     ),
                   );
+                }
 
                 List<DocumentSnapshot> docs = snapshot.data!.docs.where((doc) {
                   final raw = doc.data();
@@ -2743,13 +2755,14 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                   }
                 });
 
-                if (docs.isEmpty)
+                if (docs.isEmpty) {
                   return Center(
                     child: Text(
                       'Ничего не найдено'.tr,
-                      style: TextStyle(color: Colors.grey),
+                      style: const TextStyle(color: Colors.grey),
                     ),
                   );
+                }
 
                 return ListView.builder(
                   padding: const EdgeInsets.symmetric(
@@ -2793,7 +2806,7 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
                         side: BorderSide(
-                          color: statusColor.withOpacity(0.4),
+                          color: statusColor.withValues(alpha: 0.4),
                           width: 1.5,
                         ),
                       ),

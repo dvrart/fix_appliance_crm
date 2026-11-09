@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../../core/app_feedback.dart';
 import '../../../core/constants.dart';
@@ -9,7 +9,6 @@ import '../../../models/job.dart';
 import '../../../services/services.dart';
 import '../../clients/client_details_screen.dart';
 import '../../care_plan/care_plan_widgets.dart';
-import '../../../shared/widgets/confirm_action_sheet.dart';
 import '../../../shared/widgets/unsaved_changes_dialog.dart';
 import '../../../shared/app_nav.dart';
 import '../../../shared/stale_routes.dart';

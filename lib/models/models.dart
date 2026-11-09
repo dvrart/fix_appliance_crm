@@ -1,4 +1,5 @@
 /// Экспорт всех моделей
+library;
 export 'client.dart';
 export 'contact.dart';
 export 'job.dart';

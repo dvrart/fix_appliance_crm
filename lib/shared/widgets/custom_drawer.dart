@@ -107,7 +107,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
                     ),
                     decoration: BoxDecoration(
                       color: AppColors.primary,
-                      borderRadius: BorderRadius.only(
+                      borderRadius: const BorderRadius.only(
                         bottomRight: Radius.circular(30),
                       ),
                     ),
@@ -174,8 +174,9 @@ class _CustomDrawerState extends State<CustomDrawer> {
                           onTap: () async {
                             if (!await UnsavedNavigationGate.allowLeave(
                               host: context,
-                            ))
+                            )) {
                               return;
+                            }
                             if (!context.mounted) return;
                             final open = AssistantHost.opener(context);
                             await _dismiss(context);

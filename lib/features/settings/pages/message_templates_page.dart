@@ -395,9 +395,9 @@ class _MessageTemplatesPageState extends State<MessageTemplatesPage> {
           ),
           if (_guideExpanded) ...[
             Divider(height: 1, color: AppColors.border),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
-              child: const PlaceholderGuideContent(),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(14, 10, 14, 14),
+              child: PlaceholderGuideContent(),
             ),
           ],
         ],
@@ -420,7 +420,7 @@ class _MessageTemplatesPageState extends State<MessageTemplatesPage> {
               ),
             ),
           ),
-          if (trailing != null) trailing,
+          ?trailing,
         ],
       ),
     );

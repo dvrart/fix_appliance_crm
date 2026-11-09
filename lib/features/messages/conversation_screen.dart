@@ -89,7 +89,7 @@ class _ScheduleDateTimeSheetState extends State<_ScheduleDateTimeSheet> {
     final m = diff.inMinutes % 60;
     if (h == 0) return 'через $m мин'.tr;
     if (m == 0) return 'через $h ч'.tr;
-    return 'через ${h} ч $m мин'.tr;
+    return 'через $h ч $m мин'.tr;
   }
 
   @override
@@ -2444,7 +2444,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                             ? 'Письма с сайта'.tr
                             : 'Нет писем — напишите первым'.tr)
                         : 'Нет SMS — напишите первым'.tr,
-                    style: TextStyle(color: Colors.grey),
+                    style: const TextStyle(color: Colors.grey),
                   ),
                 );
               }
@@ -3060,7 +3060,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                 child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
               );
             },
-            errorBuilder: (_, __, ___) => _fileTile(url, isOutbound),
+            errorBuilder: (_, _, _) => _fileTile(url, isOutbound),
           ),
         ),
       );
@@ -3581,7 +3581,7 @@ class _ConversationScreenState extends State<ConversationScreen>
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 itemCount: _attachments.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
                 itemBuilder: (context, index) {
                   final file = _attachments[index];
                   return Stack(

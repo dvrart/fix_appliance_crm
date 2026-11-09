@@ -957,7 +957,7 @@ class _SectionCard extends StatelessWidget {
                   ),
                 ),
               ),
-              if (titleTrailing != null) titleTrailing!,
+              ?titleTrailing,
             ],
           ),
           const SizedBox(height: 10),

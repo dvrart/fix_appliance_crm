@@ -159,10 +159,10 @@ class _CatalogPickerSheetState extends State<_CatalogPickerSheet> {
                     ),
                     if (filtered.isEmpty && q.isEmpty)
                       Padding(
-                        padding: EdgeInsets.all(24),
+                        padding: const EdgeInsets.all(24),
                         child: Text(
                           'Список пуст'.tr,
-                          style: TextStyle(color: Colors.grey),
+                          style: const TextStyle(color: Colors.grey),
                         ),
                       ),
                     if (q.isNotEmpty && !exactMatch)

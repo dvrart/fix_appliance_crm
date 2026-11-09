@@ -31,11 +31,11 @@ class ChatTab extends StatelessWidget {
               child: selected == null || !selected.hasChannel
                   ? Center(
                       child: Padding(
-                        padding: EdgeInsets.all(24),
+                        padding: const EdgeInsets.all(24),
                         child: Text(
                           'Нет телефона или email.\nДобавьте контакт клиента.'.tr,
                           textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.grey),
+                          style: const TextStyle(color: Colors.grey),
                         ),
                       ),
                     )

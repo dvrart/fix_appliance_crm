@@ -943,7 +943,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
           margin: const EdgeInsets.only(bottom: 8),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: BorderSide(color: StatusService.colorOf(status).withOpacity(0.3)),
+            side: BorderSide(color: StatusService.colorOf(status).withValues(alpha: 0.3)),
           ),
           child: InkWell(
             borderRadius: BorderRadius.circular(12),
@@ -1017,7 +1017,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: StatusService.colorOf(status).withOpacity(0.1),
+                                  color: StatusService.colorOf(status).withValues(alpha: 0.1),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Text(

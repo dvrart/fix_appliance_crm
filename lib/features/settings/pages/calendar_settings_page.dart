@@ -260,7 +260,7 @@ class TimeSourceDialog extends StatefulWidget {
   final String source;
   final String? zoneName;
 
-  const TimeSourceDialog({required this.source, this.zoneName});
+  const TimeSourceDialog({super.key, required this.source, this.zoneName});
 
   @override
   State<TimeSourceDialog> createState() => _TimeSourceDialogState();

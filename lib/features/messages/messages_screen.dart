@@ -194,12 +194,12 @@ class _MessagesScreenState extends State<MessagesScreen>
                   children: [
                     Icon(Icons.forum_outlined, size: 80, color: Colors.grey.shade300),
                     const SizedBox(height: 16),
-                    Text('Нет сообщений'.tr, style: TextStyle(fontSize: 18, color: Colors.grey)),
+                    Text('Нет сообщений'.tr, style: const TextStyle(fontSize: 18, color: Colors.grey)),
                     const SizedBox(height: 8),
                     Text(
                       'SMS и письма от клиентов\nпоявятся здесь'.tr,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey),
+                      style: const TextStyle(color: Colors.grey),
                     ),
                   ],
                 ),
@@ -284,7 +284,7 @@ class _MessagesScreenState extends State<MessagesScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Сообщения'.tr, style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Text('Сообщения'.tr, style: const TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
       ),

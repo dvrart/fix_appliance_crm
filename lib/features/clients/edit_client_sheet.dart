@@ -421,7 +421,7 @@ class _EditClientSheetState extends State<EditClientSheet> {
                             final sources = snap.data ??
                                 CatalogService.defaultLeadSources;
                             return DropdownButtonFormField<String>(
-                              value: sources.contains(source) ? source : null,
+                              initialValue: sources.contains(source) ? source : null,
                               decoration: InputDecoration(
                                 labelText: 'Откуда узнали'.tr,
                                 border: const OutlineInputBorder(),

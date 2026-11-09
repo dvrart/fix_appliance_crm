@@ -29,7 +29,7 @@ class EmailService {
               'to': email,
               'body': body.trim(),
               if (subject != null && subject.trim().isNotEmpty) 'subject': subject.trim(),
-              if (clientId != null) 'clientId': clientId,
+              'clientId': ?clientId,
               if (phone != null && phone.trim().isNotEmpty) 'phone': phone.trim(),
               if (urls.isNotEmpty) 'mediaUrls': urls,
               if (bodyRu != null && bodyRu.trim().isNotEmpty) 'bodyRu': bodyRu.trim(),

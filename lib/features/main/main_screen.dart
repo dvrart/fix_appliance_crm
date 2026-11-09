@@ -395,13 +395,13 @@ class _MainScreenState extends State<MainScreen>
           children: [
             ColoredBox(
               color: AppColors.primary,
-              child: SafeArea(
+              child: const SafeArea(
                 bottom: false,
                 child: SizedBox(
                   height: 44,
                   child: Stack(
                     alignment: Alignment.center,
-                    children: const [
+                    children: [
                       Center(child: AssistantFaceButton(size: 40)),
                       Positioned(left: 12, child: OfflineChip()),
                     ],

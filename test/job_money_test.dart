@@ -23,9 +23,9 @@ void main() {
       'items': items,
       'taxRate': taxRate,
       'payments': payments,
-      if (stripe != null) 'stripe': stripe,
-      if (deletedAt != null) 'deletedAt': deletedAt,
-      if (status != null) 'status': status,
+      'stripe': ?stripe,
+      'deletedAt': ?deletedAt,
+      'status': ?status,
     };
   }
 

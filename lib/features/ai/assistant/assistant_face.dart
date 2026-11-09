@@ -118,7 +118,7 @@ class AssistantFaceButton extends StatelessWidget {
     return ListenableBuilder(
       listenable: Listenable.merge([
         AppCommands.faceTick,
-        if (controller != null) controller,
+        ?controller,
       ]),
       builder: (context, _) {
         final mood = controller == null

@@ -573,8 +573,9 @@ class StatusService {
     final trimmed = status.trim();
     if (trimmed.isEmpty) return;
     final items = await loadDefsOnce();
-    if (items.any((item) => item.id == trimmed || item.label == trimmed))
+    if (items.any((item) => item.id == trimmed || item.label == trimmed)) {
       return;
+    }
     final used = {for (final item in items) item.colorValue};
     var color = colorValue ?? statusColorPalette.first;
     for (final candidate in statusColorPalette) {

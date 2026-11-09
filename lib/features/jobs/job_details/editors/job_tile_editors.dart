@@ -381,7 +381,7 @@ class _EditorScaffold extends StatelessWidget {
             bottomNavigationBar: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (bottom != null) bottom!,
+                ?bottom,
                 BottomConfirmButton(dirty: dirty, onPressed: onSave),
               ],
             ),

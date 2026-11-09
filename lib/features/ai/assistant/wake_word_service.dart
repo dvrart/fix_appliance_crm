@@ -39,16 +39,15 @@ class WakeWordService extends ChangeNotifier {
   /// [preferStt] — начать сразу с запасного Android STT. В бою этого делать
   /// не надо (он и щёлкает микрофоном); параметр нужен тестам, чтобы
   /// проверять запасной путь, не завися от ключа Gemini.
-  /// [analyzer] — подмена разбора PCM для тестов без сети.
+  /// [_analyzer] — подмена разбора PCM для тестов без сети.
   WakeWordService({
     AudioRecorder? recorder,
     stt.SpeechToText? speech,
     bool preferStt = false,
-    Future<({String text, bool wake})> Function(Uint8List pcm)? analyzer,
+    this._analyzer,
   })  : _recorder = recorder ?? AudioRecorder(),
         _stt = speech ?? stt.SpeechToText(),
-        _useStt = preferStt,
-        _analyzer = analyzer;
+        _useStt = preferStt;
 
   final AudioRecorder _recorder;
   final stt.SpeechToText _stt;

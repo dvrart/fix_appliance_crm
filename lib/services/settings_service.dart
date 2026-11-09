@@ -32,7 +32,7 @@ class SettingsService {
   }
 
   static const String defaultOnWaySms =
-      "Hi {name}! 🚗\nYour technician is on the way — about 30 minutes.";
+      'Hi {name}! 🚗\nYour technician is on the way — about 30 minutes.';
   static const String defaultPartOrderedSms =
       'The part for your appliance is ordered. 🔧\nDelivery is usually 3–5 days.';
   /// Красиво, но без промо-блока: длинный текст с рядом звёзд и «supporting
@@ -139,7 +139,7 @@ class SettingsService {
       section: 'Документы и оплата',
       defaultTitle: 'Ссылка на оплату',
       icon: Icons.link,
-      color: Color(0xFF635BFF),
+      color: const Color(0xFF635BFF),
     ),
   ];
 

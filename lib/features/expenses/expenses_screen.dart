@@ -753,7 +753,7 @@ class _ExpenseEditPageState extends State<ExpenseEditPage> {
           ),
           const SizedBox(height: 10),
           DropdownButtonFormField<String>(
-            value: _draft.category,
+            initialValue: _draft.category,
             decoration: InputDecoration(
               labelText: context.tr('Категория', 'Category'),
               filled: true,

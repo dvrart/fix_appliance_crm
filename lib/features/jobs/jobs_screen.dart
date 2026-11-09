@@ -383,7 +383,7 @@ class _JobsScreenState extends State<JobsScreen> {
           Text(
             'Нет активных работ.\nСоздайте их кнопкой ниже.'.tr,
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey, fontSize: 16),
+            style: const TextStyle(color: Colors.grey, fontSize: 16),
           ),
         ],
       ),

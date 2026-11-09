@@ -507,7 +507,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                             // --- УМНЫЙ ПОИСК АДРЕСА (как в create_job_screen) ---
                             Text(
                               'АДРЕС'.tr,
-                              style: TextStyle(
+                              style: const TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.bold,
                                 color: Colors.grey,
@@ -583,8 +583,8 @@ class _ClientsScreenState extends State<ClientsScreen> {
                               maxLines: 3,
                               decoration: InputDecoration(
                                 labelText: 'Описание'.tr,
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.notes),
+                                border: const OutlineInputBorder(),
+                                prefixIcon: const Icon(Icons.notes),
                               ),
                             ),
                             const SizedBox(height: 12),
@@ -593,11 +593,11 @@ class _ClientsScreenState extends State<ClientsScreen> {
                               builder: (context, snap) {
                                 final sources = snap.data ?? CatalogService.defaultLeadSources;
                                 return DropdownButtonFormField<String>(
-                                  value: sources.contains(source) ? source : null,
+                                  initialValue: sources.contains(source) ? source : null,
                                   decoration: InputDecoration(
                                     labelText: 'Откуда узнали'.tr,
-                                    border: OutlineInputBorder(),
-                                    prefixIcon: Icon(Icons.campaign_outlined),
+                                    border: const OutlineInputBorder(),
+                                    prefixIcon: const Icon(Icons.campaign_outlined),
                                   ),
                                   items: [
                                     DropdownMenuItem(
@@ -619,8 +619,8 @@ class _ClientsScreenState extends State<ClientsScreen> {
                               textCapitalization: TextCapitalization.words,
                               decoration: InputDecoration(
                                 labelText: 'Название компании (опционально)'.tr,
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.business),
+                                border: const OutlineInputBorder(),
+                                prefixIcon: const Icon(Icons.business),
                               ),
                             ),
                           ],
@@ -1270,7 +1270,7 @@ class _ClientsScreenState extends State<ClientsScreen> {
                     child: Text(
                       'Список клиентов пуст.\nНажмите (+) чтобы добавить.'.tr,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey),
+                      style: const TextStyle(color: Colors.grey),
                     ),
                   );
                 }

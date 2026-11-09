@@ -760,7 +760,7 @@ class SmsService {
           if (urls.isNotEmpty) 'mediaUrls': urls,
           if (bodyRu != null && bodyRu.trim().isNotEmpty) 'bodyRu': bodyRu.trim(),
           if (fallback.isNotEmpty) 'fallbackBody': SmsText.formatSentences(fallback),
-          if (visitBooking != null) 'visitBooking': visitBooking,
+          'visitBooking': ?visitBooking,
         }),
       )
           .timeout(const Duration(seconds: 40));

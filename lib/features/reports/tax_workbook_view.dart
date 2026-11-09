@@ -995,7 +995,7 @@ class TaxWorkbookView extends StatelessWidget {
         build: (context) => [
           pw.Text(
             'T2 / GST workbook (from Fix Appliance CRM)',
-            style: pw.TextStyle(font: bold, fontSize: 16, color: PdfColor.fromInt(0xFF14557F)),
+            style: pw.TextStyle(font: bold, fontSize: 16, color: const PdfColor.fromInt(0xFF14557F)),
           ),
           pw.SizedBox(height: 6),
           pw.Text(f.companyName.isEmpty ? 'Fix Appliance' : f.companyName),

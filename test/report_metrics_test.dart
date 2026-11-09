@@ -27,7 +27,7 @@ void main() {
       'items': items,
       'taxRate': taxRate,
       'payments': payments,
-      if (stripe != null) 'stripe': stripe,
+      'stripe': ?stripe,
     };
   }
 

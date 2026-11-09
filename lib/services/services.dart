@@ -1,4 +1,5 @@
 /// Экспорт всех сервисов
+library;
 export 'firestore_service.dart';
 export 'client_service.dart';
 export 'job_service.dart';

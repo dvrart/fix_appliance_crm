@@ -482,7 +482,7 @@ class _RouteMapViewState extends State<RouteMapView> {
         if (_skippedCount > 0)
           Container(
             width: double.infinity,
-            color: Colors.orange.withOpacity(0.12),
+            color: Colors.orange.withValues(alpha: 0.12),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
             child: Text(
               '$_skippedCount ${'заявок без адреса не включены в маршрут'.tr}',

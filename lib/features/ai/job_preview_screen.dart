@@ -516,7 +516,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
               : (_existingClient != null
                   ? 'Новая заявка'.tr
                   : 'Проверьте данные'.tr),
-          style: TextStyle(fontWeight: FontWeight.bold),
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -703,12 +703,12 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
               child: SwitchListTile(
                 title: Text(
                   'Другой адрес работы (арендатор)'.tr,
-                  style: TextStyle(fontWeight: FontWeight.bold),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 subtitle: Text('Техника находится по другому адресу'.tr),
                 value: _hasJobSite,
                 onChanged: (val) => setState(() => _hasJobSite = val),
-                activeColor: AppColors.primary,
+                activeThumbColor: AppColors.primary,
               ),
             ),
 
@@ -878,7 +878,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
             ExpansionTile(
               title: Text(
                 'Исходный текст'.tr,
-                style: TextStyle(fontWeight: FontWeight.bold),
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
               leading: const Icon(Icons.text_snippet),
               children: [

@@ -137,7 +137,7 @@ class DocumentTemplateService {
                     maxLines: 8,
                     decoration: InputDecoration(
                       labelText: 'Текст SMS'.tr,
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
                       alignLabelWithHint: true,
                     ),
                   ),
@@ -474,7 +474,7 @@ class DocumentTemplateService {
           children: [
             pw.Text(
               settings.companyName,
-              style: pw.TextStyle(
+              style: const pw.TextStyle(
                 fontSize: 14,
                 fontWeight: pw.FontWeight.bold,
               ),
@@ -501,7 +501,7 @@ class DocumentTemplateService {
         children: [
           pw.Text(
             '#${data.documentNumber.toString().padLeft(6, '0')}',
-            style: pw.TextStyle(
+            style: const pw.TextStyle(
               fontSize: 16,
               fontWeight: pw.FontWeight.bold,
             ),
@@ -567,7 +567,7 @@ class DocumentTemplateService {
           children: [
             pw.Text(
               title.toUpperCase(),
-              style: pw.TextStyle(
+              style: const pw.TextStyle(
                 fontSize: 9,
                 fontWeight: pw.FontWeight.bold,
                 color: PdfColors.grey700,
@@ -655,7 +655,7 @@ class DocumentTemplateService {
               data.subject.trim().isEmpty
                   ? '${settings.titleFor(data.kind)} for ${data.clientName}'
                   : data.subject.trim(),
-              style: pw.TextStyle(
+              style: const pw.TextStyle(
                 fontSize: 16,
                 fontWeight: pw.FontWeight.bold,
               ),
@@ -688,7 +688,7 @@ class DocumentTemplateService {
             ),
             pw.SizedBox(height: 18),
             pw.TableHelper.fromTextArray(
-              headerStyle: pw.TextStyle(
+              headerStyle: const pw.TextStyle(
                 fontWeight: pw.FontWeight.bold,
                 fontSize: 10,
               ),
@@ -747,7 +747,7 @@ class DocumentTemplateService {
               pw.SizedBox(height: 18),
               pw.Text(
                 'Payments',
-                style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12),
+                style: const pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12),
               ),
               pw.SizedBox(height: 6),
               for (final payment in data.payments)
@@ -796,7 +796,7 @@ class DocumentTemplateService {
               pw.SizedBox(height: 22),
               pw.Text(
                 'Customer signature',
-                style: pw.TextStyle(
+                style: const pw.TextStyle(
                   fontSize: 9,
                   fontWeight: pw.FontWeight.bold,
                   color: PdfColors.grey700,

@@ -148,7 +148,7 @@ class AppTheme {
       progressIndicatorTheme: ProgressIndicatorThemeData(
         color: highlight,
       ),
-      snackBarTheme: SnackBarThemeData(
+      snackBarTheme: const SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
         dismissDirection: DismissDirection.horizontal,
       ),

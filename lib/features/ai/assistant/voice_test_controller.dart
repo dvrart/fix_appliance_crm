@@ -146,7 +146,7 @@ Do not hang up. Always wait for the owner to speak first.
             statusText = 'Error';
             notifyListeners();
           },
-          onClose: (_, __) {},
+          onClose: (_, _) {},
         ),
       ),
     );

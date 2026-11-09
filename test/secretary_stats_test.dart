@@ -20,8 +20,8 @@ void main() {
       'direction': direction,
       'status': 'completed',
       if (engine != null) 'aiReception': {'engine': engine},
-      if (recordingUrl != null) 'recordingUrl': recordingUrl,
-      if (jobId != null) 'createdJobId': jobId,
+      'recordingUrl': ?recordingUrl,
+      'createdJobId': ?jobId,
     }, id);
   }
 
@@ -29,7 +29,7 @@ void main() {
     return Job.fromMap({
       'clientName': 'Will',
       'createdAt': '2026-10-01T10:00:00.000Z',
-      if (sourceCallId != null) 'sourceCallId': sourceCallId,
+      'sourceCallId': ?sourceCallId,
       'documents': [
         {
           'type': 'Invoice',
