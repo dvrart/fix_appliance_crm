@@ -149,7 +149,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
       context,
       title: 'Удалить визит?'.tr,
       message:
-          '${appDateTimeLabel(visit.startAt)}\n\n${'Остальные визиты, счёт и оплаты останутся на месте.'.tr}',
+          '${appDateTimeLabel(visit.startAt, withTime: visit.hasTime)}\n\n${'Остальные визиты, счёт и оплаты останутся на месте.'.tr}',
       confirmLabel: 'Удалить'.tr,
     );
     if (!ok || !mounted) return;
@@ -207,7 +207,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
                     color: AppColors.inkMuted,
                   ),
                   title: Text(
-                    appDateTimeLabel(visit.startAt),
+                    appDateTimeLabel(visit.startAt, withTime: visit.hasTime),
                     style: const TextStyle(
                       fontWeight: FontWeight.w800,
                       fontSize: 15,

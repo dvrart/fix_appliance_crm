@@ -615,7 +615,9 @@ class _JobsScreenState extends State<JobsScreen> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          Formatters.formatTime(entry.visit.startAt),
+                          entry.visit.hasTime
+                              ? Formatters.formatTime(entry.visit.startAt)
+                              : '—',
                           maxLines: 1,
                           style: TextStyle(
                             color: AppColors.primaryOnCard,
@@ -624,15 +626,16 @@ class _JobsScreenState extends State<JobsScreen> {
                             height: 1.1,
                           ),
                         ),
-                        Text(
-                          Formatters.formatTime(_entryEnd(entry)),
-                          maxLines: 1,
-                          style: TextStyle(
-                            color: AppColors.inkMuted,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 11,
+                        if (entry.visit.hasTime)
+                          Text(
+                            Formatters.formatTime(_entryEnd(entry)),
+                            maxLines: 1,
+                            style: TextStyle(
+                              color: AppColors.inkMuted,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 11,
+                            ),
                           ),
-                        ),
                       ],
                     ),
                   ),

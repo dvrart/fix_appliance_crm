@@ -720,10 +720,19 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                   visit.id,
                                 );
                                 realMinutesById[appointmentId] = minutes;
+                                final effectiveStart = visit.hasTime
+                                    ? visit.startAt
+                                    : DateTime(
+                                        visit.startAt.year,
+                                        visit.startAt.month,
+                                        visit.startAt.day,
+                                      ).add(
+                                        Duration(minutes: _workStartMinutes),
+                                      );
                                 appointments.add(
                                   Appointment(
-                                    startTime: visit.startAt,
-                                    endTime: visit.startAt.add(
+                                    startTime: effectiveStart,
+                                    endTime: effectiveStart.add(
                                       Duration(minutes: _cardMinutes(minutes)),
                                     ),
                                     color: _appointmentColor(job, visit),

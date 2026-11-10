@@ -122,7 +122,10 @@ class JobAgendaCard extends StatelessWidget {
     final address = job.workAddress.trim();
     final nameSize = 15.5 * ui.cardNameScale;
     final when = visit?.startAt ?? job.scheduledAt;
-    final timeLabel = showTime ? Formatters.formatTime(when) : '';
+    final hasTime = visit != null
+        ? visit!.hasTime
+        : (when != null && (when.hour != 0 || when.minute != 0));
+    final timeLabel = showTime && hasTime ? Formatters.formatTime(when) : '';
 
     return Material(
       color: ui.paperColor,
@@ -357,7 +360,10 @@ class JobAgendaCard extends StatelessWidget {
   }) {
     final nameSize = 14.5 * ui.cardNameScale;
     final when = visit?.startAt ?? job.scheduledAt;
-    final timeLabel = showTime ? Formatters.formatTime(when) : '';
+    final hasTime = visit != null
+        ? visit!.hasTime
+        : (when != null && (when.hour != 0 || when.minute != 0));
+    final timeLabel = showTime && hasTime ? Formatters.formatTime(when) : '';
     final fill = Color.alphaBlend(
       statusColor.withValues(alpha: 0.22),
       ui.paperColor,
@@ -549,7 +555,10 @@ class JobAgendaCard extends StatelessWidget {
   }) {
     final nameSize = 14.5 * ui.cardNameScale;
     final when = visit?.startAt ?? job.scheduledAt;
-    final timeLabel = showTime ? Formatters.formatTime(when) : '';
+    final hasTime = visit != null
+        ? visit!.hasTime
+        : (when != null && (when.hour != 0 || when.minute != 0));
+    final timeLabel = showTime && hasTime ? Formatters.formatTime(when) : '';
     final address = job.workAddress.trim();
     final isJobCancelled = JobStatuses.isCancelledStatus(job.status);
     final mutedStatus = Color.alphaBlend(

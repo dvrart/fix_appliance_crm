@@ -63,9 +63,11 @@ class AssistantController extends ChangeNotifier {
 Если мастер просит открыть раздел «Ошибка и диагностика» на экране («открой ошибки», «открой диагностику», «покажи коды ошибок Samsung») — вызови open_diagnostics.
 Отвечай по карточкам из справочника: расшифровка ошибки, кнопки входа в тест, шаги проверки, омы, выход, типичный ремонт. Если found=false — так и скажи, не сочиняй процедуру.
 
-Если мастер говорит «отправь SMS, что я поехал» — вызови send_sms с template=on_way и job_query=следующая, если не назван клиент.
-Если просит написать клиенту свой текст (перенос, «буду сегодня», ответ на вопрос) — вызови send_sms с text=готовое сообщение. Не обещай, что отправил, пока инструмент не вернул ok.
-Если мастер говорит перенести визит на день и время — вызови reschedule_visit (date=YYYY-MM-DD, time=HH:mm). Инструмент сам запишет новую дату на заявку и отправит клиенту SMS с этой датой и временем. Не говори, что перенёс, пока инструмент не вернул ok и scheduled_at.
+Если мастер просит отправить SMS («я уже в пути, буду через 20 минут», перенос, свой текст):
+- если мастер назвал имя клиента, фамилию, улицу или город — передай его в job_query (лучше латиницей, как в базе, например John, Michael, Sarah, или сначала проверь через list_jobs / search_clients, чтобы точно не перепутать клиента). НИКОГДА не передавай job_query=следующая, если мастер назвал конкретного клиента;
+- если мастер НЕ назвал клиента — передай job_query=открытая (если речь про открытую карточку) или job_query=следующая;
+- если мастер сказал время прибытия или свой текст (например «буду через 20 минут») — обязательно передай готовый текст на английском в поле text (например: "Hello, this is your technician. I am on my way and will be there in about 20 minutes."). Не обещай, что отправил, пока инструмент не вернул ok.
+Если мастер говорит перенести визит на другой день (с временем или только на день без времени) — вызови reschedule_visit (date=YYYY-MM-DD, и time=HH:mm если время названо). Не говори, что перенёс, пока инструмент не вернул ok и scheduled_at.
 После действия коротко скажи, что сделал и кому.
 Сегодняшняя дата и время приходят из инструментов. Не выдумывай заявки: сначала вызови list_jobs или get_job.
 ВАЖНО про клиентов с несколькими объектами: у одного клиента (лендлорда, управляющего недвижимостью, например Kyle Malinouski) может быть несколько мест проведения работ (разные адреса и разные арендаторы), при этом мастер переписывается с ним с одного и того же номера телефона. Поэтому в одной переписке по одному номеру могут обсуждаться разные адреса и заявки. Всегда различай заявки одного клиента по адресу объекта (address / job_site_address) и контакту на месте (contact_name), проверяй все открытые заявки этого клиента через list_jobs или get_job и не путай один адрес клиента с другим.
@@ -117,9 +119,11 @@ If they mean the current job, call get_job first, then lookup_service_guide with
 If they ask to open the "Errors & diagnostics" screen ("open diagnostics", "show error codes") — call open_diagnostics.
 Answer from the guide cards: error meaning, how to enter test mode, steps, ohms, how to exit, typical fix. If found=false, say the guide has no card — do not invent a sequence.
 
-If they say "send SMS that I'm on my way" — call send_sms with template=on_way and job_query=next if no client is named.
-If they want you to text the client a custom reply (reschedule, "I'll be there today", answer a question) — call send_sms with text=the message. Do not claim you sent it until the tool returns ok.
-If they ask to move a visit to a day and time — call reschedule_visit (date=YYYY-MM-DD, time=HH:mm). The tool writes the new date on the job and texts the client with that date and time. Do not say it was moved until the tool returns ok and scheduled_at.
+If they ask to send an SMS ("I'm on my way, I'll be there in 20 minutes", reschedule, custom message):
+- if they named a client, street, or city — pass that exact client name/address in job_query (in English Latin as stored in CRM, or call list_jobs / search_clients first to verify the exact client). NEVER pass job_query=next when a specific client was named;
+- if no client was named — pass job_query=current (if referring to the open card) or job_query=next;
+- if they mentioned an ETA or custom details (e.g. "will be there in 20 minutes"), pass the full English message in text. Do not claim you sent it until the tool returns ok.
+If they ask to move a visit to a day (with a time, or date only without a time) — call reschedule_visit (date=YYYY-MM-DD, and time=HH:mm if given). Do not say it was moved until the tool returns ok and scheduled_at.
 After an action, say briefly what you did and for whom.
 Today's date and time come from tools. Do not invent jobs: call list_jobs or get_job first.
 IMPORTANT about multi-property clients: one client (landlord or property manager, e.g. Kyle Malinouski) can have multiple job sites / properties at different addresses while texting and calling from a single phone number. In the same SMS thread with that phone number, different messages may refer to different addresses and jobs. Always distinguish a client's jobs by their work address (address / job_site_address) and on-site tenant (contact_name), check all open jobs for that client via list_jobs or get_job, and never mix up one property address with another.
@@ -841,7 +845,7 @@ IMPORTANT about multi-property clients: one client (landlord or property manager
         behavior: Behavior.BLOCKING,
         name: 'send_sms',
         description:
-            'Отправить SMS клиенту. Можно шаблон on_way/parts/done ИЛИ свой text (ответ про перенос, «буду сегодня» и т.д.). job_query: следующая или имя.',
+            'Отправить SMS клиенту. job_query: имя клиента (латиницей, как в базе), адрес, телефон, «открытая» или «следующая» (только если клиент не назван). Можно шаблон on_way/parts/done ИЛИ свой text (например с точным временем прибытия «через 20 минут»).',
         parameters: {
           'type': 'OBJECT',
           'properties': {
@@ -849,13 +853,14 @@ IMPORTANT about multi-property clients: one client (landlord or property manager
             'template': {'type': 'STRING'},
             'text': {'type': 'STRING'},
           },
+          'required': ['job_query'],
         },
       ),
       FunctionDeclaration(
         behavior: Behavior.BLOCKING,
         name: 'reschedule_visit',
         description:
-            'Перенести визит заявки на новую дату и время. date=YYYY-MM-DD (или Tuesday / next Tuesday), time=HH:mm. Сам пишет дату в заявку и шлёт клиенту SMS с этой датой.',
+            'Перенести визит заявки на новую дату (и время, если указано). date=YYYY-MM-DD (или Tuesday / next Tuesday), time=HH:mm (необязательно, если известен только день).',
         parameters: {
           'type': 'OBJECT',
           'properties': {
@@ -863,7 +868,7 @@ IMPORTANT about multi-property clients: one client (landlord or property manager
             'date': {'type': 'STRING'},
             'time': {'type': 'STRING'},
           },
-          'required': ['date', 'time'],
+          'required': ['date'],
         },
       ),
       FunctionDeclaration(

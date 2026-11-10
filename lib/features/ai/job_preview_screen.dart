@@ -254,18 +254,22 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
   Future<void> _pickDateTime() async {
     final now = DateTime.now();
     final day = _scheduledDate ?? now;
-    final time = _scheduledTime ?? TimeOfDay.fromDateTime(now);
+    final time = _scheduledTime ?? const TimeOfDay(hour: 10, minute: 0);
     final picked = await showAppDateTimeSheet(
       context: context,
       initial: DateTime(day.year, day.month, day.day, time.hour, time.minute),
       firstDate: now,
       lastDate: now.add(const Duration(days: 365)),
       title: 'Дата и время визита'.tr,
+      optionalTime: true,
+      initialWithTime: _scheduledTime != null,
     );
     if (picked == null || !mounted) return;
     setState(() {
       _scheduledDate = DateTime(picked.year, picked.month, picked.day);
-      _scheduledTime = TimeOfDay.fromDateTime(picked);
+      _scheduledTime = picked.hour == 0 && picked.minute == 0
+          ? null
+          : TimeOfDay.fromDateTime(picked);
     });
   }
 
@@ -358,15 +362,21 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
       }
 
       // Создаём дату-время визита
-      final scheduledAt = _scheduledDate != null && _scheduledTime != null
-          ? DateTime(
-              _scheduledDate!.year,
-              _scheduledDate!.month,
-              _scheduledDate!.day,
-              _scheduledTime!.hour,
-              _scheduledTime!.minute,
-            )
-          : null;
+      final scheduledAt = _scheduledDate == null
+          ? null
+          : (_scheduledTime != null
+                ? DateTime(
+                    _scheduledDate!.year,
+                    _scheduledDate!.month,
+                    _scheduledDate!.day,
+                    _scheduledTime!.hour,
+                    _scheduledTime!.minute,
+                  )
+                : DateTime(
+                    _scheduledDate!.year,
+                    _scheduledDate!.month,
+                    _scheduledDate!.day,
+                  ));
 
       // Создаём заявку
       final ownerAddress = existing != null &&

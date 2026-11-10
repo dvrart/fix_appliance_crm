@@ -304,11 +304,15 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
       firstDate: DateTime(2023),
       lastDate: DateTime(2030),
       title: 'Дата и время визита'.tr,
+      optionalTime: true,
+      initialWithTime: _selectedTime != null,
     );
     if (picked == null || !mounted) return;
     setState(() {
       _selectedDate = DateTime(picked.year, picked.month, picked.day);
-      _selectedTime = TimeOfDay.fromDateTime(picked);
+      _selectedTime = picked.hour == 0 && picked.minute == 0
+          ? null
+          : TimeOfDay.fromDateTime(picked);
     });
     _markDirty();
   }
@@ -379,15 +383,21 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         unit: _clientUnitCtrl.text.trim(),
       );
 
-      final jobDateTime = _selectedDate != null && _selectedTime != null
-          ? DateTime(
-              _selectedDate!.year,
-              _selectedDate!.month,
-              _selectedDate!.day,
-              _selectedTime!.hour,
-              _selectedTime!.minute,
-            )
-          : null;
+      final jobDateTime = _selectedDate == null
+          ? null
+          : (_selectedTime != null
+                ? DateTime(
+                    _selectedDate!.year,
+                    _selectedDate!.month,
+                    _selectedDate!.day,
+                    _selectedTime!.hour,
+                    _selectedTime!.minute,
+                  )
+                : DateTime(
+                    _selectedDate!.year,
+                    _selectedDate!.month,
+                    _selectedDate!.day,
+                  ));
 
       final appliances = _appliances
           .map(
@@ -1364,9 +1374,14 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                   size: 28,
                 ),
                 label: Text(
-                  _selectedDate == null || _selectedTime == null
+                  _selectedDate == null
                       ? 'Нажмите, чтобы выбрать'.tr
-                      : '${DateFormat('dd MMMM yyyy', AppLocale.instance.dateLocale).format(_selectedDate!)}  ${'в'.tr}  ${_selectedTime!.format(context)}',
+                      : (_selectedTime == null
+                            ? DateFormat(
+                                'dd MMMM yyyy',
+                                AppLocale.instance.dateLocale,
+                              ).format(_selectedDate!)
+                            : '${DateFormat('dd MMMM yyyy', AppLocale.instance.dateLocale).format(_selectedDate!)}  ${'в'.tr}  ${_selectedTime!.format(context)}'),
                   style: TextStyle(color: AppColors.ink, fontSize: 16),
                 ),
                 style: OutlinedButton.styleFrom(

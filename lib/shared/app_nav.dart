@@ -94,6 +94,22 @@ class AppNav {
   static List<Route<dynamic>> pagesOf(NavigatorState navigator) =>
       _observers[navigator]?.pages ?? const <Route<dynamic>>[];
 
+  /// Ключ верхней открытой карточки (`card:job:...`, `card:client:...`, `card:chat:...`),
+  /// если сейчас на экране открыта карточка.
+  static String? get topCardKey {
+    for (final nav in [rootNavigatorKey.currentState, activeTabNavigator]) {
+      if (nav == null) continue;
+      final pages = pagesOf(nav);
+      for (var i = pages.length - 1; i >= 0; i--) {
+        final route = pages[i];
+        if (route.isActive && isCard(route)) {
+          return route.settings.name;
+        }
+      }
+    }
+    return null;
+  }
+
   /// Открывает карточку [key]. Если она уже в стеке — возвращается к ней.
   static Future<T?> openCard<T>(
     BuildContext context, {

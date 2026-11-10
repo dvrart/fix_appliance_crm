@@ -243,6 +243,8 @@ class JobVisit {
   DateTime get endAt =>
       startAt.add(Duration(minutes: durationMinutes.clamp(15, 8 * 60)));
 
+  bool get hasTime => startAt.hour != 0 || startAt.minute != 0;
+
   bool get isDone => outcome == done;
   bool get isScheduled => outcome == scheduled;
   bool get isCancelled =>
@@ -1062,7 +1064,17 @@ class Job {
   JobVisit? nextActiveVisit({DateTime? now}) {
     final instant = (now ?? DateTime.now()).toUtc();
     for (final visit in activeVisits) {
-      if (visit.endAt.toUtc().isAfter(instant)) return visit;
+      final effectiveEnd = visit.hasTime
+          ? visit.endAt
+          : DateTime(
+              visit.startAt.year,
+              visit.startAt.month,
+              visit.startAt.day,
+              23,
+              59,
+              59,
+            );
+      if (effectiveEnd.toUtc().isAfter(instant)) return visit;
     }
     return null;
   }

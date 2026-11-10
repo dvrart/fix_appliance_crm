@@ -11,6 +11,7 @@ import '../../../services/message_translate_service.dart';
 import '../../../services/service_guide_service.dart';
 import '../../../services/settings_service.dart';
 import '../../../services/sms_service.dart';
+import '../../../shared/app_nav.dart';
 import 'assistant_actions.dart';
 
 class AssistantTools {
@@ -97,21 +98,453 @@ class AssistantTools {
     };
   }
 
-  static Future<Job?> resolveJob(String? query, {bool includeClosed = false}) async {
+  static bool _isNextKeyword(String q) =>
+      q == 'next' ||
+      q == 'следующая' ||
+      q == 'следующий' ||
+      q == 'следующему' ||
+      q == 'ближайшая' ||
+      q == 'ближайший' ||
+      q == 'ближайшему' ||
+      q.contains('следующ') ||
+      q.contains('ближайш');
+
+  static bool _isCurrentScreenKeyword(String q) =>
+      q == 'current' ||
+      q == 'open' ||
+      q == 'screen' ||
+      q == 'текущая' ||
+      q == 'текущий' ||
+      q == 'текущему' ||
+      q == 'открытая' ||
+      q == 'открытый' ||
+      q == 'открытому' ||
+      q == ' эта' ||
+      q == 'эта' ||
+      q == 'эту' ||
+      q == 'этой' ||
+      q == 'этого' ||
+      q == 'этому';
+
+  static Future<Job?> _resolveOpenScreenJob(List<Job> jobs) async {
+    final key = AppNav.topCardKey;
+    if (key == null || key.isEmpty) return null;
+    if (key.startsWith('card:job:')) {
+      final jobId = key.substring('card:job:'.length).trim();
+      for (final job in jobs) {
+        if (job.id == jobId) return job;
+      }
+      return JobService.getById(jobId);
+    }
+    final jobMarker = key.indexOf(':job:');
+    if (jobMarker >= 0) {
+      final jobId = key.substring(jobMarker + 5).trim();
+      for (final job in jobs) {
+        if (job.id == jobId) return job;
+      }
+      return JobService.getById(jobId);
+    }
+    if (key.startsWith('card:client:')) {
+      final clientId = key.substring('card:client:'.length).trim();
+      for (final job in jobs) {
+        if (job.clientId == clientId && !JobStatuses.isClosed(job.status)) {
+          return job;
+        }
+      }
+      for (final job in jobs) {
+        if (job.clientId == clientId) return job;
+      }
+    }
+    if (key.startsWith('card:chat:')) {
+      final rest = key.substring('card:chat:'.length).trim();
+      final digits = ClientService.normalizePhone(rest);
+      if (digits.length >= 10) {
+        for (final job in jobs) {
+          if (!JobStatuses.isClosed(job.status) &&
+              (ClientService.normalizePhone(job.contactPhone) == digits ||
+                  ClientService.normalizePhone(job.clientPhone) == digits)) {
+            return job;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Приводит русское или английское имя/слово к единому фонетическому виду
+  /// латиницей, чтобы «Майклу» находило «Michael», «Джону» — «John»,
+  /// «Брэнтфорд» — «Brantford» и т.д.
+  static String _phonetic(String input) {
+    var s = input.toLowerCase().trim();
+    if (s.isEmpty) return '';
+    const aliases = <String, String>{
+      'майкл': 'michael',
+      'майк': 'mike',
+      'джон': 'john',
+      'джони': 'johnny',
+      'джонатан': 'jonathan',
+      'сара': 'sarah',
+      'кud': 'kyle',
+      'кайл': 'kyle',
+      'дэвид': 'david',
+      'дейв': 'dave',
+      'дэйв': 'dave',
+      'алекс': 'alex',
+      'александр': 'alexander',
+      'стивен': 'steven',
+      'стив': 'steve',
+      'роберт': 'robert',
+      'боб': 'bob',
+      'уильям': 'william',
+      'билл': 'bill',
+      'джеймс': 'james',
+      'джим': 'jim',
+      'ричард': 'richard',
+      'рик': 'rick',
+      'чарльз': 'charles',
+      'чарли': 'charlie',
+      'джозеф': 'joseph',
+      'джо': 'joe',
+      'томас': 'thomas',
+      'том': 'tom',
+      'кристофер': 'christopher',
+      'крис': 'chris',
+      'дэниел': 'daniel',
+      'даниэль': 'daniel',
+      'дэн': 'dan',
+      'пол': 'paul',
+      'марк': 'mark',
+      'дональд': 'donald',
+      'джордж': 'george',
+      'кеннет': 'kenneth',
+      'стивeн': 'steven',
+      'эдвард': 'edward',
+      'брайан': 'brian',
+      'рональд': 'ronald',
+      'энтони': 'anthony',
+      'кевин': 'kevin',
+      'джейсон': 'jason',
+      'мэттью': 'matthew',
+      'мэтт': 'matt',
+      'гэри': 'gary',
+      'тимоти': 'timothy',
+      'тим': 'tim',
+      'фpэнк': 'frank',
+      'фрэнк': 'frank',
+      'скотт': 'scott',
+      'эрик': 'eric',
+      'эндрю': 'andrew',
+      'энди': 'andy',
+      'реймонд': 'raymond',
+      'грегори': 'gregory',
+      'грег': 'greg',
+      'джошуа': 'joshua',
+      'джош': 'josh',
+      'жерри': 'jerry',
+      'джерри': 'jerry',
+      'деннис': 'dennis',
+      'уолтер': 'walter',
+      'патрик': 'patrick',
+      'питер': 'peter',
+      'пит': 'pete',
+      'гарольд': 'harold',
+      'дуглас': 'douglas',
+      'генри': 'henry',
+      'карл': 'carl',
+      'артур': 'arthur',
+      'райан': 'ryan',
+      'роджер': 'roger',
+      'тейлор': 'taylor',
+      'мэри': 'mary',
+      'патриция': 'patricia',
+      'дженнифер': 'jennifer',
+      'линда': 'linda',
+      'элизабет': 'elizabeth',
+      'лиза': 'lisa',
+      'барбара': 'barbara',
+      'сьюзан': 'susan',
+      'сью': 'sue',
+      'джессика': 'jessica',
+      'карен': 'karen',
+      'нэнси': 'nancy',
+      'маргарет': 'margaret',
+      'сандра': 'sandra',
+      'эшли': 'ashley',
+      'дороти': 'dorothy',
+      'кимберли': 'kimberly',
+      'эмили': 'emily',
+      'донна': 'donna',
+      'мишель': 'michelle',
+      'кэрол': 'carol',
+      'аманда': 'amanda',
+      'мелисса': 'melissa',
+      'дебора': 'deborah',
+      'стефани': 'stephanie',
+      'ребекка': 'rebecca',
+      'лора': 'laura',
+      'шэрон': 'sharon',
+      'синтия': 'cynthia',
+      'кэтлин': 'kathleen',
+      'эми': 'amy',
+      'анна': 'anna',
+      'энн': 'anne',
+      'хелен': 'helen',
+      'кэтрин': 'katherine',
+      'кристина': 'christine',
+      'рейчел': 'rachel',
+      'джанет': 'janet',
+      'мария': 'maria',
+      'хезер': 'heather',
+      'диана': 'diana',
+      'джули': 'julie',
+      'джойс': 'joyce',
+      'виктория': 'victoria',
+      'келли': 'kelly',
+      'николь': 'nicole',
+      'лорен': 'lauren',
+      'меган': 'megan',
+      'хани': 'hani',
+      'смит': 'smith',
+      'джонсон': 'johnson',
+      'уильямс': 'williams',
+      'браун': 'brown',
+      'джонс': 'jones',
+      'миллер': 'miller',
+      'дэвис': 'davis',
+      'уилсон': 'wilson',
+      'андерсон': 'anderson',
+      'мартин': 'martin',
+      'томпсон': 'thompson',
+      'уайт': 'white',
+      'харрис': 'harris',
+      'кларк': 'clark',
+      'льюис': 'lewis',
+      'робинсон': 'robinson',
+      'уокер': 'walker',
+      'янг': 'young',
+      'кинг': 'king',
+      'райт': 'wright',
+      'грин': 'green',
+      'бейкер': 'baker',
+      'адамс': 'adams',
+      'нельсон': 'nelson',
+      'хилл': 'hill',
+      'кэмпбелл': 'campbell',
+      'митчелл': 'mitchell',
+      'робертс': 'roberts',
+      'картер': 'carter',
+      'филлипс': 'phillips',
+      'эванс': 'evans',
+      'тернер': 'turner',
+      'паркер': 'parker',
+      'коллинз': 'collins',
+      'эдвардс': 'edwards',
+      'стюарт': 'stewart',
+      'моррис': 'morris',
+      'мерфи': 'murphy',
+      'кук': 'cook',
+      'роджерс': 'rogers',
+      'морган': 'morgan',
+      'купер': 'cooper',
+      'рид': 'reed',
+      'бейли': 'bailey',
+      'белл': 'bell',
+      'холланд': 'holland',
+      'малиновски': 'malinouski',
+      'малиновский': 'malinouski',
+      'ратбоун': 'rathbone',
+      'брэнфорд': 'brantford',
+      'брэнтфорд': 'brantford',
+      'брантфорд': 'brantford',
+      'гамильтон': 'hamilton',
+      'хамильтон': 'hamilton',
+      'кембридж': 'cambridge',
+      'китченер': 'kitchener',
+      'ватерлоо': 'waterloo',
+      'уотерлу': 'waterloo',
+      'гвелф': 'guelph',
+      'гуэлф': 'guelph',
+      'вудсток': 'woodstock',
+      'симко': 'simcoe',
+      'берлингтон': 'burlington',
+      'оквилл': 'oakville',
+      'анкастер': 'ancaster',
+      'дандас': 'dundas',
+      'каледония': 'caledonia',
+      'парис': 'paris',
+      'пэрис': 'paris',
+      'делхай': 'delhi',
+      'ингерсолл': 'ingersoll',
+      'тилсонбург': 'tillsonburg',
+      'уотерфорд': 'waterford',
+      'порт довер': 'port dover',
+      'хейгерсвилл': 'hagersville',
+      'данвилл': 'dunnville',
+      'гримсби': 'grimsby',
+      'бимсвилл': 'beamsville',
+    };
+    for (final entry in aliases.entries) {
+      if (s == entry.key) {
+        s = entry.value;
+        break;
+      }
+    }
+    const cyr = <String, String>{
+      'а': 'a',
+      'б': 'b',
+      'в': 'v',
+      'г': 'g',
+      'д': 'd',
+      'е': 'e',
+      'ё': 'e',
+      'ж': 'zh',
+      'з': 'z',
+      'и': 'i',
+      'й': 'i',
+      'к': 'k',
+      'л': 'l',
+      'м': 'm',
+      'н': 'n',
+      'о': 'o',
+      'п': 'p',
+      'р': 'r',
+      'с': 's',
+      'т': 't',
+      'у': 'u',
+      'ф': 'f',
+      'х': 'h',
+      'ц': 'ts',
+      'ч': 'ch',
+      'ш': 'sh',
+      'щ': 'sh',
+      'ъ': '',
+      'ы': 'i',
+      'ь': '',
+      'э': 'e',
+      'ю': 'yu',
+      'я': 'ya',
+    };
+    final buf = StringBuffer();
+    for (var i = 0; i < s.length; i++) {
+      final ch = s[i];
+      buf.write(cyr[ch] ?? ch);
+    }
+    var lat = buf.toString();
+    lat = lat
+        .replaceAll('ph', 'f')
+        .replaceAll('th', 't')
+        .replaceAll('ck', 'k')
+        .replaceAll('ch', 'k')
+        .replaceAll('sh', 's')
+        .replaceAll('ou', 'u')
+        .replaceAll('oo', 'u')
+        .replaceAll('ee', 'i')
+        .replaceAll('ea', 'i')
+        .replaceAll('ae', 'e')
+        .replaceAll('ai', 'e')
+        .replaceAll('ay', 'e')
+        .replaceAll('ey', 'i')
+        .replaceAll('y', 'i')
+        .replaceAll('w', 'v')
+        .replaceAll('x', 'ks')
+        .replaceAll('qu', 'kv')
+        .replaceAll('c', 'k')
+        .replaceAll(RegExp(r'[^a-z0-9]'), '');
+    lat = lat.replaceAllMapped(RegExp(r'(.)\1+'), (m) => m.group(1)!);
+    return lat;
+  }
+
+  /// Отсекает падежные окончания у русских слов («Майклу» → «Майкл», «Саре» → «Сар»).
+  static List<String> _wordStems(String word) {
+    final w = word.toLowerCase().trim();
+    if (w.isEmpty) return const [];
+    final out = <String>{w};
+    if (RegExp(r'[а-яё]').hasMatch(w) && w.length >= 4) {
+      final stripped = w.replaceFirst(
+        RegExp(r'(ому|ему|ами|ями|ов|ев|ей|ам|ям|ах|ях|ом|ем|ой|ей|у|ю|е|а|я|ы|и)$'),
+        '',
+      );
+      if (stripped.length >= 3) {
+        out.add(stripped);
+        out.add('$strippedа');
+        out.add('$strippedя');
+        out.add('$strippedй');
+      }
+    }
+    return out.toList();
+  }
+
+  static int _matchScore(String haystack, String query) {
+    final h = haystack.toLowerCase();
+    final q = query.toLowerCase().trim();
+    if (q.isEmpty || h.isEmpty) return 0;
+    if (h.contains(q)) return 100;
+
+    final queryWords = q
+        .split(RegExp(r'[^a-zA-Zа-яА-ЯёЁ0-9]+'))
+        .where((w) => w.length >= 2)
+        .toList();
+    if (queryWords.isEmpty) return 0;
+
+    final hayWords = h
+        .split(RegExp(r'[^a-zA-Zа-яА-ЯёЁ0-9]+'))
+        .where((w) => w.length >= 2)
+        .toList();
+    final hayPhonetics = hayWords.map(_phonetic).where((p) => p.isNotEmpty).toList();
+
+    var matchedWords = 0;
+    for (final qw in queryWords) {
+      var wordMatched = false;
+      final stems = _wordStems(qw);
+      for (final stem in stems) {
+        if (hayWords.any((hw) => hw.startsWith(stem) || stem.startsWith(hw))) {
+          wordMatched = true;
+          break;
+        }
+        final pStem = _phonetic(stem);
+        if (pStem.length >= 3 &&
+            hayPhonetics.any(
+              (hp) =>
+                  hp == pStem ||
+                  (hp.length >= 4 &&
+                      pStem.length >= 4 &&
+                      (hp.startsWith(pStem) || pStem.startsWith(hp))),
+            )) {
+          wordMatched = true;
+          break;
+        }
+      }
+      if (!wordMatched) return 0;
+      matchedWords++;
+    }
+    return matchedWords == queryWords.length ? 70 + matchedWords * 5 : 0;
+  }
+
+  static Future<Job?> resolveJob(
+    String? query, {
+    bool includeClosed = false,
+    bool fallbackToNextWhenEmpty = true,
+  }) async {
     final jobs = await JobService.loadAllOnce();
-    final pool = includeClosed
-        ? jobs
-        : jobs.where((j) => !JobStatuses.isClosed(j.status)).toList();
+    final openPool = jobs.where((j) => !JobStatuses.isClosed(j.status)).toList();
+    final pool = includeClosed ? jobs : openPool;
 
     final q = (query ?? '').trim().toLowerCase();
-    if (q.isEmpty ||
-        q.contains('следующ') ||
-        q.contains('ближайш') ||
-        q == 'next') {
+    if (_isCurrentScreenKeyword(q)) {
+      final openJob = await _resolveOpenScreenJob(jobs);
+      if (openJob != null) return openJob;
+    }
+
+    if (q.isEmpty || _isNextKeyword(q)) {
+      if (q.isEmpty) {
+        final openJob = await _resolveOpenScreenJob(jobs);
+        if (openJob != null) return openJob;
+        if (!fallbackToNextWhenEmpty) return null;
+      }
       final now = DateTime.now().toUtc();
       Job? nextJob;
       JobVisit? nextVisit;
-      for (final job in pool) {
+      for (final job in openPool) {
         final visit = job.nextActiveVisit(now: now);
         if (visit != null &&
             (nextVisit == null || visit.startAt.isBefore(nextVisit.startAt))) {
@@ -122,25 +555,68 @@ class AssistantTools {
       return nextJob;
     }
 
-    final digits = q.replaceAll(RegExp(r'\D'), '');
     for (final job in pool) {
-      if (job.id == query) return job;
-      final haystack = [
+      if (job.id == query?.trim()) return job;
+    }
+
+    final digits = q.replaceAll(RegExp(r'\D'), '');
+    if (digits.length >= 4) {
+      for (final list in [
+        openPool,
+        if (includeClosed) jobs.where((j) => JobStatuses.isClosed(j.status)),
+      ]) {
+        for (final job in list) {
+          if (ClientService.normalizePhone(job.contactPhone).contains(digits) ||
+              ClientService.normalizePhone(job.clientPhone).contains(digits)) {
+            return job;
+          }
+        }
+      }
+    }
+
+    final now = DateTime.now().toUtc();
+    Job? bestJob;
+    var bestScore = 0;
+    for (final job in pool) {
+      final nameScore = _matchScore(
+        '${job.clientName} ${job.contactName} ${job.jobSiteName ?? ''}',
+        q,
+      );
+      final fullHaystack = [
         job.clientName,
         job.contactName,
+        job.jobSiteName ?? '',
+        job.workAddress,
+        job.clientAddress,
+        job.city ?? '',
         job.applianceType,
         job.applianceBrand,
         job.description,
-        job.workAddress,
         job.contactPhone,
-      ].join(' ').toLowerCase();
-      if (haystack.contains(q)) return job;
-      if (digits.length >= 4 &&
-          ClientService.normalizePhone(job.contactPhone).contains(digits)) {
-        return job;
+      ].join(' ');
+      final totalScore = nameScore > 0
+          ? nameScore + 30
+          : _matchScore(fullHaystack, q);
+      if (totalScore <= 0) continue;
+
+      var rank = totalScore * 10;
+      if (!JobStatuses.isClosed(job.status)) rank += 50;
+      final nextVisit = job.nextActiveVisit(now: now);
+      if (nextVisit != null) {
+        rank += 25;
+        if (JobVisit.isSameDay(
+          AppTimeService.bookingWallClock(nextVisit.startAt),
+          AppTimeService.bookingWallClock(now),
+        )) {
+          rank += 20;
+        }
+      }
+      if (rank > bestScore) {
+        bestScore = rank;
+        bestJob = job;
       }
     }
-    return null;
+    return bestJob;
   }
 
   static Future<Map<String, dynamic>> handle(
@@ -274,17 +750,69 @@ class AssistantTools {
   }
 
   static Future<Map<String, dynamic>> _sendSms(Map<String, dynamic> args) async {
-    var job = await resolveJob(
-      args['job_query'] as String?,
-      includeClosed: true,
-    );
-    job ??= await resolveJob(args['query'] as String?, includeClosed: true);
-    if (job == null) {
-      return {'ok': false, 'error': 'Не нашёл, кому отправлять SMS'};
+    final rawQuery =
+        ((args['job_query'] ?? args['query'] ?? args['client_name']) as String?)
+            ?.trim() ??
+        '';
+    final explicitPhone = (args['phone'] as String?)?.trim() ?? '';
+
+    Job? job;
+    if (rawQuery.isNotEmpty) {
+      job = await resolveJob(
+        rawQuery,
+        includeClosed: true,
+        fallbackToNextWhenEmpty: false,
+      );
+    } else if (explicitPhone.isNotEmpty) {
+      job = await resolveJob(
+        explicitPhone,
+        includeClosed: true,
+        fallbackToNextWhenEmpty: false,
+      );
+    } else {
+      job = await resolveJob(
+        null,
+        includeClosed: false,
+        fallbackToNextWhenEmpty: true,
+      );
     }
-    final phone = job.contactPhone;
+
+    var phone = job?.contactPhone.trim() ?? '';
+    var recipientName = job?.contactName ?? '';
+    var clientId = job?.clientId ?? '';
+
+    // Если назвали клиента по имени, а открытой заявки не нашлось (или имя
+    // только в карточке клиента) — ищем в справочнике клиентов, но НИКОГДА
+    // не подставляем чужую «следующую» заявку.
+    if (job == null && rawQuery.isNotEmpty && !_isNextKeyword(rawQuery.toLowerCase())) {
+      final clients = await ClientService.loadAllOnce();
+      var bestClientScore = 0;
+      for (final c in clients) {
+        final score = _matchScore(
+          '${c.fullName} ${c.address} ${c.phone}',
+          rawQuery,
+        );
+        if (score > bestClientScore && c.phone.trim().isNotEmpty) {
+          bestClientScore = score;
+          phone = c.phone.trim();
+          recipientName = c.fullName;
+          clientId = c.id;
+        }
+      }
+      if (phone.isEmpty) {
+        return {
+          'ok': false,
+          'error': 'Клиент «$rawQuery» не найден. Уточните имя или телефон.',
+        };
+      }
+    }
+
+    if (phone.isEmpty && explicitPhone.isNotEmpty) {
+      phone = explicitPhone;
+    }
+
     if (phone.trim().isEmpty) {
-      return {'ok': false, 'error': 'У заявки нет телефона'};
+      return {'ok': false, 'error': 'Не нашёл, кому отправлять SMS'};
     }
 
     final templates = await SettingsService.loadSmsTemplates();
@@ -300,7 +828,7 @@ class AssistantTools {
           templates['on_way'] ??
           'Hello, this is your technician. I am on my way.';
     }
-    body = SmsText.fillName(body, job.contactName);
+    body = SmsText.fillName(body, recipientName);
     final russian = MessageTranslateService.looksRussian(body) ? body : '';
     if (russian.isNotEmpty) {
       body = await MessageTranslateService.toEnglish(body);
@@ -309,10 +837,10 @@ class AssistantTools {
     final ok = await SmsService.sendSms(
       to: phone,
       body: body,
-      clientId: job.clientId,
+      clientId: clientId.isEmpty ? null : clientId,
       bodyRu: russian.isEmpty ? null : russian,
     );
-    if (ok) {
+    if (ok && job != null) {
       await JobService.sendMessage(
         jobId: job.id,
         text: body,
@@ -322,17 +850,20 @@ class AssistantTools {
     }
     return {
       'ok': ok,
-      'client_name': job.clientName,
+      'client_name': job?.clientName ?? recipientName,
       'phone': phone,
       'text': body,
     };
   }
 
   static DateTime? _parseVisitSlot(String date, String time) {
-    final parsedTime = _parseClock(time);
-    if (parsedTime == null) return null;
     final parsedDate = _parseDay(date);
     if (parsedDate == null) return null;
+    if (time.trim().isEmpty) {
+      return DateTime(parsedDate.year, parsedDate.month, parsedDate.day);
+    }
+    final parsedTime = _parseClock(time);
+    if (parsedTime == null) return null;
     return AppTimeService.atWall(
       parsedDate.year,
       parsedDate.month,
@@ -414,16 +945,21 @@ class AssistantTools {
   static Future<Map<String, dynamic>> _rescheduleVisit(
     Map<String, dynamic> args,
   ) async {
-    final job = await resolveJob(args['job_query'] as String?);
+    final rawQuery = ((args['job_query'] ?? args['query']) as String?)?.trim();
+    final job = await resolveJob(
+      rawQuery,
+      fallbackToNextWhenEmpty: rawQuery == null || rawQuery.isEmpty,
+    );
     if (job == null) {
       return {'ok': false, 'error': 'Заявка не найдена'};
     }
+    final rawTime = (args['time'] as String?)?.trim() ?? '';
     final next = _parseVisitSlot(
       (args['date'] as String?) ?? '',
-      (args['time'] as String?) ?? '',
+      rawTime,
     );
     if (next == null) {
-      return {'ok': false, 'error': 'Нужны date=YYYY-MM-DD и time=HH:mm'};
+      return {'ok': false, 'error': 'Нужна дата date=YYYY-MM-DD'};
     }
     final visits = [...job.coalescedVisits];
     final now = DateTime.now();
@@ -441,13 +977,16 @@ class AssistantTools {
       ...JobVisit.syncFields(visits, defaultDuration: job.durationMinutes),
       'status': JobStatuses.call,
     });
-    final when = DateFormat('yyyy-MM-dd HH:mm').format(next);
+    final hasTime = next.hour != 0 || next.minute != 0;
+    final when = hasTime
+        ? DateFormat('yyyy-MM-dd HH:mm').format(next)
+        : DateFormat('yyyy-MM-dd').format(next);
     return {
       'ok': true,
       'client_name': job.clientName,
       'scheduled_at': when,
       'date': Formatters.formatDateEn(next),
-      'time': Formatters.formatTime(next),
+      'time': hasTime ? Formatters.formatTime(next) : '',
     };
   }
 
@@ -485,14 +1024,14 @@ class AssistantTools {
     if (dateStr != null && dateStr.isNotEmpty) {
       final parsed = DateTime.tryParse(dateStr);
       if (parsed != null) {
-        var hour = 9;
-        var minute = 0;
         if (timeStr != null && timeStr.contains(':')) {
           final parts = timeStr.split(':');
-          hour = int.tryParse(parts[0]) ?? 9;
-          minute = int.tryParse(parts[1]) ?? 0;
+          final hour = int.tryParse(parts[0]) ?? 9;
+          final minute = int.tryParse(parts[1]) ?? 0;
+          scheduledAt = DateTime(parsed.year, parsed.month, parsed.day, hour, minute);
+        } else {
+          scheduledAt = DateTime(parsed.year, parsed.month, parsed.day);
         }
-        scheduledAt = DateTime(parsed.year, parsed.month, parsed.day, hour, minute);
       }
     }
 
@@ -707,16 +1246,6 @@ class AssistantIntents {
         return (name: 'open_route', args: {});
       }
     }
-    if (_has(t, ['смс', 'sms', 'сообщен', 'text', 'напиш']) &&
-        _has(t, ['отправ', 'send', 'напиш', 'пути', 'way', 'ехал', 'еду'])) {
-      return (
-        name: 'send_sms',
-        args: {
-          'job_query': query,
-          'template': 'on_way',
-        },
-      );
-    }
     return null;
   }
 
@@ -731,8 +1260,9 @@ class AssistantIntents {
     final cleaned = t
         .replaceAll(
           RegExp(
-            r'\b(открой|открыть|open|пожалуйста|please|карточку|карточк[ауие]?|заявк[уиеа]?|клиента?|client|job|card|отправь|отправить|send|смс|sms|позвони|позвонить|call|что|я|в|пути|the|a)\b',
+            r'(^|\s)(открой|открыть|open|пожалуйста|please|карточку|карточк[ауие]?|заявк[уиеа]?|клиента?|client|job|card|отправь|отправить|send|смс|sms|позвони|позвонить|call|что|я|в|пути|the|a)(?=\s|$)',
             caseSensitive: false,
+            unicode: true,
           ),
           ' ',
         )

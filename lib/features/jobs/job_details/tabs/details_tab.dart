@@ -358,6 +358,7 @@ class _DetailsTabState extends State<DetailsTab> {
     JobVisit? existing,
     String? followUpStatus,
     String? moveStatus,
+    bool preferWithTime = false,
   }) async {
     final followUp = followUpStatus != null && existing == null;
     final moving = moveStatus != null;
@@ -369,11 +370,15 @@ class _DetailsTabState extends State<DetailsTab> {
           last.year,
           last.month,
           last.day,
-          last.hour,
+          last.hour == 0 && last.minute == 0 ? 10 : last.hour,
           last.minute,
         ).add(const Duration(days: 7));
     if (existing == null && startAt.isBefore(now)) {
-      startAt = now.add(const Duration(days: 1));
+      startAt = DateTime(now.year, now.month, now.day + 1, 10, 0);
+    }
+    var withTime = existing == null || existing.hasTime || preferWithTime;
+    if (withTime && startAt.hour == 0 && startAt.minute == 0) {
+      startAt = DateTime(startAt.year, startAt.month, startAt.day, 10, 0);
     }
     final canSms = _bookingPhone.isNotEmpty && !ctrl.needsReview;
     var sendSms = false;
@@ -441,12 +446,48 @@ class _DetailsTabState extends State<DetailsTab> {
                       ),
                     const Divider(height: 16),
                     Text(
-                      appDateTimeLabel(startAt),
+                      appDateTimeLabel(startAt, withTime: withTime),
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w800,
                         color: AppColors.primaryOnCard,
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8, bottom: 4),
+                      child: SegmentedButton<bool>(
+                        showSelectedIcon: false,
+                        segments: [
+                          ButtonSegment<bool>(
+                            value: false,
+                            icon: const Icon(Icons.calendar_today, size: 16),
+                            label: Text('Только дата'.tr),
+                          ),
+                          ButtonSegment<bool>(
+                            value: true,
+                            icon: const Icon(Icons.access_time, size: 16),
+                            label: Text('Дата и время'.tr),
+                          ),
+                        ],
+                        selected: {withTime},
+                        onSelectionChanged: (sel) {
+                          final next = sel.first;
+                          setSheet(() {
+                            withTime = next;
+                            if (withTime &&
+                                startAt.hour == 0 &&
+                                startAt.minute == 0) {
+                              startAt = DateTime(
+                                startAt.year,
+                                startAt.month,
+                                startAt.day,
+                                10,
+                                0,
+                              );
+                            }
+                          });
+                        },
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -461,16 +502,18 @@ class _DetailsTabState extends State<DetailsTab> {
                         onChanged: (v) => setSheet(() => startAt = v),
                       ),
                     ),
-                    const SizedBox(height: 12),
-                    _visitPickerBox(
-                      icon: Icons.schedule_rounded,
-                      title: 'Время'.tr,
-                      child: AppTimeWheel(
-                        value: startAt,
-                        height: 120,
-                        onChanged: (v) => setSheet(() => startAt = v),
+                    if (withTime) ...[
+                      const SizedBox(height: 12),
+                      _visitPickerBox(
+                        icon: Icons.schedule_rounded,
+                        title: 'Время'.tr,
+                        child: AppTimeWheel(
+                          value: startAt,
+                          height: 120,
+                          onChanged: (v) => setSheet(() => startAt = v),
+                        ),
                       ),
-                    ),
+                    ],
                     const SizedBox(height: 4),
                     CheckboxListTile(
                       value: sendSms,
@@ -533,12 +576,16 @@ class _DetailsTabState extends State<DetailsTab> {
     if (saved == 'delete' && existing != null) {
       if (!mounted) return;
       final onlyOne = ctrl.visits.length <= 1;
+      final existingLabel = appDateTimeLabel(
+        existing.startAt,
+        withTime: existing.hasTime,
+      );
       final ok = await showConfirmCancelSheet(
         context,
         title: 'Удалить визит?'.tr,
         message: onlyOne
-            ? '${appDateTimeLabel(existing.startAt)}\n\n${'У заявки не останется даты. Сама заявка, счёт и оплаты никуда не денутся.'.tr}'
-            : '${appDateTimeLabel(existing.startAt)}\n\n${'Остальные визиты заявки останутся на месте.'.tr}',
+            ? '$existingLabel\n\n${'У заявки не останется даты. Сама заявка, счёт и оплаты никуда не денутся.'.tr}'
+            : '$existingLabel\n\n${'Остальные визиты заявки останутся на месте.'.tr}',
         confirmLabel: 'Удалить'.tr,
       );
       if (!ok || !mounted) return;
@@ -548,8 +595,12 @@ class _DetailsTabState extends State<DetailsTab> {
     }
     if (saved != 'save') return;
 
+    final effectiveStartAt = withTime
+        ? startAt
+        : DateTime(startAt.year, startAt.month, startAt.day);
+
     if (existing != null) {
-      final visit = existing.copyWith(startAt: startAt);
+      final visit = existing.copyWith(startAt: effectiveStartAt);
       await ctrl.updateVisit(visit, correction: true);
       if (moving && ctrl.currentStatus != moveStatus) {
         await ctrl.updateStatus(moveStatus);
@@ -562,7 +613,7 @@ class _DetailsTabState extends State<DetailsTab> {
     // SMS, если мастер его выбрал, только сообщает дату и время — клиенту
     // больше не предлагается подтверждать визит ответом.
     final visit = JobVisit.create(
-      startAt: startAt,
+      startAt: effectiveStartAt,
       durationMinutes: ctrl.durationMinutes,
       note: followUp ? followUpStatus : '',
     );
@@ -1868,7 +1919,10 @@ class _DetailsTabState extends State<DetailsTab> {
       'EEE, d MMM',
       AppLocale.instance.dateLocale,
     ).format(visit.startAt);
-    final time = DateFormat('HH:mm').format(visit.startAt);
+    final hasTime = visit.hasTime;
+    final time = hasTime
+        ? DateFormat('HH:mm').format(visit.startAt)
+        : 'Выберите время'.tr;
     final Color dotColor;
     if (visit.isDone) {
       dotColor = const Color(0xFF2E7D32);
@@ -1877,57 +1931,70 @@ class _DetailsTabState extends State<DetailsTab> {
     } else {
       dotColor = AppColors.primary;
     }
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3.5),
-      decoration: BoxDecoration(
-        color: AppColors.card,
+    return Material(
+      color: AppColors.card,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: dotColor.withValues(alpha: 0.45), width: 1.3),
+        side: BorderSide(color: dotColor.withValues(alpha: 0.45), width: 1.3),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 9,
-            height: 9,
-            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text.rich(
-              TextSpan(
-                children: [
-                  TextSpan(
-                    text: date,
-                    style: TextStyle(
-                      color: visit.isCancelled
-                          ? AppColors.inkMuted
-                          : const Color(0xFF008F3B),
-                    ),
-                  ),
-                  TextSpan(
-                    text: ' · $time',
-                    style: TextStyle(
-                      color: visit.isCancelled
-                          ? AppColors.inkMuted
-                          : const Color(0xFFE53935),
-                    ),
-                  ),
-                ],
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: visit.isActiveSlot
+            ? () => _editVisit(existing: visit, preferWithTime: !hasTime)
+            : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3.5),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(
+                  color: dotColor,
+                  shape: BoxShape.circle,
+                ),
               ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 17,
-                height: 1.15,
-                fontWeight: FontWeight.w900,
-                decoration: visit.isCancelled
-                    ? TextDecoration.lineThrough
-                    : null,
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: date,
+                        style: TextStyle(
+                          color: visit.isCancelled
+                              ? AppColors.inkMuted
+                              : const Color(0xFF008F3B),
+                        ),
+                      ),
+                      TextSpan(
+                        text: ' · $time',
+                        style: TextStyle(
+                          color: visit.isCancelled
+                              ? AppColors.inkMuted
+                              : (hasTime
+                                    ? const Color(0xFFE53935)
+                                    : Colors.orange.shade800),
+                        ),
+                      ),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 17,
+                    height: 1.15,
+                    fontWeight: FontWeight.w900,
+                    decoration: visit.isCancelled
+                        ? TextDecoration.lineThrough
+                        : null,
+                  ),
+                ),
               ),
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -2036,7 +2103,7 @@ class _DetailsTabState extends State<DetailsTab> {
       'd MMM',
       AppLocale.instance.dateLocale,
     ).format(visit.startAt);
-    final time = DateFormat('HH:mm').format(visit.startAt);
+    final time = visit.hasTime ? DateFormat('HH:mm').format(visit.startAt) : '';
     final textColor = isCurrent
         ? AppColors.primaryOnCard
         : (visit.isDone ? AppColors.ink : AppColors.inkMuted);
@@ -2083,7 +2150,7 @@ class _DetailsTabState extends State<DetailsTab> {
                 ),
               ),
             Text(
-              '$when · $time',
+              time.isEmpty ? when : '$when · $time',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
@@ -2131,9 +2198,10 @@ class _DetailsTabState extends State<DetailsTab> {
   /// «SMS ждёт отправки»: сервер только пометил визит, отправляет владелец.
   Widget _pendingSmsBanner(JobVisit visit) {
     final clock = AppTimeService.bookingWallClock(visit.startAt);
-    final when =
-        '${DateFormat('d MMM', AppLocale.instance.dateLocale).format(clock)}'
-        ' · ${DateFormat('HH:mm').format(clock)}';
+    final datePart = DateFormat('d MMM', AppLocale.instance.dateLocale).format(clock);
+    final when = visit.hasTime
+        ? '$datePart · ${DateFormat('HH:mm').format(clock)}'
+        : datePart;
     final sending = visit.bookingSmsState == 'sending';
     final approved = visit.bookingSmsState == 'approved';
     final busy = _bookingBusy || sending;
@@ -2325,7 +2393,7 @@ class _DetailsTabState extends State<DetailsTab> {
       final templates = await SettingsService.loadSmsTemplates();
       final clock = AppTimeService.bookingWallClock(visit.startAt);
       final date = DateFormat('MMMM d', 'en_US').format(clock);
-      final time = DateFormat('HH:mm').format(clock);
+      final time = visit.hasTime ? DateFormat('HH:mm').format(clock) : '';
       final slotKey = AppTimeService.bookingSlotKey(visit.startAt);
       final template =
           templates['booking_confirm'] ??
@@ -2425,8 +2493,8 @@ class _DetailsTabState extends State<DetailsTab> {
                   _twinJob != null ||
                   (!ctrl.needsReview && _pendingSmsVisit != null);
               final mapHeight = hasExtraBlocks
-                  ? (viewport.maxHeight * 0.14).clamp(84.0, 100.0)
-                  : (viewport.maxHeight * 0.16).clamp(92.0, 112.0);
+                  ? (viewport.maxHeight * 0.22).clamp(135.0, 180.0)
+                  : (viewport.maxHeight * 0.28).clamp(160.0, 220.0);
               _measureScrollSlack();
               return SingleChildScrollView(
                 controller: _scrollController,
@@ -2714,58 +2782,6 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  Widget _routeButton() {
-    final travelHint = ctrl.travelTime.trim();
-    final showTravelHint =
-        travelHint.isNotEmpty && travelHint != 'GO' && travelHint != '...';
-    final address = ctrl.workAddress.trim();
-    return Tooltip(
-      message: showTravelHint
-          ? '${'Проложить маршрут'.tr} · $travelHint'
-          : 'Проложить маршрут'.tr,
-      child: _contactActionButton(
-        onPressed: _openNavigator,
-        onLongPress: address.isNotEmpty
-            ? () => AppFeedback.copy(context, address)
-            : null,
-        background: AppColors.accent,
-        foreground: Colors.black,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (ctrl.isLoadingTime)
-              const SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.black,
-                ),
-              )
-            else
-              const _GoogleMapsLogoIcon(),
-            const SizedBox(width: 6),
-            Flexible(
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  ctrl.isLoadingTime
-                      ? '...'
-                      : (travelHint.isEmpty ? 'GO' : travelHint),
-                  maxLines: 1,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 14,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   /// Лучший доступный телефон: сначала contactPhone, затем первый из chatContacts.
   String _bestContactPhone() {
     final direct = ctrl.contactPhone.trim();
@@ -2812,8 +2828,6 @@ class _DetailsTabState extends State<DetailsTab> {
           padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
           child: Row(
             children: [
-              Expanded(child: _routeButton()),
-              const SizedBox(width: 8),
               Expanded(child: _callButton()),
               const SizedBox(width: 8),
               Expanded(child: _smsButton()),
@@ -3266,9 +3280,73 @@ class _DetailsTabState extends State<DetailsTab> {
     }
   }
 
-  /// Одна секция «Где работа» под «Датой визита»: слева адрес и проверка дома,
-  /// справа превью карты. Карта открывает интерактивный вид по тапу.
-  Widget _buildJobSiteCard({double mapHeight = 112}) {
+  String _workCity() {
+    final fromAddress = Job.cityFromAddress(ctrl.workAddress.trim());
+    if (fromAddress.isNotEmpty) return fromAddress;
+    final fromJob = (ctrl.jobData['city'] ?? '').toString().trim();
+    if (fromJob.isNotEmpty) return fromJob;
+    final fromPlace = Job.cityFromAddress(_verifiedPlace?.address ?? '');
+    if (fromPlace.isNotEmpty) return fromPlace;
+    return '';
+  }
+
+  Widget _buildTravelTimeAboveMap() {
+    final travelHint = ctrl.travelTime.trim();
+    final hasTravelTime =
+        travelHint.isNotEmpty && travelHint != 'GO' && travelHint != '...';
+    final label = ctrl.isLoadingTime
+        ? '...'
+        : (hasTravelTime ? travelHint : 'Проложить маршрут'.tr);
+    return Material(
+      color: AppColors.accent.withValues(alpha: 0.28),
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: _openNavigator,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (ctrl.isLoadingTime)
+                const SizedBox(
+                  width: 13,
+                  height: 13,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.8,
+                    color: Colors.black87,
+                  ),
+                )
+              else
+                const Icon(
+                  Icons.directions_car_rounded,
+                  size: 15,
+                  color: Colors.black87,
+                ),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.black87,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Одна секция «Где работа» под «Датой визита»: слева имя, телефон и город,
+  /// справа время до адреса над картой, карта и статус «Дом найден» под картой.
+  Widget _buildJobSiteCard({double mapHeight = 160}) {
     final address = ctrl.workAddress.trim();
     final hasAddress = MapsService.hasRoutableAddress(address);
     final place = _verifiedPlace;
@@ -3280,14 +3358,18 @@ class _DetailsTabState extends State<DetailsTab> {
         place.location != null;
     final outsideArea =
         hasAddress && !_verifyingAddress && place?.insideServiceArea == false;
-    final contactLine = _onSiteContactSummary();
+    final phone = _bestContactPhone();
+    final city = _workCity();
+    final cityOrHint = city.isNotEmpty
+        ? city
+        : (hasAddress ? address : 'Нажмите, чтобы указать адрес работы'.tr);
     final copyText = [
-      if (contactLine.isNotEmpty) contactLine,
+      ctrl.contactName.trim(),
+      if (phone.isNotEmpty) phone,
       if (address.isNotEmpty) address,
-    ].join(', ');
+    ].where((s) => s.isNotEmpty).join(', ');
 
     final warnState = !hasAddress || (!_verifyingAddress && !houseFound);
-    final accent = warnState ? Colors.orange.shade800 : AppColors.primaryOnCard;
     final borderColor = outsideArea
         ? Colors.red.withValues(alpha: 0.4)
         : warnState
@@ -3303,130 +3385,73 @@ class _DetailsTabState extends State<DetailsTab> {
           ? null
           : () => AppFeedback.copy(context, copyText),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
+        padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(Icons.location_on_rounded, size: 15, color: accent),
-                const Spacer(),
-                Icon(
-                  Icons.edit_outlined,
-                  size: 15,
-                  color: Colors.grey.shade600,
-                ),
-              ],
-            ),
-            const SizedBox(height: 3),
-            _buildAddressVerifyBadge(
-              hasAddress: hasAddress,
-              verifying: _verifyingAddress,
-              houseFound: houseFound,
-            ),
-            if (contactLine.isNotEmpty) ...[
-              const SizedBox(height: 3),
-              Row(
-                children: [
-                  Icon(
-                    Icons.person_pin_circle_outlined,
-                    size: 14,
-                    color: AppColors.primaryOnCard,
-                  ),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      '${'На месте'.tr}: $contactLine',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.ink,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            const SizedBox(height: 3),
-            Text(
-              hasAddress
-                  ? address
-                  : 'Нажмите, чтобы указать адрес работы'.tr,
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 13,
-                height: 1.2,
-                fontWeight: FontWeight.w800,
-                color: hasAddress ? AppColors.ink : Colors.orange.shade800,
-              ),
-            ),
-            const SizedBox(height: 4),
             Text(
               ctrl.contactName.toUpperCase(),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 fontSize: 20,
-                height: 1.05,
+                height: 1.1,
                 fontWeight: FontWeight.w900,
                 color: Color(0xFF1E88E5),
-                letterSpacing: 0.4,
+                letterSpacing: 0.3,
               ),
             ),
-            if (hasAddress && !_verifyingAddress && !houseFound) ...[
-              const SizedBox(height: 4),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    Icons.warning_amber_rounded,
-                    size: 14,
-                    color: Colors.orange.shade900,
-                  ),
-                  const SizedBox(width: 5),
-                  Expanded(
-                    child: Text(
-                      'Точный дом не найден на карте — проверьте номер дома и улицу'
-                          .tr,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.orange.shade900,
-                      ),
-                    ),
-                  ),
-                ],
+            if (phone.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                Formatters.formatPhone(phone),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 15.5,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.ink,
+                ),
               ),
             ],
-            if (outsideArea) ...[
-              const SizedBox(height: 4),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    Icons.error_outline_rounded,
-                    size: 14,
-                    color: Colors.red.shade700,
-                  ),
-                  const SizedBox(width: 5),
-                  Expanded(
-                    child: Text(
-                      'Адрес вне зоны обслуживания'.tr,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.red.shade700,
-                      ),
-                    ),
-                  ),
-                ],
+            const SizedBox(height: 8),
+            Text(
+              cityOrHint,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 15,
+                height: 1.15,
+                fontWeight: FontWeight.w800,
+                color: hasAddress
+                    ? AppColors.primaryOnCard
+                    : Colors.orange.shade800,
               ),
-            ],
+            ),
           ],
         ),
+      ),
+    );
+
+    final mapColumn = Padding(
+      padding: const EdgeInsets.fromLTRB(0, 6, 8, 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Center(child: _buildTravelTimeAboveMap()),
+          const SizedBox(height: 5),
+          _buildHouseMapPreview(place, height: mapHeight),
+          const SizedBox(height: 5),
+          Center(
+            child: _buildAddressVerifyBadge(
+              hasAddress: hasAddress,
+              verifying: _verifyingAddress,
+              houseFound: houseFound,
+            ),
+          ),
+        ],
       ),
     );
 
@@ -3438,69 +3463,73 @@ class _DetailsTabState extends State<DetailsTab> {
         border: Border.all(color: borderColor),
       ),
       clipBehavior: Clip.antiAlias,
-      child: houseFound
-          ? IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(child: info),
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(0, 6, 6, 6),
-                      child: _buildHouseMapPreview(place, height: mapHeight),
-                    ),
-                  ),
-                ],
-              ),
-            )
-          : info,
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: info),
+            Expanded(child: mapColumn),
+          ],
+        ),
+      ),
     );
   }
 
-  Widget _buildHouseMapPreview(MapPlace place, {required double height}) {
+  Widget _buildHouseMapPreview(MapPlace? place, {required double height}) {
+    final hasPoint = place?.location != null;
     return ClipRRect(
       borderRadius: BorderRadius.circular(9),
       child: Material(
         color: Colors.grey.shade200,
         child: InkWell(
-          onTap: () => _openHouseMapSheet(place),
+          onTap: hasPoint ? () => _openHouseMapSheet(place!) : _openNavigator,
           child: SizedBox(
             height: height,
             width: double.infinity,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Image.network(
-                  MapsService.getStaticMapUrlForPoint(
-                    place.location!,
-                    width: 320,
-                    height: 280,
-                    zoom: 16,
-                  ),
-                  fit: BoxFit.cover,
-                  cacheWidth: 320,
-                  errorBuilder: (context, error, stackTrace) => Container(
-                    color: Colors.grey.shade200,
-                    alignment: Alignment.center,
+            child: hasPoint
+                ? Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.network(
+                        MapsService.getStaticMapUrlForPoint(
+                          place!.location!,
+                          width: 400,
+                          height: 360,
+                          zoom: 16,
+                        ),
+                        fit: BoxFit.cover,
+                        cacheWidth: 400,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          color: Colors.grey.shade200,
+                          alignment: Alignment.center,
+                          child: Icon(
+                            Icons.map_outlined,
+                            size: 32,
+                            color: Colors.grey.shade500,
+                          ),
+                        ),
+                      ),
+                      const Positioned(
+                        right: 4,
+                        top: 4,
+                        child: Icon(
+                          Icons.open_in_full_rounded,
+                          size: 14,
+                          color: Colors.white,
+                          shadows: [
+                            Shadow(blurRadius: 4, color: Colors.black87),
+                          ],
+                        ),
+                      ),
+                    ],
+                  )
+                : Center(
                     child: Icon(
                       Icons.map_outlined,
-                      size: 28,
+                      size: 34,
                       color: Colors.grey.shade500,
                     ),
                   ),
-                ),
-                const Positioned(
-                  right: 4,
-                  top: 4,
-                  child: Icon(
-                    Icons.open_in_full_rounded,
-                    size: 14,
-                    color: Colors.white,
-                    shadows: [Shadow(blurRadius: 4, color: Colors.black87)],
-                  ),
-                ),
-              ],
-            ),
           ),
         ),
       ),
@@ -4125,44 +4154,6 @@ class _CassettePainter extends CustomPainter {
         ..lineTo(w * 0.69, h * 0.77)
         ..lineTo(w * 0.76, h - stroke / 2),
       line,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _GoogleMapsLogoIcon extends StatelessWidget {
-  const _GoogleMapsLogoIcon();
-
-  @override
-  Widget build(BuildContext context) {
-    return const SizedBox(
-      width: 28,
-      height: 28,
-      child: CustomPaint(painter: _GoogleMapsLogoPainter()),
-    );
-  }
-}
-
-class _GoogleMapsLogoPainter extends CustomPainter {
-  const _GoogleMapsLogoPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final w = size.width;
-    final h = size.height;
-    final cx = w / 2;
-    final pin = Path()
-      ..moveTo(cx, h)
-      ..cubicTo(w * 0.04, h * 0.58, w * 0.04, h * 0.08, cx, h * 0.08)
-      ..cubicTo(w * 0.96, h * 0.08, w * 0.96, h * 0.58, cx, h)
-      ..close();
-    canvas.drawPath(pin, Paint()..color = const Color(0xFFE53935));
-    canvas.drawCircle(
-      Offset(cx, h * 0.34),
-      w * 0.18,
-      Paint()..color = const Color(0xFF6D1B16),
     );
   }
 
