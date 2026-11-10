@@ -736,8 +736,7 @@ class _DetailsTabState extends State<DetailsTab> {
             onTap: _openJobComms,
             icon: lastCall == null && sourceLabel.isNotEmpty
                 ? Icon(Job.intakeSourceIcon(source), size: 28, color: sourceColor)
-                : const Icon(
-                    Icons.phone_in_talk_rounded,
+                : const _PhoneListIcon(
                     size: 34,
                     color: Color(0xFFD97706),
                   ),
@@ -911,7 +910,6 @@ class _DetailsTabState extends State<DetailsTab> {
     Color? fillColor,
     bool hasData = false,
     VoidCallback? onLongPress,
-    String? caption,
   }) {
     final bg = Color.alphaBlend(
       fillColor ?? color.withValues(alpha: hasData ? 0.18 : 0.11),
@@ -919,37 +917,10 @@ class _DetailsTabState extends State<DetailsTab> {
     );
     final height = _quickIconHeight;
     final grown = height > 76;
-    // Значок растёт вместе с плиткой, но медленнее неё: иначе кассета на
-    // жёлтой плитке упирается в края.
     final iconSize = grown ? 34.0 + (height - 72) * 0.32 : 34.0;
-    // Плитка с подписью (у «Когда пообещал» на ней дата): значок поменьше,
-    // под ним текст, без круглой подложки.
-    final Widget content = caption == null
-        ? (grown
-              ? _iconBadge(color, iconSize + 22, _sizedIcon(icon, iconSize))
-              : icon)
-        : Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _sizedIcon(icon, grown ? 26.0 + (height - 72) * 0.25 : 24.0),
-              const SizedBox(height: 3),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 3),
-                child: Text(
-                  caption,
-                  maxLines: 2,
-                  textAlign: TextAlign.center,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    height: 1.1,
-                    fontWeight: FontWeight.w800,
-                    color: color,
-                  ),
-                ),
-              ),
-            ],
-          );
+    final Widget content = grown
+        ? _iconBadge(color, iconSize + 22, _sizedIcon(icon, iconSize))
+        : icon;
     return Tooltip(
       message: tooltip,
       child: Material(
@@ -994,6 +965,9 @@ class _DetailsTabState extends State<DetailsTab> {
 
   Widget _sizedIcon(Widget icon, double size) {
     if (icon is Icon) return Icon(icon.icon, size: size, color: icon.color);
+    if (icon is _PhoneListIcon) {
+      return _PhoneListIcon(size: size, color: icon.color);
+    }
     return icon;
   }
 
@@ -1649,9 +1623,7 @@ class _DetailsTabState extends State<DetailsTab> {
           ctrl.jobData,
         );
         final at = ctrl.promisedPartAt ?? remindAt;
-        final overdue =
-            Job.isPromisedOverdue(at) ||
-            (remindAt != null && !remindAt.isAfter(DateTime.now()));
+        final overdue = Job.isPromisedOverdue(at);
         final color = overdue
             ? const Color(0xFFC62828)
             : (at != null ? const Color(0xFFEF6C00) : AppColors.primaryOnCard);
@@ -4108,6 +4080,74 @@ class _CommsThread {
     required this.lastAt,
     required this.preview,
   });
+}
+
+/// Значок «телефонная трубка и список» для кнопки «Связь по заявке».
+class _PhoneListIcon extends StatelessWidget {
+  final double size;
+  final Color color;
+
+  const _PhoneListIcon({
+    this.size = 34,
+    this.color = const Color(0xFFD97706),
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final phoneSize = size * 0.56;
+    final dotSize = (size * 0.095).clamp(2.6, 4.5);
+    final barHeight = (size * 0.085).clamp(2.2, 4.0);
+    final barWidth = size * 0.30;
+    final gap = (size * 0.08).clamp(2.0, 4.0);
+
+    Widget line() {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: dotSize,
+            height: dotSize,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+            ),
+          ),
+          SizedBox(width: size * 0.05),
+          Container(
+            width: barWidth,
+            height: barHeight,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(99),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.phone_rounded, size: phoneSize, color: color),
+          SizedBox(width: size * 0.04),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              line(),
+              SizedBox(height: gap),
+              line(),
+              SizedBox(height: gap),
+              line(),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _HouseMapSheet extends StatefulWidget {
