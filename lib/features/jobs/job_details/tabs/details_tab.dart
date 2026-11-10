@@ -1562,13 +1562,6 @@ class _DetailsTabState extends State<DetailsTab> {
     final appliance = _applianceSummary();
     final appliances = _applianceList();
     final model = appliance.model;
-    final extraTypes = appliances.length > 1
-        ? appliances
-              .sublist(1)
-              .map((a) => trAny((a['type'] ?? '').toString()))
-              .where((type) => type.trim().isNotEmpty)
-              .join(', ')
-        : '';
     return Material(
       color: AppColors.card,
       shape: RoundedRectangleBorder(
@@ -1583,81 +1576,21 @@ class _DetailsTabState extends State<DetailsTab> {
         borderRadius: BorderRadius.circular(11),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          child: Row(
-            children: [
-              Stack(
-                children: [
-                  AppliancePicture(
-                    type: appliances.length > 1 ? 'Техника' : appliance.type,
-                    size: 54,
-                  ),
-                  if (appliances.length > 1)
-                    Positioned(
-                      top: 0,
-                      right: 0,
-                      child: _applianceCountBadge(appliances.length),
-                    ),
-                ],
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      trAny(appliance.type),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 14.5,
-                        height: 1.1,
-                      ),
-                    ),
-                    if (appliance.brand.isNotEmpty) ...[
-                      const SizedBox(height: 1),
-                      Text(
-                        appliance.brand,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12,
-                          color: AppColors.primaryOnCard,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 1),
-                    Text(
-                      model.isNotEmpty ? model : 'Модель не указана'.tr,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 11.5,
-                        color: model.isNotEmpty
-                            ? AppColors.inkMuted
-                            : Colors.grey,
-                      ),
-                    ),
-                    if (extraTypes.isNotEmpty) ...[
-                      const SizedBox(height: 1),
-                      Text(
-                        '+ $extraTypes',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 11,
-                          color: AppColors.primaryOnCard,
-                        ),
-                      ),
-                    ],
-                  ],
+          child: Center(
+            child: Stack(
+              children: [
+                AppliancePicture(
+                  type: appliances.length > 1 ? 'Техника' : appliance.type,
+                  size: 56,
                 ),
-              ),
-            ],
+                if (appliances.length > 1)
+                  Positioned(
+                    top: 0,
+                    right: 0,
+                    child: _applianceCountBadge(appliances.length),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -2276,18 +2209,18 @@ class _DetailsTabState extends State<DetailsTab> {
               final minScreenHeight = (viewport.maxHeight - topPad - bottomPad)
                   .clamp(0.0, double.infinity);
               final fixedEstimate =
-                  216.0 +
+                  316.0 +
                   (ctrl.visits.length > 1 ? 44.0 : 0.0) +
                   (ctrl.needsReview ? 116.0 : 0.0) +
                   (_twinJob != null ? 124.0 : 0.0);
               final totalFlex =
                   (minScreenHeight - fixedEstimate + _measuredDelta).clamp(
-                    236.0,
-                    520.0,
+                    190.0,
+                    480.0,
                   );
-              _currentQuickIconHeight = (totalFlex * 0.27).clamp(84.0, 116.0);
-              final mapHeight = (totalFlex - _currentQuickIconHeight - 14.0)
-                  .clamp(150.0, 360.0);
+              _currentQuickIconHeight = (totalFlex * 0.34).clamp(80.0, 114.0);
+              final mapHeight = (totalFlex - _currentQuickIconHeight - 8.0)
+                  .clamp(110.0, 320.0);
               _measureLayoutGap();
               return SingleChildScrollView(
                 controller: _scrollController,
@@ -3178,13 +3111,14 @@ class _DetailsTabState extends State<DetailsTab> {
           ? null
           : () => AppFeedback.copy(context, copyText),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Text(
               ctrl.contactName.toUpperCase(),
+              textAlign: TextAlign.center,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
@@ -3196,9 +3130,10 @@ class _DetailsTabState extends State<DetailsTab> {
               ),
             ),
             if (phone.isNotEmpty) ...[
-              const SizedBox(height: 8),
+              const SizedBox(height: 4),
               Text(
                 Formatters.formatPhone(phone),
+                textAlign: TextAlign.center,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -3208,9 +3143,9 @@ class _DetailsTabState extends State<DetailsTab> {
                 ),
               ),
             ],
-            const SizedBox(height: 8),
+            const SizedBox(height: 5),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(
                 color: cityFrameColor.withValues(alpha: 0.10),
                 borderRadius: BorderRadius.circular(9),
@@ -3221,6 +3156,7 @@ class _DetailsTabState extends State<DetailsTab> {
               ),
               child: Text(
                 cityOrHint,
+                textAlign: TextAlign.center,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -3244,25 +3180,22 @@ class _DetailsTabState extends State<DetailsTab> {
         border: Border.all(color: borderColor),
       ),
       clipBehavior: Clip.antiAlias,
-      child: IntrinsicHeight(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(child: info),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(0, 6, 6, 6),
-                child: _buildHouseMapPreview(
-                  place,
-                  height: mapHeight,
-                  hasAddress: hasAddress,
-                  verifying: _verifyingAddress,
-                  houseFound: houseFound,
-                ),
-              ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          info,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
+            child: _buildHouseMapPreview(
+              place,
+              height: mapHeight,
+              hasAddress: hasAddress,
+              verifying: _verifyingAddress,
+              houseFound: houseFound,
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -3291,12 +3224,12 @@ class _DetailsTabState extends State<DetailsTab> {
                   Image.network(
                     MapsService.getStaticMapUrlForPoint(
                       place!.location!,
-                      width: 400,
-                      height: 360,
+                      width: 600,
+                      height: 320,
                       zoom: 16,
                     ),
                     fit: BoxFit.cover,
-                    cacheWidth: 400,
+                    cacheWidth: 600,
                     errorBuilder: (context, error, stackTrace) => Container(
                       color: Colors.grey.shade200,
                       alignment: Alignment.center,
