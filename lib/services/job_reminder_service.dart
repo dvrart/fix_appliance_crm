@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,15 +15,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../core/app_feedback.dart';
 import '../core/constants.dart';
 import '../core/l10n/app_locale.dart';
+import '../core/sms_text.dart';
 import '../core/utils/app_date_picker.dart';
 import '../features/jobs/job_details/job_details_screen.dart';
 import '../features/jobs/job_details/widgets/full_screen_gallery.dart';
 import '../models/job.dart';
 import '../shared/app_nav.dart';
 import '../shared/widgets/appliance_picture.dart';
+import '../shared/widgets/confirm_action_sheet.dart';
 import '../shared/widgets/dispose_on_close.dart';
+import 'app_time_service.dart';
 import 'job_service.dart';
 import 'local_notification_service.dart';
+import 'settings_service.dart';
+import 'sms_service.dart';
 
 /// Фото или файл, приложенный к напоминанию. Лежит в личной папке
 /// приложения на телефоне — напоминание тоже личное и живёт здесь же.
@@ -871,7 +877,33 @@ class JobReminderService {
     return result;
   }
 
-  /// Открывает список сработавших напоминаний из колокольчика в правом верхнем углу.
+  /// Заявки, в которых визит ждёт одобрения/отправки SMS мастером.
+  static List<({Job job, JobVisit visit})> pendingSmsEntries([
+    List<Job> jobs = const [],
+  ]) {
+    final out = <({Job job, JobVisit visit})>[];
+    for (final job in jobs) {
+      if (job.isDeleted || JobStatuses.isClosed(job.status) || job.needsReview) {
+        continue;
+      }
+      for (final visit in job.coalescedVisits) {
+        if (visit.isActiveSlot &&
+            [
+              'pending',
+              'approved',
+              'sending',
+              'error',
+            ].contains(visit.bookingSmsState)) {
+          out.add((job: job, visit: visit));
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /// Открывает список сработавших напоминаний и ожидающих отправки SMS
+  /// из колокольчика в правом верхнем углу календаря.
   static Future<void> showDueRemindersSheet(
     BuildContext hostContext, [
     List<Job> jobs = const [],
@@ -885,94 +917,352 @@ class JobReminderService {
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (sheetContext) {
-        return ValueListenableBuilder<int>(
-          valueListenable: revision,
-          builder: (context, _, _) {
-            final items = dueReminders(jobs);
-            return SafeArea(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: MediaQuery.sizeOf(context).height * 0.72,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(height: 8),
-                    Container(
-                      width: 36,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade400,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
+        return StreamBuilder<List<Job>>(
+          stream: JobService.streamAll(),
+          initialData: jobs,
+          builder: (context, snapshot) {
+            final liveJobs = snapshot.data ?? jobs;
+            return ValueListenableBuilder<int>(
+              valueListenable: revision,
+              builder: (context, _, _) {
+                final items = dueReminders(liveJobs);
+                final pendingSms = pendingSmsEntries(liveJobs);
+                final totalCount = items.length + pendingSms.length;
+                return SafeArea(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.sizeOf(context).height * 0.78,
                     ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 12, 4),
-                      child: Row(
-                        children: [
-                          const Icon(
-                            Icons.notifications_active_rounded,
-                            color: Color(0xFF7B1FA2),
-                            size: 24,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(height: 8),
+                        Container(
+                          width: 36,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade400,
+                            borderRadius: BorderRadius.circular(2),
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              context.tr('Напоминания', 'Reminders'),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w900,
-                                fontSize: 20,
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 12, 4),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.notifications_active_rounded,
+                                color: Color(0xFF7B1FA2),
+                                size: 24,
                               ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  context.tr('Напоминания', 'Reminders'),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 20,
+                                  ),
+                                ),
+                              ),
+                              if (items.isNotEmpty)
+                                TextButton(
+                                  onPressed: () async {
+                                    for (final item in items) {
+                                      await clearReminder(item.jobId);
+                                    }
+                                    if (pendingSms.isEmpty &&
+                                        sheetContext.mounted) {
+                                      Navigator.pop(sheetContext);
+                                    }
+                                  },
+                                  child: Text(
+                                    context.tr('Очистить', 'Clear all'),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const Divider(height: 12),
+                        if (totalCount == 0)
+                          Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              context.tr(
+                                'Нет активных напоминаний',
+                                'No active reminders',
+                              ),
+                              style: TextStyle(color: AppColors.inkMuted),
+                            ),
+                          )
+                        else
+                          Flexible(
+                            child: ListView(
+                              shrinkWrap: true,
+                              padding: const EdgeInsets.fromLTRB(
+                                12,
+                                4,
+                                12,
+                                16,
+                              ),
+                              children: [
+                                for (final entry in pendingSms)
+                                  _buildPendingSmsTile(
+                                    context: context,
+                                    hostContext: hostContext,
+                                    sheetContext: sheetContext,
+                                    job: entry.job,
+                                    visit: entry.visit,
+                                  ),
+                                for (final item in items)
+                                  _buildDueReminderTile(
+                                    context: context,
+                                    hostContext: hostContext,
+                                    sheetContext: sheetContext,
+                                    item: item,
+                                  ),
+                              ],
                             ),
                           ),
-                          if (items.isNotEmpty)
-                            TextButton(
-                              onPressed: () async {
-                                for (final item in items) {
-                                  await clearReminder(item.jobId);
-                                }
-                                if (sheetContext.mounted) {
-                                  Navigator.pop(sheetContext);
-                                }
-                              },
-                              child: Text(context.tr('Очистить', 'Clear all')),
-                            ),
-                        ],
-                      ),
+                      ],
                     ),
-                    const Divider(height: 12),
-                    if (items.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Text(
-                          context.tr(
-                            'Нет активных напоминаний',
-                            'No active reminders',
-                          ),
-                          style: TextStyle(color: AppColors.inkMuted),
-                        ),
-                      )
-                    else
-                      Flexible(
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                          itemCount: items.length,
-                          itemBuilder: (context, index) => _buildDueReminderTile(
-                            context: context,
-                            hostContext: hostContext,
-                            sheetContext: sheetContext,
-                            item: items[index],
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
+                  ),
+                );
+              },
             );
           },
         );
       },
+    );
+  }
+
+  static Future<void> _sendPendingVisitSms(
+    BuildContext context,
+    Job job,
+    JobVisit visit,
+  ) async {
+    final phone = job.contactPhone.trim();
+    if (phone.isEmpty) return;
+    final templates = await SettingsService.loadSmsTemplates();
+    final clock = AppTimeService.bookingWallClock(visit.startAt);
+    final date = DateFormat('MMMM d', 'en_US').format(clock);
+    final time = visit.hasTime ? DateFormat('HH:mm').format(clock) : '';
+    final slotKey = AppTimeService.bookingSlotKey(visit.startAt);
+    final template =
+        templates['booking_confirm'] ??
+        SettingsService.defaultBookingConfirmSms;
+    var body = SmsText.stripConfirmAsk(
+      SmsText.fillName(template, job.contactName),
+    );
+    body = SmsText.replacePlaceholder(body, 'date', date);
+    body = SmsText.replacePlaceholder(body, 'time', time);
+    body = SmsText.replacePlaceholder(body, 'address', job.workAddress.trim());
+    body = SmsText.replacePlaceholder(body, 'review', '');
+    body = SmsText.replacePlaceholder(body, 'appliance', '');
+    body = body.trim();
+
+    if (!context.mounted) return;
+    final confirmed = await showConfirmCancelSheet(
+      context,
+      title: 'Отправить SMS клиенту?'.tr,
+      message: '$phone\n\n$body',
+      confirmLabel: 'Отправить'.tr,
+    );
+    if (!confirmed) return;
+    final requestId =
+        visit.smsBooking['requestId'] is String &&
+            (visit.smsBooking['requestId'] as String).isNotEmpty
+        ? visit.smsBooking['requestId'] as String
+        : FirebaseFirestore.instance
+              .collection('companies')
+              .doc(kCompanyId)
+              .collection('messages')
+              .doc()
+              .id;
+    await SmsService.sendSms(
+      to: phone,
+      body: body,
+      clientId: job.clientId,
+      visitBooking: {
+        'jobId': job.id,
+        'visitId': visit.id,
+        'slotKey': slotKey,
+        'requestId': requestId,
+      },
+    );
+  }
+
+  static Future<void> _dismissPendingVisitSms(
+    BuildContext context,
+    Job job,
+    JobVisit visit,
+  ) async {
+    final ok = await showConfirmCancelSheet(
+      context,
+      title: 'Не отправлять SMS?'.tr,
+      message: 'SMS об этом времени визита не будет отправлено.'.tr,
+      confirmLabel: 'Не отправлять'.tr,
+    );
+    if (!ok) return;
+    final slotKey = AppTimeService.bookingSlotKey(visit.startAt);
+    final updated = visit.copyWith(
+      smsBookingPending: false,
+      smsBookingSlotKey: slotKey,
+      smsBooking: {
+        'state': 'rejected',
+        'slotKey': slotKey,
+        'decidedAt': DateTime.now(),
+      },
+    );
+    final nextVisits = [
+      for (final item in job.coalescedVisits)
+        item.id == visit.id ? updated : item,
+    ];
+    await JobService.saveVisits(
+      job.id,
+      nextVisits,
+      defaultDuration: job.durationMinutes,
+      currentStatus: job.status,
+    );
+  }
+
+  static Widget _buildPendingSmsTile({
+    required BuildContext context,
+    required BuildContext hostContext,
+    required BuildContext sheetContext,
+    required Job job,
+    required JobVisit visit,
+  }) {
+    final clock = AppTimeService.bookingWallClock(visit.startAt);
+    final datePart = DateFormat(
+      'd MMM',
+      AppLocale.instance.dateLocale,
+    ).format(clock);
+    final when = visit.hasTime
+        ? '$datePart · ${DateFormat('HH:mm').format(clock)}'
+        : datePart;
+    final sending = visit.bookingSmsState == 'sending';
+    final approved = visit.bookingSmsState == 'approved';
+    final failed = visit.bookingSmsState == 'error';
+    final unknown = failed && visit.smsBooking['retryAllowed'] == false;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () async {
+            HapticFeedback.selectionClick();
+            if (sheetContext.mounted && Navigator.of(sheetContext).canPop()) {
+              Navigator.pop(sheetContext);
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 220));
+            if (!hostContext.mounted) return;
+            await AppNav.openCard(
+              hostContext,
+              key: AppNav.jobKey(job.id),
+              builder: (_) => JobDetailsScreen(
+                jobId: job.id,
+                clientId: job.clientId,
+                jobData: job.toMap(),
+              ),
+            );
+          },
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.orange.shade300),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    AppliancePicture(type: job.appliancePictureType, size: 34),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            job.contactName.trim().isEmpty
+                                ? 'Клиент'.tr
+                                : job.contactName.trim(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 14.5,
+                              color: AppColors.ink,
+                            ),
+                          ),
+                          Text(
+                            sending
+                                ? '${'SMS отправляется'.tr}: $when'
+                                : approved
+                                ? '${'SMS одобрено'.tr}: $when'
+                                : failed
+                                ? '${'Проверьте отправку SMS'.tr}: $when'
+                                : '${'SMS ждёт отправки'.tr}: $when',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12.5,
+                              color: Colors.orange.shade900,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: sending || unknown
+                            ? null
+                            : () => _sendPendingVisitSms(context, job, visit),
+                        icon: const Icon(Icons.send_rounded, size: 18),
+                        label: Text(
+                          approved
+                              ? 'Продолжить'.tr
+                              : failed
+                              ? 'Повторить'.tr
+                              : 'Отправить'.tr,
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF22C55E),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: sending || unknown || approved
+                            ? null
+                            : () =>
+                                  _dismissPendingVisitSms(context, job, visit),
+                        icon: const Icon(Icons.close_rounded, size: 18),
+                        label: Text('Не отправлять'.tr),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFE53935),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 

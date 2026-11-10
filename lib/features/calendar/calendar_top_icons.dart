@@ -63,13 +63,15 @@ class _CalendarTopIconsState extends State<CalendarTopIcons> {
           valueListenable: JobReminderService.revision,
           builder: (context, _, _) {
             final dueReminders = JobReminderService.dueReminders(allJobs);
+            final pendingSms = JobReminderService.pendingSmsEntries(allJobs);
+            final bellCount = dueReminders.length + pendingSms.length;
             return Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (dueReminders.isNotEmpty)
+                if (bellCount > 0)
                   _headerButton(
                     icon: Icons.notifications_active_rounded,
-                    count: dueReminders.length,
+                    count: bellCount,
                     alert: true,
                     tooltip: context.tr(
                       'Напоминания о карточках',

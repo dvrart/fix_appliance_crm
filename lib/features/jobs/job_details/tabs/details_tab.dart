@@ -42,8 +42,6 @@ class DetailsTab extends StatefulWidget {
 
 class _DetailsTabState extends State<DetailsTab> {
   JobDetailsController get ctrl => widget.controller;
-  List<Job> _relatedJobs = const [];
-  Job? _originalJob;
 
   /// Вторая заявка с того же номера: дубляж, который сервер не стал соединять
   /// сам, либо та, в которую эту уже слили.
@@ -75,7 +73,6 @@ class _DetailsTabState extends State<DetailsTab> {
   void initState() {
     super.initState();
     ctrl.addListener(_onControllerChange);
-    _loadRelatedJobs();
     unawaited(_loadTwinJob());
     unawaited(_verifyWorkAddress());
     _changesSub = ChangeLogService.streamChanges(ctrl.jobId).listen((events) {
@@ -1201,86 +1198,6 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  Map<String, String> _applianceFields() {
-    final list = _applianceList();
-    final primary = list.isNotEmpty ? list.first : null;
-    return {
-      'type': (ctrl.jobData['applianceType'] ?? primary?['type'] ?? '')
-          .toString(),
-      'brand': (ctrl.jobData['brand'] ?? primary?['brand'] ?? '').toString(),
-      'model': (ctrl.jobData['model'] ?? primary?['model'] ?? '').toString(),
-      'serial': (ctrl.jobData['serialNumber'] ?? primary?['serialNumber'] ?? '')
-          .toString(),
-    };
-  }
-
-  Future<void> _loadRelatedJobs() async {
-    final fields = _applianceFields();
-    final jobs = await JobService.findRelatedAppliances(
-      excludeJobId: ctrl.jobId,
-      clientId: ctrl.clientId,
-      serialNumber: fields['serial'] ?? '',
-      model: fields['model'] ?? '',
-      brand: fields['brand'] ?? '',
-    );
-    Job? original;
-    final originId = (ctrl.jobData['repeatOfJobId'] ?? '').toString().trim();
-    if (originId.isNotEmpty) {
-      original = await JobService.getById(originId);
-    }
-    if (!mounted) return;
-    setState(() {
-      _relatedJobs = jobs;
-      _originalJob = original;
-      // Контент под кнопками прибыл — дыра уменьшилась, ряд надо перемерить.
-      _scrollSlack = 0;
-    });
-  }
-
-  Widget _buildOriginalJobLink() {
-    final job = _originalJob!;
-    const color = Color(0xFF8E24AA);
-    return Container(
-      decoration: BoxDecoration(
-        color: Color.alphaBlend(color.withValues(alpha: 0.12), AppColors.card),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-      ),
-      child: ListTile(
-        dense: true,
-        visualDensity: VisualDensity.compact,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-        leading: const Icon(Icons.history, color: color, size: 20),
-        title: Text(
-          'Исходная заявка'.tr,
-          style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
-        ),
-        subtitle: Text(
-          [
-            trAny(job.status),
-            DateFormat(
-              'd MMM yyyy',
-              AppLocale.instance.dateLocale,
-            ).format(job.scheduledAt ?? job.createdAt),
-          ].join(' · '),
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-        ),
-        trailing: const Icon(Icons.chevron_right, color: color),
-        onTap: () {
-          AppNav.openCard(
-            context,
-            key: AppNav.jobKey(job.id),
-            builder: (_) => JobDetailsScreen(
-              jobId: job.id,
-              clientId: job.clientId,
-              jobData: job.toMap(),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   /// Рамка с заголовком в окне визита: календарь и часы — отдельными блоками.
   Widget _visitPickerBox({
     required IconData icon,
@@ -2179,124 +2096,6 @@ class _DetailsTabState extends State<DetailsTab> {
     });
   }
 
-  /// Визит, для которого сервер отложил SMS до подтверждения владельца.
-  JobVisit? get _pendingSmsVisit {
-    for (final visit in ctrl.visits) {
-      if (visit.isActiveSlot &&
-          [
-            'pending',
-            'approved',
-            'sending',
-            'error',
-          ].contains(visit.bookingSmsState)) {
-        return visit;
-      }
-    }
-    return null;
-  }
-
-  /// «SMS ждёт отправки»: сервер только пометил визит, отправляет владелец.
-  Widget _pendingSmsBanner(JobVisit visit) {
-    final clock = AppTimeService.bookingWallClock(visit.startAt);
-    final datePart = DateFormat('d MMM', AppLocale.instance.dateLocale).format(clock);
-    final when = visit.hasTime
-        ? '$datePart · ${DateFormat('HH:mm').format(clock)}'
-        : datePart;
-    final sending = visit.bookingSmsState == 'sending';
-    final approved = visit.bookingSmsState == 'approved';
-    final busy = _bookingBusy || sending;
-    final failed = visit.bookingSmsState == 'error';
-    final unknown = failed && visit.smsBooking['retryAllowed'] == false;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.orange.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.orange.shade300),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.sms_outlined, size: 20, color: Colors.orange.shade800),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  sending
-                      ? 'SMS отправляется'.tr
-                      : approved
-                      ? 'SMS одобрено'.tr
-                      : failed
-                      ? 'Проверьте отправку SMS'.tr
-                      : 'SMS ждёт отправки'.tr,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
-                    color: Colors.orange.shade900,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            sending
-                ? '${'Ожидаем результат отправки'.tr}: $when'
-                : approved
-                ? '${'Нажмите «Продолжить», чтобы завершить отправку'.tr}: $when'
-                : failed
-                ? (visit.smsBooking['error'] ?? 'Не удалось отправить SMS'.tr)
-                      .toString()
-                : '${'SMS о визите ещё не отправлено'.tr}: $when',
-            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: busy || unknown
-                      ? null
-                      : () => _resendVisitBookingSms(visit),
-                  icon: const Icon(Icons.send_rounded, size: 20),
-                  label: Text(
-                    approved
-                        ? 'Продолжить'.tr
-                        : failed
-                        ? 'Повторить'.tr
-                        : 'Отправить'.tr,
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF22C55E),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: busy || unknown || approved
-                      ? null
-                      : () => _dismissPendingSms(visit),
-                  icon: const Icon(Icons.close_rounded, size: 20),
-                  label: Text('Не отправлять'.tr),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFE53935),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
   JobVisit? _currentBookingVisit(JobVisit expected) {
     for (final visit in ctrl.visits) {
       if (visit.id == expected.id &&
@@ -2312,40 +2111,6 @@ class _DetailsTabState extends State<DetailsTab> {
       );
     }
     return null;
-  }
-
-  Future<void> _dismissPendingSms(JobVisit visit) async {
-    if (_bookingBusy || visit.bookingSmsInProgress) return;
-    setState(() => _bookingBusy = true);
-    try {
-      AppFeedback.haptic();
-      final ok = await showConfirmCancelSheet(
-        context,
-        title: 'Не отправлять SMS?'.tr,
-        message: 'SMS об этом времени визита не будет отправлено.'.tr,
-        confirmLabel: 'Не отправлять'.tr,
-      );
-      if (!ok || !mounted) return;
-      final current = _currentBookingVisit(visit);
-      if (current == null || current.bookingSmsInProgress) return;
-      visit = current;
-      final slotKey = AppTimeService.bookingSlotKey(visit.startAt);
-      // copyWith не умеет обнулять smsBookingPendingAt, но сервер смотрит на флаг.
-      await ctrl.updateVisit(
-        visit.copyWith(
-          smsBookingPending: false,
-          smsBookingSlotKey: slotKey,
-          smsBooking: {
-            'state': 'rejected',
-            'slotKey': slotKey,
-            'decidedAt': DateTime.now(),
-          },
-        ),
-      );
-      await ctrl.commitChanges();
-    } finally {
-      if (mounted) setState(() => _bookingBusy = false);
-    }
   }
 
   /// [jobId] — визит из другой заявки (новая заявка после «Перенос визита»):
@@ -2487,11 +2252,8 @@ class _DetailsTabState extends State<DetailsTab> {
                   .clamp(0.0, double.infinity);
               final hasExtraBlocks =
                   ctrl.documents.isNotEmpty ||
-                  _relatedJobs.isNotEmpty ||
-                  _originalJob != null ||
                   ctrl.needsReview ||
-                  _twinJob != null ||
-                  (!ctrl.needsReview && _pendingSmsVisit != null);
+                  _twinJob != null;
               final mapHeight = hasExtraBlocks
                   ? (viewport.maxHeight * 0.22).clamp(135.0, 180.0)
                   : (viewport.maxHeight * 0.28).clamp(160.0, 220.0);
@@ -2526,19 +2288,6 @@ class _DetailsTabState extends State<DetailsTab> {
                               _buildJobSiteCard(mapHeight: mapHeight),
                               const SizedBox(height: 6),
                               _buildQuickIconBar(),
-                              if (!ctrl.needsReview &&
-                                  _pendingSmsVisit != null) ...[
-                                const SizedBox(height: 6),
-                                _pendingSmsBanner(_pendingSmsVisit!),
-                              ],
-                              if (_originalJob != null) ...[
-                                const SizedBox(height: 6),
-                                _buildOriginalJobLink(),
-                              ],
-                              if (_relatedJobs.isNotEmpty) ...[
-                                const SizedBox(height: 6),
-                                _buildRelatedJobs(),
-                              ],
                               const SizedBox(height: 6),
                             ],
                           ),
@@ -3658,99 +3407,6 @@ class _DetailsTabState extends State<DetailsTab> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildRelatedJobs() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(bottom: 5),
-          child: Text(
-            'Эта техника раньше'.tr,
-            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
-          ),
-        ),
-        for (final job in _relatedJobs.take(5))
-          Padding(
-            padding: const EdgeInsets.only(bottom: 5),
-            child: Builder(
-              builder: (context) {
-                final color = StatusService.colorOf(job.status);
-                return Material(
-                  color: Color.alphaBlend(
-                    color.withValues(alpha: 0.12),
-                    AppColors.card,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    side: BorderSide(color: color.withValues(alpha: 0.42)),
-                  ),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(10),
-                    onTap: () {
-                      AppNav.openCard(
-                        context,
-                        key: AppNav.jobKey(job.id),
-                        builder: (_) => JobDetailsScreen(
-                          jobId: job.id,
-                          clientId: job.clientId,
-                          jobData: job.toMap(),
-                        ),
-                      );
-                    },
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 7,
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: BoxDecoration(
-                              color: color,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              trAny(job.status),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w800,
-                                fontSize: 12.5,
-                              ),
-                            ),
-                          ),
-                          Text(
-                            DateFormat(
-                              'd MMM yyyy',
-                              AppLocale.instance.dateLocale,
-                            ).format(job.scheduledAt ?? job.createdAt),
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.grey.shade700,
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Icon(
-                            Icons.chevron_right,
-                            size: 18,
-                            color: Colors.grey.shade600,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-      ],
     );
   }
 
