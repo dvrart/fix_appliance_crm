@@ -3290,62 +3290,65 @@ class _DetailsTabState extends State<DetailsTab> {
     return '';
   }
 
-  Widget _buildTravelTimeAboveMap() {
+  Widget _buildMapTravelTimeBadge() {
     final travelHint = ctrl.travelTime.trim();
     final hasTravelTime =
         travelHint.isNotEmpty && travelHint != 'GO' && travelHint != '...';
     final label = ctrl.isLoadingTime
         ? '...'
-        : (hasTravelTime ? travelHint : 'Проложить маршрут'.tr);
-    return Material(
-      color: AppColors.accent.withValues(alpha: 0.28),
-      borderRadius: BorderRadius.circular(8),
-      child: InkWell(
-        onTap: _openNavigator,
-        borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (ctrl.isLoadingTime)
-                const SizedBox(
-                  width: 13,
-                  height: 13,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 1.8,
-                    color: Colors.black87,
-                  ),
-                )
-              else
-                const Icon(
-                  Icons.directions_car_rounded,
-                  size: 15,
-                  color: Colors.black87,
-                ),
-              const SizedBox(width: 5),
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w800,
-                    color: Colors.black87,
-                  ),
-                ),
-              ),
-            ],
+        : (hasTravelTime ? travelHint : 'Маршрут'.tr);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3.5),
+      decoration: BoxDecoration(
+        color: AppColors.accent.withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(999),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.22),
+            blurRadius: 4,
+            offset: const Offset(0, 1),
           ),
-        ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (ctrl.isLoadingTime)
+            const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.8,
+                color: Colors.black87,
+              ),
+            )
+          else
+            const Icon(
+              Icons.directions_car_rounded,
+              size: 14,
+              color: Colors.black87,
+            ),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w900,
+                color: Colors.black87,
+                height: 1.1,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  /// Одна секция «Где работа» под «Датой визита»: слева имя, телефон и город,
-  /// справа время до адреса над картой, карта и статус «Дом найден» под картой.
+  /// Одна секция «Где работа» под «Датой визита»: слева имя, телефон и город
+  /// в рамке; справа карта, а прямо на карте сверху время в пути и снизу «Дом найден».
   Widget _buildJobSiteCard({double mapHeight = 160}) {
     final address = ctrl.workAddress.trim();
     final hasAddress = MapsService.hasRoutableAddress(address);
@@ -3362,7 +3365,7 @@ class _DetailsTabState extends State<DetailsTab> {
     final city = _workCity();
     final cityOrHint = city.isNotEmpty
         ? city
-        : (hasAddress ? address : 'Нажмите, чтобы указать адрес работы'.tr);
+        : (hasAddress ? address : 'Адрес не указан'.tr);
     final copyText = [
       ctrl.contactName.trim(),
       if (phone.isNotEmpty) phone,
@@ -3378,6 +3381,10 @@ class _DetailsTabState extends State<DetailsTab> {
     final bgColor = warnState
         ? Colors.orange.withValues(alpha: 0.08)
         : AppColors.card;
+
+    final cityFrameColor = hasAddress
+        ? AppColors.primaryOnCard
+        : Colors.orange.shade800;
 
     final info = InkWell(
       onTap: _editJobSite,
@@ -3395,8 +3402,8 @@ class _DetailsTabState extends State<DetailsTab> {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                fontSize: 20,
-                height: 1.1,
+                fontSize: 24,
+                height: 1.06,
                 fontWeight: FontWeight.w900,
                 color: Color(0xFF1E88E5),
                 letterSpacing: 0.3,
@@ -3416,42 +3423,30 @@ class _DetailsTabState extends State<DetailsTab> {
               ),
             ],
             const SizedBox(height: 8),
-            Text(
-              cityOrHint,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 15,
-                height: 1.15,
-                fontWeight: FontWeight.w800,
-                color: hasAddress
-                    ? AppColors.primaryOnCard
-                    : Colors.orange.shade800,
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: cityFrameColor.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(
+                  color: cityFrameColor.withValues(alpha: 0.42),
+                  width: 1.3,
+                ),
+              ),
+              child: Text(
+                cityOrHint,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 18,
+                  height: 1.12,
+                  fontWeight: FontWeight.w900,
+                  color: cityFrameColor,
+                ),
               ),
             ),
           ],
         ),
-      ),
-    );
-
-    final mapColumn = Padding(
-      padding: const EdgeInsets.fromLTRB(0, 6, 8, 6),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Center(child: _buildTravelTimeAboveMap()),
-          const SizedBox(height: 5),
-          _buildHouseMapPreview(place, height: mapHeight),
-          const SizedBox(height: 5),
-          Center(
-            child: _buildAddressVerifyBadge(
-              hasAddress: hasAddress,
-              verifying: _verifyingAddress,
-              houseFound: houseFound,
-            ),
-          ),
-        ],
       ),
     );
 
@@ -3468,68 +3463,92 @@ class _DetailsTabState extends State<DetailsTab> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(child: info),
-            Expanded(child: mapColumn),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(0, 6, 6, 6),
+                child: _buildHouseMapPreview(
+                  place,
+                  height: mapHeight,
+                  hasAddress: hasAddress,
+                  verifying: _verifyingAddress,
+                  houseFound: houseFound,
+                ),
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildHouseMapPreview(MapPlace? place, {required double height}) {
+  Widget _buildHouseMapPreview(
+    MapPlace? place, {
+    required double height,
+    required bool hasAddress,
+    required bool verifying,
+    required bool houseFound,
+  }) {
     final hasPoint = place?.location != null;
     return ClipRRect(
       borderRadius: BorderRadius.circular(9),
       child: Material(
         color: Colors.grey.shade200,
         child: InkWell(
-          onTap: hasPoint ? () => _openHouseMapSheet(place!) : _openNavigator,
+          onTap: hasPoint ? () => _openHouseMapSheet(place!) : _editJobSite,
           child: SizedBox(
             height: height,
             width: double.infinity,
-            child: hasPoint
-                ? Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Image.network(
-                        MapsService.getStaticMapUrlForPoint(
-                          place!.location!,
-                          width: 400,
-                          height: 360,
-                          zoom: 16,
-                        ),
-                        fit: BoxFit.cover,
-                        cacheWidth: 400,
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          color: Colors.grey.shade200,
-                          alignment: Alignment.center,
-                          child: Icon(
-                            Icons.map_outlined,
-                            size: 32,
-                            color: Colors.grey.shade500,
-                          ),
-                        ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (hasPoint)
+                  Image.network(
+                    MapsService.getStaticMapUrlForPoint(
+                      place!.location!,
+                      width: 400,
+                      height: 360,
+                      zoom: 16,
+                    ),
+                    fit: BoxFit.cover,
+                    cacheWidth: 400,
+                    errorBuilder: (context, error, stackTrace) => Container(
+                      color: Colors.grey.shade200,
+                      alignment: Alignment.center,
+                      child: Icon(
+                        Icons.map_outlined,
+                        size: 32,
+                        color: Colors.grey.shade500,
                       ),
-                      const Positioned(
-                        right: 4,
-                        top: 4,
-                        child: Icon(
-                          Icons.open_in_full_rounded,
-                          size: 14,
-                          color: Colors.white,
-                          shadows: [
-                            Shadow(blurRadius: 4, color: Colors.black87),
-                          ],
-                        ),
-                      ),
-                    ],
+                    ),
                   )
-                : Center(
+                else
+                  Center(
                     child: Icon(
                       Icons.map_outlined,
                       size: 34,
                       color: Colors.grey.shade500,
                     ),
                   ),
+                Positioned(
+                  top: 6,
+                  left: 6,
+                  right: 6,
+                  child: Center(child: _buildMapTravelTimeBadge()),
+                ),
+                Positioned(
+                  bottom: 6,
+                  left: 6,
+                  right: 6,
+                  child: Center(
+                    child: _buildAddressVerifyBadge(
+                      hasAddress: hasAddress,
+                      verifying: verifying,
+                      houseFound: houseFound,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -3542,36 +3561,64 @@ class _DetailsTabState extends State<DetailsTab> {
     required bool houseFound,
   }) {
     if (verifying) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 12,
-            height: 12,
-            child: CircularProgressIndicator(
-              strokeWidth: 1.8,
-              color: AppColors.primary,
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: AppColors.card.withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(999),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.18),
+              blurRadius: 4,
+              offset: const Offset(0, 1),
             ),
-          ),
-          const SizedBox(width: 5),
-          Text(
-            'Проверка адреса...'.tr,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: Colors.grey.shade600,
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.8,
+                color: AppColors.primary,
+              ),
             ),
-          ),
-        ],
+            const SizedBox(width: 5),
+            Text(
+              'Проверка адреса...'.tr,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: Colors.grey.shade700,
+              ),
+            ),
+          ],
+        ),
       );
     }
     if (!hasAddress) {
-      return Text(
-        'Адрес не указан'.tr,
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
-          color: Colors.red.shade600,
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: AppColors.card.withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(999),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.18),
+              blurRadius: 4,
+              offset: const Offset(0, 1),
+            ),
+          ],
+        ),
+        child: Text(
+          'Адрес не указан'.tr,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            color: Colors.red.shade600,
+          ),
         ),
       );
     }
@@ -3583,10 +3630,18 @@ class _DetailsTabState extends State<DetailsTab> {
         : Icons.warning_amber_rounded;
     final text = houseFound ? 'Дом найден'.tr : 'Дом не найден'.tr;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
+        color: AppColors.card.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.45)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.18),
+            blurRadius: 4,
+            offset: const Offset(0, 1),
+          ),
+        ],
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -4178,7 +4233,7 @@ class _HouseMapSheet extends StatefulWidget {
 
 class _HouseMapSheetState extends State<_HouseMapSheet> {
   GoogleMapController? _map;
-  MapType _mapType = MapType.normal;
+  MapType _mapType = MapType.hybrid;
 
   LatLng get _point => widget.place.location!;
 
