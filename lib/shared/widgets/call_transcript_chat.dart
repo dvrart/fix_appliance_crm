@@ -39,7 +39,11 @@ bool _isShopSpeaker(String label) {
       t == 'fixapplianceca';
 }
 
-String _speakerTitle(String label, String answeredBy) {
+String _speakerTitle(
+  String label,
+  String answeredBy, {
+  String clientLabel = '',
+}) {
   if (_isShopSpeaker(label)) {
     if (answeredBy == 'master' ||
         label.toLowerCase() == 'me' ||
@@ -51,6 +55,7 @@ String _speakerTitle(String label, String answeredBy) {
     }
     return 'ИИ'.tr;
   }
+  if (clientLabel.trim().isNotEmpty) return clientLabel.trim();
   return 'Клиент'.tr;
 }
 
@@ -146,6 +151,7 @@ class CallTranscriptChat extends StatelessWidget {
   final String text;
   final bool translating;
   final String answeredBy;
+  final String clientLabel;
 
   /// Начало разговора. Отдельного времени у реплик нет — расшифровка
   /// приходит одним текстом, — поэтому день и время ставим на весь разговор.
@@ -156,6 +162,7 @@ class CallTranscriptChat extends StatelessWidget {
     required this.text,
     this.translating = false,
     this.answeredBy = '',
+    this.clientLabel = '',
     this.startedAt,
   });
 
@@ -205,6 +212,7 @@ class CallTranscriptChat extends StatelessWidget {
           _Bubble(
             line: lines[i],
             answeredBy: answeredBy,
+            clientLabel: clientLabel,
           ),
         ],
       ],
@@ -215,8 +223,13 @@ class CallTranscriptChat extends StatelessWidget {
 class _Bubble extends StatelessWidget {
   final _SpeakerLine line;
   final String answeredBy;
+  final String clientLabel;
 
-  const _Bubble({required this.line, required this.answeredBy});
+  const _Bubble({
+    required this.line,
+    required this.answeredBy,
+    this.clientLabel = '',
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -254,7 +267,11 @@ class _Bubble extends StatelessWidget {
                 shop ? CrossAxisAlignment.start : CrossAxisAlignment.end,
             children: [
               Text(
-                _speakerTitle(line.speaker, answeredBy),
+                _speakerTitle(
+                  line.speaker,
+                  answeredBy,
+                  clientLabel: clientLabel,
+                ),
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w800,

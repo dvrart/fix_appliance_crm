@@ -508,66 +508,9 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
                 tooltip: 'Удалить заявку'.tr,
                 onPressed: _deleteJob,
               ),
-              title: Row(
-                children: [
-                  ValueListenableBuilder<int>(
-                    valueListenable: JobReminderService.revision,
-                    builder: (context, _, _) {
-                      final remindAt = JobReminderService.reminderFor(
-                        widget.jobId,
-                        _controller.jobData,
-                      );
-                      final hasReminder = remindAt != null;
-                      final due =
-                          remindAt != null && !remindAt.isAfter(DateTime.now());
-                      return IconButton(
-                        visualDensity: VisualDensity.compact,
-                        tooltip: hasReminder
-                            ? '${context.tr('Напоминание', 'Reminder')}: ${appDateTimeLabel(remindAt)}'
-                            : context.tr(
-                                'Напомнить о карточке',
-                                'Remind about job',
-                              ),
-                        icon: Icon(
-                          hasReminder
-                              ? Icons.notifications_active_rounded
-                              : Icons.notifications_none_rounded,
-                          color: due
-                              ? const Color(0xFFFF5252)
-                              : hasReminder
-                                  ? AppColors.accent
-                                  : Colors.white,
-                          size: 24,
-                        ),
-                        onPressed: () {
-                          JobReminderService.showPickerSheet(
-                            context,
-                            jobId: widget.jobId,
-                            clientId: _controller.clientId,
-                            jobData: _controller.jobData,
-                            onChanged: (dt) {
-                              if (!mounted) return;
-                              setState(() {
-                                if (dt == null) {
-                                  _controller.jobData.remove('reminderAt');
-                                } else {
-                                  _controller.jobData['reminderAt'] =
-                                      dt.toIso8601String();
-                                }
-                              });
-                            },
-                          );
-                        },
-                      );
-                    },
-                  ),
-                  Expanded(
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: _clientTitle(),
-                    ),
-                  ),
-                ],
+              title: Align(
+                alignment: Alignment.centerRight,
+                child: _clientTitle(),
               ),
               titleSpacing: 4,
               toolbarHeight: 52,

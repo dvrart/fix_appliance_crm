@@ -349,6 +349,21 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final role = (widget.attachment['counterpartRole'] ?? '').toString().trim();
+    final name = (widget.attachment['counterpartName'] ?? '').toString().trim();
+    final phone =
+        (widget.attachment['counterpartPhone'] ?? '').toString().trim();
+    final directionText =
+        (widget.attachment['counterpartDirection'] ?? '').toString().trim();
+    final isTenant = widget.attachment['counterpartIsTenant'] == true;
+    final roleColor = isTenant
+        ? const Color(0xFFE65100)
+        : const Color(0xFF1565C0);
+    final speakerLabel = [
+      if (role.isNotEmpty) role,
+      if (name.isNotEmpty && name.toLowerCase() != role.toLowerCase()) name,
+    ].join(' · ');
+
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
@@ -366,7 +381,10 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                         color: AppColors.accent,
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.mic, color: Colors.black),
+                      child: const Icon(
+                        Icons.phone_in_talk_rounded,
+                        color: Colors.black,
+                      ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -402,6 +420,83 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                     ),
                   ],
                 ),
+                if (role.isNotEmpty ||
+                    name.isNotEmpty ||
+                    phone.isNotEmpty ||
+                    directionText.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: roleColor.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: roleColor.withValues(alpha: 0.42),
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            if (role.isNotEmpty)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: roleColor,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  role,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                            if (role.isNotEmpty && name.isNotEmpty)
+                              const SizedBox(width: 8),
+                            if (name.isNotEmpty)
+                              Expanded(
+                                child: Text(
+                                  name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 16,
+                                    color: AppColors.ink,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        if (directionText.isNotEmpty || phone.isNotEmpty) ...[
+                          const SizedBox(height: 5),
+                          Text(
+                            [
+                              if (directionText.isNotEmpty) directionText,
+                              if (phone.isNotEmpty) phone,
+                            ].join(' · '),
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: roleColor,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 16),
                 if (widget.url.trim().isNotEmpty)
                   CallAudioPlayer(
@@ -477,6 +572,7 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                   translating: _translating,
                   answeredBy:
                       (widget.attachment['answeredBy'] ?? '').toString(),
+                  clientLabel: speakerLabel,
                   startedAt: CallRecord.parseStamp(
                     widget.attachment['startTime'],
                   ),

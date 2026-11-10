@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -8,6 +9,7 @@ import '../../../../core/constants.dart';
 import '../../../../core/motion.dart';
 import '../../../../core/sms_text.dart';
 import '../../../../core/utils/app_date_picker.dart';
+import '../../../../core/utils/thumb_image.dart';
 import '../../../../models/client.dart';
 import '../../../../models/job.dart';
 import '../../../../services/services.dart';
@@ -698,10 +700,13 @@ class _DetailsTabState extends State<DetailsTab> {
         ? 'Связь'.tr
         : (_callInbound(lastCall) ? 'Клиент звонил'.tr : 'Мы звонили'.tr);
 
-    final photoCount = ctrl.attachments.where((item) {
-      final kind = (item['kind'] ?? '').toString();
-      return kind != 'call' && kind != 'signature';
-    }).length;
+    final photos = [
+      for (final item in ctrl.attachments)
+        if ((item['kind'] ?? '').toString() != 'call' &&
+            (item['kind'] ?? '').toString() != 'signature')
+          item,
+    ];
+    final photoCount = photos.length;
 
     return Row(
       children: [
@@ -730,36 +735,171 @@ class _DetailsTabState extends State<DetailsTab> {
             hasData: totalCalls > 0,
             onTap: _openJobComms,
             icon: lastCall == null && sourceLabel.isNotEmpty
-                ? Icon(Job.intakeSourceIcon(source), size: 26, color: sourceColor)
-                : const _CassetteIcon(size: 34),
-          ),
-        ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: _quickIconTile(
-            tooltip: 'Фото'.tr,
-            color: const Color(0xFF00897B),
-            hasData: photoCount > 0,
-            onTap: () => openPhotosEditor(context, ctrl),
-            icon: ctrl.isUploadingImage
-                ? const SizedBox(
-                    width: 34,
-                    height: 34,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.4,
-                      color: Color(0xFF00897B),
-                    ),
-                  )
+                ? Icon(Job.intakeSourceIcon(source), size: 28, color: sourceColor)
                 : const Icon(
-                    Icons.add_a_photo_outlined,
+                    Icons.phone_in_talk_rounded,
                     size: 34,
-                    color: Color(0xFF00897B),
+                    color: Color(0xFFD97706),
                   ),
           ),
         ),
         const SizedBox(width: 6),
-        Expanded(child: _buildPromisedTile()),
+        Expanded(
+          child: photoCount > 0 && !ctrl.isUploadingImage
+              ? _buildPhotoQuickTile(photos)
+              : _quickIconTile(
+                  tooltip: 'Фото'.tr,
+                  color: const Color(0xFF00897B),
+                  hasData: photoCount > 0,
+                  onTap: () => openPhotosEditor(context, ctrl),
+                  icon: ctrl.isUploadingImage
+                      ? const SizedBox(
+                          width: 34,
+                          height: 34,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            color: Color(0xFF00897B),
+                          ),
+                        )
+                      : const Icon(
+                          Icons.add_a_photo_outlined,
+                          size: 34,
+                          color: Color(0xFF00897B),
+                        ),
+                ),
+        ),
       ],
+    );
+  }
+
+  ImageProvider _photoThumbProvider(Map<String, dynamic> item) {
+    final local = (item['localPath'] ?? '').toString();
+    final url = (item['url'] ?? '').toString();
+    if (local.isNotEmpty && url.isEmpty) {
+      return ResizeImage(
+        FileImage(File(local)),
+        width: 240,
+        policy: ResizeImagePolicy.fit,
+      );
+    }
+    return thumbImage(url, width: 240);
+  }
+
+  Widget _photoCell(Map<String, dynamic> item, {int extraCount = 0}) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(7),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Image(
+            image: _photoThumbProvider(item),
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) => Container(
+              color: Colors.grey.shade200,
+              alignment: Alignment.center,
+              child: const Icon(
+                Icons.photo_outlined,
+                size: 20,
+                color: Color(0xFF00897B),
+              ),
+            ),
+          ),
+          if (extraCount > 0)
+            Container(
+              color: Colors.black.withValues(alpha: 0.52),
+              alignment: Alignment.center,
+              child: Text(
+                '+$extraCount',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 14,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPhotoQuickTile(List<Map<String, dynamic>> photos) {
+    const color = Color(0xFF00897B);
+    final bg = Color.alphaBlend(
+      color.withValues(alpha: 0.16),
+      AppColors.card,
+    );
+    final Widget grid;
+    if (photos.length == 1) {
+      grid = _photoCell(photos[0]);
+    } else if (photos.length == 2) {
+      grid = Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(child: _photoCell(photos[0])),
+          const SizedBox(width: 3),
+          Expanded(child: _photoCell(photos[1])),
+        ],
+      );
+    } else if (photos.length == 3) {
+      grid = Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(child: _photoCell(photos[0])),
+          const SizedBox(width: 3),
+          Expanded(child: _photoCell(photos[1])),
+          const SizedBox(width: 3),
+          Expanded(child: _photoCell(photos[2])),
+        ],
+      );
+    } else {
+      final extra = photos.length - 4;
+      grid = Column(
+        children: [
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: _photoCell(photos[0])),
+                const SizedBox(width: 3),
+                Expanded(child: _photoCell(photos[1])),
+              ],
+            ),
+          ),
+          const SizedBox(height: 3),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: _photoCell(photos[2])),
+                const SizedBox(width: 3),
+                Expanded(child: _photoCell(photos[3], extraCount: extra)),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Tooltip(
+      message: '${'Фото'.tr} (${photos.length})',
+      child: Material(
+        color: bg,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: color.withValues(alpha: 0.65), width: 1.3),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => openPhotosEditor(context, ctrl),
+          child: SizedBox(
+            height: _quickIconHeight,
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: grid,
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -854,7 +994,6 @@ class _DetailsTabState extends State<DetailsTab> {
 
   Widget _sizedIcon(Widget icon, double size) {
     if (icon is Icon) return Icon(icon.icon, size: size, color: icon.color);
-    if (icon is _CassetteIcon) return _CassetteIcon(size: size);
     return icon;
   }
 
@@ -1454,38 +1593,28 @@ class _DetailsTabState extends State<DetailsTab> {
     return ok;
   }
 
-  /// День и время, когда пообещали клиенту приехать со следующим визитом / запчастью.
+  /// Объединённое окно колокольчика напоминания и «Когда пообещал».
   Future<void> _pickPromisedPartDay() async {
-    final now = DateTime.now();
-    final defaultInitial = DateTime(now.year, now.month, now.day + 2, 10, 0);
-    final current = ctrl.promisedPartAt;
-    final hasCurrentTime =
-        current != null && (current.hour != 0 || current.minute != 0);
-    final initial = current == null
-        ? defaultInitial
-        : (hasCurrentTime
-              ? current
-              : DateTime(current.year, current.month, current.day, 10, 0));
-    final picked = await showAppDateTimeSheet(
-      context: context,
-      initial: initial,
-      firstDate: DateTime(now.year - 1),
-      lastDate: DateTime(now.year + 2),
-      title: 'Пообещал к'.tr,
-      optionalTime: true,
-      initialWithTime: current == null ? true : hasCurrentTime,
-      onClear: current == null
-          ? null
-          : () async {
-              await ctrl.updatePromisedPartAt(null);
-              if (!mounted) return;
-              await ctrl.commitChanges();
-            },
+    await JobReminderService.showPickerSheet(
+      context,
+      jobId: ctrl.jobId,
+      clientId: ctrl.clientId,
+      jobData: ctrl.jobData,
+      initialPromised: ctrl.promisedPartAt,
+      onChanged: (dt) async {
+        if (!mounted) return;
+        setState(() {
+          if (dt == null) {
+            ctrl.jobData.remove('reminderAt');
+          } else {
+            ctrl.jobData['reminderAt'] = dt.toIso8601String();
+          }
+        });
+        await ctrl.updatePromisedPartAt(dt);
+        if (!mounted) return;
+        await ctrl.commitChanges();
+      },
     );
-    if (picked == null) return;
-    await ctrl.updatePromisedPartAt(picked);
-    if (!mounted) return;
-    await ctrl.commitChanges();
   }
 
   String _formatPromisedPartAt(DateTime at) {
@@ -1494,46 +1623,104 @@ class _DetailsTabState extends State<DetailsTab> {
     return '$date · ${DateFormat('HH:mm').format(at)}';
   }
 
-  /// Верх карточки: что чиним — слева, где заказ сейчас — справа.
+  /// Верх карточки: слева вид техники, посередине статус, справа колокольчик («Когда пообещал»).
   Widget _buildTopRow() {
     return IntrinsicHeight(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(flex: 11, child: _buildApplianceHero()),
+          Expanded(flex: 3, child: _buildApplianceHero()),
           const SizedBox(width: 6),
-          Expanded(flex: 9, child: _buildStatusButton()),
+          Expanded(flex: 5, child: _buildStatusButton()),
+          const SizedBox(width: 6),
+          Expanded(flex: 3, child: _buildPromisedTile()),
         ],
       ),
     );
   }
 
-  /// Кнопка «Когда пообещал» в ряду рядом с «Фото»: на ней сама дата, к
-  /// которой обещали клиенту. Красная — этот срок уже прошёл. Долгое
-  /// нажатие убирает дату.
+  /// Объединённая кнопка колокольчика напоминания и «Когда пообещал» справа от статуса.
   Widget _buildPromisedTile() {
-    final at = ctrl.promisedPartAt;
-    final overdue = Job.isPromisedOverdue(at);
-    final color = overdue ? const Color(0xFFC62828) : const Color(0xFFEF6C00);
-    final caption = at == null
-        ? context.tr('Когда пообещал', 'Promised by')
-        : _formatPromisedPartAt(at).replaceFirst(' · ', '\n');
-    return _quickIconTile(
-      tooltip: at == null
-          ? context.tr('Когда пообещал', 'Promised by')
-          : '${context.tr('Пообещал к', 'Promised by')} ${_formatPromisedPartAt(at)}',
-      color: color,
-      hasData: at != null,
-      onTap: _pickPromisedPartDay,
-      onLongPress: at == null
-          ? null
-          : () async {
-              await ctrl.updatePromisedPartAt(null);
-              if (!mounted) return;
-              await ctrl.commitChanges();
-            },
-      caption: caption,
-      icon: Icon(Icons.handshake_outlined, size: 26, color: color),
+    return ValueListenableBuilder<int>(
+      valueListenable: JobReminderService.revision,
+      builder: (context, _, _) {
+        final remindAt = JobReminderService.reminderFor(
+          ctrl.jobId,
+          ctrl.jobData,
+        );
+        final at = ctrl.promisedPartAt ?? remindAt;
+        final overdue =
+            Job.isPromisedOverdue(at) ||
+            (remindAt != null && !remindAt.isAfter(DateTime.now()));
+        final color = overdue
+            ? const Color(0xFFC62828)
+            : (at != null ? const Color(0xFFEF6C00) : AppColors.primaryOnCard);
+        final caption = at == null
+            ? ''
+            : _formatPromisedPartAt(at).replaceFirst(' · ', '\n');
+        final bg = Color.alphaBlend(
+          color.withValues(alpha: at != null ? 0.16 : 0.08),
+          AppColors.card,
+        );
+        return Tooltip(
+          message: at == null
+              ? context.tr('Когда пообещал / Напомнить', 'Promised / Reminder')
+              : '${context.tr('Пообещал к', 'Promised by')} ${_formatPromisedPartAt(at)}',
+          child: Material(
+            color: bg,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(11),
+              side: BorderSide(
+                color: color.withValues(alpha: at != null ? 0.55 : 0.32),
+                width: at != null ? 1.3 : 1.0,
+              ),
+            ),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(11),
+              onTap: _pickPromisedPartDay,
+              onLongPress: at == null
+                  ? null
+                  : () async {
+                      await JobReminderService.clearReminder(ctrl.jobId);
+                      ctrl.jobData.remove('reminderAt');
+                      await ctrl.updatePromisedPartAt(null);
+                      if (!mounted) return;
+                      await ctrl.commitChanges();
+                    },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      at != null
+                          ? Icons.notifications_active_rounded
+                          : Icons.notifications_none_rounded,
+                      size: at == null ? 28 : 22,
+                      color: color,
+                    ),
+                    if (caption.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        caption,
+                        maxLines: 2,
+                        textAlign: TextAlign.center,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          height: 1.08,
+                          fontWeight: FontWeight.w900,
+                          color: color,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -2657,28 +2844,171 @@ class _DetailsTabState extends State<DetailsTab> {
     }
   }
 
+  /// Определяет, с кем именно был звонок — Хозяин или Арендатор (на месте),
+  /// его имя и номер телефона, чтобы мастер всегда видел, чью расшифровку смотрит.
+  ({
+    String role,
+    bool isTenant,
+    String name,
+    String phone,
+    String directionText,
+  }) _callParticipantInfo(Map<String, dynamic> item) {
+    final inbound = _callInbound(item);
+    final rawPhone =
+        (inbound ? item['fromNumber'] : item['toNumber'])?.toString().trim() ??
+        '';
+    final normPhone = SmsService.normalizePhone(rawPhone);
+
+    final ownerPhone = (ctrl.jobData['clientPhone'] ?? '').toString().trim();
+    final ownerNorm = SmsService.normalizePhone(ownerPhone);
+    final ownerName = Client.stripClientWord(
+      ctrl.jobData['clientName']?.toString(),
+      ownerPhone,
+    );
+
+    final sitePhone = ctrl.effectiveJobSitePhone.trim();
+    final siteNorm = SmsService.normalizePhone(sitePhone);
+    final siteName = ctrl.effectiveJobSiteName.trim();
+
+    final callSitePhone = (item['contactOnSitePhone'] ?? '').toString().trim();
+    final callSiteNorm = SmsService.normalizePhone(callSitePhone);
+    final callSiteName = Client.stripClientWord(
+      (item['contactOnSiteName'] ?? '').toString(),
+      callSitePhone,
+    );
+
+    var isTenant = false;
+    var resolvedName = '';
+    var resolvedPhone = rawPhone;
+
+    if (normPhone.length >= 10) {
+      if ((siteNorm.length >= 10 &&
+              normPhone == siteNorm &&
+              siteNorm != ownerNorm) ||
+          (callSiteNorm.length >= 10 &&
+              normPhone == callSiteNorm &&
+              callSiteNorm != ownerNorm) ||
+          (ctrl.hasJobSite &&
+              ctrl.extraPhones.any(
+                (p) =>
+                    SmsService.normalizePhone(p) == normPhone &&
+                    normPhone != ownerNorm,
+              ))) {
+        isTenant = true;
+        resolvedName = siteName.isNotEmpty ? siteName : callSiteName;
+      } else if (ownerNorm.length >= 10 && normPhone == ownerNorm) {
+        isTenant = false;
+        resolvedName = ownerName;
+      } else {
+        for (final c in ctrl.chatContacts) {
+          if (c.normalizedPhone == normPhone) {
+            isTenant = !c.isOwner;
+            resolvedName = c.displayName;
+            break;
+          }
+        }
+      }
+    }
+
+    if (resolvedName.isEmpty) {
+      resolvedName = isTenant
+          ? (siteName.isNotEmpty ? siteName : callSiteName)
+          : ownerName;
+    }
+    if (resolvedPhone.isEmpty) {
+      resolvedPhone = isTenant && sitePhone.isNotEmpty ? sitePhone : ownerPhone;
+    }
+
+    final role = isTenant ? 'Арендатор'.tr : 'Хозяин'.tr;
+    final formattedPhone = resolvedPhone.isNotEmpty
+        ? Formatters.formatPhone(resolvedPhone)
+        : '';
+    final whoAnswered = _callAnsweredBy(item);
+    final baseDir = inbound
+        ? (isTenant
+              ? context.tr('Звонил арендатор', 'Tenant called')
+              : context.tr('Звонил хозяин', 'Owner called'))
+        : (isTenant
+              ? context.tr('Мы звонили арендатору', 'We called tenant')
+              : context.tr('Мы звонили хозяину', 'We called owner'));
+    final directionText = [
+      baseDir,
+      if (whoAnswered.isNotEmpty) whoAnswered,
+    ].join(' · ');
+
+    return (
+      role: role,
+      isTenant: isTenant,
+      name: resolvedName,
+      phone: formattedPhone,
+      directionText: directionText,
+    );
+  }
+
+  Map<String, dynamic> _enrichCallAttachment(Map<String, dynamic> item) {
+    final info = _callParticipantInfo(item);
+    return {
+      ...item,
+      'counterpartRole': info.role,
+      'counterpartIsTenant': info.isTenant,
+      'counterpartName': info.name,
+      'counterpartPhone': info.phone,
+      'counterpartDirection': info.directionText,
+    };
+  }
+
   Widget _callChoiceTile(BuildContext sheetContext, Map<String, dynamic> item) {
-    final who = _callAnsweredBy(item);
+    final info = _callParticipantInfo(item);
+    final when = _callWhen(item);
+    final roleColor = info.isTenant
+        ? const Color(0xFFE65100)
+        : const Color(0xFF1565C0);
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: Icon(
         _callInbound(item) ? Icons.call_received : Icons.call_made,
         color: _callInbound(item) ? const Color(0xFF008F3B) : AppColors.primary,
       ),
-      title: Text(
-        _callWhen(item) == null
-            ? 'Звонок'.tr
-            : Formatters.formatDateTime(_callWhen(item)),
-        style: const TextStyle(fontWeight: FontWeight.w700),
+      title: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              color: roleColor.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: roleColor.withValues(alpha: 0.45)),
+            ),
+            child: Text(
+              info.role,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+                color: roleColor,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              [
+                if (info.name.isNotEmpty) info.name,
+                when == null ? 'Звонок'.tr : Formatters.formatDateTime(when),
+              ].join(' · '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+            ),
+          ),
+        ],
       ),
       subtitle: Text(
         [
-          _callInbound(item) ? 'Клиент звонил'.tr : 'Мы звонили'.tr,
-          if (who.isNotEmpty) who,
+          info.directionText,
+          if (info.phone.isNotEmpty) info.phone,
         ].join(' · '),
       ),
       trailing: const Icon(Icons.chevron_right),
-      onTap: () => Navigator.pop(sheetContext, item),
+      onTap: () => Navigator.pop(sheetContext, _enrichCallAttachment(item)),
     );
   }
 
@@ -2713,7 +3043,11 @@ class _DetailsTabState extends State<DetailsTab> {
     }
     if (calls.length + threads.length == 1) {
       if (calls.isNotEmpty) {
-        await openCallRecordingSheet(context, calls.first, jobId: ctrl.jobId);
+        await openCallRecordingSheet(
+          context,
+          _enrichCallAttachment(calls.first),
+          jobId: ctrl.jobId,
+        );
       } else {
         await _openCommsThread(threads.first);
       }
@@ -3774,72 +4108,6 @@ class _CommsThread {
     required this.lastAt,
     required this.preview,
   });
-}
-
-class _CassetteIcon extends StatelessWidget {
-  final double size;
-
-  const _CassetteIcon({this.size = 31});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: size,
-      height: size * 21 / 31,
-      child: const CustomPaint(painter: _CassettePainter()),
-    );
-  }
-}
-
-class _CassettePainter extends CustomPainter {
-  const _CassettePainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final w = size.width;
-    final h = size.height;
-    const ink = Color(0xFF1A1A1A);
-    final stroke = w * 0.065;
-    final line = Paint()
-      ..color = ink
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeJoin = StrokeJoin.round
-      ..strokeCap = StrokeCap.round;
-    final thin = Paint()
-      ..color = ink
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke * 0.75;
-    final body = RRect.fromRectAndRadius(
-      Rect.fromLTWH(stroke / 2, stroke / 2, w - stroke, h - stroke),
-      Radius.circular(w * 0.1),
-    );
-    canvas.drawRRect(body, Paint()..color = Colors.white);
-    canvas.drawRRect(body, line);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTRB(w * 0.2, h * 0.2, w * 0.8, h * 0.62),
-        Radius.circular(h * 0.16),
-      ),
-      thin,
-    );
-    for (final x in [w * 0.37, w * 0.63]) {
-      final center = Offset(x, h * 0.41);
-      canvas.drawCircle(center, h * 0.12, Paint()..color = ink);
-      canvas.drawCircle(center, h * 0.045, Paint()..color = Colors.white);
-    }
-    canvas.drawPath(
-      Path()
-        ..moveTo(w * 0.24, h - stroke / 2)
-        ..lineTo(w * 0.31, h * 0.77)
-        ..lineTo(w * 0.69, h * 0.77)
-        ..lineTo(w * 0.76, h - stroke / 2),
-      line,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _HouseMapSheet extends StatefulWidget {

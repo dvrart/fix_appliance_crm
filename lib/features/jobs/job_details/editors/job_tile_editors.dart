@@ -1135,29 +1135,6 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: double.infinity,
-            height: 44,
-            child: OutlinedButton(
-              onPressed: _openDiagnostics,
-              style: OutlinedButton.styleFrom(
-                backgroundColor: AppColors.tint(const Color(0xFF1976D2), 0.12),
-                side: BorderSide(
-                  color: const Color(0xFF1976D2).withValues(alpha: 0.55),
-                  width: 1.4,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              child: const Icon(
-                Icons.help_outline_rounded,
-                size: 26,
-                color: Color(0xFF1976D2),
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
           Padding(
             padding: const EdgeInsets.only(left: 4, bottom: 6),
             child: Text('К визиту'.tr, style: _sectionStyle),
@@ -1186,6 +1163,18 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                     value: tracking,
                     highlightCaption: hasTracking,
                     onTap: _openTrackingSheet,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _visitTile(
+                    icon: Icons.help_outline_rounded,
+                    caption: context.tr('Подсказка', 'Diagnostics'),
+                    value: widget.applianceBrand.trim().isNotEmpty
+                        ? widget.applianceBrand.trim()
+                        : trAny(widget.applianceType.trim()),
+                    highlightCaption: true,
+                    onTap: _openDiagnostics,
                   ),
                 ),
               ],

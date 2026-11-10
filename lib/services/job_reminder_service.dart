@@ -576,18 +576,24 @@ class JobReminderService {
     );
   }
 
-  /// Лист выбора дня и времени напоминания для рабочей карточки.
+  /// Лист выбора дня и времени напоминания / «Когда пообещал» для рабочей карточки.
   static Future<DateTime?> showPickerSheet(
     BuildContext context, {
     required String jobId,
     required String clientId,
     required Map<String, dynamic> jobData,
+    DateTime? initialPromised,
     ValueChanged<DateTime?>? onChanged,
   }) async {
-    final existing = reminderFor(jobId, jobData);
+    final existing = reminderFor(jobId, jobData) ?? initialPromised;
     final now = DateTime.now();
+    final hasExistingTime =
+        existing != null && (existing.hour != 0 || existing.minute != 0);
+    var withTime = existing == null ? true : hasExistingTime;
     final defaultTime = existing != null && existing.isAfter(now)
-        ? existing
+        ? (hasExistingTime
+              ? existing
+              : DateTime(existing.year, existing.month, existing.day, 10, 0))
         : DateTime(
             now.year,
             now.month,
@@ -618,10 +624,7 @@ class JobReminderService {
           disposables: [noteCtrl],
           child: StatefulBuilder(
           builder: (context, setSheet) {
-            final stamp = DateFormat(
-              'd MMM, HH:mm',
-              AppLocale.instance.dateLocale,
-            ).format(current);
+            final stamp = appDateTimeLabel(current, withTime: withTime);
             final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
 
             Future<void> attach(
@@ -806,11 +809,49 @@ class JobReminderService {
                     // С открытой клавиатурой календарь прячется: видно поле
                     // и время в заголовке, кнопка «Готово» не уезжает.
                     if (!keyboardOpen) ...[
-                      const SizedBox(height: 6),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8, bottom: 4),
+                        child: SegmentedButton<bool>(
+                          showSelectedIcon: false,
+                          segments: [
+                            ButtonSegment<bool>(
+                              value: false,
+                              icon: const Icon(Icons.calendar_today, size: 16),
+                              label: Text('Только дата'.tr),
+                            ),
+                            ButtonSegment<bool>(
+                              value: true,
+                              icon: const Icon(Icons.access_time, size: 16),
+                              label: Text('Дата и время'.tr),
+                            ),
+                          ],
+                          selected: {withTime},
+                          onSelectionChanged: (sel) {
+                            final next = sel.first;
+                            HapticFeedback.selectionClick();
+                            setSheet(() {
+                              withTime = next;
+                              if (withTime &&
+                                  current.hour == 0 &&
+                                  current.minute == 0) {
+                                current = DateTime(
+                                  current.year,
+                                  current.month,
+                                  current.day,
+                                  10,
+                                  0,
+                                );
+                              }
+                            });
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 4),
                       AppDateTimePanel(
                         value: current,
-                        firstDate: DateTime(now.year, now.month, now.day),
+                        firstDate: DateTime(now.year - 1),
                         lastDate: now.add(const Duration(days: 365 * 2)),
+                        showTime: withTime,
                         onChanged: (v) => setSheet(() => current = v),
                       ),
                     ],
@@ -850,17 +891,33 @@ class JobReminderService {
                           ? null
                           : () async {
                               saved = true;
+                              final effective = withTime
+                                  ? current
+                                  : DateTime(
+                                      current.year,
+                                      current.month,
+                                      current.day,
+                                    );
+                              final remindTime = withTime
+                                  ? current
+                                  : DateTime(
+                                      current.year,
+                                      current.month,
+                                      current.day,
+                                      9,
+                                      0,
+                                    );
                               await setReminder(
                                 jobId: jobId,
                                 clientId: clientId,
                                 jobData: jobData,
-                                remindAt: current,
+                                remindAt: remindTime,
                                 note: noteCtrl.text,
                                 files: files,
                               );
-                              onChanged?.call(current);
+                              onChanged?.call(effective);
                               if (sheetContext.mounted) {
-                                Navigator.pop(sheetContext, current);
+                                Navigator.pop(sheetContext, effective);
                               }
                             },
                     ),
