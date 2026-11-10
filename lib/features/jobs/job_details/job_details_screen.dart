@@ -16,7 +16,6 @@ import '../../../shared/unsaved_navigation_gate.dart';
 import 'job_details_controller.dart';
 import 'tabs/details_tab.dart';
 import 'tabs/finance_tab.dart';
-import 'tabs/chat_tab.dart';
 import '../../../services/error_log_service.dart';
 
 class JobDetailsScreen extends StatefulWidget {
@@ -49,9 +48,9 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
     super.initState();
     ErrorLogService.markScreen('Карточка заявки');
     _tabController = TabController(
-      length: 3,
+      length: 2,
       vsync: this,
-      initialIndex: widget.initialTab.clamp(0, 2),
+      initialIndex: widget.initialTab.clamp(0, 1),
       animationDuration: const Duration(milliseconds: 520),
     );
     _controller = JobDetailsController(
@@ -591,10 +590,6 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
                     children: [
                       DetailsTab(controller: _controller),
                       FinanceTab(controller: _controller),
-                      ChatTab(
-                        controller: _controller,
-                        chatVisible: _tabController.index == 2,
-                      ),
                     ],
                   ),
                 ),
@@ -625,7 +620,6 @@ class _FolderTabs extends StatelessWidget implements PreferredSizeWidget {
     final tabs = [
       (icon: Icons.assignment_outlined, label: 'Детали'.tr),
       (icon: Icons.payments_outlined, label: 'Финансы'.tr),
-      (icon: Icons.chat_bubble_outline, label: 'Чат'.tr),
     ];
     return SizedBox(
       height: _height,

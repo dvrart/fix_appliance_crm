@@ -629,25 +629,46 @@ class _DetailsTabState extends State<DetailsTab> {
     if (sendSms) await _resendVisitBookingSms(visit);
   }
 
-  /// Сколько места осталось списку под содержимым. Ряд иконок забирает его
-  /// себе, чтобы не висела пустая полоса между кнопками и «Историей».
-  double _scrollSlack = 0;
+  /// Свободное место между рядом из 4 кнопок и «Историей» делят между собой
+  /// секция «Место работы» с картой и сам ряд из 4 кнопок.
+  final GlobalKey _iconsBarKey = GlobalKey();
+  final GlobalKey _historyHeaderKey = GlobalKey();
+  double _measuredDelta = 0;
+  double _lastViewportHeight = 0;
+  double _currentQuickIconHeight = 96;
 
-  /// Высота ряда иконок: обычные 72 плюс свободное место под ними, но не
-  /// больше полутора обычных высот. На заявках, где сверху стоят баннеры
-  /// и свободного места почти нет, кнопки остаются как были.
-  double get _quickIconHeight =>
-      (72.0 + _scrollSlack).clamp(72.0, 72.0 * 1.5);
+  double get _quickIconHeight => _currentQuickIconHeight;
 
-  void _measureScrollSlack() {
+  void _measureLayoutGap() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) return;
-      final slack = _scrollController.position.maxScrollExtent <= 0
-          ? -_scrollController.position.minScrollExtent
-          : 0.0;
-      final next = slack < 1 ? 0.0 : slack;
-      if ((next - _scrollSlack).abs() < 1) return;
-      setState(() => _scrollSlack = next);
+      if (!mounted || _historyExpanded) return;
+      final iconsBox =
+          _iconsBarKey.currentContext?.findRenderObject() as RenderBox?;
+      final historyBox =
+          _historyHeaderKey.currentContext?.findRenderObject() as RenderBox?;
+      if (iconsBox == null ||
+          historyBox == null ||
+          !iconsBox.hasSize ||
+          !historyBox.hasSize) {
+        return;
+      }
+      final iconsBottom =
+          iconsBox.localToGlobal(Offset(0, iconsBox.size.height)).dy;
+      final historyTop = historyBox.localToGlobal(Offset.zero).dy;
+      final gap = historyTop - iconsBottom - 6.0;
+      if (gap > 1.5) {
+        setState(() => _measuredDelta = (_measuredDelta + gap).clamp(-120.0, 260.0));
+        return;
+      }
+      if (!ctrl.needsReview &&
+          _twinJob == null &&
+          _scrollController.hasClients &&
+          _scrollController.position.maxScrollExtent > 1.5) {
+        final overflow = _scrollController.position.maxScrollExtent;
+        setState(
+          () => _measuredDelta = (_measuredDelta - overflow).clamp(-120.0, 260.0),
+        );
+      }
     });
   }
 
@@ -2248,16 +2269,26 @@ class _DetailsTabState extends State<DetailsTab> {
             builder: (context, viewport) {
               const topPad = 6.0;
               const bottomPad = 6.0;
+              if ((viewport.maxHeight - _lastViewportHeight).abs() > 1) {
+                _lastViewportHeight = viewport.maxHeight;
+                _measuredDelta = 0;
+              }
               final minScreenHeight = (viewport.maxHeight - topPad - bottomPad)
                   .clamp(0.0, double.infinity);
-              final hasExtraBlocks =
-                  ctrl.documents.isNotEmpty ||
-                  ctrl.needsReview ||
-                  _twinJob != null;
-              final mapHeight = hasExtraBlocks
-                  ? (viewport.maxHeight * 0.22).clamp(135.0, 180.0)
-                  : (viewport.maxHeight * 0.28).clamp(160.0, 220.0);
-              _measureScrollSlack();
+              final fixedEstimate =
+                  216.0 +
+                  (ctrl.visits.length > 1 ? 44.0 : 0.0) +
+                  (ctrl.needsReview ? 116.0 : 0.0) +
+                  (_twinJob != null ? 124.0 : 0.0);
+              final totalFlex =
+                  (minScreenHeight - fixedEstimate + _measuredDelta).clamp(
+                    236.0,
+                    520.0,
+                  );
+              _currentQuickIconHeight = (totalFlex * 0.27).clamp(84.0, 116.0);
+              final mapHeight = (totalFlex - _currentQuickIconHeight - 14.0)
+                  .clamp(150.0, 360.0);
+              _measureLayoutGap();
               return SingleChildScrollView(
                 controller: _scrollController,
                 padding: const EdgeInsets.fromLTRB(12, topPad, 12, bottomPad),
@@ -2287,11 +2318,17 @@ class _DetailsTabState extends State<DetailsTab> {
                               const SizedBox(height: 6),
                               _buildJobSiteCard(mapHeight: mapHeight),
                               const SizedBox(height: 6),
-                              _buildQuickIconBar(),
+                              KeyedSubtree(
+                                key: _iconsBarKey,
+                                child: _buildQuickIconBar(),
+                              ),
                               const SizedBox(height: 6),
                             ],
                           ),
-                          _buildChangeHistoryHeader(),
+                          KeyedSubtree(
+                            key: _historyHeaderKey,
+                            child: _buildChangeHistoryHeader(),
+                          ),
                         ],
                       ),
                     ),
