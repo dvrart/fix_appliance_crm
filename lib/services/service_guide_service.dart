@@ -12,7 +12,7 @@ import 'network_status_service.dart';
 /// синхронизирует базовые карточки и имеет резервную копию в локальном ассете.
 class ServiceGuideService {
   static const assetPath = 'assets/diagnostics/service_guide.json';
-  static const int currentSeedVersion = 4;
+  static const int currentSeedVersion = 5;
 
   static List<Map<String, dynamic>>? _assetCache;
   static List<Map<String, dynamic>>? _serverCache;
@@ -68,7 +68,11 @@ class ServiceGuideService {
     'bosch': ['bosch', 'thermador', 'gaggenau', 'siemens', 'ascenta', 'бош', 'термадор'],
     'miele': ['miele', 'миле'],
     'blomberg': ['blomberg', 'beko', 'бломберг', 'блумберг', 'беко'],
-    'speed queen': ['speed queen', 'speedqueen', 'huebsch', 'alliance', 'спид квин', 'спидквин', 'tr5', 'tr7', 'tc5', 'ff7'],
+    'asko': ['asko', 'аско', 'w2084', 'w4086'],
+    'liebherr': ['liebherr', 'либхер', 'либхерр'],
+    'hisense': ['hisense', 'mora', 'хайсенс', 'мора'],
+    'bertazzoni': ['bertazzoni', 'thor', 'forno', 'verona', 'бертазони', 'бертаццони', 'тор', 'форно'],
+    'speed queen': ['speed queen', 'speedqueen', 'huebsch', 'alliance', 'спид квин', 'спидквин', 'tr5', 'tr7', 'tc5', 'ff7', 'dr5', 'dr7'],
     'fisher': ['fisher', 'paykel', 'dishdrawer', 'фишер'],
     'sub-zero': ['sub-zero', 'subzero', 'wolf', 'сабзиро', 'вульф'],
     'midea': ['midea', 'insignia', 'hisense', 'danby', 'haier', 'comfee', 'мидеа', 'инсигния', 'хайер', 'данби'],

@@ -104,6 +104,48 @@ void main() {
         'kind': 'test_modes',
       });
       expect(viaAssistant['found'], isTrue);
+
+      final washTower = await ServiceGuideService.lookup(
+        query: 'LG WashTower WKEX200 тестовый режим',
+        brand: 'LG',
+        appliance: 'washer',
+      );
+      expect(washTower['found'], isTrue);
+
+      final asko = await ServiceGuideService.lookup(
+        query: 'Asko W2084 E0 сервисное меню',
+        brand: 'Asko',
+        appliance: 'washer',
+      );
+      expect(asko['found'], isTrue);
+
+      final heatPumpDryer = await ServiceGuideService.lookup(
+        query: 'сушилка с тепловым насосом Heat Pump Miele T1 F66',
+        brand: 'Miele',
+        appliance: 'dryer',
+      );
+      expect(heatPumpDryer['found'], isTrue);
+
+      final geDishwasherCsm = await ServiceGuideService.lookup(
+        query: 'посудомойка GE мёртвая панель CSM 7 вспышек',
+        brand: 'GE',
+        appliance: 'dishwasher',
+      );
+      expect(geDishwasherCsm['found'], isTrue);
+
+      final liebherr = await ServiceGuideService.lookup(
+        query: 'холодильник Liebherr ошибка F2 датчик испарителя',
+        brand: 'Liebherr',
+        appliance: 'fridge',
+      );
+      expect(liebherr['found'], isTrue);
+
+      final bertazzoni = await ServiceGuideService.lookup(
+        query: 'газовая духовка Bertazzoni тухнет термопара',
+        brand: 'Bertazzoni',
+        appliance: 'range',
+      );
+      expect(bertazzoni['found'], isTrue);
     });
 
     testWidgets('ключевое слово «открытая» не цепляет случайные карточки и видит открытый чат', (tester) async {
