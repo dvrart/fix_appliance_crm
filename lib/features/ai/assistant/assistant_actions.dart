@@ -15,6 +15,7 @@ import '../../diagnostics/diagnostics_screen.dart';
 import '../../jobs/job_details/job_details_screen.dart';
 import '../../messages/conversation_screen.dart';
 import '../../settings/pages/appearance_settings_page.dart';
+import 'part_search_screen.dart';
 
 class AssistantUiAction {
   final String type;
@@ -138,6 +139,26 @@ class AssistantActions {
               initialBrand: (args['brand'] as String?) ?? 'all',
               initialKind: (args['kind'] as String?) ?? 'all',
             ),
+          ),
+        );
+        return;
+      case 'open_part_search':
+        Route<dynamic>? existing;
+        for (final route in AppNav.pagesOf(nav)) {
+          if (route.isActive && route.settings.name == 'part_search') {
+            existing = route;
+          }
+        }
+        if (existing != null) {
+          if (!existing.isCurrent) {
+            AppNav.backTo(nav, existing);
+          }
+          return;
+        }
+        nav.push(
+          MaterialPageRoute(
+            settings: const RouteSettings(name: 'part_search'),
+            builder: (_) => const PartSearchScreen(),
           ),
         );
         return;

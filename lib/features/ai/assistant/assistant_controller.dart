@@ -45,12 +45,20 @@ class AssistantController extends ChangeNotifier {
 - открыть переписку (write_client) или отправить SMS (send_sms);
 - перенести визит (reschedule_visit);
 - создать заявку (create_job);
+- найти запчасть в наличии по самой выгодной цене и открыть проверенные ссылки для покупки (search_parts);
 - менять масштаб и цвета экрана (update_settings), открыть настройки экрана (open_settings);
 - посмотреть текущий экран приложения (look_at_screen).
 
 НИКОГДА не говори «открыл / отправил / позвонил / проложил», пока инструмент не вернул ok.
 Сначала вызови инструмент, дождись результата, потом одна короткая фраза.
 После действия коротко скажи, что сделал.
+
+Если мастер просит найти запчасть, узнать где купить дешевле, проверить наличие или дать ссылки («найди запчасть для этой посудомойки», «где купить сливной насос», «поищи деталь W10876537»):
+- НИКОГДА не придумывай артикулы, цены, наличие и ссылки из памяти;
+- если речь про открытую карточку или фото шильдика/детали на экране, можешь сначала посмотреть экран (look_at_screen), если на нём открыто фото шильдика или этикетки, и обязательно вызывай search_parts (передай job_query='current', если речь про текущую заявку/технику, плюс известные part_query, part_number, appliance_type, brand, model);
+- search_parts сам тщательно проверит точный OEM-артикул, совместимость с моделью, собственный склад мастера, живое наличие и цены в канадских магазинах и откроет на экране проверенные ссылки для покупки;
+- если search_parts вернул needs_clarification=true — коротко спроси у мастера то, чего не хватает (номер модели с шильдика или какая именно деталь нужна);
+- когда search_parts вернул ok=true — назови проверенный артикул, скажи если деталь уже есть на своём складе, назови самое дешёвое предложение в наличии (и самый дешёвый оригинал OEM, если отличается от аналога) с точной ценой и магазином, и скажи, что проверенные ссылки открыты на экране.
 
 По ремонту и диагностике НЕ выдумывай сервисный режим, коды ошибок и омы из памяти.
 Всегда сначала вызови lookup_service_guide (база хранится на сервере):
@@ -101,12 +109,20 @@ You CAN and MUST call tools instead of only saying you did it:
 - open the chat (write_client) or send SMS (send_sms);
 - reschedule a visit (reschedule_visit);
 - create a job (create_job);
+- find spare parts in stock at the lowest verified price and open verified buy links (search_parts);
 - change scale/colors (update_settings) or open display settings (open_settings);
 - look at the current app screen (look_at_screen).
 
 NEVER say you opened, sent, called, or routed until the matching tool returns ok.
 Call the tool first, wait for the result, then say one short sentence.
 After an action, say briefly what you did and for whom.
+
+When they ask to find a spare part, check prices/availability, or get links to buy ("find me a part for this dishwasher", "where is the cheapest drain pump in stock", "find W10876537"):
+- NEVER invent part numbers, prices, stock status, or URLs from memory;
+- if a rating plate or part sticker photo might be open on screen, call look_at_screen to read the model/part number if needed, and ALWAYS call search_parts (pass job_query='current' when referring to the open job/appliance, plus known part_query, part_number, appliance_type, brand, model);
+- search_parts thoroughly verifies the exact OEM part number, model compatibility, own warehouse stock, and live prices/availability across Canadian suppliers, and opens verified purchase links on screen;
+- if search_parts returns needs_clarification=true, briefly ask for the missing detail (rating-plate model number or specific part);
+- when search_parts returns ok=true, state the verified part number, mention if it is already in the technician's own warehouse, name the cheapest verified in-stock option (and cheapest genuine OEM if different from aftermarket) with store and price, and confirm that verified buy links are open on screen.
 
 For repair, error codes, test/service mode, and ohm specs do NOT invent procedures from memory.
 Always call lookup_service_guide first (stored on the server):
@@ -964,6 +980,52 @@ IMPORTANT about multi-property clients: one client (landlord or property manager
               'type': 'STRING',
               'description':
                   'error_codes | test_modes | field_guide | electrical | all',
+            },
+          },
+        },
+      ),
+      FunctionDeclaration(
+        behavior: Behavior.BLOCKING,
+        name: 'search_parts',
+        description:
+            'Тщательно найти и проверить запчасть для техники: проверяет точный OEM-артикул, совместимость с моделью, собственный склад мастера, живое наличие и самые низкие цены в канадских магазинах, и открывает проверенные ссылки для покупки.',
+        parameters: {
+          'type': 'OBJECT',
+          'properties': {
+            'part_query': {
+              'type': 'STRING',
+              'description':
+                  'Какая деталь нужна (например: сливной насос, drain pump, ТЭН, дверной замок)',
+            },
+            'part_number': {
+              'type': 'STRING',
+              'description':
+                  'Известный артикул детали, если мастер назвал или прочитал с этикетки (например W10876537, 00631200, DC47-00019A)',
+            },
+            'appliance_type': {
+              'type': 'STRING',
+              'description':
+                  'Тип техники (dishwasher, washer, dryer, fridge, range, microwave и т.д.)',
+            },
+            'brand': {
+              'type': 'STRING',
+              'description':
+                  'Бренд техники (Bosch, Whirlpool, Samsung, LG, GE, Frigidaire, Maytag, KitchenAid, Miele и т.д.)',
+            },
+            'model': {
+              'type': 'STRING',
+              'description':
+                  'Точный номер модели техники с шильдика или из заявки (например SHXM63W55N/01, WDT730PAHZ0)',
+            },
+            'problem': {
+              'type': 'STRING',
+              'description':
+                  'Симптом или код ошибки, если конкретная деталь не названа (например E24 не сливает воду)',
+            },
+            'job_query': {
+              'type': 'STRING',
+              'description':
+                  'current (для открытой сейчас заявки/техники), имя клиента или адрес',
             },
           },
         },

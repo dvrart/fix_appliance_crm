@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:intl/intl.dart';
 
 import '../../../core/constants.dart';
@@ -5,13 +7,16 @@ import '../../../core/sms_text.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../models/job.dart';
 import '../../../services/app_time_service.dart';
+import '../../../services/care_plan_service.dart';
 import '../../../services/client_service.dart';
 import '../../../services/job_service.dart';
 import '../../../services/message_translate_service.dart';
+import '../../../services/part_search_service.dart';
 import '../../../services/service_guide_service.dart';
 import '../../../services/settings_service.dart';
 import '../../../services/sms_service.dart';
 import '../../../shared/app_nav.dart';
+import '../../diagnostics/diagnostics_screen.dart';
 import 'assistant_actions.dart';
 
 class AssistantTools {
@@ -56,6 +61,8 @@ class AssistantTools {
     return {
       ...summary,
       'contact_name': job.contactName,
+      if (job.solution.trim().isNotEmpty) 'solution': job.solution,
+      if (job.expectedParts.isNotEmpty) 'expected_parts': job.expectedParts,
       'packing_notes': job.packingNotes,
       'tracking': {
         'number': job.trackingNumber,
@@ -657,6 +664,8 @@ class AssistantTools {
           ),
         );
         return {'ok': true, 'opened': 'diagnostics'};
+      case 'search_parts':
+        return _searchParts(args);
       case 'open_job':
         return _openJob(args);
       case 'open_client':
@@ -1188,6 +1197,130 @@ class AssistantTools {
       ),
     );
     return {'ok': true, 'opened': 'conversation'};
+  }
+
+  static Future<Map<String, dynamic>> _searchParts(
+    Map<String, dynamic> args,
+  ) async {
+    var partQuery =
+        ((args['part_query'] ?? args['query']) as String?)?.trim() ?? '';
+    var partNumber = (args['part_number'] as String?)?.trim() ?? '';
+    var applianceType =
+        ((args['appliance_type'] ?? args['appliance']) as String?)?.trim() ??
+        '';
+    var brand = (args['brand'] as String?)?.trim() ?? '';
+    var model = (args['model'] as String?)?.trim() ?? '';
+    var problem = (args['problem'] as String?)?.trim() ?? '';
+    final jobQuery = (args['job_query'] as String?)?.trim() ?? '';
+
+    if (jobQuery.isNotEmpty ||
+        model.isEmpty ||
+        brand.isEmpty ||
+        (partQuery.isEmpty && partNumber.isEmpty)) {
+      final job = await resolveJob(
+        jobQuery.isEmpty ? 'current' : jobQuery,
+        includeClosed: true,
+        fallbackToNextWhenEmpty: false,
+      );
+      if (job != null) {
+        JobAppliance? picked;
+        final wantedKey = DiagnosticsScreen.normalizeApplianceKey(applianceType);
+        if (wantedKey != 'all') {
+          for (final a in job.appliances) {
+            if (DiagnosticsScreen.normalizeApplianceKey(a.type) == wantedKey) {
+              picked = a;
+              break;
+            }
+          }
+        }
+        picked ??= job.appliances.isNotEmpty ? job.appliances.first : null;
+
+        if (picked != null) {
+          if (applianceType.isEmpty) applianceType = picked.type.trim();
+          if (brand.isEmpty) brand = picked.brand.trim();
+          if (model.isEmpty) model = picked.model.trim();
+        }
+        if (model.isEmpty) {
+          final targetKey = DiagnosticsScreen.normalizeApplianceKey(
+            applianceType,
+          );
+          for (final passport in CarePlanService.appliances) {
+            if (!passport.isActive || passport.model.trim().isEmpty) continue;
+            final linked = job.applianceIds.contains(passport.id);
+            final sameClient =
+                job.clientId.isNotEmpty && passport.clientId == job.clientId;
+            if (!linked && !sameClient) continue;
+            if (targetKey != 'all' &&
+                DiagnosticsScreen.normalizeApplianceKey(passport.type) !=
+                    targetKey) {
+              continue;
+            }
+            model = passport.model.trim();
+            if (brand.isEmpty) brand = passport.brand.trim();
+            if (applianceType.isEmpty) applianceType = passport.type.trim();
+            break;
+          }
+        }
+        if (partQuery.isEmpty &&
+            partNumber.isEmpty &&
+            job.expectedParts.isNotEmpty) {
+          partQuery = job.expectedParts.first.trim();
+        }
+        if (problem.isEmpty) {
+          problem = [
+            if (picked != null && picked.issue.trim().isNotEmpty)
+              picked.issue.trim(),
+            if (job.solution.trim().isNotEmpty) job.solution.trim(),
+            if (job.description.trim().isNotEmpty &&
+                job.description.trim() != 'Нет описания')
+              job.description.trim(),
+          ].join('. ');
+        }
+      }
+    }
+
+    final enough = PartSearchService.hasEnoughInput(
+      partQuery: partQuery,
+      partNumber: partNumber,
+      model: model,
+      problem: problem,
+    );
+    if (!enough) {
+      final quick = await PartSearchService.search(
+        partQuery: partQuery,
+        partNumber: partNumber,
+        applianceType: applianceType,
+        brand: brand,
+        model: model,
+        problem: problem,
+      );
+      return quick.toToolJson();
+    }
+
+    final titleParts = <String>[
+      if (partNumber.isNotEmpty) partNumber,
+      if (partQuery.isNotEmpty) partQuery,
+      if (brand.isNotEmpty || model.isNotEmpty) '$brand $model'.trim()
+      else if (applianceType.isNotEmpty) applianceType,
+    ];
+    final session = PartSearchSession(
+      queryTitle: titleParts.isEmpty ? 'Поиск запчасти' : titleParts.join(' · '),
+    );
+    AssistantActions.enqueue(
+      const AssistantUiAction(type: 'open_part_search'),
+    );
+    unawaited(AssistantActions.flush());
+
+    final result = await PartSearchService.search(
+      partQuery: partQuery,
+      partNumber: partNumber,
+      applianceType: applianceType,
+      brand: brand,
+      model: model,
+      problem: problem,
+      session: session,
+    );
+    return result.toToolJson();
   }
 }
 

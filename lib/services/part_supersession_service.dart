@@ -20,7 +20,6 @@ enum SupersessionVerdict {
 }
 
 /// Что каталог знает про один номер.
-@visibleForTesting
 class PartCatalogHit {
   /// Номер, под которым деталь продаётся сейчас (`Part #:` на странице).
   final String canonical;
