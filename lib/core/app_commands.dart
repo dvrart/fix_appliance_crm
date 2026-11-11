@@ -14,6 +14,7 @@ class AppCommands {
   static final ValueNotifier<int?> selectTab = ValueNotifier<int?>(null);
   static final ValueNotifier<String?> calendarMode = ValueNotifier<String?>(null);
   static final ValueNotifier<bool> calendarAtHome = ValueNotifier<bool>(false);
+  static final ValueNotifier<int> calendarTodayTick = ValueNotifier<int>(0);
   /// 0 = звонки, 1 = переписка на вкладке «Связь».
   static final ValueNotifier<int> commsTab = ValueNotifier<int>(0);
   static final ValueNotifier<int> faceTick = ValueNotifier<int>(0);
@@ -93,5 +94,9 @@ class AppCommands {
       calendarMode.value = null;
     }
     calendarMode.value = 'home';
+  }
+
+  static void jumpCalendarToToday() {
+    calendarTodayTick.value++;
   }
 }

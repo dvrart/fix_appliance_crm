@@ -1038,6 +1038,7 @@ class _FinanceTabState extends State<FinanceTab> {
     final input = TextEditingController(
       text: fixedAmount ? currentValue.toStringAsFixed(2) : pctText(currentValue),
     );
+    var inputFresh = true;
     final result = await showDialog<({double value, bool fixedAmount, bool wholeInvoice})>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(builder: (context, setDialog) => DisposeOnClose(
@@ -1085,8 +1086,16 @@ class _FinanceTabState extends State<FinanceTab> {
               const SizedBox(height: 10),
               TextField(
                 controller: input,
-                autofocus: true,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                onTap: () {
+                  final parsed = double.tryParse(
+                    input.text.replaceAll(',', '.').trim(),
+                  );
+                  if (!inputFresh && parsed != 0) return;
+                  inputFresh = false;
+                  clearAutoNumber(input);
+                },
+                onChanged: (_) => inputFresh = false,
                 decoration: InputDecoration(
                   labelText: fixedAmount ? '\$' : '%',
                   border: const OutlineInputBorder(),
@@ -1106,7 +1115,8 @@ class _FinanceTabState extends State<FinanceTab> {
             ),
             FilledButton(
               onPressed: () {
-                final value = double.tryParse(input.text.replaceAll(',', '.').trim());
+                final raw = input.text.replaceAll(',', '.').trim();
+                final value = raw.isEmpty ? 0.0 : double.tryParse(raw);
                 if (value == null || !value.isFinite || value < 0) return;
                 Navigator.pop(dialogContext,
                   (value: value, fixedAmount: fixedAmount, wholeInvoice: wholeInvoice));

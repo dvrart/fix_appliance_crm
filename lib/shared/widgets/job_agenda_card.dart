@@ -17,6 +17,7 @@ class JobAgendaCard extends StatelessWidget {
   final JobVisit? visit;
   final VoidCallback? onTap;
   final int? routeIndex;
+  final int? reorderIndex;
   final String? footer;
   final Color? routeIndexColor;
 
@@ -42,6 +43,7 @@ class JobAgendaCard extends StatelessWidget {
     this.visit,
     this.onTap,
     this.routeIndex,
+    this.reorderIndex,
     this.footer,
     this.routeIndexColor,
     this.showTime = true,
@@ -133,9 +135,13 @@ class JobAgendaCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         onTap: onTap,
-        onLongPress: address.isNotEmpty
-            ? () => AppFeedback.copy(context, address)
-            : (name != '—' ? () => AppFeedback.copy(context, name) : null),
+        onLongPress: routeIndex != null
+            ? null
+            : (address.isNotEmpty
+                  ? () => AppFeedback.copy(context, address)
+                  : (name != '—'
+                        ? () => AppFeedback.copy(context, name)
+                        : null)),
         borderRadius: BorderRadius.circular(10),
         child: IntrinsicHeight(
           child: Stack(
@@ -146,23 +152,7 @@ class JobAgendaCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     if (routeIndex != null) ...[
-                      Container(
-                        width: 22,
-                        height: 22,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: routeIndexColor ?? AppColors.primary,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Text(
-                          '$routeIndex',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w800,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ),
+                      _buildRouteHandleColumn(),
                       const SizedBox(width: 6),
                     ],
                     Expanded(
@@ -298,6 +288,77 @@ class JobAgendaCard extends StatelessWidget {
     );
   }
 
+  Widget _buildRouteBadge() {
+    return Container(
+      width: 22,
+      height: 22,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: routeIndexColor ?? AppColors.primary,
+        shape: BoxShape.circle,
+      ),
+      child: Text(
+        '$routeIndex',
+        style: const TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.w800,
+          fontSize: 11,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRouteHandleColumn() {
+    final content = Column(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        _buildRouteBadge(),
+        if (reorderIndex != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 2),
+            child: Icon(
+              Icons.drag_indicator_rounded,
+              size: 20,
+              color: AppColors.inkMuted,
+            ),
+          ),
+      ],
+    );
+    if (reorderIndex == null) return content;
+    return ReorderableDragStartListener(
+      index: reorderIndex!,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        child: content,
+      ),
+    );
+  }
+
+  Widget _buildCompactRouteLead() {
+    final content = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (reorderIndex != null) ...[
+          Icon(
+            Icons.drag_indicator_rounded,
+            size: 18,
+            color: AppColors.inkMuted,
+          ),
+          const SizedBox(width: 2),
+        ],
+        _buildRouteBadge(),
+      ],
+    );
+    if (reorderIndex == null) return content;
+    return ReorderableDragStartListener(
+      index: reorderIndex!,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: content,
+      ),
+    );
+  }
+
   Widget _statusTab(Color color, String label) {
     return Container(
       constraints: const BoxConstraints(maxWidth: 140),
@@ -381,32 +442,20 @@ class JobAgendaCard extends StatelessWidget {
       ),
       child: InkWell(
         onTap: onTap,
-        onLongPress: address.isNotEmpty
-            ? () => AppFeedback.copy(context, address)
-            : (name != '—' ? () => AppFeedback.copy(context, name) : null),
+        onLongPress: routeIndex != null
+            ? null
+            : (address.isNotEmpty
+                  ? () => AppFeedback.copy(context, address)
+                  : (name != '—'
+                        ? () => AppFeedback.copy(context, name)
+                        : null)),
         borderRadius: BorderRadius.circular(10),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
           child: Row(
             children: [
               if (routeIndex != null) ...[
-                Container(
-                  width: 22,
-                  height: 22,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: routeIndexColor ?? AppColors.primary,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Text(
-                    '$routeIndex',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 11,
-                    ),
-                  ),
-                ),
+                _buildCompactRouteLead(),
                 const SizedBox(width: 8),
               ],
               Expanded(

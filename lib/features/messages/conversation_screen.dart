@@ -2472,8 +2472,28 @@ class _ConversationScreenState extends State<ConversationScreen>
                 padding: const EdgeInsets.all(16),
                 itemCount: messages.length,
                 itemBuilder: (context, index) {
-                  final message = messages[messages.length - 1 - index];
-                  return _highlightWrap(message, _buildBubble(message));
+                  final msgIndex = messages.length - 1 - index;
+                  final message = messages[msgIndex];
+                  final showDayDivider =
+                      message.createdAt != null &&
+                      (msgIndex == 0 ||
+                          !_isSameMessageDay(
+                            messages[msgIndex - 1].createdAt,
+                            message.createdAt,
+                          ));
+                  final bubble = _highlightWrap(
+                    message,
+                    _buildBubble(message),
+                  );
+                  if (!showDayDivider) return bubble;
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildDayDivider(message.createdAt),
+                      bubble,
+                    ],
+                  );
                 },
               );
             },
@@ -2595,6 +2615,61 @@ class _ConversationScreenState extends State<ConversationScreen>
                 actions: _quickActions(),
               ),
         body: thread,
+      ),
+    );
+  }
+
+  bool _isSameMessageDay(DateTime? a, DateTime? b) {
+    if (a == null || b == null) return a == b;
+    final wa = AppTimeService.wallClock(a);
+    final wb = AppTimeService.wallClock(b);
+    return wa.year == wb.year && wa.month == wb.month && wa.day == wb.day;
+  }
+
+  String _dayDividerLabel(DateTime? date) {
+    if (date == null) return '';
+    final value = AppTimeService.wallClock(date);
+    final now = AppTimeService.wallClock(DateTime.now());
+    final shift = DateTime(value.year, value.month, value.day)
+        .difference(DateTime(now.year, now.month, now.day))
+        .inDays;
+    final datePart = DateFormat(
+      value.year == now.year ? 'd MMMM' : 'd MMMM yyyy',
+      AppLocale.instance.dateLocale,
+    ).format(value);
+    if (shift == 0) return '${'Сегодня'.tr}, $datePart';
+    if (shift == -1) return '${'Вчера'.tr}, $datePart';
+    return datePart;
+  }
+
+  Widget _buildDayDivider(DateTime? date) {
+    if (date == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, bottom: 14),
+      child: Row(
+        children: [
+          Expanded(child: Divider(height: 1, color: AppColors.border)),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppColors.card,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Text(
+                _dayDividerLabel(date),
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.inkMuted,
+                ),
+              ),
+            ),
+          ),
+          Expanded(child: Divider(height: 1, color: AppColors.border)),
+        ],
       ),
     );
   }
@@ -2843,7 +2918,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                   const SizedBox(width: 8),
                 ],
                 Text(
-                  Formatters.messageStamp(message.createdAt),
+                  Formatters.formatTime(message.createdAt),
                   style: TextStyle(
                     color: onDark ? Colors.white70 : Colors.grey.shade500,
                     fontSize: 11,

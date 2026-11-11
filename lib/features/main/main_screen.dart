@@ -46,6 +46,7 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen>
     with UiSettingsAware, SingleTickerProviderStateMixin {
   int _currentIndex = 0;
+  DateTime? _lastCalendarTapAt;
   /// Вкладка с карточкой, из которой ушли по нижнему меню. Её стек не
   /// сбрасывается сразу: «Назад» с чужой вкладки возвращает в ту самую
   /// заявку или карточку клиента, а не выбрасывает на главную.
@@ -546,7 +547,7 @@ class _MainScreenState extends State<MainScreen>
       glyph = CountBadge(count: CommsBadgeService.total, child: glyph);
     }
     return InkWell(
-      onTap: () => _selectTab(index),
+      onTap: () => _onDockTabTap(index),
       child: Padding(
         padding: EdgeInsets.symmetric(horizontal: 7 * scale),
         child: AnimatedContainer(
@@ -564,6 +565,24 @@ class _MainScreenState extends State<MainScreen>
         ),
       ),
     );
+  }
+
+  Future<void> _onDockTabTap(int index) async {
+    if (index != 0) {
+      _lastCalendarTapAt = null;
+      await _selectTab(index);
+      return;
+    }
+    final now = DateTime.now();
+    final isDoubleTap =
+        _lastCalendarTapAt != null &&
+        now.difference(_lastCalendarTapAt!) <=
+            const Duration(milliseconds: 420);
+    _lastCalendarTapAt = isDoubleTap ? null : now;
+    await _selectTab(0);
+    if (isDoubleTap && mounted && _currentIndex == 0) {
+      AppCommands.jumpCalendarToToday();
+    }
   }
 
   Widget _buildTab(int index) {

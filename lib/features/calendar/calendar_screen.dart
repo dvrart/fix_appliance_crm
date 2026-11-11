@@ -102,6 +102,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     });
     _loadVisitLinksPref();
     AppCommands.calendarMode.addListener(_onCalendarCommand);
+    AppCommands.calendarTodayTick.addListener(_onJumpCalendarToday);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _publishHomeState();
     });
@@ -119,6 +120,30 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     if (mode == null || !mounted) return;
     AppCommands.calendarMode.value = null;
     _selectCalendarMode(mode);
+  }
+
+  void _onJumpCalendarToday() {
+    if (!mounted) return;
+    final today = _todayDate();
+    setState(() {
+      _focusDate = today;
+      if (_showList) return;
+      _calendarController.displayDate = DateTime(
+        today.year,
+        today.month,
+        today.day,
+        2,
+      );
+      _resetHourlyPager(today);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_showList && _calendarController.view != CalendarView.month) {
+        _scrollWorkHoursIntoView();
+      }
+      if (_visitLinksEnabled) _visitLinkHub.bump();
+      _nowLine.bump();
+    });
   }
 
   void _listenCalendarSettings() {
@@ -166,6 +191,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   @override
   void dispose() {
     AppCommands.calendarMode.removeListener(_onCalendarCommand);
+    AppCommands.calendarTodayTick.removeListener(_onJumpCalendarToday);
     _configSub?.cancel();
     _eventsSub?.cancel();
     _pageController.dispose();
@@ -720,21 +746,21 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                   visit.id,
                                 );
                                 realMinutesById[appointmentId] = minutes;
-                                final effectiveStart = visit.hasTime
-                                    ? visit.startAt
-                                    : DateTime(
+                                final isDateOnly = !visit.hasTime;
+                                final effectiveStart = isDateOnly
+                                    ? DateTime(
                                         visit.startAt.year,
                                         visit.startAt.month,
                                         visit.startAt.day,
-                                      ).add(
-                                        Duration(minutes: _workStartMinutes),
-                                      );
+                                      )
+                                    : visit.startAt;
                                 appointments.add(
                                   Appointment(
                                     startTime: effectiveStart,
                                     endTime: effectiveStart.add(
                                       Duration(minutes: _cardMinutes(minutes)),
                                     ),
+                                    isAllDay: isDateOnly,
                                     color: _appointmentColor(job, visit),
                                     id: appointmentId,
                                     notes: visit.note,
@@ -773,6 +799,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                             // держим под рукой ближайшее следующее начало дня.
                             final startsByDay = <DateTime, List<DateTime>>{};
                             for (final app in appointments) {
+                              if (app.isAllDay) continue;
                               final start = app.startTime;
                               final day = DateTime(
                                 start.year,
@@ -969,7 +996,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   }) {
     final slotItems = <CalendarSlotItem>[
       for (final app in appointments)
-        if (app.id != null)
+        if (app.id != null && !app.isAllDay)
           CalendarSlotItem(id: app.id.toString(), startTime: app.startTime),
     ];
     final initialDates = _visibleDatesForPage(_currentPageIndex, view);
@@ -1077,14 +1104,16 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                 registerLink: !forDragFeedback,
                 handleGestures: false,
               ),
-          onAppointmentDropped: (app, newTime) => _handleAppointmentDrop(
-            appointment: app,
-            dropped: newTime,
-            appointments: appointments,
-            activeAppointmentIds: activeAppointmentIds,
-            realMinutesById: realMinutesById,
-            docsById: docsById,
-          ),
+          onAppointmentDropped: (app, newTime, {required bool allDay}) =>
+              _handleAppointmentDrop(
+                appointment: app,
+                dropped: newTime,
+                droppedAllDay: allDay,
+                appointments: appointments,
+                activeAppointmentIds: activeAppointmentIds,
+                realMinutesById: realMinutesById,
+                docsById: docsById,
+              ),
           onCardTap: (app) => _openAppointment(app, docsById),
         );
       },
@@ -1160,6 +1189,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
         await _handleAppointmentDrop(
           appointment: appointment,
           dropped: dropped,
+          droppedAllDay: appointment.isAllDay,
           appointments: appointments,
           activeAppointmentIds: activeAppointmentIds,
           realMinutesById: realMinutesById,
@@ -1309,12 +1339,15 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
   Future<void> _handleAppointmentDrop({
     required Appointment appointment,
     required DateTime dropped,
+    bool droppedAllDay = false,
     required List<Appointment> appointments,
     required Set<String> activeAppointmentIds,
     required Map<String, int> realMinutesById,
     required Map<String, QueryDocumentSnapshot> docsById,
   }) async {
-    final newTime = _snapToQuarterHour(dropped);
+    final newTime = droppedAllDay
+        ? DateTime(dropped.year, dropped.month, dropped.day)
+        : _snapToQuarterHour(dropped);
 
     if (CalendarEvent.isAppointmentId(appointment.id)) {
       final eventId = CalendarEvent.idFromAppointment(appointment.id);
@@ -1353,44 +1386,54 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
           realMinutesById[appointment.id.toString()] ??
           appointment.endTime.difference(appointment.startTime).inMinutes,
     );
-    final newEnd = newTime.add(duration);
-    final overlaps = appointments.any((other) {
-      if (other.id.toString() == appointment.id.toString()) return false;
-      if (!activeAppointmentIds.contains(other.id.toString())) {
-        return false;
-      }
-      final otherEnd = other.startTime.add(
-        Duration(
-          minutes:
-              realMinutesById[other.id.toString()] ??
-              other.endTime.difference(other.startTime).inMinutes,
-        ),
-      );
-      return newTime.isBefore(otherEnd) && newEnd.isAfter(other.startTime);
-    });
-    if (overlaps) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Это время пересекается с другой заявкой'.tr),
-            backgroundColor: Colors.red,
+    if (!droppedAllDay) {
+      final newEnd = newTime.add(duration);
+      final overlaps = appointments.any((other) {
+        if (other.isAllDay) return false;
+        if (other.id.toString() == appointment.id.toString()) return false;
+        if (!activeAppointmentIds.contains(other.id.toString())) {
+          return false;
+        }
+        final otherEnd = other.startTime.add(
+          Duration(
+            minutes:
+                realMinutesById[other.id.toString()] ??
+                other.endTime.difference(other.startTime).inMinutes,
           ),
         );
+        return newTime.isBefore(otherEnd) && newEnd.isAfter(other.startTime);
+      });
+      if (overlaps) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Это время пересекается с другой заявкой'.tr),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        _snapCardBack();
+        return;
       }
-      _snapCardBack();
-      return;
     }
 
     if (!mounted) return;
+    final loc = AppLocale.instance.dateLocale;
+    final oldDateLabel = DateFormat(
+      'EEEE, d MMMM',
+      loc,
+    ).format(appointment.startTime);
+    final oldLabel = appointment.isAllDay
+        ? oldDateLabel
+        : '$oldDateLabel · ${DateFormat('HH:mm').format(appointment.startTime)}';
+    final newDateLabel = DateFormat('EEEE, d MMMM', loc).format(newTime);
+    final newLabel = droppedAllDay
+        ? newDateLabel
+        : '$newDateLabel · ${DateFormat('HH:mm').format(newTime)}';
     final approved = await showConfirmCancelSheet(
       context,
       title: 'Перенести заявку?'.tr,
-      message:
-          '${DateFormat('EEEE, d MMMM', AppLocale.instance.dateLocale).format(appointment.startTime)}'
-          ' · ${DateFormat('HH:mm').format(appointment.startTime)}'
-          '\n↓\n'
-          '${DateFormat('EEEE, d MMMM', AppLocale.instance.dateLocale).format(newTime)}'
-          ' · ${DateFormat('HH:mm').format(newTime)}',
+      message: '$oldLabel\n↓\n$newLabel',
       confirmLabel: 'Перенести'.tr,
     );
     if (!approved) {
@@ -1405,9 +1448,10 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     final newTimeInToronto = AppTimeService.bookingWallClock(newTime);
     final newMinutes = newTimeInToronto.hour * 60 + newTimeInToronto.minute;
     final isWorkDay = SettingsService.isVisitDay(config, newTime);
-    if (!isWorkDay ||
-        newMinutes < workStart ||
-        newMinutes + durationMins > workEnd) {
+    final outOfWorkHours =
+        !droppedAllDay &&
+        (newMinutes < workStart || newMinutes + durationMins > workEnd);
+    if (!isWorkDay || outOfWorkHours) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1449,11 +1493,15 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
       );
 
       if (mounted) {
+        final targetText = droppedAllDay
+            ? DateFormat('d MMMM', AppLocale.instance.dateLocale).format(newTime)
+            : DateFormat(
+                'd MMMM, HH:mm',
+                AppLocale.instance.dateLocale,
+              ).format(newTime);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              '${'Заявка перенесена на'.tr} ${DateFormat('d MMMM, HH:mm', AppLocale.instance.dateLocale).format(newTime)}',
-            ),
+            content: Text('${'Заявка перенесена на'.tr} $targetText'),
             backgroundColor: Colors.green,
           ),
         );
@@ -1550,10 +1598,11 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     final radius = BorderRadius.circular(
       _calendarController.view == CalendarView.month ? 4 : 8,
     );
+    final hasTime = !app.isAllDay && (visit?.hasTime ?? true);
     final timeStr = DateFormat('HH:mm').format(app.startTime);
     final cityStr = (parsedJob?.city ?? '').trim();
     final minimalSubtitle = [
-      timeStr,
+      if (hasTime) timeStr,
       if (cityStr.isNotEmpty) cityStr,
       if (type.trim().isNotEmpty) trAny(type.trim()),
     ].join(' · ');
@@ -1816,7 +1865,8 @@ class _AdaptiveCalendarPage extends StatefulWidget {
   final VoidCallback onLockedDragAttempt;
   final Widget Function(Appointment, Size, {required bool forDragFeedback})
   cardBuilder;
-  final Future<void> Function(Appointment, DateTime) onAppointmentDropped;
+  final Future<void> Function(Appointment, DateTime, {required bool allDay})
+  onAppointmentDropped;
   final ValueChanged<Appointment> onCardTap;
 
   @override
@@ -1829,11 +1879,13 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
   static const double _rulerWidth = 52;
   static Color get _nonWorkingHourColor => AppColors.nonWorkingHour;
 
+  final GlobalKey _headerKey = GlobalKey();
   final GlobalKey _gridKey = GlobalKey();
   late final ScrollController _scrollController;
 
   Appointment? _draggingApp;
   DateTime? _draggingTime;
+  bool _draggingAllDay = false;
 
   double get _defaultScrollOffset {
     final targetMinutes = (widget.workStartMinutes - 60)
@@ -1905,8 +1957,38 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
   }
 
   void _updateDragFromGlobal(Offset globalPos, double dayWidth) {
+    if (widget.visibleDates.isEmpty || dayWidth <= 0) return;
+
+    final headerBox =
+        _headerKey.currentContext?.findRenderObject() as RenderBox?;
+    if (headerBox != null && headerBox.hasSize) {
+      final headerLocal = headerBox.globalToLocal(globalPos);
+      if (headerLocal.dy <= headerBox.size.height + 2) {
+        final dxHeader = (headerLocal.dx - _rulerWidth).clamp(
+          0.0,
+          headerBox.size.width - _rulerWidth - 0.01,
+        );
+        final dayIdx = (dxHeader ~/ dayWidth).clamp(
+          0,
+          widget.visibleDates.length - 1,
+        );
+        final day = widget.visibleDates[dayIdx];
+        final dayOnly = DateTime(day.year, day.month, day.day);
+        if (!_draggingAllDay ||
+            _draggingTime == null ||
+            !_sameDay(_draggingTime!, dayOnly)) {
+          setState(() {
+            _draggingAllDay = true;
+            _draggingTime = dayOnly;
+          });
+          AppFeedback.haptic();
+        }
+        return;
+      }
+    }
+
     final box = _gridKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null || !box.hasSize || widget.visibleDates.isEmpty) return;
+    if (box == null || !box.hasSize) return;
     final local = box.globalToLocal(globalPos);
     final dxInColumns = (local.dx - _rulerWidth).clamp(
       0.0,
@@ -1918,9 +2000,17 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
     );
     final day = widget.visibleDates[dayIdx];
     final raw = widget.layout.timeForY(day, local.dy);
-    final snapped = _snapQuarter(raw);
-    if (_draggingTime == null || !_draggingTime!.isAtSameMomentAs(snapped)) {
-      setState(() => _draggingTime = snapped);
+    var snapped = _snapQuarter(raw);
+    if (snapped.hour == 0 && snapped.minute == 0) {
+      snapped = DateTime(day.year, day.month, day.day, 0, 15);
+    }
+    if (_draggingAllDay ||
+        _draggingTime == null ||
+        !_draggingTime!.isAtSameMomentAs(snapped)) {
+      setState(() {
+        _draggingAllDay = false;
+        _draggingTime = snapped;
+      });
       AppFeedback.haptic();
     }
 
@@ -1928,10 +2018,14 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
       final pos = _scrollController.position;
       final viewportY = local.dy - pos.pixels;
       if (viewportY < 32 && pos.pixels > 0) {
-        _scrollController.jumpTo((pos.pixels - 8).clamp(0.0, pos.maxScrollExtent));
+        _scrollController.jumpTo(
+          (pos.pixels - 8).clamp(0.0, pos.maxScrollExtent),
+        );
       } else if (viewportY > pos.viewportDimension - 32 &&
           pos.pixels < pos.maxScrollExtent) {
-        _scrollController.jumpTo((pos.pixels + 8).clamp(0.0, pos.maxScrollExtent));
+        _scrollController.jumpTo(
+          (pos.pixels + 8).clamp(0.0, pos.maxScrollExtent),
+        );
       }
     }
   }
@@ -1959,9 +2053,20 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
         final visibleAppointments = <Appointment>[
           for (final app in widget.appointments)
             if (app.id != null &&
+                !app.isAllDay &&
                 widget.layout.placements.containsKey(app.id.toString()))
               app,
         ];
+        final allDayByDate = <List<Appointment>>[
+          for (final date in dates)
+            [
+              for (final app in widget.appointments)
+                if (app.isAllDay && _sameDay(app.startTime, date)) app,
+            ],
+        ];
+        final showAllDayStrip =
+            allDayByDate.any((list) => list.isNotEmpty) ||
+            (_draggingApp != null && _draggingAllDay);
 
         return ColoredBox(
           color: AppColors.card,
@@ -1983,22 +2088,37 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
                 ),
               ),
               Container(
-                height: _viewHeaderHeight,
+                key: _headerKey,
                 decoration: BoxDecoration(
                   color: AppColors.card,
                   border: Border(
                     bottom: BorderSide(color: AppColors.border, width: 1),
                   ),
                 ),
-                child: Row(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    const SizedBox(width: _rulerWidth),
-                    for (final date in dates)
-                      Expanded(
-                        child: _buildDayHeader(
-                          date: date,
-                          isToday: _sameDay(date, widget.today),
-                        ),
+                    SizedBox(
+                      height: _viewHeaderHeight,
+                      child: Row(
+                        children: [
+                          const SizedBox(width: _rulerWidth),
+                          for (final date in dates)
+                            Expanded(
+                              child: _buildDayHeader(
+                                date: date,
+                                isToday: _sameDay(date, widget.today),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (showAllDayStrip)
+                      _buildAllDayStrip(
+                        dates: dates,
+                        allDayByDate: allDayByDate,
+                        dayWidth: dayWidth,
+                        cardSize: cardSize,
                       ),
                   ],
                 ),
@@ -2045,7 +2165,9 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
                             dayWidth: dayWidth,
                             cardSize: cardSize,
                           ),
-                        if (_draggingApp != null && _draggingTime != null)
+                        if (_draggingApp != null &&
+                            _draggingTime != null &&
+                            !_draggingAllDay)
                           ..._buildDragOverlay(
                             app: _draggingApp!,
                             draggingTime: _draggingTime!,
@@ -2115,6 +2237,152 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
     );
   }
 
+  void _startCardDrag(
+    Appointment app,
+    Offset globalPos,
+    double dayWidth,
+  ) {
+    if (widget.isDragLocked(app)) {
+      widget.onLockedDragAttempt();
+      return;
+    }
+    AppFeedback.haptic();
+    setState(() {
+      _draggingApp = app;
+      _draggingAllDay = app.isAllDay;
+      _draggingTime = app.isAllDay
+          ? DateTime(
+              app.startTime.year,
+              app.startTime.month,
+              app.startTime.day,
+            )
+          : _snapQuarter(app.startTime);
+    });
+    _updateDragFromGlobal(globalPos, dayWidth);
+  }
+
+  void _finishCardDrag() {
+    final dragged = _draggingApp;
+    final targetTime = _draggingTime;
+    final targetAllDay = _draggingAllDay;
+    setState(() {
+      _draggingApp = null;
+      _draggingTime = null;
+      _draggingAllDay = false;
+    });
+    if (dragged == null || targetTime == null) return;
+    final unchanged =
+        dragged.isAllDay == targetAllDay &&
+        (targetAllDay
+            ? _sameDay(dragged.startTime, targetTime)
+            : targetTime.isAtSameMomentAs(dragged.startTime));
+    if (!unchanged) {
+      widget.onAppointmentDropped(dragged, targetTime, allDay: targetAllDay);
+    }
+  }
+
+  void _cancelCardDrag() {
+    if (_draggingApp != null) {
+      setState(() {
+        _draggingApp = null;
+        _draggingTime = null;
+        _draggingAllDay = false;
+      });
+    }
+  }
+
+  Widget _buildAllDayStrip({
+    required List<DateTime> dates,
+    required List<List<Appointment>> allDayByDate,
+    required double dayWidth,
+    required Size cardSize,
+  }) {
+    final fullWidth = dates.length == 1 && dayWidth > cardSize.width + 8;
+    final itemWidth = fullWidth
+        ? dayWidth - 8
+        : (dayWidth - 2 < cardSize.width
+              ? (dayWidth - 2).clamp(16.0, cardSize.width)
+              : cardSize.width);
+    final itemSize = Size(itemWidth, cardSize.height);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(width: _rulerWidth),
+          for (var i = 0; i < dates.length; i++)
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (var j = 0; j < allDayByDate[i].length; j++) ...[
+                    if (j > 0) const SizedBox(height: 2),
+                    _buildAllDayCard(
+                      app: allDayByDate[i][j],
+                      size: itemSize,
+                      dayWidth: dayWidth,
+                    ),
+                  ],
+                  if (_draggingApp != null &&
+                      _draggingAllDay &&
+                      _draggingTime != null &&
+                      _sameDay(_draggingTime!, dates[i]) &&
+                      !allDayByDate[i].any(
+                        (a) => a.id.toString() == _draggingApp!.id.toString(),
+                      )) ...[
+                    if (allDayByDate[i].isNotEmpty) const SizedBox(height: 2),
+                    SizedBox(
+                      width: itemSize.width,
+                      height: itemSize.height,
+                      child: Opacity(
+                        opacity: 0.75,
+                        child: widget.cardBuilder(
+                          _draggingApp!,
+                          itemSize,
+                          forDragFeedback: true,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAllDayCard({
+    required Appointment app,
+    required Size size,
+    required double dayWidth,
+  }) {
+    final isBeingDragged =
+        _draggingApp != null &&
+        _draggingApp!.id.toString() == app.id.toString();
+    return SizedBox(
+      width: size.width,
+      height: size.height,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => widget.onCardTap(app),
+        onLongPressStart: (details) =>
+            _startCardDrag(app, details.globalPosition, dayWidth),
+        onLongPressMoveUpdate: (details) {
+          if (_draggingApp == null) return;
+          _updateDragFromGlobal(details.globalPosition, dayWidth);
+        },
+        onLongPressEnd: (_) => _finishCardDrag(),
+        onLongPressCancel: _cancelCardDrag,
+        child: Opacity(
+          opacity: isBeingDragged ? 0.35 : 1.0,
+          child: widget.cardBuilder(app, size, forDragFeedback: false),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPlacedAppointment({
     required Appointment app,
     required List<DateTime> dates,
@@ -2141,50 +2409,20 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
     final isBeingDragged =
         _draggingApp != null &&
         _draggingApp!.id.toString() == app.id.toString();
-    final locked = widget.isDragLocked(app);
 
     return Positioned.fromRect(
       rect: rect,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: () => widget.onCardTap(app),
-        onLongPressStart: (details) {
-          if (locked) {
-            widget.onLockedDragAttempt();
-            return;
-          }
-          AppFeedback.haptic();
-          setState(() {
-            _draggingApp = app;
-            _draggingTime = _snapQuarter(app.startTime);
-          });
-          _updateDragFromGlobal(details.globalPosition, dayWidth);
-        },
+        onLongPressStart: (details) =>
+            _startCardDrag(app, details.globalPosition, dayWidth),
         onLongPressMoveUpdate: (details) {
           if (_draggingApp == null) return;
           _updateDragFromGlobal(details.globalPosition, dayWidth);
         },
-        onLongPressEnd: (_) {
-          final dragged = _draggingApp;
-          final targetTime = _draggingTime;
-          setState(() {
-            _draggingApp = null;
-            _draggingTime = null;
-          });
-          if (dragged != null &&
-              targetTime != null &&
-              !targetTime.isAtSameMomentAs(dragged.startTime)) {
-            widget.onAppointmentDropped(dragged, targetTime);
-          }
-        },
-        onLongPressCancel: () {
-          if (_draggingApp != null) {
-            setState(() {
-              _draggingApp = null;
-              _draggingTime = null;
-            });
-          }
-        },
+        onLongPressEnd: (_) => _finishCardDrag(),
+        onLongPressCancel: _cancelCardDrag,
         child: Opacity(
           opacity: isBeingDragged ? 0.35 : 1.0,
           child: widget.cardBuilder(

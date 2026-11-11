@@ -1816,7 +1816,6 @@ class _DetailsTabState extends State<DetailsTab> {
     final hasVisits = visits.isNotEmpty;
     final currentVisit = _orderConfirmVisit;
     final accent = hasVisits ? AppColors.primaryOnCard : Colors.orange.shade800;
-    final canAdd = !visits.any((visit) => visit.isActiveSlot);
     final singleVisit = visits.length == 1 ? visits.first : null;
     final showWaitingHint =
         ctrl.currentStatus == JobStatuses.waitingPart &&
@@ -1843,82 +1842,72 @@ class _DetailsTabState extends State<DetailsTab> {
         children: [
           InkWell(
             borderRadius: BorderRadius.circular(9),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Padding(
-                  padding: EdgeInsets.symmetric(horizontal: canAdd ? 32 : 4),
-                  child: Column(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Row(
                     mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.calendar_month_rounded,
-                            size: 14,
-                            color: accent,
-                          ),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              context.tr(
-                                'Время следующего визита',
-                                'Next visit time',
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.w800,
-                                color: accent,
-                              ),
-                            ),
-                          ),
-                        ],
+                      Icon(
+                        Icons.calendar_month_rounded,
+                        size: 14,
+                        color: accent,
                       ),
-                      const SizedBox(height: 3),
-                      if (currentVisit == null)
-                        Text(
-                          'Нажмите «+», чтобы назначить день и время'.tr,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w900,
-                            fontSize: 13.5,
-                            color: Colors.orange.shade800,
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          context.tr(
+                            'Время следующего визита',
+                            'Next visit time',
                           ),
-                        )
-                      else
-                        _singleVisitChip(currentVisit),
-                      if (singleVisit != null &&
-                          singleVisit.note.trim().isNotEmpty) ...[
-                        const SizedBox(height: 2),
-                        Text(
-                          singleVisit.note.trim(),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 11.5,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w800,
+                            color: accent,
                           ),
                         ),
-                      ],
+                      ),
                     ],
                   ),
-                ),
-                if (canAdd)
-                  Positioned(
-                    right: 0,
-                    child: _addVisitButton(),
-                  ),
-              ],
+                  const SizedBox(height: 3),
+                  if (currentVisit == null)
+                    Text(
+                      'Не запланировано'.tr,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 13.5,
+                        color: Colors.orange.shade800,
+                      ),
+                    )
+                  else
+                    _singleVisitChip(currentVisit),
+                  if (singleVisit != null &&
+                      singleVisit.note.trim().isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      singleVisit.note.trim(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
           if (visits.length > 1) ...[
@@ -2023,27 +2012,6 @@ class _DetailsTabState extends State<DetailsTab> {
                 ),
               ),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Зелёный плюс в заголовке «Дата визита» — единственная кнопка, которая
-  /// открывает календарь и колесо времени для нового выезда.
-  Widget _addVisitButton() {
-    return Material(
-      color: const Color(0xFF22C55E),
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: () => _editVisit(),
-        child: Tooltip(
-          message: 'Назначить время визита'.tr,
-          child: const SizedBox(
-            width: 26,
-            height: 26,
-            child: Icon(Icons.add_rounded, size: 18, color: Colors.white),
           ),
         ),
       ),

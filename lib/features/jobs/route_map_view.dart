@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/constants.dart';
 import '../../models/job.dart';
@@ -79,7 +81,7 @@ class _RouteMapViewState extends State<RouteMapView> {
             distanceText: distance,
             applyTimes: _applyTimesFromRoute,
             openMaps: _openInMaps,
-            refresh: _loadRoute,
+            refresh: _reoptimizeRoute,
           );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -99,12 +101,35 @@ class _RouteMapViewState extends State<RouteMapView> {
     _orderedJobs = [for (final job in _orderedJobs) byId[job.id] ?? job];
   }
 
+  String _manualOrderKey(DateTime day) =>
+      'routeManualOrder_${day.year}-${day.month}-${day.day}';
+
+  String _jobsAddressSig(List<Job> jobs) {
+    final entries = [
+      for (final j in jobs) '${j.id}:${j.workAddress.trim()}',
+    ]..sort();
+    return entries.join('|');
+  }
+
+  Future<void> _saveManualOrder() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _manualOrderKey(widget.day),
+      [for (final job in _orderedJobs) job.id],
+    );
+  }
+
+  Future<void> _reoptimizeRoute() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_manualOrderKey(widget.day));
+    await _loadRoute(forceOptimize: true);
+  }
+
   @override
   void didUpdateWidget(RouteMapView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final oldIds = oldWidget.jobs.map((j) => j.id).join(',');
-    final newIds = widget.jobs.map((j) => j.id).join(',');
-    if (oldIds != newIds || !JobVisit.isSameDay(oldWidget.day, widget.day)) {
+    if (!JobVisit.isSameDay(oldWidget.day, widget.day) ||
+        _jobsAddressSig(oldWidget.jobs) != _jobsAddressSig(widget.jobs)) {
       _loadRoute();
       return;
     }
@@ -115,17 +140,42 @@ class _RouteMapViewState extends State<RouteMapView> {
     }
   }
 
-  Future<void> _loadRoute() async {
+  Future<void> _loadRoute({bool forceOptimize = false}) async {
     if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;
     });
 
-    final jobsWithAddress = widget.jobs
+    var jobsWithAddress = widget.jobs
         .where((j) => MapsService.hasRoutableAddress(j.workAddress))
         .toList();
     _skippedCount = widget.jobs.length - jobsWithAddress.length;
+
+    var hasManualOrder = false;
+    if (!forceOptimize && jobsWithAddress.length > 1) {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      final savedIds = prefs.getStringList(_manualOrderKey(widget.day));
+      if (savedIds != null && savedIds.isNotEmpty) {
+        final rank = <String, int>{
+          for (var i = 0; i < savedIds.length; i++) savedIds[i]: i,
+        };
+        if (jobsWithAddress.any((j) => rank.containsKey(j.id))) {
+          hasManualOrder = true;
+          final originalPos = <String, int>{
+            for (var i = 0; i < jobsWithAddress.length; i++)
+              jobsWithAddress[i].id: i,
+          };
+          jobsWithAddress = [...jobsWithAddress]..sort((a, b) {
+              final ra = rank[a.id] ?? (100000 + (originalPos[a.id] ?? 0));
+              final rb = rank[b.id] ?? (100000 + (originalPos[b.id] ?? 0));
+              return ra.compareTo(rb);
+            });
+        }
+      }
+    }
+
     _orderedJobs = jobsWithAddress;
 
     if (_orderedJobs.isEmpty) {
@@ -160,6 +210,7 @@ class _RouteMapViewState extends State<RouteMapView> {
     final route = await MapsService.getOptimizedRoute(
       origin: _origin!,
       addresses: _orderedJobs.map((j) => j.workAddress).toList(),
+      optimize: !hasManualOrder,
     );
     if (!mounted) return;
 
@@ -176,7 +227,9 @@ class _RouteMapViewState extends State<RouteMapView> {
     }
 
     _route = route;
-    _orderedJobs = route.order.map((i) => _orderedJobs[i]).toList();
+    if (!hasManualOrder) {
+      _orderedJobs = route.order.map((i) => _orderedJobs[i]).toList();
+    }
     await _buildMarkersAndPolylines();
     if (!mounted) return;
     _notifyChrome();
@@ -259,6 +312,7 @@ class _RouteMapViewState extends State<RouteMapView> {
       final job = _orderedJobs.removeAt(from);
       _orderedJobs.insert(to, job);
     });
+    unawaited(_saveManualOrder());
     _recomputeForManualOrder();
   }
 
@@ -434,36 +488,6 @@ class _RouteMapViewState extends State<RouteMapView> {
       return Center(child: CircularProgressIndicator(color: AppColors.accent));
     }
 
-    if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.location_off, size: 56, color: Colors.grey),
-              const SizedBox(height: 16),
-              Text(
-                _error!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.grey),
-              ),
-              const SizedBox(height: 16),
-              ElevatedButton.icon(
-                onPressed: _loadRoute,
-                icon: const Icon(Icons.refresh),
-                label: Text('Попробовать снова'.tr),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
     if (_orderedJobs.isEmpty) {
       return Center(
         child: Padding(
@@ -474,6 +498,36 @@ class _RouteMapViewState extends State<RouteMapView> {
             style: const TextStyle(color: Colors.grey, fontSize: 16),
           ),
         ),
+      );
+    }
+
+    if (_error != null) {
+      return Column(
+        children: [
+          Container(
+            width: double.infinity,
+            color: Colors.orange.withValues(alpha: 0.12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.location_off, size: 20, color: Colors.orange),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _error!,
+                    style: TextStyle(fontSize: 12, color: AppColors.inkMuted),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 20),
+                  tooltip: 'Попробовать снова'.tr,
+                  onPressed: _loadRoute,
+                ),
+              ],
+            ),
+          ),
+          Expanded(child: _buildStopsList()),
+        ],
       );
     }
 
@@ -535,7 +589,7 @@ class _RouteMapViewState extends State<RouteMapView> {
                     _mapAction(
                       icon: Icons.refresh,
                       tooltip: 'Оптимизировать заново'.tr,
-                      onTap: _loadRoute,
+                      onTap: _reoptimizeRoute,
                     ),
                   ],
                 ),
@@ -628,6 +682,7 @@ class _RouteMapViewState extends State<RouteMapView> {
           job: job,
           visit: visit,
           routeIndex: index + 1,
+          reorderIndex: index,
           routeIndexColor: _statusColorFor(job),
           footer: footer.isEmpty ? null : footer,
           onTap: () {

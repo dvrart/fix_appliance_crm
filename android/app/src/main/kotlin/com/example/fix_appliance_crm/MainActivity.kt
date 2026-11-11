@@ -6,6 +6,7 @@ import android.app.KeyguardManager
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.ComponentName
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -20,9 +21,11 @@ import android.media.AudioTrack
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.provider.Settings
 import android.view.WindowManager
 import kotlin.math.max
@@ -285,6 +288,21 @@ class MainActivity : FlutterFragmentActivity() {
                     "placeCellularCall" -> {
                         val args = call.arguments as? Map<*, *>
                         result.success(placeCellularCall(args?.get("number")?.toString().orEmpty()))
+                    }
+                    "saveImageToGallery" -> {
+                        val args = call.arguments as? Map<*, *>
+                        val bytes = args?.get("bytes") as? ByteArray
+                        val name = args?.get("name")?.toString().orEmpty()
+                        val mimeType = args?.get("mimeType")?.toString().orEmpty()
+                        if (bytes == null || bytes.isEmpty()) {
+                            result.success(false)
+                        } else {
+                            val appCtx = applicationContext
+                            Thread {
+                                val ok = saveImageToMediaStore(appCtx, bytes, name, mimeType)
+                                runOnUiThread { result.success(ok) }
+                            }.start()
+                        }
                     }
                     else -> result.notImplemented()
                 }
@@ -1104,6 +1122,50 @@ class MainActivity : FlutterFragmentActivity() {
             enableLockscreenFlags()
         } else {
             clearLockscreenFlags()
+        }
+    }
+
+    private fun saveImageToMediaStore(
+        ctx: Context,
+        bytes: ByteArray,
+        rawName: String,
+        rawMime: String,
+    ): Boolean {
+        return try {
+            val mime = rawMime.ifBlank { "image/jpeg" }
+            val name = rawName.ifBlank { "photo_${System.currentTimeMillis()}.jpg" }
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.MIME_TYPE, mime)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(
+                        MediaStore.Images.Media.RELATIVE_PATH,
+                        Environment.DIRECTORY_PICTURES + "/FixAppliance",
+                    )
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+            val resolver = ctx.contentResolver
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: return false
+            val wrote = resolver.openOutputStream(uri)?.use { out ->
+                out.write(bytes)
+                out.flush()
+                true
+            } ?: false
+            if (!wrote) {
+                resolver.delete(uri, null, null)
+                return false
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val done = ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }
+                resolver.update(uri, done, null, null)
+            }
+            true
+        } catch (_: Throwable) {
+            false
         }
     }
 }

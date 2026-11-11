@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/app_commands.dart';
 import '../../core/utils/app_date_picker.dart';
 import 'package:intl/intl.dart';
 import '../../core/app_feedback.dart';
@@ -60,10 +61,19 @@ class _JobsScreenState extends State<JobsScreen> {
     _routeDate = _origin;
     _syncFromParent();
     _pageController = PageController(initialPage: _pageOf(_routeDate));
+    if (widget.onRouteDateChanged != null) {
+      AppCommands.calendarTodayTick.addListener(_onCalendarTodayTick);
+    }
+  }
+
+  void _onCalendarTodayTick() {
+    if (!mounted) return;
+    _goToDay(_companyToday);
   }
 
   @override
   void dispose() {
+    AppCommands.calendarTodayTick.removeListener(_onCalendarTodayTick);
     _pageController.dispose();
     super.dispose();
   }
@@ -491,6 +501,14 @@ class _JobsScreenState extends State<JobsScreen> {
       }
     }
     entries.sort((a, b) => a.visit.startAt.compareTo(b.visit.startAt));
+    final dateOnlyEntries = [
+      for (final entry in entries)
+        if (!entry.visit.hasTime) entry,
+    ];
+    final timedEntries = [
+      for (final entry in entries)
+        if (entry.visit.hasTime) entry,
+    ];
 
     return CustomScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
@@ -538,6 +556,31 @@ class _JobsScreenState extends State<JobsScreen> {
               ),
             ),
           ),
+        if (dateOnlyEntries.isNotEmpty)
+          SliverPadding(
+            padding: EdgeInsets.fromLTRB(
+              14,
+              10,
+              14,
+              timedEntries.isEmpty ? 88 : 4,
+            ),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate([
+                for (var i = 0; i < dateOnlyEntries.length; i++)
+                  Padding(
+                    padding: EdgeInsets.only(
+                      bottom: i == dateOnlyEntries.length - 1 ? 0 : 8,
+                    ),
+                    child: JobAgendaCard(
+                      job: dateOnlyEntries[i].job,
+                      visit: dateOnlyEntries[i].visit,
+                      showTime: false,
+                      onTap: () => _openJob(dateOnlyEntries[i].job),
+                    ),
+                  ),
+              ]),
+            ),
+          ),
         if (entries.isEmpty && unscheduledCount == 0)
           SliverFillRemaining(
             hasScrollBody: false,
@@ -550,12 +593,12 @@ class _JobsScreenState extends State<JobsScreen> {
               ),
             ),
           )
-        else if (entries.isNotEmpty)
+        else if (timedEntries.isNotEmpty)
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(8, 8, 14, 88),
             sliver: SliverList(
               delegate: SliverChildListDelegate(
-                _timelineRows(entries, isToday),
+                _timelineRows(timedEntries, isToday),
               ),
             ),
           ),
