@@ -1,4 +1,7 @@
+import 'package:fix_appliance_crm/features/ai/assistant/assistant_tools.dart';
 import 'package:fix_appliance_crm/services/service_guide_service.dart';
+import 'package:fix_appliance_crm/shared/app_nav.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -59,6 +62,84 @@ void main() {
         kind: 'electrical',
       );
       expect(ohms['found'], isTrue);
+    });
+
+    test('находит мануал W11448643 и тестовые режимы всех основных стиральных машин', () async {
+      final techSheet = await ServiceGuideService.lookup(
+        query: 'W11448643 тестовый режим',
+        appliance: 'washer',
+      );
+      expect(techSheet['found'], isTrue);
+      final sheetHits = techSheet['hits'] as List;
+      expect(
+        sheetHits.first['codes'].toString().toUpperCase(),
+        contains('W11448643'),
+      );
+
+      final newAcu = await ServiceGuideService.lookup(
+        query: 'MVW6230HW F7EA тестовый режим 1-2-3',
+        brand: 'Maytag',
+        appliance: 'washer',
+      );
+      expect(newAcu['found'], isTrue);
+
+      final speedQueen = await ServiceGuideService.lookup(
+        query: 'Speed Queen TR7 FF7 вход в тестовый режим Er dL',
+        brand: 'Speed Queen',
+        appliance: 'washer',
+      );
+      expect(speedQueen['found'], isTrue);
+
+      final blomberg = await ServiceGuideService.lookup(
+        query: 'Blomberg WM72200W тестовый режим H5',
+        brand: 'Blomberg',
+        appliance: 'washer',
+      );
+      expect(blomberg['found'], isTrue);
+
+      // Встроенный ИИ может вызвать lookup_service_guide без поля query, только по brand+appliance+kind:
+      final viaAssistant = await AssistantTools.handle('lookup_service_guide', {
+        'brand': 'Whirlpool',
+        'appliance': 'washer',
+        'kind': 'test_modes',
+      });
+      expect(viaAssistant['found'], isTrue);
+    });
+
+    testWidgets('ключевое слово «открытая» не цепляет случайные карточки и видит открытый чат', (tester) async {
+      // Регрессия: слово «открытая» раньше совпадало по 2-буквенному префиксу «от»
+      // с чужой заявкой «Посудомоечная Машина Париж».
+      expect(
+        AssistantTools.matchScoreForTest(
+          'Посудомоечная Машина Париж от клиента 9058075214',
+          'открытая',
+        ),
+        0,
+      );
+
+      final navKey = GlobalKey<NavigatorState>();
+      AppNav.bindTabNavigator(() => navKey.currentState);
+      addTearDown(() => AppNav.bindTabNavigator(null));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: navKey,
+          navigatorObservers: [AppNav.rootObserver],
+          home: Builder(
+            builder: (ctx) => TextButton(
+              onPressed: () => AppNav.openCard<void>(
+                ctx,
+                key: AppNav.chatKey(phone: '+12269186432'),
+                builder: (_) => const Scaffold(body: Text('chat')),
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(AppNav.topCardKey, 'card:chat:2269186432');
     });
   });
 }

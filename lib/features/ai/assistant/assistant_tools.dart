@@ -17,6 +17,7 @@ import '../../../services/settings_service.dart';
 import '../../../services/sms_service.dart';
 import '../../../shared/app_nav.dart';
 import '../../diagnostics/diagnostics_screen.dart';
+import '../../messages/conversation_screen.dart';
 import 'assistant_actions.dart';
 
 class AssistantTools {
@@ -116,24 +117,65 @@ class AssistantTools {
       q.contains('следующ') ||
       q.contains('ближайш');
 
-  static bool _isCurrentScreenKeyword(String q) =>
-      q == 'current' ||
-      q == 'open' ||
-      q == 'screen' ||
-      q == 'текущая' ||
-      q == 'текущий' ||
-      q == 'текущему' ||
-      q == 'открытая' ||
-      q == 'открытый' ||
-      q == 'открытому' ||
-      q == ' эта' ||
-      q == 'эта' ||
-      q == 'эту' ||
-      q == 'этой' ||
-      q == 'этого' ||
-      q == 'этому';
+  static bool _isCurrentScreenKeyword(String q) {
+    final clean = q.trim().toLowerCase();
+    return clean == 'current' ||
+        clean == 'open' ||
+        clean == 'screen' ||
+        clean == 'chat' ||
+        clean == 'this' ||
+        clean == 'here' ||
+        clean == 'this client' ||
+        clean == 'current chat' ||
+        clean == 'open chat' ||
+        clean == 'текущая' ||
+        clean == 'текущий' ||
+        clean == 'текущему' ||
+        clean == 'открытая' ||
+        clean == 'открытый' ||
+        clean == 'открытому' ||
+        clean == 'открытый чат' ||
+        clean == 'открытая переписка' ||
+        clean == 'этот клиент' ||
+        clean == 'этому клиенту' ||
+        clean == 'сюда' ||
+        clean == 'в этот чат' ||
+        clean == 'эта' ||
+        clean == 'эту' ||
+        clean == 'этой' ||
+        clean == 'этого' ||
+        clean == 'этому';
+  }
 
   static Future<Job?> _resolveOpenScreenJob(List<Job> jobs) async {
+    final activeChat = ConversationScreen.activeTarget;
+    if (activeChat != null) {
+      final jid = (activeChat.jobId ?? '').trim();
+      if (jid.isNotEmpty) {
+        for (final job in jobs) {
+          if (job.id == jid) return job;
+        }
+        final fetched = await JobService.getById(jid);
+        if (fetched != null) return fetched;
+      }
+      final digits = ClientService.normalizePhone(activeChat.phone);
+      if (digits.length >= 10) {
+        for (final job in jobs) {
+          if (!JobStatuses.isClosed(job.status) &&
+              (ClientService.normalizePhone(job.contactPhone) == digits ||
+                  ClientService.normalizePhone(job.clientPhone) == digits)) {
+            return job;
+          }
+        }
+        for (final job in jobs) {
+          if (ClientService.normalizePhone(job.contactPhone) == digits ||
+              ClientService.normalizePhone(job.clientPhone) == digits) {
+            return job;
+          }
+        }
+      }
+    }
+
     final key = AppNav.topCardKey;
     if (key == null || key.isEmpty) return null;
     if (key.startsWith('card:job:')) {
@@ -170,6 +212,12 @@ class AssistantTools {
           if (!JobStatuses.isClosed(job.status) &&
               (ClientService.normalizePhone(job.contactPhone) == digits ||
                   ClientService.normalizePhone(job.clientPhone) == digits)) {
+            return job;
+          }
+        }
+        for (final job in jobs) {
+          if (ClientService.normalizePhone(job.contactPhone) == digits ||
+              ClientService.normalizePhone(job.clientPhone) == digits) {
             return job;
           }
         }
@@ -481,6 +529,9 @@ class AssistantTools {
     return out.toList();
   }
 
+  static int matchScoreForTest(String haystack, String query) =>
+      _matchScore(haystack, query);
+
   static int _matchScore(String haystack, String query) {
     final h = haystack.toLowerCase();
     final q = query.toLowerCase().trim();
@@ -504,7 +555,13 @@ class AssistantTools {
       var wordMatched = false;
       final stems = _wordStems(qw);
       for (final stem in stems) {
-        if (hayWords.any((hw) => hw.startsWith(stem) || stem.startsWith(hw))) {
+        if (hayWords.any(
+          (hw) =>
+              hw == stem ||
+              (hw.length >= 4 &&
+                  stem.length >= 4 &&
+                  (hw.startsWith(stem) || stem.startsWith(hw))),
+        )) {
           wordMatched = true;
           break;
         }
@@ -538,8 +595,8 @@ class AssistantTools {
 
     final q = (query ?? '').trim().toLowerCase();
     if (_isCurrentScreenKeyword(q)) {
-      final openJob = await _resolveOpenScreenJob(jobs);
-      if (openJob != null) return openJob;
+      // НИКОГДА не проваливаемся в нечёткий поиск по слову «открытая/current»!
+      return _resolveOpenScreenJob(jobs);
     }
 
     if (q.isEmpty || _isNextKeyword(q)) {
@@ -644,12 +701,29 @@ class AssistantTools {
       case 'search_clients':
         return _searchClients(args);
       case 'lookup_service_guide':
+        var brandArg = (args['brand'] as String?)?.trim() ?? '';
+        var appArg = (args['appliance'] as String?)?.trim() ?? '';
+        var modelArg = (args['model'] as String?)?.trim() ?? '';
+        final techSheetArg = (args['tech_sheet'] as String?)?.trim() ?? '';
+        if (brandArg.isEmpty || appArg.isEmpty) {
+          final jobs = await JobService.loadAllOnce();
+          final openJob = await _resolveOpenScreenJob(jobs);
+          if (openJob != null) {
+            if (brandArg.isEmpty) brandArg = openJob.applianceBrand;
+            if (appArg.isEmpty) appArg = openJob.applianceType;
+            if (modelArg.isEmpty) {
+              modelArg = openJob.primaryAppliance?.model ?? '';
+            }
+          }
+        }
         return ServiceGuideService.lookup(
           query: (args['query'] as String?) ?? '',
-          brand: (args['brand'] as String?) ?? '',
-          appliance: (args['appliance'] as String?) ?? '',
+          brand: brandArg,
+          appliance: appArg,
           code: (args['code'] as String?) ?? '',
           kind: (args['kind'] as String?) ?? '',
+          model: modelArg,
+          techSheet: techSheetArg,
         );
       case 'open_diagnostics':
         AssistantActions.enqueue(
@@ -758,42 +832,173 @@ class AssistantTools {
     return {'found': true, 'job': _jobSummary(job, detailed: true)};
   }
 
+  static Future<({
+    String phone,
+    String name,
+    String clientId,
+    Job? job,
+  })?> _resolveOpenScreenSmsRecipient(List<Job> jobs) async {
+    // 1. Живая открытая на экране переписка ConversationScreen (включая тех, у кого вообще нет заявки).
+    final activeChat = ConversationScreen.activeTarget;
+    if (activeChat != null && activeChat.phone.trim().isNotEmpty) {
+      final digits = ClientService.normalizePhone(activeChat.phone);
+      Job? matchedJob;
+      final jid = (activeChat.jobId ?? '').trim();
+      if (jid.isNotEmpty) {
+        for (final j in jobs) {
+          if (j.id == jid) {
+            matchedJob = j;
+            break;
+          }
+        }
+        matchedJob ??= await JobService.getById(jid);
+      }
+      if (matchedJob == null && digits.length >= 10) {
+        for (final j in jobs) {
+          if (!JobStatuses.isClosed(j.status) &&
+              (ClientService.normalizePhone(j.contactPhone) == digits ||
+                  ClientService.normalizePhone(j.clientPhone) == digits)) {
+            matchedJob = j;
+            break;
+          }
+        }
+      }
+      var name = activeChat.name.trim();
+      var cid = (activeChat.clientId ?? '').trim();
+      if ((name.isEmpty || cid.isEmpty) && digits.length >= 10) {
+        final foundClient = await ClientService.findByPhone(activeChat.phone);
+        if (foundClient != null) {
+          if (name.isEmpty) name = foundClient.fullName;
+          if (cid.isEmpty) cid = foundClient.id;
+        }
+      }
+      if (name.isEmpty && matchedJob != null) {
+        name = matchedJob.contactName;
+      }
+      if (cid.isEmpty && matchedJob != null) {
+        cid = matchedJob.clientId;
+      }
+      return (
+        phone: activeChat.phone.trim(),
+        name: name,
+        clientId: cid,
+        job: matchedJob,
+      );
+    }
+
+    // 2. Проверка верхней карточки в навигаторе (`card:chat:...`, `card:client:...`, `card:job:...`).
+    final key = AppNav.topCardKey;
+    if (key != null && key.isNotEmpty) {
+      if (key.startsWith('card:chat:')) {
+        final rest = key.substring('card:chat:'.length).trim();
+        final beforeJob = rest.contains(':job:')
+            ? rest.substring(0, rest.indexOf(':job:'))
+            : rest;
+        final digits = ClientService.normalizePhone(beforeJob);
+        if (digits.length >= 10) {
+          final openJob = await _resolveOpenScreenJob(jobs);
+          final foundClient = await ClientService.findByPhone(digits);
+          return (
+            phone: SmsService.toE164(digits),
+            name: openJob?.contactName ?? foundClient?.fullName ?? '',
+            clientId: openJob?.clientId ?? foundClient?.id ?? '',
+            job: openJob,
+          );
+        }
+      }
+      if (key.startsWith('card:client:')) {
+        final cid = key.substring('card:client:'.length).trim();
+        final c = await ClientService.getById(cid);
+        if (c != null && c.phone.trim().isNotEmpty) {
+          final openJob = await _resolveOpenScreenJob(jobs);
+          return (
+            phone: c.phone.trim(),
+            name: c.fullName,
+            clientId: c.id,
+            job: openJob,
+          );
+        }
+      }
+      final openJob = await _resolveOpenScreenJob(jobs);
+      if (openJob != null && openJob.contactPhone.trim().isNotEmpty) {
+        return (
+          phone: openJob.contactPhone.trim(),
+          name: openJob.contactName,
+          clientId: openJob.clientId,
+          job: openJob,
+        );
+      }
+    }
+    return null;
+  }
+
   static Future<Map<String, dynamic>> _sendSms(Map<String, dynamic> args) async {
     final rawQuery =
         ((args['job_query'] ?? args['query'] ?? args['client_name']) as String?)
             ?.trim() ??
         '';
     final explicitPhone = (args['phone'] as String?)?.trim() ?? '';
+    final lowerQuery = rawQuery.toLowerCase();
+    final wantsOpenScreen =
+        explicitPhone.isEmpty &&
+        (rawQuery.isEmpty || _isCurrentScreenKeyword(lowerQuery));
+
+    final allJobs = await JobService.loadAllOnce();
 
     Job? job;
-    if (rawQuery.isNotEmpty) {
+    var phone = '';
+    var recipientName = '';
+    var clientId = '';
+
+    if (wantsOpenScreen) {
+      final openTarget = await _resolveOpenScreenSmsRecipient(allJobs);
+      if (openTarget == null) {
+        return {
+          'ok': false,
+          'error':
+              'На экране сейчас не открыта переписка или карточка клиента. Назовите имя клиента или телефон, кому отправить сообщение.',
+        };
+      }
+      phone = openTarget.phone;
+      recipientName = openTarget.name;
+      clientId = openTarget.clientId;
+      job = openTarget.job;
+    } else if (_isNextKeyword(lowerQuery)) {
+      job = await resolveJob(
+        'next',
+        includeClosed: false,
+        fallbackToNextWhenEmpty: true,
+      );
+      phone = job?.contactPhone.trim() ?? '';
+      recipientName = job?.contactName ?? '';
+      clientId = job?.clientId ?? '';
+    } else if (rawQuery.isNotEmpty) {
       job = await resolveJob(
         rawQuery,
         includeClosed: true,
         fallbackToNextWhenEmpty: false,
       );
+      phone = job?.contactPhone.trim() ?? '';
+      recipientName = job?.contactName ?? '';
+      clientId = job?.clientId ?? '';
     } else if (explicitPhone.isNotEmpty) {
       job = await resolveJob(
         explicitPhone,
         includeClosed: true,
         fallbackToNextWhenEmpty: false,
       );
-    } else {
-      job = await resolveJob(
-        null,
-        includeClosed: false,
-        fallbackToNextWhenEmpty: true,
-      );
+      phone = job?.contactPhone.trim() ?? explicitPhone;
+      recipientName = job?.contactName ?? '';
+      clientId = job?.clientId ?? '';
     }
-
-    var phone = job?.contactPhone.trim() ?? '';
-    var recipientName = job?.contactName ?? '';
-    var clientId = job?.clientId ?? '';
 
     // Если назвали клиента по имени, а открытой заявки не нашлось (или имя
     // только в карточке клиента) — ищем в справочнике клиентов, но НИКОГДА
-    // не подставляем чужую «следующую» заявку.
-    if (job == null && rawQuery.isNotEmpty && !_isNextKeyword(rawQuery.toLowerCase())) {
+    // не подставляем чужую заявку.
+    if (phone.isEmpty &&
+        rawQuery.isNotEmpty &&
+        !wantsOpenScreen &&
+        !_isNextKeyword(lowerQuery)) {
       final clients = await ClientService.loadAllOnce();
       var bestClientScore = 0;
       for (final c in clients) {
@@ -824,15 +1029,21 @@ class AssistantTools {
       return {'ok': false, 'error': 'Не нашёл, кому отправлять SMS'};
     }
 
-    final templates = await SettingsService.loadSmsTemplates();
-    final rawTemplate = (args['template'] as String?) ?? 'on_way';
-    final templateKey = switch (rawTemplate) {
-      'parts' || 'part_ordered' => 'part_ordered',
-      'done' || 'job_done' => 'job_done',
-      _ => 'on_way',
-    };
+    final rawTemplate = (args['template'] as String?)?.trim() ?? '';
     var body = (args['text'] as String?)?.trim() ?? '';
     if (body.isEmpty) {
+      if (rawTemplate.isEmpty) {
+        return {
+          'ok': false,
+          'error': 'Уточните, какой именно текст отправить клиенту.',
+        };
+      }
+      final templates = await SettingsService.loadSmsTemplates();
+      final templateKey = switch (rawTemplate) {
+        'parts' || 'part_ordered' => 'part_ordered',
+        'done' || 'job_done' => 'job_done',
+        _ => 'on_way',
+      };
       body = templates[templateKey]?.trim() ??
           templates['on_way'] ??
           'Hello, this is your technician. I am on my way.';
@@ -847,6 +1058,7 @@ class AssistantTools {
       to: phone,
       body: body,
       clientId: clientId.isEmpty ? null : clientId,
+      jobId: job?.id,
       bodyRu: russian.isEmpty ? null : russian,
     );
     if (ok && job != null) {
@@ -859,7 +1071,9 @@ class AssistantTools {
     }
     return {
       'ok': ok,
-      'client_name': job?.clientName ?? recipientName,
+      'client_name': recipientName.isNotEmpty
+          ? recipientName
+          : (job?.clientName ?? phone),
       'phone': phone,
       'text': body,
     };

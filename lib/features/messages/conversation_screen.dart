@@ -707,6 +707,35 @@ class ConversationScreen extends StatefulWidget {
     this.highlightMessageId,
   });
 
+  static final List<_ConversationScreenState> _activeStack = [];
+
+  /// Открытая прямо сейчас на экране переписка (для голосового ассистента),
+  /// чтобы команда «отправь сообщение» уходила именно открытому собеседнику.
+  static ({
+    String phone,
+    String email,
+    String name,
+    String? clientId,
+    String? jobId,
+  })? get activeTarget {
+    for (var i = _activeStack.length - 1; i >= 0; i--) {
+      final s = _activeStack[i];
+      if (!s.mounted) continue;
+      if (s.widget.embedded && !s.widget.embeddedVisible) continue;
+      if (s.widget.websiteInbox) continue;
+      final route = ModalRoute.of(s.context);
+      if (route != null && !route.isCurrent) continue;
+      return (
+        phone: s._phone.trim(),
+        email: s._email.trim(),
+        name: s._contactName.trim(),
+        clientId: s.widget.clientId,
+        jobId: s.widget.jobId,
+      );
+    }
+    return null;
+  }
+
   static Future<void> open(
     BuildContext context, {
     String phoneNumber = '',
@@ -1089,8 +1118,16 @@ class _ConversationScreenState extends State<ConversationScreen>
     _textController.addListener(_onDraftChanged);
     final highlight = (widget.highlightMessageId ?? '').trim();
     _highlightId = highlight.isEmpty ? null : highlight;
+    _syncActiveStack();
     _markRead();
     unawaited(_loadPeersIfNeeded());
+  }
+
+  void _syncActiveStack() {
+    ConversationScreen._activeStack.remove(this);
+    if (!widget.websiteInbox && (!widget.embedded || widget.embeddedVisible)) {
+      ConversationScreen._activeStack.add(this);
+    }
   }
 
   /// Подвести ленту к сообщению из уведомления и снять подсветку.
@@ -1194,6 +1231,7 @@ class _ConversationScreenState extends State<ConversationScreen>
         widget.embeddedVisible) {
       _markRead();
     }
+    _syncActiveStack();
   }
 
   void _bindStreams() {
@@ -1260,6 +1298,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       }
       _bindStreams();
     });
+    _syncActiveStack();
     widget.onRecipientChanged?.call(peer);
     _markRead();
   }
@@ -1347,6 +1386,7 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   @override
   void dispose() {
+    ConversationScreen._activeStack.remove(this);
     WidgetsBinding.instance.removeObserver(this);
     _translateDebounce?.cancel();
     _highlightTimer?.cancel();

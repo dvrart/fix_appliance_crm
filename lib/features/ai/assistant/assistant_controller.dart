@@ -61,20 +61,20 @@ class AssistantController extends ChangeNotifier {
 - когда search_parts вернул ok=true — назови проверенный артикул, скажи если деталь уже есть на своём складе, назови самое дешёвое предложение в наличии (и самый дешёвый оригинал OEM, если отличается от аналога) с точной ценой и магазином, и скажи, что проверенные ссылки открыты на экране.
 
 По ремонту и диагностике НЕ выдумывай сервисный режим, коды ошибок и омы из памяти.
-Всегда сначала вызови lookup_service_guide (база хранится на сервере):
-- query — что спросил мастер (можно целиком фразу);
-- brand — Samsung, LG, Whirlpool, Maytag, KitchenAid, GE, Bosch, Frigidaire, Electrolux, Miele, Fisher & Paykel, Midea, Panasonic и т.д., если известен;
+У тебя есть полный доступ ко всей базе знаний мастера через инструмент lookup_service_guide (коды ошибок, вход в тестовые режимы, калибровка, распиновка плат, tech sheets вроде W11448643, W11580994, 31-3000205, Омы по всем брендам — Whirlpool, Maytag, Amana, Samsung, LG, GE, Frigidaire, Electrolux, Bosch, Miele, Blomberg, Beko, Speed Queen, Midea, Insignia, Haier и др.):
+- query — что спросил мастер;
+- brand — бренд, если назван (Samsung, LG, Whirlpool, Maytag, GE, Bosch, Frigidaire, Electrolux, Speed Queen, Blomberg, Beko, Miele, Midea…);
 - appliance — fridge / freezer / washer / dryer / dishwasher / range / cooktop / microwave / other;
-- code — код ошибки, если назвали (F21, 3E, LE, E15, E09, Er IF, SY EF, d80, F7E1, H97…);
-- kind — error_codes (коды ошибок), test_modes (вход в тестовый режим и калибровка), field_guide (диагностика по симптомам), electrical (омы/сопротивление/датчики), или пусто.
-Если мастер говорит про текущую заявку — сначала get_job, потом lookup_service_guide с брендом и техникой из заявки.
-Если мастер просит открыть раздел «Ошибка и диагностика» на экране («открой ошибки», «открой диагностику», «покажи коды ошибок Samsung») — вызови open_diagnostics.
-Отвечай по карточкам из справочника: расшифровка ошибки, кнопки входа в тест, шаги проверки, омы, выход, типичный ремонт. Если found=false — так и скажи, не сочиняй процедуру.
+- code — код ошибки или номер мануала tech sheet (F7E1, F21, 3E, LE, E15, W11448643, W11580994…);
+- kind — test_modes (вход в тестовый режим, ручной тест и калибровка), error_codes (коды ошибок и двоичная расшифровка LED), electrical (распиновка разъёмов, омы, напряжения), field_guide (пошаговая диагностика), или пусто.
+Если мастер спрашивает «как войти в тестовый режим» — обязательно вызови lookup_service_guide с kind='test_modes' и подробно, чётко по шагам объясни процедуру входа, какие индикаторы загораются и как выбрать нужный тест или калибровку.
+Если мастер просит открыть раздел «Ошибка и диагностика» на экране — вызови open_diagnostics.
 
-Если мастер просит отправить SMS («я уже в пути, буду через 20 минут», перенос, свой текст):
-- если мастер назвал имя клиента, фамилию, улицу или город — передай его в job_query (лучше латиницей, как в базе, например John, Michael, Sarah, или сначала проверь через list_jobs / search_clients, чтобы точно не перепутать клиента). НИКОГДА не передавай job_query=следующая, если мастер назвал конкретного клиента;
-- если мастер НЕ назвал клиента — передай job_query=открытая (если речь про открытую карточку) или job_query=следующая;
-- если мастер сказал время прибытия или свой текст (например «буду через 20 минут») — обязательно передай готовый текст на английском в поле text (например: "Hello, this is your technician. I am on my way and will be there in about 20 minutes."). Не обещай, что отправил, пока инструмент не вернул ok.
+Если мастер просит отправить сообщение / SMS (например «отправь сообщение хорошо, спасибо», «напиши я буду через 20 минут»):
+- если на экране открыта переписка с клиентом или карточка клиента/заявки и мастер НЕ назвал другое конкретное имя — ВСЕГДА передавай job_query='current' (никогда не передавай случайные слова, технику или next, чтобы сообщение ушло строго тому человеку, чей чат или карточка открыты на экране!);
+- если мастер явно назвал имя клиента, фамилию, улицу или телефон — передай ТОЛЬКО это имя/адрес/телефон в job_query (латиницей как в базе, либо сначала проверь через search_clients / list_jobs, чтобы на 100% не перепутать получателя);
+- передавай job_query='next' ТОЛЬКО если мастер прямо сказал «следующему клиенту»;
+- в поле text передавай ТОЧНО тот смысл, который продиктовал мастер, на грамотном английском (например для «хорошо, спасибо» -> text='Okay, thank you.') — не подменяй его шаблоном «я в пути» и не добавляй лишних слов, о которых мастер не просил. Не говори «отправил», пока send_sms не вернул ok=true.
 Если мастер говорит перенести визит на другой день (с временем или только на день без времени) — вызови reschedule_visit (date=YYYY-MM-DD, и time=HH:mm если время названо). Не говори, что перенёс, пока инструмент не вернул ok и scheduled_at.
 После действия коротко скажи, что сделал и кому.
 Сегодняшняя дата и время приходят из инструментов. Не выдумывай заявки: сначала вызови list_jobs или get_job.
@@ -135,10 +135,10 @@ If they mean the current job, call get_job first, then lookup_service_guide with
 If they ask to open the "Errors & diagnostics" screen ("open diagnostics", "show error codes") — call open_diagnostics.
 Answer from the guide cards: error meaning, how to enter test mode, steps, ohms, how to exit, typical fix. If found=false, say the guide has no card — do not invent a sequence.
 
-If they ask to send an SMS ("I'm on my way, I'll be there in 20 minutes", reschedule, custom message):
-- if they named a client, street, or city — pass that exact client name/address in job_query (in English Latin as stored in CRM, or call list_jobs / search_clients first to verify the exact client). NEVER pass job_query=next when a specific client was named;
-- if no client was named — pass job_query=current (if referring to the open card) or job_query=next;
-- if they mentioned an ETA or custom details (e.g. "will be there in 20 minutes"), pass the full English message in text. Do not claim you sent it until the tool returns ok.
+If they ask to send an SMS ("send 'okay, thank you'", "I'm on my way, I'll be there in 20 minutes", custom message):
+- if a client conversation or job/client card is open on screen and no other specific client was named — ALWAYS pass job_query='current' so it goes strictly to the person currently open on screen;
+- if they explicitly named a client, street, or phone — pass ONLY that exact name/address/phone in job_query (verify via search_clients / list_jobs if unsure). Pass job_query='next' ONLY if they explicitly said "next client";
+- pass the exact dictated message in English in `text` (e.g. "Okay, thank you.") without replacing it with an unrelated template. Do not claim you sent it until send_sms returns ok=true.
 If they ask to move a visit to a day (with a time, or date only without a time) — call reschedule_visit (date=YYYY-MM-DD, and time=HH:mm if given). Do not say it was moved until the tool returns ok and scheduled_at.
 After an action, say briefly what you did and for whom.
 Today's date and time come from tools. Do not invent jobs: call list_jobs or get_job first.
@@ -861,15 +861,24 @@ IMPORTANT about multi-property clients: one client (landlord or property manager
         behavior: Behavior.BLOCKING,
         name: 'send_sms',
         description:
-            'Отправить SMS клиенту. job_query: имя клиента (латиницей, как в базе), адрес, телефон, «открытая» или «следующая» (только если клиент не назван). Можно шаблон on_way/parts/done ИЛИ свой text (например с точным временем прибытия «через 20 минут»).',
+            'Отправить SMS клиенту. Если на экране открыт чат или карточка клиента и имя другого клиента не названо — передавай job_query="current". Если назван конкретный клиент — передай его имя/телефон в job_query. В text передай точный текст сообщения на английском.',
         parameters: {
           'type': 'OBJECT',
           'properties': {
-            'job_query': {'type': 'STRING'},
-            'template': {'type': 'STRING'},
-            'text': {'type': 'STRING'},
+            'job_query': {
+              'type': 'STRING',
+              'description':
+                  'current (для открытого сейчас экрана переписки/карточки), имя клиента, адрес, телефон или next (только если явно просят следующему)',
+            },
+            'template': {
+              'type': 'STRING',
+              'description': 'on_way | parts | done (только если просят стандартный шаблон)',
+            },
+            'text': {
+              'type': 'STRING',
+              'description': 'Точный текст сообщения на английском языке',
+            },
           },
-          'required': ['job_query'],
         },
       ),
       FunctionDeclaration(
@@ -923,18 +932,18 @@ IMPORTANT about multi-property clients: one client (landlord or property manager
         behavior: Behavior.BLOCKING,
         name: 'lookup_service_guide',
         description:
-            'Серверный справочник мастера: коды ошибок (error_codes), вход в тестовый/сервисный режим и калибровка (test_modes), пошаговая диагностика всех видов техники (field_guide), нормы сопротивлений в Омах и датчики (electrical). Вызывать при любом вопросе про ошибку, тестовый режим, сопротивление или ремонт.',
+            'База знаний мастера (сервисные мануалы и tech sheets): вход в тестовый/сервисный режим и калибровка (test_modes), все коды ошибок и двоичная расшифровка мигания LED (error_codes), распиновка плат, напряжения и сопротивления в Омах (electrical), пошаговая диагностика (field_guide). Вызывать при любом вопросе про тестовый режим, калибровку, код ошибки, мануал (например W11448643) или Омы.',
         parameters: {
           'type': 'OBJECT',
           'properties': {
             'query': {
               'type': 'STRING',
-              'description': 'Фраза мастера или что искать',
+              'description': 'Вопрос мастера или что искать',
             },
             'brand': {
               'type': 'STRING',
               'description':
-                  'Samsung, LG, Whirlpool, Maytag, KitchenAid, GE, Bosch, Frigidaire, Electrolux, Miele, Fisher & Paykel, Midea, Panasonic…',
+                  'Whirlpool, Maytag, Amana, Samsung, LG, GE, Bosch, Frigidaire, Electrolux, Speed Queen, Blomberg, Beko, Miele, Midea, Insignia, Haier…',
             },
             'appliance': {
               'type': 'STRING',
@@ -944,15 +953,22 @@ IMPORTANT about multi-property clients: one client (landlord or property manager
             'code': {
               'type': 'STRING',
               'description':
-                  'Код ошибки, например F21, 3E, LE, E15, E09, Er IF, SY EF, d80, F7E1, H97',
+                  'Код ошибки или номер tech sheet, например F7E1, F21, 3E, LE, E15, W11448643, W11580994',
+            },
+            'model': {
+              'type': 'STRING',
+              'description': 'Модель техники, если известна (например WTW4816FW, MVW6230HW, ELFW7637)',
+            },
+            'tech_sheet': {
+              'type': 'STRING',
+              'description': 'Номер сервисного листа (например W11448643)',
             },
             'kind': {
               'type': 'STRING',
               'description':
-                  'error_codes | test_modes | field_guide | electrical',
+                  'test_modes | error_codes | electrical | field_guide',
             },
           },
-          'required': ['query'],
         },
       ),
       FunctionDeclaration(

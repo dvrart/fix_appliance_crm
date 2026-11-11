@@ -12,28 +12,66 @@ import 'network_status_service.dart';
 /// синхронизирует базовые карточки и имеет резервную копию в локальном ассете.
 class ServiceGuideService {
   static const assetPath = 'assets/diagnostics/service_guide.json';
-  static const int currentSeedVersion = 3;
+  static const int currentSeedVersion = 4;
 
   static List<Map<String, dynamic>>? _assetCache;
   static List<Map<String, dynamic>>? _serverCache;
   static Future<void>? _syncFuture;
 
   static const _brandAliases = <String, List<String>>{
-    'whirlpool': ['whirlpool', 'wfw', 'vmw', 'duet', 'cabrio', 'bravos', 'вирпул'],
-    'maytag': ['maytag', 'мейтег', 'майтег'],
+    'whirlpool': [
+      'whirlpool',
+      'wfw',
+      'vmw',
+      'wtw',
+      'mvw',
+      'ntw',
+      'itw',
+      'duet',
+      'cabrio',
+      'bravos',
+      'inglis',
+      'roper',
+      'w11448643',
+      'w11580994',
+      'w11580995',
+      'вирпул',
+      'уирлпул',
+      'инглис',
+    ],
+    'maytag': ['maytag', 'mvw', 'mvwc', 'mvwb', 'мейтег', 'майтег'],
     'kitchenaid': ['kitchenaid', 'kitchen aid', 'kdtm', 'китченэйд'],
     'kenmore': ['kenmore', 'кенмор'],
-    'amana': ['amana', 'амана'],
+    'amana': ['amana', 'ntw', 'амана'],
     'samsung': ['samsung', 'самсунг', 'bespoke', 'waterwall', 'twin cooling'],
     'lg': ['lg', 'элджи', 'direct drive', 'washtower', 'quadwash', 'truesteam', 'flowsense'],
-    'ge': ['ge', 'profile', 'cafe', 'hotpoint', 'gfw', 'gtw', 'gdf', 'gdt', 'gfd', 'gtd', 'джии'],
-    'frigidaire': ['frigidaire', 'electrolux', 'фриджидейр', 'электролюкс'],
-    'electrolux': ['electrolux', 'frigidaire', 'электролюкс'],
+    'ge': [
+      'ge',
+      'profile',
+      'cafe',
+      'hotpoint',
+      'moffat',
+      'hydrowave',
+      'gfw',
+      'gtw',
+      'ptw',
+      'htw',
+      'gdf',
+      'gdt',
+      'gfd',
+      'gtd',
+      'джии',
+      'хотпоинт',
+    ],
+    'frigidaire': ['frigidaire', 'electrolux', 'elfw', 'efls', 'fftw', 'фриджидейр', 'электролюкс'],
+    'electrolux': ['electrolux', 'frigidaire', 'elfw', 'efls', 'электролюкс'],
     'bosch': ['bosch', 'thermador', 'gaggenau', 'siemens', 'ascenta', 'бош', 'термадор'],
     'miele': ['miele', 'миле'],
+    'blomberg': ['blomberg', 'beko', 'бломберг', 'блумберг', 'беко'],
+    'speed queen': ['speed queen', 'speedqueen', 'huebsch', 'alliance', 'спид квин', 'спидквин', 'tr5', 'tr7', 'tc5', 'ff7'],
     'fisher': ['fisher', 'paykel', 'dishdrawer', 'фишер'],
     'sub-zero': ['sub-zero', 'subzero', 'wolf', 'сабзиро', 'вульф'],
-    'midea': ['midea', 'insignia', 'hisense', 'danby', 'мидеа', 'инсигния'],
+    'midea': ['midea', 'insignia', 'hisense', 'danby', 'haier', 'comfee', 'мидеа', 'инсигния', 'хайер', 'данби'],
     'panasonic': ['panasonic', 'sharp', 'панасоник', 'шарп'],
     'insinkerator': ['insinkerator', 'disposal', 'диспоузер', 'измельчитель'],
   };
@@ -400,12 +438,17 @@ class ServiceGuideService {
     String appliance = '',
     String code = '',
     String kind = '',
+    String model = '',
+    String techSheet = '',
   }) async {
     final records = await load();
-    final q = query.trim();
+    final q = [query.trim(), model.trim(), techSheet.trim()]
+        .where((s) => s.isNotEmpty)
+        .join(' ');
     final brandQ = brand.trim();
     final applianceQ = appliance.trim();
     var codeQ = code.trim();
+    if (codeQ.isEmpty) codeQ = techSheet.trim();
     if (codeQ.isEmpty) codeQ = _extractCode(q);
     final kindQ = _normalizeKind(kind, q, codeQ);
     final tokens = _tokens('$q $brandQ $applianceQ $codeQ');
@@ -567,26 +610,37 @@ class ServiceGuideService {
   static String _extractCode(String query) {
     final compact = query.toUpperCase();
     final match = RegExp(
-      r'\b(ER\s*[A-Z]{2}|5Y\s*[A-Z]{2}|SY\s*[A-Z]{2}|F\d{1,2}\s*E\d{1,2}|F-\d{1,2}|C-[A-Z0-9]{2}|E-\d{2}|H9[789]|[A-Z]{1,3}\d{1,3}[A-Z]?|\d{1,2}[A-Z]\d?\b|T\d{2}|E\d{1,3}|I\d{2})\b',
+      r'\b(W\d{7,9}[A-Z]?|ER\s*[A-Z]{2}|5Y\s*[A-Z]{2}|SY\s*[A-Z]{2}|F\d{1,2}\s*E[A-Z0-9]{1,2}|F-\d{1,2}|C-[A-Z0-9]{2}|E-\d{2}|H9[789]|[A-Z]{1,3}\d{1,3}[A-Z]?|\d{1,2}[A-Z]\d?\b|T\d{2}|E\d{1,3}|I\d{2})\b',
       caseSensitive: false,
     ).firstMatch(compact);
     return match?.group(1)?.trim() ?? '';
   }
 
   static Set<String> _tokens(String text) {
-    return text
+    final raw = text
         .toLowerCase()
         .replaceAll(RegExp(r'[^a-zа-я0-9ё\-\s]'), ' ')
         .split(RegExp(r'\s+'))
         .where((t) => t.length >= 2)
         .toSet();
+    final expanded = <String>{...raw};
+    for (final t in raw) {
+      if (RegExp(r'[а-яё]').hasMatch(t) && t.length >= 5) {
+        final stem = t.replaceFirst(
+          RegExp(r'(ого|ему|ому|ыми|ими|ую|юю|ая|яя|ое|ее|ые|ие|ой|ей|ом|ем|ах|ях|ам|ям|ов|ев|у|ю|а|я|е|и|ы)$'),
+          '',
+        );
+        if (stem.length >= 4) expanded.add(stem);
+      }
+    }
+    return expanded;
   }
 
   static Map<String, dynamic> _public(Map<String, dynamic> rec, int score) {
     String clip(String? value) {
       final text = (value ?? '').trim();
-      if (text.length <= 1600) return text;
-      return '${text.substring(0, 1600)}…';
+      if (text.length <= 3800) return text;
+      return '${text.substring(0, 3800)}…';
     }
 
     return {
