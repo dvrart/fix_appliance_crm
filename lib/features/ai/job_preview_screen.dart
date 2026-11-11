@@ -17,6 +17,7 @@ import '../../shared/widgets/catalog_picker.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../shared/widgets/app_bar_save.dart';
 import '../../shared/widgets/dirty_leave_scope.dart';
+import '../../shared/widgets/technician_filter_bar.dart';
 
 /// Экран предпросмотра извлечённых данных
 class JobPreviewScreen extends StatefulWidget {
@@ -69,6 +70,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
 
   DateTime? _scheduledDate;
   TimeOfDay? _scheduledTime;
+  String? _assignedTo;
   bool _hasJobSite = false;
   bool _isSaving = false;
   Client? _existingClient;
@@ -409,6 +411,7 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
         description: _problemController.text.trim(),
         status: JobStatuses.call,
         priority: JobPriorities.low,
+        assignedTo: _assignedTo,
         scheduledAt: scheduledAt,
         createdAt: DateTime.now(),
         city: _cityController.text.trim(),
@@ -578,6 +581,10 @@ class _JobPreviewScreenState extends State<JobPreviewScreen> {
               ),
               const SizedBox(height: 16),
             ],
+            TechnicianAssigneeSelector(
+              selectedUid: _assignedTo,
+              onChanged: (uid) => setState(() => _assignedTo = uid),
+            ),
             if (_existingClient != null && !_editingExistingClient) ...[
               _buildExistingClientCard(),
               const SizedBox(height: 16),

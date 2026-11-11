@@ -16,6 +16,7 @@ import '../../services/client_service.dart';
 import '../../services/job_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/status_service.dart';
+import '../../services/technician_service.dart';
 import '../../services/app_time_service.dart';
 import '../jobs/job_details/job_details_screen.dart';
 import '../jobs/create_job_screen.dart';
@@ -27,6 +28,7 @@ import '../../shared/app_nav.dart';
 import '../../shared/widgets/animated_app_logo.dart';
 import '../../shared/widgets/calendar_hatch.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
+import '../../shared/widgets/technician_filter_bar.dart';
 import 'calendar_card_shape.dart';
 import 'visit_link_overlay.dart';
 import 'now_time_overlay.dart';
@@ -90,16 +92,23 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     super.initState();
     ErrorLogService.markScreen('Календарь');
     _calendarController.view = CalendarView.week;
-    _jobsSnap = FirebaseFirestore.instance
+    final baseJobsRef = FirebaseFirestore.instance
         .collection('companies')
         .doc(kCompanyId)
-        .collection('jobs')
-        .snapshots();
+        .collection('jobs');
+    _jobsSnap = TechnicianService.isTechnician
+        ? baseJobsRef
+              .where('assignedTo', isEqualTo: TechnicianService.currentUid)
+              .snapshots()
+        : baseJobsRef.snapshots();
     _listenCalendarSettings();
-    _eventsSub = CalendarEventService.stream().listen((events) {
-      if (!mounted) return;
-      setState(() => _events = events);
-    });
+    if (TechnicianService.isOwner) {
+      _eventsSub = CalendarEventService.stream().listen((events) {
+        if (!mounted) return;
+        setState(() => _events = events);
+      });
+    }
+    TechnicianFilterState.selected.addListener(_onTechFilterChanged);
     _loadVisitLinksPref();
     AppCommands.calendarMode.addListener(_onCalendarCommand);
     AppCommands.calendarTodayTick.addListener(_onJumpCalendarToday);
@@ -190,6 +199,7 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
 
   @override
   void dispose() {
+    TechnicianFilterState.selected.removeListener(_onTechFilterChanged);
     AppCommands.calendarMode.removeListener(_onCalendarCommand);
     AppCommands.calendarTodayTick.removeListener(_onJumpCalendarToday);
     _configSub?.cancel();
@@ -364,7 +374,12 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
     return StatusService.colorOf(status);
   }
 
-  bool _showJobOnCalendar(Job job) => !job.isDeleted;
+  bool _showJobOnCalendar(Job job) =>
+      !job.isDeleted && TechnicianFilterState.matches(job);
+
+  void _onTechFilterChanged() {
+    if (mounted) setState(() {});
+  }
 
   /// Пункт 1: перетаскивание прилипает к четверти часа — 7:00, 7:15, 7:30…
   /// Календарь отдаёт произвольную минуту, зависящую от пикселя, куда попал
@@ -679,10 +694,12 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                 children: [
                   _viewButton(),
                   const Spacer(),
-                  const CalendarTopIcons(color: Colors.white, iconSize: 24),
+                  if (TechnicianService.isOwner)
+                    const CalendarTopIcons(color: Colors.white, iconSize: 24),
                 ],
               ),
             ),
+            const TechnicianFilterBar(),
 
             // --- САМ КАЛЕНДАРЬ И ЕГО ДАННЫЕ ---
             Expanded(
@@ -768,7 +785,16 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                                 );
                               }
                             }
-                            for (final event in _events) {
+                            final includeOwnerEvents =
+                                TechnicianService.isOwner &&
+                                (TechnicianFilterState.selected.value ==
+                                        TechnicianFilterState.all ||
+                                    TechnicianFilterState.selected.value ==
+                                        TechnicianFilterState.owner);
+                            for (final event
+                                in includeOwnerEvents
+                                    ? _events
+                                    : const <CalendarEvent>[]) {
                               final eventAppointmentId =
                                   CalendarEvent.appointmentIdOf(event.id);
                               activeAppointmentIds.add(eventAppointmentId);
@@ -1664,6 +1690,12 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
                               planId: (jobData['carePlanId'] ?? '')
                                   .toString(),
                               size: 14,
+                              onDark: true,
+                            ),
+                            TechnicianBadge(
+                              assignedTo: (jobData['assignedTo'] ?? '')
+                                  .toString(),
+                              compact: true,
                               onDark: true,
                             ),
                           ],

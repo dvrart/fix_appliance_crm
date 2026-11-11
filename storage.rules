@@ -1,13 +1,9 @@
 rules_version = '2';
 
-// Файлы — только аккаунт владельца, по uid. Причина та же, что в
-// firestore.rules: `request.auth != null` пускал любой аккаунт, который кто
-// угодно мог создать через публичный REST API Firebase.
-//
-// Ссылки, которые уходят клиенту в SMS и письмах, это не ломает: download URL
-// со своим токеном открывается без входа и правила не проверяет. Cloud
-// Functions (счёт в PDF, картинка детали, копия базы) работают через Admin SDK
-// и правила тоже обходят.
+// Файлы:
+// 1. Владелец (по uid) — полный доступ.
+// 2. Активный мастер — чтение и загрузка фото/чеков/подписей только по назначенным
+//    лично ему заявкам (`jobs/{jobId}`), а также загрузка исходящих вложений для SMS/PDF.
 service firebase.storage {
   match /b/{bucket}/o {
     function owners() {
@@ -16,27 +12,46 @@ service firebase.storage {
     function isOwner() {
       return request.auth != null && request.auth.uid in owners();
     }
+    function isActiveTech() {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/companies/fix_appliance_ca/technicians/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/companies/fix_appliance_ca/technicians/$(request.auth.uid)).data.active != false;
+    }
+    function isTechJob(jobId) {
+      return isActiveTech()
+        && firestore.exists(/databases/(default)/documents/companies/fix_appliance_ca/jobs/$(jobId))
+        && firestore.get(/databases/(default)/documents/companies/fix_appliance_ca/jobs/$(jobId)).data.assignedTo == request.auth.uid;
+    }
     function underLimit(maxBytes) {
       return request.resource.size < maxBytes;
     }
 
-    // Job photos and signatures from the shop app.
+    // Job photos, part receipts and signatures.
     match /jobs/{jobId}/attachments/{fileName} {
-      allow read, delete: if isOwner();
-      allow create, update: if isOwner() && underLimit(20 * 1024 * 1024);
+      allow read: if isOwner() || isTechJob(jobId);
+      allow delete: if isOwner();
+      allow create, update: if (isOwner() || isTechJob(jobId)) && underLimit(20 * 1024 * 1024);
     }
     match /jobs/{jobId}/signatures/{fileName} {
-      allow read, delete: if isOwner();
-      allow create, update: if isOwner() && underLimit(20 * 1024 * 1024);
+      allow read: if isOwner() || isTechJob(jobId);
+      allow delete: if isOwner();
+      allow create, update: if (isOwner() || isTechJob(jobId)) && underLimit(20 * 1024 * 1024);
     }
 
-    // Warehouse part photos.
+    // Warehouse part photos (owner only).
     match /warehouse/{fileName} {
       allow read, delete: if isOwner();
       allow create, update: if isOwner() && underLimit(12 * 1024 * 1024);
     }
 
-    // Shop branding, outbound files, call recordings, SMS media.
+    // Outbound files (invoice PDFs and MMS attachments sent to clients).
+    match /companies/fix_appliance_ca/outbound/{fileName} {
+      allow read: if isOwner() || isActiveTech();
+      allow delete: if isOwner();
+      allow create, update: if (isOwner() || isActiveTech()) && underLimit(25 * 1024 * 1024);
+    }
+
+    // Shop branding, call recordings, backups, SMS media (owner only).
     match /companies/fix_appliance_ca/{allPaths=**} {
       allow read, delete: if isOwner();
       allow create, update: if isOwner() && underLimit(25 * 1024 * 1024);

@@ -78,4 +78,12 @@ class FirestoreService {
   /// Метаданные версии серверного справочника диагностики
   static DocumentReference get serviceGuideMetaRef =>
       settingsRef.doc('service_guide_meta');
+
+  /// Профили независимых мастеров (субподрядчиков)
+  static CollectionReference get techniciansRef =>
+      companyRef.collection('technicians');
+
+  /// История принятых от мастеров расчётов
+  static CollectionReference get technicianSettlementsRef =>
+      companyRef.collection('technician_settlements');
 }

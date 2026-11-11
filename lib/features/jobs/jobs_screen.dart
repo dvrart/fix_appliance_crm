@@ -11,6 +11,7 @@ import '../../models/job.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/widgets/job_agenda_card.dart';
 import '../../shared/widgets/job_status_filter_bar.dart';
+import '../../shared/widgets/technician_filter_bar.dart';
 import 'job_details/job_details_screen.dart';
 import 'basket_screen.dart';
 import 'route_map_view.dart';
@@ -64,6 +65,11 @@ class _JobsScreenState extends State<JobsScreen> {
     if (widget.onRouteDateChanged != null) {
       AppCommands.calendarTodayTick.addListener(_onCalendarTodayTick);
     }
+    TechnicianFilterState.selected.addListener(_onTechFilterChanged);
+  }
+
+  void _onTechFilterChanged() {
+    if (mounted) setState(() {});
   }
 
   void _onCalendarTodayTick() {
@@ -73,6 +79,7 @@ class _JobsScreenState extends State<JobsScreen> {
 
   @override
   void dispose() {
+    TechnicianFilterState.selected.removeListener(_onTechFilterChanged);
     AppCommands.calendarTodayTick.removeListener(_onCalendarTodayTick);
     _pageController.dispose();
     super.dispose();
@@ -162,10 +169,12 @@ class _JobsScreenState extends State<JobsScreen> {
     return JobService.activeForDay(
       jobs
           .where(
-            (job) => SettingsService.jobMatchesListFilter(
-              job,
-              widget.selectedFilter,
-            ),
+            (job) =>
+                TechnicianFilterState.matches(job) &&
+                SettingsService.jobMatchesListFilter(
+                  job,
+                  widget.selectedFilter,
+                ),
           )
           .toList(),
       date,

@@ -22,14 +22,17 @@ import '../calls/dial_pad_screen.dart';
 import '../messages/messages_screen.dart';
 import '../messages/compose_speed_dial.dart';
 import '../messages/conversation_screen.dart';
+import '../technicians/technician_earnings_screen.dart';
 import '../ai/assistant/assistant_face.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../services/auth_service.dart';
 import '../../services/care_plan_service.dart';
 import '../../services/comms_badge_service.dart';
 import '../../services/job_reminder_service.dart';
 import '../../services/job_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/offline_queue_service.dart';
+import '../../services/technician_service.dart';
 import '../../services/twilio_service.dart';
 import '../../services/error_log_service.dart';
 
@@ -68,11 +71,17 @@ class _MainScreenState extends State<MainScreen>
     GlobalKey<NavigatorState>(),
   ];
 
-  final List<Widget> _screens = [
-    const CalendarScreen(),
-    const CommsHubScreen(),
-    const ClientsScreen(),
-  ];
+  List<Widget> get _screens => TechnicianService.isTechnician
+      ? const [
+          CalendarScreen(),
+          ActiveJobsScreen(),
+          TechnicianEarningsScreen(),
+        ]
+      : const [
+          CalendarScreen(),
+          CommsHubScreen(),
+          ClientsScreen(),
+        ];
 
   @override
   void initState() {
@@ -84,12 +93,15 @@ class _MainScreenState extends State<MainScreen>
       _TabNavObserver(_syncRoot),
     ];
     AppNav.bindTabNavigator(() => _navigatorKeys[_currentIndex].currentState);
+    TechnicianService.start();
     OfflineQueueService.flush();
-    // Care Plan и паспорта — одна подписка на всё приложение: значок
-    // «гарантийный клиент» на звонке и в заявке появляется без запросов.
-    CarePlanService.start();
+    // Care Plan и паспорта — одна подписка на всё приложение у владельца.
+    if (TechnicianService.isOwner) {
+      CarePlanService.start();
+      unawaited(JobService.completeLegacyJobsIfNeeded());
+    }
     unawaited(JobReminderService.start());
-    unawaited(JobService.completeLegacyJobsIfNeeded());
+    AuthService.user.addListener(_onAuthRoleChanged);
     AppCommands.selectTab.addListener(_onSelectTabCommand);
     AppCommands.commsTab.addListener(_onCommsTabChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -97,8 +109,17 @@ class _MainScreenState extends State<MainScreen>
     });
   }
 
+  void _onAuthRoleChanged() {
+    if (!mounted) return;
+    setState(() {
+      _currentIndex = 0;
+      _composeOpen = false;
+    });
+  }
+
   @override
   void dispose() {
+    AuthService.user.removeListener(_onAuthRoleChanged);
     AppNav.bindTabNavigator(null);
     AppCommands.selectTab.removeListener(_onSelectTabCommand);
     AppCommands.commsTab.removeListener(_onCommsTabChanged);
@@ -396,15 +417,30 @@ class _MainScreenState extends State<MainScreen>
           children: [
             ColoredBox(
               color: AppColors.primary,
-              child: const SafeArea(
+              child: SafeArea(
                 bottom: false,
                 child: SizedBox(
                   height: 44,
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      Center(child: AssistantFaceButton(size: 40)),
-                      Positioned(left: 12, child: OfflineChip()),
+                      if (TechnicianService.isOwner)
+                        const Center(child: AssistantFaceButton(size: 40))
+                      else
+                        Center(
+                          child: ValueListenableBuilder(
+                            valueListenable: TechnicianService.selfProfile,
+                            builder: (context, tech, _) => Text(
+                              tech?.displayName ?? 'Fix Appliance',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ),
+                        ),
+                      const Positioned(left: 12, child: OfflineChip()),
                     ],
                   ),
                 ),
@@ -435,7 +471,9 @@ class _MainScreenState extends State<MainScreen>
                       children: [_buildTab(0), _buildTab(1), _buildTab(2)],
                     ),
                   ),
-                  if (_onRoot && _currentIndex == 1)
+                  if (TechnicianService.isOwner &&
+                      _onRoot &&
+                      _currentIndex == 1)
                     Positioned(
                       left: 0,
                       right: 0,
@@ -483,11 +521,17 @@ class _MainScreenState extends State<MainScreen>
             child: Center(
               child: Row(
                 mainAxisSize: MainAxisSize.min,
-                children: [
-                  _dockTab(0, Icons.calendar_month),
-                  _dockTab(1, Icons.forum),
-                  _dockTab(2, Icons.people),
-                ],
+                children: TechnicianService.isTechnician
+                    ? [
+                        _dockTab(0, Icons.calendar_month),
+                        _dockTab(1, Icons.assignment_outlined),
+                        _dockTab(2, Icons.account_balance_wallet_outlined),
+                      ]
+                    : [
+                        _dockTab(0, Icons.calendar_month),
+                        _dockTab(1, Icons.forum),
+                        _dockTab(2, Icons.people),
+                      ],
               ),
             ),
           ),
@@ -543,7 +587,7 @@ class _MainScreenState extends State<MainScreen>
     );
     // Новый звонок и непрочитанное сообщение теперь видно там, где их
     // разбирают, а не в колокольчике.
-    if (index == 1) {
+    if (index == 1 && TechnicianService.isOwner) {
       glyph = CountBadge(count: CommsBadgeService.total, child: glyph);
     }
     return InkWell(

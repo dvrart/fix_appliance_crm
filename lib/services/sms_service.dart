@@ -13,6 +13,7 @@ import 'firestore_service.dart';
 import 'notification_service.dart';
 import 'auth_service.dart';
 import 'network_status_service.dart';
+import 'technician_service.dart';
 
 DateTime? _asDate(dynamic value) {
   if (value == null) return null;
@@ -732,6 +733,7 @@ class SmsService {
     required String to,
     required String body,
     String? clientId,
+    String? jobId,
     List<String> mediaUrls = const [],
     String? bodyRu,
     String? fallbackBody,
@@ -757,6 +759,7 @@ class SmsService {
           'to': toE164(to),
           'body': SmsText.formatSentences(body.trim()),
           'clientId': clientId,
+          if (jobId != null && jobId.trim().isNotEmpty) 'jobId': jobId.trim(),
           if (urls.isNotEmpty) 'mediaUrls': urls,
           if (bodyRu != null && bodyRu.trim().isNotEmpty) 'bodyRu': bodyRu.trim(),
           if (fallback.isNotEmpty) 'fallbackBody': SmsText.formatSentences(fallback),
@@ -1088,6 +1091,33 @@ class SmsService {
     bool emailsOnly = false,
     bool websiteInbox = false,
   }) {
+    if (TechnicianService.isTechnician) {
+      final targetJobId = (jobId ?? '').trim();
+      if (targetJobId.isEmpty) return Stream.value(const []);
+      return _ref.where('jobId', isEqualTo: targetJobId).snapshots().map((
+        snapshot,
+      ) {
+        final items = <SmsMessage>[];
+        for (final doc in snapshot.docs) {
+          try {
+            final data = doc.data();
+            if (data is! Map) continue;
+            final m = SmsMessage.fromMap(
+              Map<String, dynamic>.from(data),
+              doc.id,
+            );
+            if (!m.isDeleted && m.visibleInCrm && emailsOnly == m.isEmail) {
+              items.add(m);
+            }
+          } catch (_) {}
+        }
+        items.sort(
+          (a, b) =>
+              (a.createdAt ?? DateTime(0)).compareTo(b.createdAt ?? DateTime(0)),
+        );
+        return _foldTapbacks(items);
+      });
+    }
     final normalized = normalizePhone(phoneNumber);
     final extra = {
       for (final phone in extraPhones)

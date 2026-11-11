@@ -6,6 +6,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import '../../../core/constants.dart';
 import '../../../models/client.dart';
 import '../../../models/job.dart';
+import '../../../models/technician.dart';
 import '../../../services/services.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../shared/stale_routes.dart';
@@ -62,6 +63,7 @@ class JobDetailsController extends ChangeNotifier {
   }
 
   void _syncClientNameFromJob() {
+    if (TechnicianService.isTechnician) return;
     final id = clientId.trim();
     if (id.isEmpty) return;
     String spoken = '';
@@ -293,6 +295,7 @@ class JobDetailsController extends ChangeNotifier {
       }
       // Метки дубляжа ставит сервер — показываем их даже поверх черновика.
       for (final key in [
+        'assignedTo',
         'mergedIntoJobId',
         'mergedFromJobIds',
         'possibleDuplicateOfJobId',
@@ -416,9 +419,51 @@ class JobDetailsController extends ChangeNotifier {
   }
 
   Future<void> _loadTaxDefault() async {
+    final assignedUid = (jobData['assignedTo'] ?? '').toString().trim();
+    if (assignedUid.isNotEmpty && assignedUid != kOwnerUid) {
+      var tech = TechnicianService.byId(assignedUid);
+      if (tech == null) {
+        try {
+          final snap = await FirestoreService.techniciansRef
+              .doc(assignedUid)
+              .get();
+          if (snap.exists && snap.data() is Map) {
+            tech = TechnicianProfile.fromMap(
+              Map<String, dynamic>.from(snap.data() as Map),
+              snap.id,
+            );
+          }
+        } catch (_) {}
+      }
+      builderTaxRate = (tech != null && tech.hasOwnTax) ? TaxRates.hst : 0.0;
+      if (!_disposed) notifyListeners();
+      return;
+    }
     final config = await SettingsService.loadConfig();
     builderTaxRate = SettingsService.readDefaultTaxRate(config);
-    notifyListeners();
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Загрузить фото чека запчасти в папку заявки и вернуть публичную ссылку.
+  Future<String?> uploadPartReceipt(File file) async {
+    final fileName = 'part_receipt_${DateTime.now().microsecondsSinceEpoch}.jpg';
+    final storageRef = FirebaseStorage.instance.ref().child(
+      'jobs/$jobId/attachments/$fileName',
+    );
+    await storageRef.putFile(file).timeout(const Duration(seconds: 30));
+    final url = await storageRef.getDownloadURL().timeout(
+      const Duration(seconds: 15),
+    );
+    final entry = <String, dynamic>{
+      'name': fileName,
+      'url': url,
+      'kind': 'part_receipt',
+      'uploadedAt': DateTime.now().toIso8601String(),
+    };
+    attachments = [...attachments, entry];
+    await JobService.update(jobId, {'attachments': attachments});
+    if (!_disposed) notifyListeners();
+    return url;
   }
 
   List<Map<String, dynamic>> get callItems {
@@ -608,6 +653,7 @@ class JobDetailsController extends ChangeNotifier {
   /// Телефон приходит позже самой заявки, поэтому метод можно звать повторно:
   /// пока ключ не изменился, он ничего не делает.
   void _listenClientCalls() {
+    if (TechnicianService.isTechnician) return;
     final phones = <String>{
       for (final c in chatContacts)
         if (c.normalizedPhone.length >= 10) SmsService.toE164(c.phone),
@@ -870,6 +916,7 @@ class JobDetailsController extends ChangeNotifier {
   /// Догружает карточку клиента, если мастер нажал кнопку звонка/SMS
   /// быстрее, чем пришёл первый снимок.
   Future<void> ensureChatContactsLoaded() async {
+    if (TechnicianService.isTechnician) return;
     final pending = _loadingClientContacts;
     if (pending != null) {
       await pending;
@@ -916,6 +963,7 @@ class JobDetailsController extends ChangeNotifier {
   }
 
   void _listenClient() {
+    if (TechnicianService.isTechnician) return;
     if (clientId.isEmpty) return;
     _clientSub = FirestoreService.clientsRef.doc(clientId).snapshots().listen((
       snap,

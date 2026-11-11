@@ -5,6 +5,7 @@ import '../core/constants.dart';
 import '../core/sms_text.dart';
 import '../services/app_time_service.dart';
 import '../services/status_service.dart';
+import 'technician.dart';
 
 /// Единица техники в заявке
 class JobAppliance {
@@ -738,6 +739,19 @@ class Job {
 
   /// Закрытый дубляж: его данные уже переехали в другую заявку.
   bool get isMergedDuplicate => mergedIntoJobId.trim().isNotEmpty;
+
+  /// Назначена ли заявка на стороннего частного мастера (не на владельца).
+  bool get isAssignedToTechnician {
+    final uid = (assignedTo ?? '').trim();
+    return uid.isNotEmpty && uid != kOwnerUid;
+  }
+
+  /// Проверить принадлежность заявки конкретному мастеру.
+  bool isAssignedToUser(String uid) {
+    final target = uid.trim();
+    if (target.isEmpty) return false;
+    return (assignedTo ?? '').trim() == target;
+  }
 
   /// Ждёт решения мастера: соединить с [possibleDuplicateOfJobId] или нет.
   bool get hasDuplicateHint =>
@@ -1610,6 +1624,7 @@ class Job {
     String? status,
     String? priority,
     String? assignedTo,
+    bool clearAssignedTo = false,
     DateTime? scheduledAt,
     List<JobVisit>? visits,
     DateTime? completedAt,
@@ -1666,7 +1681,7 @@ class Job {
       solution: solution ?? this.solution,
       status: status ?? this.status,
       priority: priority ?? this.priority,
-      assignedTo: assignedTo ?? this.assignedTo,
+      assignedTo: clearAssignedTo ? null : (assignedTo ?? this.assignedTo),
       scheduledAt: scheduledAt ?? this.scheduledAt,
       visits: visits ?? this.visits,
       completedAt: completedAt ?? this.completedAt,

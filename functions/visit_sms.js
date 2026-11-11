@@ -13,7 +13,9 @@ const voiceFacts = require('./voice_facts');
 const schedule = require('./schedule');
 const jobDedupe = require('./job_dedupe');
 const paymentGuard = require('./payment_guard');
-const { notifyMaster } = require('./notify');
+const technicians = require('./technicians');
+const notify = require('./notify');
+const { notifyMaster } = notify;
 
 const COMPANY_ID = 'fix_appliance_ca';
 const SMS_STATUS_CB =
@@ -2452,6 +2454,79 @@ async function keepVisit(match) {
 // Учтите: одной правки здесь мало. Регион уже существующей функции деплоем не
 // меняется, нужен firebase functions:delete onJobWritten --region <старый>,
 // и на время пересоздания триггер на заявках не работает.
+async function notifyTechnicianAndOwnerChanges(before, after, jobId) {
+  if (!after || after.deletedAt) return;
+  if (!technicians.isAssignedToTechnician(after)) return;
+  const techUid = String(after.assignedTo || '').trim();
+  if (!techUid) return;
+
+  const tech = await technicians.getActiveTechnician(techUid);
+  const techName = String((tech && tech.name) || 'Мастер').trim();
+  const clientLabel = String(
+    after.jobSiteName || after.clientName || after.clientPhone || 'Клиент'
+  ).trim();
+  const appliance = String(
+    after.applianceType ||
+      (Array.isArray(after.appliances) && after.appliances[0] && after.appliances[0].type) ||
+      'Техника'
+  ).trim();
+  const city = String(after.city || after.clientAddress || '').trim();
+
+  const prevAssigned = String((before && before.assignedTo) || '').trim();
+  const beforeSlot = before && before.scheduledAt
+    ? String(before.scheduledAt.toMillis ? before.scheduledAt.toMillis() : before.scheduledAt)
+    : '';
+  const afterSlot = after.scheduledAt
+    ? String(after.scheduledAt.toMillis ? after.scheduledAt.toMillis() : after.scheduledAt)
+    : '';
+
+  if (typeof notify.notifyUser === 'function') {
+    if (prevAssigned !== techUid) {
+      await notify.notifyUser(
+        techUid,
+        'Назначен новый заказ',
+        [clientLabel, appliance, city].filter(Boolean).join(' · '),
+        {
+          type: 'job',
+          jobId,
+          eventId: `tech_assign:${jobId}:${techUid}`,
+        }
+      );
+    } else if (afterSlot && beforeSlot !== afterSlot) {
+      await notify.notifyUser(
+        techUid,
+        'Обновлено время визита',
+        [clientLabel, appliance].filter(Boolean).join(' · '),
+        {
+          type: 'job',
+          jobId,
+          eventId: `tech_slot:${jobId}:${afterSlot}`,
+        }
+      );
+    }
+  }
+
+  // Контроль оплат владельцем: если по заявке мастера выросла сумма оплаты —
+  // сразу присылаем уведомление владельцу с суммой и его долей прибыли.
+  const sharePct = tech ? Number(tech.profitSharePercent ?? 50) : 50;
+  const prevPay = before ? technicians.summarizeJobPayout(before, sharePct) : { paidExTips: 0 };
+  const nextPay = technicians.summarizeJobPayout(after, sharePct);
+  if (nextPay.paidExTips - prevPay.paidExTips > 0.009) {
+    const added = (nextPay.paidExTips - prevPay.paidExTips).toFixed(2);
+    const due = nextPay.dueToOwner.toFixed(2);
+    const methodSuffix = nextPay.lastMethod ? ` (${nextPay.lastMethod})` : '';
+    await notifyMaster(
+      `Оплата у мастера ${techName}`,
+      `${clientLabel}: +$${added}${methodSuffix} · К передаче тебе: $${due}`,
+      {
+        type: 'job',
+        jobId,
+        eventId: `tech_pay:${jobId}:${nextPay.paidExTips.toFixed(2)}`,
+      }
+    );
+  }
+}
+
 exports.onJobWritten = onDocumentWritten(
   {
     document: `companies/${COMPANY_ID}/jobs/{jobId}`,
@@ -2469,6 +2544,11 @@ exports.onJobWritten = onDocumentWritten(
       await processJobWrite(before, after, event.params.jobId);
     } catch (error) {
       console.error('onJobWritten SMS error:', error);
+    }
+    try {
+      await notifyTechnicianAndOwnerChanges(before, after, event.params.jobId);
+    } catch (error) {
+      console.error('onJobWritten tech notify error:', error);
     }
   }
 );

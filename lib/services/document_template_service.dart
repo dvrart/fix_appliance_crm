@@ -12,14 +12,17 @@ import '../core/motion.dart';
 import '../core/sms_text.dart';
 import '../core/utils/formatters.dart';
 import '../models/document_settings.dart';
+import '../models/technician.dart';
 import '../shared/widgets/dispose_on_close.dart';
 import '../shared/widgets/keyboard_safe.dart';
+import 'firestore_service.dart';
 import 'job_service.dart';
 import 'network_status_service.dart';
 import 'outbound_media_service.dart';
 import 'settings_service.dart';
 import 'short_link_service.dart';
 import 'sms_service.dart';
+import 'technician_service.dart';
 
 class DocumentSendData {
   final String kind;
@@ -46,6 +49,7 @@ class DocumentSendData {
   final Future<void> Function(Map<String, dynamic> patch)? persistFields;
   final String? pdfShortCode;
   final String signatureUrl;
+  final String? assignedTo;
 
   const DocumentSendData({
     required this.kind,
@@ -72,16 +76,51 @@ class DocumentSendData {
     this.persistFields,
     this.pdfShortCode,
     this.signatureUrl = '',
+    this.assignedTo,
   });
 }
 
 /// Счёт и смета из приложения: SMS по шаблону из настроек + PDF.
 class DocumentTemplateService {
+  static Future<DocumentSettings> resolveSettingsFor(
+    DocumentSendData data,
+  ) async {
+    var settings = await SettingsService.loadDocumentSettings();
+    final assignedUid = (data.assignedTo ?? '').trim();
+    if (assignedUid.isNotEmpty && assignedUid != kOwnerUid) {
+      var tech = TechnicianService.byId(assignedUid);
+      if (tech == null) {
+        try {
+          final snap = await FirestoreService.techniciansRef
+              .doc(assignedUid)
+              .get();
+          if (snap.exists && snap.data() is Map) {
+            tech = TechnicianProfile.fromMap(
+              Map<String, dynamic>.from(snap.data() as Map),
+              snap.id,
+            );
+          }
+        } catch (_) {}
+      }
+      if (tech != null) {
+        settings = tech.applyToDocumentSettings(settings);
+      } else {
+        // Не подставляем чужой HST и чужую почту владельца, даже если профиль офлайн.
+        settings = settings.copyWith(
+          hstNumber: '',
+          companyEmail: '',
+          companyAddress: '',
+        );
+      }
+    }
+    return settings;
+  }
+
   static Future<void> showSendSheet({
     required BuildContext context,
     required DocumentSendData data,
   }) async {
-    final settings = await SettingsService.loadDocumentSettings();
+    final settings = await resolveSettingsFor(data);
     if (!context.mounted) return;
 
     final preview = TextEditingController(
@@ -326,6 +365,7 @@ class DocumentTemplateService {
           body: text,
           fallbackBody: _bodyWithUrl(body, links.fallbackUrl),
           clientId: data.clientId,
+          jobId: data.jobId,
         );
       } else {
         final pdf = await _ensurePdfUrls(settings: settings, data: data);
@@ -340,6 +380,7 @@ class DocumentTemplateService {
               : text,
           fallbackBody: asFile ? null : _bodyWithUrl(body, pdf.fallbackUrl),
           clientId: data.clientId,
+          jobId: data.jobId,
           mediaUrls: asFile ? [pdf.fileUrl] : const [],
         );
         if (!ok && asFile) {
@@ -348,6 +389,7 @@ class DocumentTemplateService {
             to: data.clientPhone,
             body: text,
             clientId: data.clientId,
+            jobId: data.jobId,
           );
         }
       }

@@ -106,10 +106,13 @@ class _SignInScreenState extends State<SignInScreen> {
                     ),
                   ),
                 ),
-                if (_error.isNotEmpty) ...[
+                if (_error.isNotEmpty ||
+                    AuthService.forcedSignOutNotice.value.isNotEmpty) ...[
                   const SizedBox(height: 12),
                   Text(
-                    _error,
+                    _error.isNotEmpty
+                        ? _error
+                        : AuthService.forcedSignOutNotice.value,
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: Colors.redAccent),
                   ),

@@ -22,6 +22,7 @@ import '../../services/outbound_media_service.dart';
 import '../../services/scheduled_message_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/sms_service.dart';
+import '../../services/technician_service.dart';
 import '../../models/client.dart';
 import '../../models/job.dart';
 import '../ai/job_preview_screen.dart';
@@ -1199,15 +1200,18 @@ class _ConversationScreenState extends State<ConversationScreen>
     _messagesStream = SmsService.streamConversation(
       _phone,
       email: _hasEmail ? _email : null,
+      jobId: widget.jobId,
       extraPhones: widget.extraPhones,
       emailsOnly: _channel == ConversationChannel.email,
       websiteInbox: widget.websiteInbox,
     );
-    _scheduledStream = ScheduledMessageService.streamPendingForConversation(
-      _phone,
-      email: _hasEmail ? _email : null,
-      clientId: widget.clientId,
-    );
+    _scheduledStream = TechnicianService.isTechnician
+        ? Stream.value(const [])
+        : ScheduledMessageService.streamPendingForConversation(
+            _phone,
+            email: _hasEmail ? _email : null,
+            clientId: widget.clientId,
+          );
     _selectedIds.clear();
   }
 
@@ -1502,6 +1506,7 @@ class _ConversationScreenState extends State<ConversationScreen>
           to: _phone,
           body: extra.toString().trim(),
           clientId: widget.clientId,
+          jobId: widget.jobId,
           mediaUrls: mms,
           bodyRu: russianBody,
         );

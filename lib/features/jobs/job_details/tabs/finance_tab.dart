@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -14,6 +16,8 @@ import '../../../../models/client.dart';
 import '../../../../models/document_settings.dart';
 import '../../../../models/job.dart';
 import '../../../../models/labour_discount.dart';
+import '../../../../models/technician.dart';
+import '../../../../models/technician_payout.dart';
 import '../../../../models/warehouse_item.dart';
 import '../../../../services/services.dart';
 import '../../../../shared/widgets/app_bar_save.dart';
@@ -21,6 +25,7 @@ import '../../../../shared/widgets/dispose_on_close.dart';
 import '../../../../shared/widgets/keyboard_safe.dart';
 import '../../../../shared/widgets/unsaved_changes_dialog.dart';
 import '../job_details_controller.dart';
+import '../widgets/full_screen_gallery.dart';
 import '../../job_review_offer.dart';
 import '../../../reports/classify_items_page.dart';
 import '../../../reports/report_breakdown_page.dart';
@@ -1447,7 +1452,7 @@ class _FinanceTabState extends State<FinanceTab> {
                       ),
                       const SizedBox(width: 8),
                       DropdownButton<double>(
-                        value: ctrl.builderTaxRate,
+                        value: _techTaxLockedToZero() ? 0.0 : ctrl.builderTaxRate,
                         isDense: true,
                         underline: const SizedBox.shrink(),
                         style: TextStyle(
@@ -1455,24 +1460,33 @@ class _FinanceTabState extends State<FinanceTab> {
                           fontWeight: FontWeight.w700,
                           color: AppColors.primaryOnCard,
                         ),
-                        items: const [
-                          DropdownMenuItem(
-                            value: TaxRates.hst,
-                            child: Text('HST 13%'),
-                          ),
-                          DropdownMenuItem(
-                            value: TaxRates.gst,
-                            child: Text('GST 5%'),
-                          ),
-                          DropdownMenuItem(
-                            value: TaxRates.none,
-                            child: Text('No tax 0%'),
-                          ),
-                        ],
-                        onChanged: (value) {
-                          if (value == null) return;
-                          setState(() => ctrl.builderTaxRate = value);
-                        },
+                        items: _techTaxLockedToZero()
+                            ? const [
+                                DropdownMenuItem(
+                                  value: TaxRates.none,
+                                  child: Text('No tax 0%'),
+                                ),
+                              ]
+                            : const [
+                                DropdownMenuItem(
+                                  value: TaxRates.hst,
+                                  child: Text('HST 13%'),
+                                ),
+                                DropdownMenuItem(
+                                  value: TaxRates.gst,
+                                  child: Text('GST 5%'),
+                                ),
+                                DropdownMenuItem(
+                                  value: TaxRates.none,
+                                  child: Text('No tax 0%'),
+                                ),
+                              ],
+                        onChanged: _techTaxLockedToZero()
+                            ? null
+                            : (value) {
+                                if (value == null) return;
+                                setState(() => ctrl.builderTaxRate = value);
+                              },
                       ),
                       const Spacer(),
                       Text(
@@ -1736,7 +1750,9 @@ class _FinanceTabState extends State<FinanceTab> {
     var serviceCall = 0.0;
     var hourly = 0.0;
     try {
-      warehouse = await WarehouseService.streamAll().first;
+      if (TechnicianService.isOwner) {
+        warehouse = await WarehouseService.streamAll().first;
+      }
       final config = await SettingsService.loadConfig();
       markup = SettingsService.readPartsMarkupPercent(config);
       serviceCall = SettingsService.readServiceCallFee(config);
@@ -1748,6 +1764,13 @@ class _FinanceTabState extends State<FinanceTab> {
     // По умолчанию работа: выезд и диагностика добавляются чаще всего.
     var isPart = false;
     var kindTouched = false;
+    var partSource = TechnicianService.isTechnician
+        ? PartSource.tech
+        : (_currentJob().isAssignedToTechnician
+            ? PartSource.owner
+            : PartSource.owner);
+    var receiptUrl = '';
+    var uploadingReceipt = false;
     final costCtrl = TextEditingController();
 
     // Замены: сначала то, что уже записано в карточке детали, потом — что
@@ -1894,6 +1917,7 @@ class _FinanceTabState extends State<FinanceTab> {
                 priceFresh = true;
                 // Со склада — всегда запчасть, себестоимость уже известна.
                 isPart = true;
+                partSource = PartSource.owner;
                 kindTouched = true;
                 if (cost != null) costCtrl.text = cost.toStringAsFixed(2);
                 // Взяли замену — запоминаем её в карточке, чтобы в следующий раз
@@ -2113,6 +2137,24 @@ class _FinanceTabState extends State<FinanceTab> {
                         clientUnitPrice: double.tryParse(priceCtrl.text) ?? 0,
                         qty: (int.tryParse(qtyCtrl.text) ?? 1).toDouble(),
                         fromWarehouse: picked != null,
+                        partSource: partSource,
+                        receiptUrl: receiptUrl,
+                        uploadingReceipt: uploadingReceipt,
+                        onPartSourceChanged: (next) {
+                          setDialog(() => partSource = next);
+                        },
+                        onPickReceipt: () async {
+                          final pickedUrl = await _pickAndUploadPartReceipt(
+                            setUploading: (busy) {
+                              if (dialogContext.mounted) {
+                                setDialog(() => uploadingReceipt = busy);
+                              }
+                            },
+                          );
+                          if (pickedUrl != null && dialogContext.mounted) {
+                            setDialog(() => receiptUrl = pickedUrl);
+                          }
+                        },
                         onChanged: (next) {
                           kindTouched = true;
                           setDialog(() => isPart = next);
@@ -2128,25 +2170,36 @@ class _FinanceTabState extends State<FinanceTab> {
                     child: Text('Отмена'.tr),
                   ),
                   ElevatedButton(
-                    onPressed: () {
-                      if (nameCtrl.text.trim().isEmpty) return;
-                      final selected = picked;
-                      final cost = double.tryParse(
-                        costCtrl.text.trim().replaceAll(',', '.'),
-                      );
-                      created = {
-                        'name': nameCtrl.text.trim(),
-                        'price': double.tryParse(priceCtrl.text) ?? 0,
-                        'qty': int.tryParse(qtyCtrl.text) ?? 1,
-                        'type': isPart ? 'Part' : 'Service',
-                        if (selected != null) 'warehouseItemId': selected.id,
-                        if (isPart && cost != null)
-                          'costPrice': cost
-                        else if (isPart && selected?.costPrice != null)
-                          'costPrice': selected!.costPrice,
-                      };
-                      Navigator.pop(dialogContext);
-                    },
+                    onPressed: uploadingReceipt
+                        ? null
+                        : () {
+                            if (nameCtrl.text.trim().isEmpty) return;
+                            final selected = picked;
+                            final cost = double.tryParse(
+                              costCtrl.text.trim().replaceAll(',', '.'),
+                            );
+                            final effectiveSource = selected != null
+                                ? PartSource.owner
+                                : partSource;
+                            created = {
+                              'name': nameCtrl.text.trim(),
+                              'price': double.tryParse(priceCtrl.text) ?? 0,
+                              'qty': int.tryParse(qtyCtrl.text) ?? 1,
+                              'type': isPart ? 'Part' : 'Service',
+                              if (selected != null)
+                                'warehouseItemId': selected.id,
+                              if (isPart) 'partSource': effectiveSource,
+                              if (isPart &&
+                                  effectiveSource == PartSource.tech &&
+                                  receiptUrl.isNotEmpty)
+                                'receiptUrl': receiptUrl,
+                              if (isPart && cost != null)
+                                'costPrice': cost
+                              else if (isPart && selected?.costPrice != null)
+                                'costPrice': selected!.costPrice,
+                            };
+                            Navigator.pop(dialogContext);
+                          },
                     child: const Text('Add'),
                   ),
                 ],
@@ -2166,6 +2219,76 @@ class _FinanceTabState extends State<FinanceTab> {
   /// и «control board for a washing machine» за $300 уезжал в работу.
   /// Себестоимость спрашиваем только у запчасти: без неё отчёт берёт 40%
   /// цены и честно помечает цифру как прикидку.
+  bool _isTechnicianContextJob() {
+    return TechnicianService.isTechnician ||
+        _currentJob().isAssignedToTechnician;
+  }
+
+  bool _techTaxLockedToZero() {
+    final assignedUid = (ctrl.jobData['assignedTo'] ?? '').toString().trim();
+    if (assignedUid.isEmpty || assignedUid == kOwnerUid) {
+      if (!TechnicianService.isTechnician) return false;
+      final self = TechnicianService.selfProfile.value;
+      return self == null || !self.hasOwnTax;
+    }
+    final tech = TechnicianService.byId(assignedUid);
+    if (tech == null) return TechnicianService.isTechnician;
+    return !tech.hasOwnTax;
+  }
+
+  Future<String?> _pickAndUploadPartReceipt({
+    required ValueChanged<bool> setUploading,
+  }) async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      useRootNavigator: true,
+      backgroundColor: AppColors.card,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined),
+              title: Text(context.tr('Сфотографировать чек', 'Take receipt photo')),
+              onTap: () => Navigator.pop(sheetCtx, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: Text(context.tr('Выбрать из галереи', 'Choose from gallery')),
+              onTap: () => Navigator.pop(sheetCtx, ImageSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null || !mounted) return null;
+    final picked = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 84,
+      maxWidth: 1800,
+    );
+    if (picked == null || !mounted) return null;
+    setUploading(true);
+    try {
+      return await ctrl.uploadPartReceipt(File(picked.path));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${context.tr('Не удалось загрузить чек', 'Receipt upload failed')}: $e'),
+            backgroundColor: const Color(0xFFE53935),
+          ),
+        );
+      }
+      return null;
+    } finally {
+      setUploading(false);
+    }
+  }
+
   Widget _itemKindField({
     required bool isPart,
     required TextEditingController costCtrl,
@@ -2174,17 +2297,26 @@ class _FinanceTabState extends State<FinanceTab> {
     double clientUnitPrice = 0,
     double qty = 1,
     bool fromWarehouse = false,
+    String partSource = PartSource.owner,
+    String receiptUrl = '',
+    bool uploadingReceipt = false,
+    ValueChanged<String>? onPartSourceChanged,
+    VoidCallback? onPickReceipt,
   }) {
+    final showPartSource = _isTechnicianContextJob();
+    final lockCostForTech =
+        TechnicianService.isTechnician && partSource == PartSource.owner;
     final typedCost = double.tryParse(
       costCtrl.text.trim().replaceAll(',', '.'),
     );
     final effectiveUnitCost = !isPart
         ? 0.0
-        : (typedCost ?? (clientUnitPrice * 0.4));
+        : (typedCost ?? (showPartSource ? 0.0 : clientUnitPrice * 0.4));
     final totalClient = qty * clientUnitPrice;
     final totalMyCost = qty * effectiveUnitCost;
     final margin = totalClient - totalMyCost;
-    final isGuess = isPart && typedCost == null && clientUnitPrice > 0;
+    final isGuess =
+        isPart && !showPartSource && typedCost == null && clientUnitPrice > 0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2206,36 +2338,139 @@ class _FinanceTabState extends State<FinanceTab> {
               ),
             ],
             selected: {isPart},
-            onSelectionChanged: fromWarehouse
+            onSelectionChanged: (fromWarehouse || lockCostForTech)
                 ? null
                 : (next) => onChanged(next.first),
           ),
         ),
         if (isPart) ...[
+          if (showPartSource) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<String>(
+                showSelectedIcon: false,
+                segments: [
+                  ButtonSegment(
+                    value: PartSource.tech,
+                    icon: const Icon(Icons.person_outline, size: 17),
+                    label: Text(context.tr('Купил мастер', 'Bought by tech')),
+                  ),
+                  ButtonSegment(
+                    value: PartSource.owner,
+                    icon: const Icon(Icons.inventory_2_outlined, size: 17),
+                    label: Text(context.tr('Выдал офис', 'Provided by office')),
+                  ),
+                ],
+                selected: {fromWarehouse ? PartSource.owner : partSource},
+                onSelectionChanged:
+                    (fromWarehouse ||
+                        TechnicianService.isTechnician ||
+                        onPartSourceChanged == null)
+                    ? null
+                    : (next) => onPartSourceChanged(next.first),
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           TextField(
             controller: costCtrl,
+            readOnly: lockCostForTech,
             onChanged: (_) => onCostChanged?.call(),
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(
               labelText: context.tr(
-                'Закупка за 1 шт. (сколько стоило мне)',
-                'My purchase cost per unit',
+                'Закупка за 1 шт.',
+                'Purchase cost per unit',
               ),
               prefixText: '\$ ',
               helperMaxLines: 3,
-              helperText: fromWarehouse
+              helperText: lockCostForTech
                   ? context.tr(
-                      'Подставлено со склада — при необходимости можно поправить.',
-                      'Filled from the warehouse — you can adjust it if needed.',
+                      'Деталь выдана офисом — закупочную цену задаёт владелец.',
+                      'Part provided by office — cost is set by the owner.',
                     )
-                  : context.tr(
-                      'Впишите вашу закупочную цену. Если оставить пустым — отчёт возьмёт 40% цены как прикидку.',
-                      'Enter your purchase cost. If left empty, reports use 40% of price as a guess.',
-                    ),
+                  : showPartSource && partSource == PartSource.tech
+                      ? context.tr(
+                          'Впишите сумму по чеку и прикрепите фото чека ниже.',
+                          'Enter receipt cost and attach receipt photo below.',
+                        )
+                      : fromWarehouse
+                          ? context.tr(
+                              'Подставлено со склада — при необходимости можно поправить.',
+                              'Filled from the warehouse — you can adjust it if needed.',
+                            )
+                          : context.tr(
+                              'Впишите вашу закупочную цену. Если оставить пустым — отчёт возьмёт 40% цены как прикидку.',
+                              'Enter your purchase cost. If left empty, reports use 40% of price as a guess.',
+                            ),
               border: const OutlineInputBorder(),
             ),
           ),
+          if (showPartSource && partSource == PartSource.tech) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: uploadingReceipt ? null : onPickReceipt,
+                    icon: uploadingReceipt
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(
+                            receiptUrl.isNotEmpty
+                                ? Icons.check_circle
+                                : Icons.camera_alt_outlined,
+                            color: receiptUrl.isNotEmpty
+                                ? const Color(0xFF22C55E)
+                                : null,
+                          ),
+                    label: Text(
+                      receiptUrl.isNotEmpty
+                          ? context.tr('Чек прикреплён (заменить)', 'Receipt attached (replace)')
+                          : context.tr('Прикрепить фото чека', 'Attach receipt photo'),
+                    ),
+                  ),
+                ),
+                if (receiptUrl.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  IconButton(
+                    tooltip: context.tr('Открыть чек', 'View receipt'),
+                    icon: const Icon(Icons.visibility_outlined),
+                    onPressed: () {
+                      Navigator.of(context, rootNavigator: true).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => FullScreenGallery(
+                            images: [
+                              {'url': receiptUrl},
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ],
+            ),
+            if (receiptUrl.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  context.tr(
+                    'Без фото чека сумма детали не вычитается при расчёте чистой прибыли.',
+                    'Without a receipt photo, part cost is not deducted from net profit.',
+                  ),
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: Color(0xFFE53935),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+          ],
           if (clientUnitPrice > 0 || typedCost != null) ...[
             const SizedBox(height: 10),
             Container(
@@ -2307,6 +2542,15 @@ class _FinanceTabState extends State<FinanceTab> {
       text: initialCost == null ? '' : initialCost.toStringAsFixed(2),
     );
     var isPart = Job.isPartItem(item);
+    var partSource = item['partSource'] != null
+        ? PartSource.ofItem(item)
+        : (fromWarehouse
+            ? PartSource.owner
+            : (TechnicianService.isTechnician
+                ? PartSource.tech
+                : PartSource.owner));
+    var receiptUrl = PartSource.receiptUrlOf(item);
+    var uploadingReceipt = false;
     var priceFresh = true;
     var qtyFresh = true;
 
@@ -2406,6 +2650,23 @@ class _FinanceTabState extends State<FinanceTab> {
                       clientUnitPrice: double.tryParse(priceCtrl.text) ?? 0,
                       qty: (int.tryParse(qtyCtrl.text) ?? 1).toDouble(),
                       fromWarehouse: fromWarehouse,
+                      partSource: partSource,
+                      receiptUrl: receiptUrl,
+                      uploadingReceipt: uploadingReceipt,
+                      onPartSourceChanged: (next) =>
+                          setDialog(() => partSource = next),
+                      onPickReceipt: () async {
+                        final pickedUrl = await _pickAndUploadPartReceipt(
+                          setUploading: (busy) {
+                            if (dialogContext.mounted) {
+                              setDialog(() => uploadingReceipt = busy);
+                            }
+                          },
+                        );
+                        if (pickedUrl != null && dialogContext.mounted) {
+                          setDialog(() => receiptUrl = pickedUrl);
+                        }
+                      },
                       onChanged: (next) => setDialog(() => isPart = next),
                       onCostChanged: () => setDialog(() {}),
                     ),
@@ -2418,30 +2679,46 @@ class _FinanceTabState extends State<FinanceTab> {
                   child: Text('Отмена'.tr),
                 ),
                 ElevatedButton(
-                  onPressed: () {
-                    final name = nameCtrl.text.trim();
-                    if (name.isEmpty) return;
-                    final cost = double.tryParse(
-                      costCtrl.text.trim().replaceAll(',', '.'),
-                    );
-                    final next = {
-                      ...item,
-                      'type': isPart ? 'Part' : 'Service',
-                    };
-                    if (!kindOnly) {
-                      next['name'] = name;
-                      next['price'] = double.tryParse(priceCtrl.text) ?? 0;
-                      next['qty'] = int.tryParse(qtyCtrl.text) ?? 1;
-                    }
-                    if (isPart && cost != null) {
-                      next['costPrice'] = cost;
-                    } else if (!isPart) {
-                      // Работе себестоимость не нужна: иначе она утянет
-                      // позицию обратно в запчасти при следующем чтении.
-                      next.remove('costPrice');
-                    }
-                    Navigator.pop(dialogContext, next);
-                  },
+                  onPressed: uploadingReceipt
+                      ? null
+                      : () {
+                          final name = nameCtrl.text.trim();
+                          if (name.isEmpty) return;
+                          final cost = double.tryParse(
+                            costCtrl.text.trim().replaceAll(',', '.'),
+                          );
+                          final effectiveSource =
+                              fromWarehouse ? PartSource.owner : partSource;
+                          final next = {
+                            ...item,
+                            'type': isPart ? 'Part' : 'Service',
+                          };
+                          if (!kindOnly) {
+                            next['name'] = name;
+                            next['price'] =
+                                double.tryParse(priceCtrl.text) ?? 0;
+                            next['qty'] = int.tryParse(qtyCtrl.text) ?? 1;
+                          }
+                          if (isPart) {
+                            next['partSource'] = effectiveSource;
+                            if (effectiveSource == PartSource.tech &&
+                                receiptUrl.isNotEmpty) {
+                              next['receiptUrl'] = receiptUrl;
+                            } else {
+                              next.remove('receiptUrl');
+                            }
+                            if (cost != null) {
+                              next['costPrice'] = cost;
+                            }
+                          } else {
+                            // Работе себестоимость не нужна: иначе она утянет
+                            // позицию обратно в запчасти при следующем чтении.
+                            next.remove('costPrice');
+                            next.remove('partSource');
+                            next.remove('receiptUrl');
+                          }
+                          Navigator.pop(dialogContext, next);
+                        },
                   child: Text('Сохранить'.tr),
                 ),
               ],
@@ -3017,7 +3294,9 @@ class _FinanceTabState extends State<FinanceTab> {
                           ),
                       ],
                     ),
-                    if (!isEstimate && paid > 0.009) ...[
+                    if (!isEstimate &&
+                        paid > 0.009 &&
+                        TechnicianService.isOwner) ...[
                       const SizedBox(height: 8),
                       SizedBox(
                         width: double.infinity,
@@ -3066,6 +3345,18 @@ class _FinanceTabState extends State<FinanceTab> {
     );
     if (summary.invoices.isEmpty) return const SizedBox.shrink();
     String m(double v) => ReportBreakdownPage.money(v);
+    final isTechJob =
+        TechnicianService.isTechnician || job.isAssignedToTechnician;
+    final techProfile = TechnicianService.isTechnician
+        ? TechnicianService.selfProfile.value
+        : TechnicianService.byId(job.assignedTo);
+    final techPayout = isTechJob
+        ? TechnicianPayoutCalculator.forJob(
+            job,
+            profitSharePercent: techProfile?.clampedTechPercent ?? 50,
+            warehouseCosts: WarehouseService.latestCosts,
+          )
+        : null;
 
     return Container(
       margin: const EdgeInsets.only(top: 4, bottom: 8),
@@ -3106,7 +3397,9 @@ class _FinanceTabState extends State<FinanceTab> {
                       ),
                     ),
                     Text(
-                      '${context.tr('Чистыми', 'Net')}: ${m(summary.netProfit)}',
+                      techPayout != null
+                          ? '${context.tr('Чистыми', 'Net')}: ${m(techPayout.netProfit)}'
+                          : '${context.tr('Чистыми', 'Net')}: ${m(summary.netProfit)}',
                       style: const TextStyle(
                         color: Color(0xFFFCC520),
                         fontSize: 14.5,
@@ -3123,11 +3416,13 @@ class _FinanceTabState extends State<FinanceTab> {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  [
-                    '${context.tr('Счёт', 'Total')}: ${m(summary.invoiced)} (${context.tr('без HST', 'ex HST')} ${m(summary.salesExHst)})',
-                    if (summary.parts.isNotEmpty)
-                      '${context.tr('Запчасти', 'Parts')}: ${context.tr('мне', 'cost')} ${m(summary.partsCost)} / ${context.tr('клиенту', 'client')} ${m(summary.partsSales)}',
-                  ].join('  ·  '),
+                  techPayout != null
+                      ? '${context.tr('Мастеру', 'Tech')}: ${m(techPayout.techProfit)}  ·  ${context.tr('В офис', 'To office')}: ${m(techPayout.dueToOwner)}'
+                      : [
+                          '${context.tr('Счёт', 'Total')}: ${m(summary.invoiced)} (${context.tr('без HST', 'ex HST')} ${m(summary.salesExHst)})',
+                          if (summary.parts.isNotEmpty)
+                            '${context.tr('Запчасти', 'Parts')}: ${context.tr('мне', 'cost')} ${m(summary.partsCost)} / ${context.tr('клиенту', 'client')} ${m(summary.partsSales)}',
+                        ].join('  ·  '),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -4257,6 +4552,7 @@ class _FinanceTabState extends State<FinanceTab> {
           return code.isEmpty ? null : code;
         }(),
         signatureUrl: _signatureUrl(doc),
+        assignedTo: (ctrl.jobData['assignedTo'] ?? '').toString(),
       ),
     );
   }
@@ -4490,56 +4786,88 @@ class _FinanceTabState extends State<FinanceTab> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 8),
-                      Text(
-                        context.tr(
-                          'Чаевые клиент выбирает на экране терминала при оплате картой.',
-                          'The customer picks a tip on the terminal screen when paying by card.',
+                      if (!_isTechnicianContextJob()) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          context.tr(
+                            'Чаевые клиент выбирает на экране терминала при оплате картой.',
+                            'The customer picks a tip on the terminal screen when paying by card.',
+                          ),
+                          style: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontSize: 13,
+                            height: 1.3,
+                          ),
                         ),
-                        style: TextStyle(color: Colors.grey.shade700, fontSize: 13, height: 1.3),
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton.icon(
-                        onPressed: () {
-                          final amount = parsedAmount();
-                          Navigator.pop(sheetContext);
-                          if (amount > 0) {
+                        const SizedBox(height: 16),
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            final amount = parsedAmount();
+                            Navigator.pop(sheetContext);
+                            if (amount > 0) {
+                              _payWithMethod(
+                                documentIndex: documentIndex,
+                                repair: amount,
+                                method: 'card',
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.credit_card),
+                          label: Text('Оплатить картой'.tr),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF635BFF),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            final amount = parsedAmount();
+                            Navigator.pop(sheetContext);
+                            if (amount <= 0) return;
+                            final isDeposit = amount < maxAmount - 0.009;
                             _payWithMethod(
                               documentIndex: documentIndex,
                               repair: amount,
-                              method: 'card',
+                              method: isDeposit ? 'deposit' : 'checkout',
                             );
-                          }
-                        },
-                        icon: const Icon(Icons.credit_card),
-                        label: Text('Оплатить картой'.tr),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF635BFF),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          },
+                          icon: const Icon(Icons.link),
+                          label: Text('Отправить ссылку на оплату'.tr),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFF635BFF),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      OutlinedButton.icon(
-                        onPressed: () {
-                          final amount = parsedAmount();
-                          Navigator.pop(sheetContext);
-                          if (amount <= 0) return;
-                          final isDeposit = amount < maxAmount - 0.009;
-                          _payWithMethod(
-                            documentIndex: documentIndex,
-                            repair: amount,
-                            method: isDeposit ? 'deposit' : 'checkout',
-                          );
-                        },
-                        icon: const Icon(Icons.link),
-                        label: Text('Отправить ссылку на оплату'.tr),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF635BFF),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        const SizedBox(height: 8),
+                      ] else ...[
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            final amount = parsedAmount();
+                            Navigator.pop(sheetContext);
+                            if (amount > 0) {
+                              _payWithMethod(
+                                documentIndex: documentIndex,
+                                repair: amount,
+                                method: 'Card (tech)',
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.credit_card),
+                          label: Text(
+                            context.tr(
+                              'Карта (терминал мастера)',
+                              'Card (technician terminal)',
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
+                        const SizedBox(height: 8),
+                      ],
                       ElevatedButton.icon(
                         onPressed: () {
                           final amount = parsedAmount();

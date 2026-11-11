@@ -21,6 +21,7 @@ import 'services/app_time_service.dart';
 import 'services/backup_service.dart';
 import 'services/error_log_service.dart';
 import 'services/network_status_service.dart';
+import 'services/technician_service.dart';
 import 'shared/widgets/animated_app_logo.dart';
 
 /// Обработчик фоновых push-уведомлений FCM. Должен быть top-level функцией
@@ -96,15 +97,18 @@ class _AppBootstrapState extends State<AppBootstrap> {
       // Всё, что стучится в сеть. Без интернета не держим заставку: эти
       // настройки подтянутся сами, когда связь появится.
       await AuthService.ensureSignedIn();
+      TechnicianService.start();
       await AppTimeService.ensureInitialized();
-      for (final initialize in [
-        SettingsService.ensureAiVoiceSettings,
-        SettingsService.ensureServiceAreaLabel,
-        SettingsService.ensureEnglishClientCopy,
-      ]) {
-        unawaited(_online(initialize));
+      if (TechnicianService.isOwner) {
+        for (final initialize in [
+          SettingsService.ensureAiVoiceSettings,
+          SettingsService.ensureServiceAreaLabel,
+          SettingsService.ensureEnglishClientCopy,
+        ]) {
+          unawaited(_online(initialize));
+        }
+        unawaited(BackupService.runIfDue());
       }
-      unawaited(BackupService.runIfDue());
       if (!mounted) return;
       setState(() => _readyApp = const FixApplianceCrmApp());
     } catch (e, stack) {

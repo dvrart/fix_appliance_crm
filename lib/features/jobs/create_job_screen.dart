@@ -17,6 +17,7 @@ import '../../shared/unsaved_navigation_gate.dart';
 import '../../shared/widgets/app_bar_save.dart';
 import '../../shared/widgets/email_field.dart';
 import '../../shared/widgets/phone_client_matches.dart';
+import '../../shared/widgets/technician_filter_bar.dart';
 import '../../shared/widgets/unsaved_changes_dialog.dart';
 
 class ApplianceFormItem {
@@ -79,6 +80,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
 
   DateTime? _selectedDate;
   TimeOfDay? _selectedTime;
+  String? _assignedTo;
   int _workStartMinutes = SettingsService.defaultWorkStartMinutes;
   final int _durationMinutes = kDefaultVisitMinutes;
   final _packingCtrl = TextEditingController();
@@ -463,6 +465,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
         durationMinutes: _durationMinutes,
         packingNotes: _packingCtrl.text.trim(),
         priority: JobPriorities.low,
+        assignedTo: _assignedTo,
         scheduledAt: jobDateTime,
         createdAt: DateTime.now(),
         city: targetCity,
@@ -1242,6 +1245,13 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
             const SizedBox(height: 12),
             _buildOwnerBlock(),
             _buildJobSiteBlock(),
+            TechnicianAssigneeSelector(
+              selectedUid: _assignedTo,
+              onChanged: (uid) => setState(() {
+                _assignedTo = uid;
+                _dirty = true;
+              }),
+            ),
             const Divider(height: 32),
 
             Text(

@@ -10,6 +10,7 @@ import '../../services/client_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/status_service.dart';
 import 'appliance_picture.dart';
+import 'technician_filter_bar.dart';
 
 /// Карточка заявки: полная для вызова, полоска после смены статуса.
 class JobAgendaCard extends StatelessWidget {
@@ -202,6 +203,7 @@ class JobAgendaCard extends StatelessWidget {
                                 ),
                                 if (isRegular)
                                   const RegularClientStar(size: 17),
+                                TechnicianBadge(assignedTo: job.assignedTo),
                               ],
                             ),
                             if (job.isRepeatCall ||
@@ -489,6 +491,10 @@ class JobAgendaCard extends StatelessWidget {
                                 ),
                               ),
                               if (isRegular) const RegularClientStar(size: 16),
+                              TechnicianBadge(
+                                assignedTo: job.assignedTo,
+                                compact: true,
+                              ),
                             ],
                           ),
                         ),

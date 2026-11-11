@@ -10,6 +10,7 @@ import '../../../services/services.dart';
 import '../../clients/client_details_screen.dart';
 import '../../care_plan/care_plan_widgets.dart';
 import '../../../shared/widgets/unsaved_changes_dialog.dart';
+import '../../../shared/widgets/technician_filter_bar.dart';
 import '../../../shared/app_nav.dart';
 import '../../../shared/stale_routes.dart';
 import '../../../shared/unsaved_navigation_gate.dart';
@@ -404,9 +405,11 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
               email: _controller.clientEmail,
             );
         return Tooltip(
-          message: 'Карточка клиента'.tr,
+          message: TechnicianService.isTechnician
+              ? (name.isEmpty ? 'Клиент'.tr : name)
+              : 'Карточка клиента'.tr,
           child: InkWell(
-            onTap: _openClientCard,
+            onTap: TechnicianService.isTechnician ? null : _openClientCard,
             onLongPress: name.isNotEmpty
                 ? () => AppFeedback.copy(context, name)
                 : null,
@@ -503,12 +506,17 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
           },
           child: Scaffold(
             appBar: AppBar(
-              // «Удалить» слева, напоминание и карточка клиента справа.
-              leading: IconButton(
-                icon: const Icon(Icons.delete, color: Colors.red),
-                tooltip: 'Удалить заявку'.tr,
-                onPressed: _deleteJob,
-              ),
+              // «Удалить» слева (только у владельца), напоминание и карточка клиента справа.
+              leading: TechnicianService.isTechnician
+                  ? IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      onPressed: _handleBack,
+                    )
+                  : IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      tooltip: 'Удалить заявку'.tr,
+                      onPressed: _deleteJob,
+                    ),
               title: Align(
                 alignment: Alignment.centerRight,
                 child: _clientTitle(),
@@ -527,6 +535,17 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
             ),
             body: Column(
               children: [
+                if (!builder)
+                  TechnicianJobHeaderBar(
+                    jobId: widget.jobId,
+                    assignedTo:
+                        (_controller.jobData['assignedTo'] ?? '').toString(),
+                    onAssignedChanged: (next) {
+                      setState(() {
+                        _controller.jobData['assignedTo'] = next;
+                      });
+                    },
+                  ),
                 Expanded(
                   child: TabBarView(
                     controller: _tabController,

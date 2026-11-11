@@ -35,6 +35,7 @@ class JobReviewOffer {
         name: name,
         address: address,
         clientId: clientId,
+        jobId: jobId,
       );
     }
     if (jobId.isEmpty) return;
@@ -53,6 +54,7 @@ class JobReviewOffer {
     required String name,
     required String address,
     required String clientId,
+    String jobId = '',
   }) async {
     if (phone.trim().isEmpty) {
       if (context.mounted) {
@@ -89,6 +91,7 @@ class JobReviewOffer {
       to: phone,
       body: body,
       clientId: clientId,
+      jobId: jobId.trim().isEmpty ? null : jobId.trim(),
     );
     if (!context.mounted) return ok;
     ScaffoldMessenger.of(context).showSnackBar(

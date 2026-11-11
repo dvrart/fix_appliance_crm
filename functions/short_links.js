@@ -169,7 +169,27 @@ exports.shortenLink = functions.https.onRequest(httpOpts, async (req, res) => {
     res.status(405).json({ error: 'POST only' });
     return;
   }
-  if (!(await requireAppUser(req, res))) return;
+  const technicians = require('./technicians');
+  const user = await technicians.requireAnyAppUser(req, res);
+  if (!user) return;
+  if (!user.isOwner) {
+    const requestedJobId = String((req.body && req.body.jobId) || '').trim();
+    if (!requestedJobId) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    const jobSnap = await getFirestore()
+      .collection('companies')
+      .doc(COMPANY_ID)
+      .collection('jobs')
+      .doc(requestedJobId)
+      .get();
+    const jobData = jobSnap.exists ? jobSnap.data() || {} : {};
+    if (String(jobData.assignedTo || '').trim() !== user.uid) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+  }
   const url = String((req.body && req.body.url) || '').trim();
   if (!isHttpUrl(url)) {
     res.status(400).json({ error: 'url must be http(s)' });

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../core/app_feedback.dart';
+import '../../services/auth_service.dart';
 import '../../services/services.dart';
 import 'conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
@@ -42,6 +43,18 @@ class _GlobalSmsListenerState extends State<GlobalSmsListener> {
   void initState() {
     super.initState();
     NotificationService.initialize();
+    AuthService.user.addListener(_rebind);
+    _rebind();
+  }
+
+  void _rebind() {
+    _subscription?.cancel();
+    _subscription = null;
+    if (TechnicianService.isTechnician) {
+      _bannerHide?.cancel();
+      if (_banner != null && mounted) setState(() => _banner = null);
+      return;
+    }
     _subscription = SmsService.streamAll().listen(_onMessages);
   }
 
@@ -125,6 +138,7 @@ class _GlobalSmsListenerState extends State<GlobalSmsListener> {
 
   @override
   void dispose() {
+    AuthService.user.removeListener(_rebind);
     _subscription?.cancel();
     _bannerHide?.cancel();
     super.dispose();

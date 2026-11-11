@@ -190,11 +190,12 @@ function sanitizeFcmData(payload) {
   return payload;
 }
 
-function selectedRegistrations(docs) {
+function selectedRegistrations(docs, filterFn = null) {
   const latest = new Map();
   for (const doc of docs) {
     const data = doc.data() || {};
     if (typeof data.token !== 'string' || !data.token.trim() || data.disabled === true) continue;
+    if (typeof filterFn === 'function' && !filterFn(data)) continue;
     const token = data.token.trim();
     const key = data.deviceId ? `device:${data.userId || ''}:${data.deviceId}` : `token:${token}`;
     const at = data.updatedAt?.toMillis ? data.updatedAt.toMillis() : new Date(data.updatedAt || 0).getTime();
@@ -204,7 +205,11 @@ function selectedRegistrations(docs) {
   return [...new Map([...latest.values()].map((entry) => [entry.token, entry])).values()];
 }
 
-async function registerDeviceToken({ token, platform, deviceId, userId, previousToken }) {
+function isOwnerTokenDoc(data) {
+  return data && data.role !== 'technician';
+}
+
+async function registerDeviceToken({ token, platform, deviceId, userId, previousToken, role }) {
   const id = deviceId
     ? `device_${crypto.createHash('sha256').update(`${userId}:${deviceId}`).digest('hex')}`
     : String(token).replace(/\//g, '_').slice(0, 700);
@@ -221,6 +226,7 @@ async function registerDeviceToken({ token, platform, deviceId, userId, previous
     }
     tx.set(ref, {
       token, platform: platform || 'unknown', userId,
+      ...(role ? { role } : {}),
       ...(deviceId ? { deviceId } : {}),
       disabled: false,
       updatedAt: FieldValue.serverTimestamp(),
@@ -252,13 +258,8 @@ async function withCarePlanTitle(title, data) {
   }
 }
 
-async function notifyMaster(title, body, data = {}) {
-  const snapshot = await tokensRef().get();
-  const registrations = selectedRegistrations(snapshot.docs);
-  if (!registrations.length) {
-    console.warn('notifyMaster: нет сохранённых FCM-токенов');
-    return;
-  }
+async function sendPushToRegistrations(snapshot, registrations, title, body, data = {}) {
+  if (!registrations.length) return;
 
   const stringData = {};
   for (const [key, value] of Object.entries(data)) {
@@ -316,13 +317,32 @@ async function notifyMaster(title, body, data = {}) {
   }
 }
 
+async function notifyMaster(title, body, data = {}) {
+  const snapshot = await tokensRef().get();
+  const registrations = selectedRegistrations(snapshot.docs, isOwnerTokenDoc);
+  if (!registrations.length) {
+    console.warn('notifyMaster: нет сохранённых FCM-токенов');
+    return;
+  }
+  await sendPushToRegistrations(snapshot, registrations, title, body, data);
+}
+
+async function notifyUser(userId, title, body, data = {}) {
+  const uid = String(userId || '').trim();
+  if (!uid) return;
+  const snapshot = await tokensRef().where('userId', '==', uid).get();
+  const registrations = selectedRegistrations(snapshot.docs, (d) => d.userId === uid);
+  if (!registrations.length) return;
+  await sendPushToRegistrations(snapshot, registrations, title, body, data);
+}
+
 /**
  * Сигнал без шторки — телефон только вибрирует (например, «клиент на линии»
  * у звонка через SIM). Опоздавший сигнал бесполезен, поэтому живёт 30 секунд.
  */
 async function pingMaster(data = {}) {
   const snapshot = await tokensRef().get();
-  const registrations = selectedRegistrations(snapshot.docs);
+  const registrations = selectedRegistrations(snapshot.docs, isOwnerTokenDoc);
   if (!registrations.length) return;
   const payload = {};
   for (const [key, value] of Object.entries({ ...data, sentAt: Date.now() })) {
@@ -336,4 +356,32 @@ async function pingMaster(data = {}) {
   });
 }
 
-module.exports = { notifyMaster, pingMaster, channelFor, shadeTag, notificationEventId, sanitizeFcmData, registerDeviceToken };
+async function pingUser(userId, data = {}) {
+  const uid = String(userId || '').trim();
+  if (!uid) return;
+  const snapshot = await tokensRef().where('userId', '==', uid).get();
+  const registrations = selectedRegistrations(snapshot.docs, (d) => d.userId === uid);
+  if (!registrations.length) return;
+  const payload = {};
+  for (const [key, value] of Object.entries({ ...data, sentAt: Date.now() })) {
+    payload[key] = String(value ?? '');
+  }
+  sanitizeFcmData(payload);
+  await getMessaging().sendEachForMulticast({
+    tokens: registrations.map((entry) => entry.token),
+    data: payload,
+    android: { priority: 'high', ttl: 30000 },
+  });
+}
+
+module.exports = {
+  notifyMaster,
+  notifyUser,
+  pingMaster,
+  pingUser,
+  channelFor,
+  shadeTag,
+  notificationEventId,
+  sanitizeFcmData,
+  registerDeviceToken,
+};

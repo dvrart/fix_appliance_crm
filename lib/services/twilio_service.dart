@@ -15,6 +15,7 @@ import 'firestore_service.dart';
 import 'auth_service.dart';
 import 'network_status_service.dart';
 import 'notification_service.dart';
+import 'technician_service.dart';
 
 /// Идентификатор мастера, под которым приложение регистрируется в Twilio
 /// Voice и на который Twilio-номер направляет входящие звонки.
@@ -398,12 +399,25 @@ class TwilioService {
     });
   }
 
+  static String get currentClientIdentity => TechnicianService.isTechnician
+      ? 'tech_${TechnicianService.currentUid}'
+      : kTwilioMasterIdentity;
+
+  static String get _pendingCellDocId => TechnicianService.isTechnician
+      ? 'pending_cell_call_${TechnicianService.currentUid}'
+      : 'pending_cell_call';
+
+  static String get _pendingOutboundDocId => TechnicianService.isTechnician
+      ? 'pending_outbound_call_${TechnicianService.currentUid}'
+      : 'pending_outbound_call';
+
   static Future<String?> _fetchAccessToken() async {
     try {
+      final identity = Uri.encodeQueryComponent(currentClientIdentity);
       final response = await http
           .get(
             Uri.parse(
-              '$kFirebaseFunctionsUrl/twilioAccessToken?identity=$kTwilioMasterIdentity',
+              '$kFirebaseFunctionsUrl/twilioAccessToken?identity=$identity',
             ),
             headers: await AuthService.headers(),
           )
@@ -752,7 +766,7 @@ class TwilioService {
     _setCallStatus('cell');
     try {
       await settleWrite(
-        FirestoreService.settingsRef.doc('pending_cell_call').set({
+        FirestoreService.settingsRef.doc(_pendingCellDocId).set({
           'phone': _formatNumber(phoneNumber),
           'jobId': jobId ?? '',
           'at': FieldValue.serverTimestamp(),
@@ -861,7 +875,7 @@ class TwilioService {
     if (registered == false) return false;
     if (!_isInitialized) {
       await TwilioVoicePlatform.instance.registerClient(
-        kTwilioMasterIdentity,
+        currentClientIdentity,
         'Мастер',
       );
       await TwilioVoicePlatform.instance.setDefaultCallerName('Клиент');
@@ -924,7 +938,7 @@ class TwilioService {
     _setCallStatus('calling');
     try {
       final result = await TwilioVoicePlatform.instance.call.place(
-        from: kTwilioMasterIdentity,
+        from: currentClientIdentity,
         to: _formatNumber(phoneNumber),
       );
       if (result != true) {
@@ -953,7 +967,7 @@ class TwilioService {
   static Future<void> _writePendingOutbound(String phone, String jobId) async {
     try {
       await settleWrite(
-        FirestoreService.settingsRef.doc('pending_outbound_call').set({
+        FirestoreService.settingsRef.doc(_pendingOutboundDocId).set({
           'jobId': jobId,
           'phone': _digits(phone),
           'at': FieldValue.serverTimestamp(),
@@ -968,6 +982,7 @@ class TwilioService {
     String phone,
     String jobId,
   ) async {
+    if (TechnicianService.isTechnician) return;
     final want = _digits(phone);
     for (var i = 0; i < 24; i++) {
       await Future<void>.delayed(Duration(milliseconds: i == 0 ? 700 : 500));

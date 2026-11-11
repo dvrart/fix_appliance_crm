@@ -7,3 +7,5 @@ export 'location.dart';
 export 'warehouse_item.dart';
 export 'expense.dart';
 export 'document_settings.dart';
+export 'technician.dart';
+export 'technician_payout.dart';

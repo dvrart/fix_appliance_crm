@@ -16,6 +16,7 @@ import 'client_service.dart';
 import 'network_status_service.dart';
 import 'notification_service.dart';
 import 'offline_queue_service.dart';
+import 'technician_service.dart';
 import 'twilio_service.dart';
 import '../shared/widgets/call_transcript_chat.dart';
 
@@ -23,32 +24,74 @@ import '../shared/widgets/call_transcript_chat.dart';
 class JobService {
   static final _ref = FirestoreService.jobsRef;
 
+  static Query get _scopedRef => TechnicianService.isTechnician
+      ? _ref.where('assignedTo', isEqualTo: TechnicianService.currentUid)
+      : _ref;
+
   static StreamSubscription<QuerySnapshot>? _allSub;
+  static String? _allScopeKey;
   static List<Job>? _allLatest;
   static final Set<MultiStreamController<List<Job>>> _allListeners = {};
 
-  /// Стрим всех заявок
+  static String get _currentScopeKey => TechnicianService.isTechnician
+      ? 'tech:${TechnicianService.currentUid}'
+      : 'owner';
+
+  static void _ensureAuthWatch() {
+    if (_watchingAuth) return;
+    _watchingAuth = true;
+    AuthService.user.addListener(_onAuthChanged);
+  }
+
+  static bool _watchingAuth = false;
+
+  static void _onAuthChanged() {
+    final nextKey = _currentScopeKey;
+    if (_allScopeKey == nextKey) return;
+    _allSub?.cancel();
+    _allSub = null;
+    _allLatest = null;
+    _allScopeKey = nextKey;
+    if (_allListeners.isNotEmpty) {
+      _openAllSub();
+    }
+  }
+
+  static void _openAllSub() {
+    _allScopeKey = _currentScopeKey;
+    _allSub = _scopedRef.snapshots().listen(
+      (snapshot) {
+        final jobs = _parseDocs(snapshot);
+        _allLatest = jobs;
+        for (final listener in _allListeners.toList()) {
+          listener.add(jobs);
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        for (final listener in _allListeners.toList()) {
+          listener.addError(error, stack);
+        }
+      },
+    );
+  }
+
+  /// Стрим всех заявок (для мастера — только назначенные ему)
   static Stream<List<Job>> streamAll() {
+    _ensureAuthWatch();
     return Stream<List<Job>>.multi((controller) {
+      if (_allScopeKey != null && _allScopeKey != _currentScopeKey) {
+        _allSub?.cancel();
+        _allSub = null;
+        _allLatest = null;
+      }
       final cached = _allLatest;
       if (cached != null) {
         controller.add(cached);
       }
       _allListeners.add(controller);
-      _allSub ??= _ref.snapshots().listen(
-        (snapshot) {
-          final jobs = _parseDocs(snapshot);
-          _allLatest = jobs;
-          for (final listener in _allListeners.toList()) {
-            listener.add(jobs);
-          }
-        },
-        onError: (Object error, StackTrace stack) {
-          for (final listener in _allListeners.toList()) {
-            listener.addError(error, stack);
-          }
-        },
-      );
+      if (_allSub == null) {
+        _openAllSub();
+      }
       controller.onCancel = () async {
         _allListeners.remove(controller);
         if (_allListeners.isEmpty) {
@@ -62,7 +105,7 @@ class JobService {
   }
 
   static Stream<List<Job>> streamTrashed() {
-    return _ref.snapshots().map(
+    return _scopedRef.snapshots().map(
       (snapshot) => _parseDocs(
         snapshot,
         includeDeleted: true,
@@ -87,7 +130,7 @@ class JobService {
 
   /// Стрим заявок по статусу
   static Stream<List<Job>> streamByStatus(String status) {
-    return _ref
+    return _scopedRef
         .where('status', isEqualTo: status)
         .snapshots()
         .map((snapshot) => _parseDocs(snapshot));
@@ -95,7 +138,7 @@ class JobService {
 
   /// Стрим заявок для календаря (только с датой)
   static Stream<List<Job>> streamScheduled() {
-    return _ref
+    return _scopedRef
         .where('scheduledAt', isNull: false)
         .snapshots()
         .map((snapshot) => _parseDocs(snapshot));

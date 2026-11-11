@@ -1520,6 +1520,7 @@ class _DetailsTabState extends State<DetailsTab> {
       to: phone,
       body: body,
       clientId: ctrl.clientId,
+      jobId: ctrl.jobId,
     );
     if (!mounted) return ok;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -2264,6 +2265,7 @@ class _DetailsTabState extends State<DetailsTab> {
         to: phone,
         body: body,
         clientId: ctrl.clientId,
+        jobId: jobId ?? ctrl.jobId,
         visitBooking: {
           'jobId': jobId ?? ctrl.jobId,
           'visitId': visit.id,

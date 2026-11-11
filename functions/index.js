@@ -25,9 +25,11 @@ const visitSms = require('./visit_sms');
 const schedule = require('./schedule');
 const serviceArea = require('./service_area');
 const jobDedupe = require('./job_dedupe');
-const { notifyMaster, pingMaster, registerDeviceToken } = require('./notify');
+const notifyApi = require('./notify');
+const { notifyMaster, pingMaster, registerDeviceToken } = notifyApi;
 const callRoute = require('./call_route');
 const { requireAppUser, requireTwilioSignature } = require('./auth_guard');
+const technicians = require('./technicians');
 const { createRecordingStore, isTwilioMediaUrl, appendCallRecording } = require('./recording_store');
 const { createCallTranscriber } = require('./call_transcribe');
 const { createCallDubber } = require('./call_dub');
@@ -1169,10 +1171,17 @@ ${raw}`,
 // VOICE: Access Token для Twilio Voice SDK (twilio_voice в приложении)
 // ============================================================================
 
+exports.manageTechnician = functions.https.onRequest(async (req, res) => {
+  if (handleOptions(req, res)) return;
+  setCors(res);
+  await technicians.handleManageTechnician(req, res);
+});
+
 exports.twilioAccessToken = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
-  if (!(await requireAppUser(req, res))) return;
+  const user = await technicians.requireAnyAppUser(req, res);
+  if (!user) return;
 
   try {
     if (!TWILIO_API_KEY_SID || !TWILIO_API_KEY_SECRET || !TWILIO_TWIML_APP_SID) {
@@ -1183,7 +1192,9 @@ exports.twilioAccessToken = functions.https.onRequest(async (req, res) => {
       return;
     }
 
-    const identity = (req.query.identity || req.body?.identity || MASTER_IDENTITY).toString();
+    const identity = user.isOwner
+      ? (req.query.identity || req.body?.identity || MASTER_IDENTITY).toString()
+      : technicians.techTwilioIdentity(user.uid);
 
     const AccessToken = twilio.jwt.AccessToken;
     const VoiceGrant = AccessToken.VoiceGrant;
@@ -1993,7 +2004,7 @@ function twimlDialPstn(req, toNumber) {
   return twiml;
 }
 
-function twimlDialMaster(req, fromNumber, timeoutSeconds) {
+function twimlDialMaster(req, fromNumber, timeoutSeconds, clientIdentity = MASTER_IDENTITY) {
   const twiml = new twilio.twiml.VoiceResponse();
   const dial = twiml.dial({
     callerId: fromNumber,
@@ -2005,7 +2016,7 @@ function twimlDialMaster(req, fromNumber, timeoutSeconds) {
     action: dialActionUrl(req),
   });
   const clientNode = dial.client();
-  clientNode.identity(MASTER_IDENTITY);
+  clientNode.identity(clientIdentity || MASTER_IDENTITY);
   if (fromNumber && fromNumber !== 'Unknown' && !/^client:/i.test(fromNumber)) {
     clientNode.parameter({ name: '__TWI_CALLER_ID', value: fromNumber });
     clientNode.parameter({ name: '__TWI_CALLER_NAME', value: fromNumber });
@@ -2066,12 +2077,14 @@ async function logCall(callSid, data) {
   }
 }
 
-async function consumePendingOutboundJobId(dest) {
+async function consumePendingOutboundJobId(dest, fromRaw = '') {
+  const techUid = technicians.uidFromTwilioClient(fromRaw);
+  const docId = techUid ? `pending_outbound_call_${techUid}` : 'pending_outbound_call';
   const ref = db
     .collection('companies')
     .doc(COMPANY_ID)
     .collection('settings')
-    .doc('pending_outbound_call');
+    .doc(docId);
   try {
     const snap = await ref.get();
     if (!snap.exists) return null;
@@ -2096,9 +2109,11 @@ async function consumePendingOutboundJobId(dest) {
 async function handleOutboundFromApp(req, res, source) {
   const dest = outboundDestination(req.body);
   const callSid = req.body.CallSid;
-  const jobId = dest ? await consumePendingOutboundJobId(dest) : null;
+  const fromRaw = String(req.body.From || '');
+  const techUid = technicians.uidFromTwilioClient(fromRaw);
+  const jobId = dest ? await consumePendingOutboundJobId(dest, fromRaw) : null;
   console.log(
-    `${source}: outbound from=${req.body.From || ''} toParam=${req.body.To || ''} phone=${req.body.phone || ''} dest=${dest || '-'} job=${jobId || '-'}`
+    `${source}: outbound from=${fromRaw} toParam=${req.body.To || ''} phone=${req.body.phone || ''} dest=${dest || '-'} job=${jobId || '-'}`
   );
   await logCall(callSid, {
     fromNumber: TWILIO_PHONE_NUMBER || '',
@@ -2107,6 +2122,7 @@ async function handleOutboundFromApp(req, res, source) {
     status: 'in-progress',
     twilioTime: req.body.Timestamp || req.body.StartTime,
     ...(jobId ? { jobId } : {}),
+    ...(techUid ? { technicianId: techUid } : {}),
   });
   if (!dest) {
     const twiml = new twilio.twiml.VoiceResponse();
@@ -2117,14 +2133,66 @@ async function handleOutboundFromApp(req, res, source) {
   sendTwiml(res, twimlDialPstn(req, dest));
 }
 
+async function findAssignedTechnicianForInboundCall(fromNumber) {
+  try {
+    const digits = digitsOf(fromNumber);
+    if (digits.length < 10) return null;
+    const matchedClient = await findClientForInboundPhone(fromNumber);
+    const openJob = await findOpenJobForContact({
+      phone: fromNumber,
+      clientId: matchedClient ? matchedClient.id : null,
+    });
+    if (!openJob || !technicians.isAssignedToTechnician(openJob)) return null;
+    const tech = await technicians.getActiveTechnician(openJob.assignedTo, db);
+    if (!tech) return null;
+    return { job: openJob, tech };
+  } catch (error) {
+    console.warn('findAssignedTechnicianForInboundCall:', error.message);
+    return null;
+  }
+}
+
 async function handleInboundToMaster(req, res, source, knownRouting = null) {
   const fromNumber = req.body.From || 'Unknown';
   const toNumber = req.body.To || TWILIO_PHONE_NUMBER || '';
   const callSid = req.body.CallSid;
-  const [aiSettings, routing] = await Promise.all([
+  const [aiSettings, routing, assignedTarget] = await Promise.all([
     getAiAnswerSettings(),
     knownRouting || getCallRouting(),
+    findAssignedTechnicianForInboundCall(fromNumber),
   ]);
+
+  if (assignedTarget) {
+    const { job: openJob, tech } = assignedTarget;
+    const techIdentity = technicians.techTwilioIdentity(tech.uid);
+    const techCell = callRoute.normalizePhone(tech.phone || '');
+    const ringTechCell = routing.mode === 'cell' && Boolean(techCell) && !callRoute.sameNumber(fromNumber, techCell);
+    console.log(
+      `${source}: inbound assigned to tech=${tech.uid} (${tech.name || ''}) job=${openJob.id} via=${ringTechCell ? 'cell' : 'app'}`
+    );
+    await logCall(callSid, {
+      fromNumber,
+      toNumber,
+      direction: 'inbound',
+      status: 'ringing',
+      jobId: openJob.id,
+      createdJobId: openJob.id,
+      assignedTechnicianId: tech.uid,
+      assignedTechnicianName: String(tech.name || 'Мастер').trim(),
+      twilioTime: req.body.Timestamp || req.body.StartTime,
+      ...(ringTechCell ? { ringVia: 'cell' } : {}),
+    });
+    if (ringTechCell) {
+      sendTwiml(
+        res,
+        twimlDialMasterCell(req, fromNumber, { mode: 'cell', cell: techCell }, callSid, aiSettings.timeoutSeconds)
+      );
+      return;
+    }
+    sendTwiml(res, twimlDialMaster(req, fromNumber, aiSettings.timeoutSeconds, techIdentity));
+    return;
+  }
+
   const toCell = callRoute.inboundGoesToCell(routing, fromNumber);
   console.log(
     `${source}: inbound from=${fromNumber} to=${toNumber} aiTimeout=${aiSettings.timeoutSeconds} ai=${aiSettings.enabled} route=${routing.mode}${toCell ? ' -> cell' : ''}`
@@ -2153,8 +2221,8 @@ async function handleInboundToMaster(req, res, source, knownRouting = null) {
 // ещё в пути (плохой интернет): ждём её по секунде, не дольше четырёх раз.
 const CELL_BRIDGE_WAITS = 4;
 
-async function takePendingCellCall(callSid) {
-  const ref = db.collection('companies').doc(COMPANY_ID).collection('settings').doc('pending_cell_call');
+async function takePendingCellCall(callSid, docId = 'pending_cell_call') {
+  const ref = db.collection('companies').doc(COMPANY_ID).collection('settings').doc(docId);
   try {
     return await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -2180,9 +2248,13 @@ async function takePendingCellCall(callSid) {
  * разговор пишется так же, как исходящий из приложения.
  */
 async function handleCellBridge(req, res, routing) {
-  if (!routing.cell || !callRoute.sameNumber(req.body.From, routing.cell)) return false;
+  const isOwnerCell = Boolean(routing.cell) && callRoute.sameNumber(req.body.From, routing.cell);
+  const techCaller = isOwnerCell ? null : await technicians.findActiveTechnicianByCell(req.body.From, db);
+  if (!isOwnerCell && !techCaller) return false;
+
   const callSid = req.body.CallSid;
-  const pending = await takePendingCellCall(callSid);
+  const pendingDocId = techCaller ? `pending_cell_call_${techCaller.uid}` : 'pending_cell_call';
+  const pending = await takePendingCellCall(callSid, pendingDocId);
   if (!pending) {
     const attempt = Number(req.query && req.query.cellWait) || 0;
     if (attempt < CELL_BRIDGE_WAITS) {
@@ -2191,11 +2263,11 @@ async function handleCellBridge(req, res, routing) {
       ));
       return true;
     }
-    console.warn(`cellBridge ${callSid}: master cell called, no pending destination`);
+    console.warn(`cellBridge ${callSid}: cell called, no pending destination`);
     sendTwiml(res, callRoute.twimlCellBridgeLost());
     return true;
   }
-  console.log(`cellBridge ${callSid}: master cell -> ${pending.phone}${pending.jobId ? ` job=${pending.jobId}` : ''}`);
+  console.log(`cellBridge ${callSid}: cell -> ${pending.phone}${pending.jobId ? ` job=${pending.jobId}` : ''}`);
   await logCall(callSid, {
     fromNumber: TWILIO_PHONE_NUMBER || '',
     toNumber: pending.phone,
@@ -2204,6 +2276,7 @@ async function handleCellBridge(req, res, routing) {
     status: 'in-progress',
     twilioTime: req.body.Timestamp || req.body.StartTime,
     ...(pending.jobId ? { jobId: pending.jobId } : {}),
+    ...(techCaller ? { technicianId: techCaller.uid } : {}),
   });
   sendTwiml(res, twimlDialPstn(req, pending.phone));
   return true;
@@ -2953,16 +3026,22 @@ async function notifyCallOutcome({ callSid, callData, extracted, kind, jobId, re
     const appliance = String(data.appliance_type || '').trim();
     const spam = kind === 'missed' && looksLikeSpamCall(data, callData);
 
+    const assignedTechId = String((callData && callData.assignedTechnicianId) || '').trim();
+    const assignedTechName = String((callData && callData.assignedTechnicianName) || '').trim();
+    const linkedJobId = jobId || (callData && (callData.jobId || callData.createdJobId)) || '';
+
     // Заявку мастер заводит сам из экрана звонка, поэтому уведомление о
     // звонке больше ничего не предлагает — оно просто сообщает о звонке.
-    const title = kind === 'call_offer'
-      ? 'Входящий звонок'
-      : kind === 'job' ? 'Заявка с телефона' : 'Пропущенный звонок';
+    const title = assignedTechId
+      ? `Мастер ${assignedTechName || ''} не ответил — поговорила ИИ`.replace(/\s+/g, ' ').trim()
+      : (kind === 'call_offer'
+          ? 'Входящий звонок'
+          : kind === 'job' ? 'Заявка с телефона' : 'Пропущенный звонок');
     const line = kind === 'call_offer' || kind === 'job'
       ? [name || phone, appliance].filter(Boolean).join(' · ')
       : [name || phone, spam ? 'похоже на рекламу' : reason || ''].filter(Boolean).join(' · ');
 
-    await notifyMaster(title, `${line}\n${calledAt}`, {
+    const pushPayload = {
       type: 'call',
       kind,
       source: 'phone',
@@ -2972,8 +3051,17 @@ async function notifyCallOutcome({ callSid, callData, extracted, kind, jobId, re
       clientName: name,
       appliance,
       spam: spam ? '1' : '',
-      ...(jobId ? { jobId } : {}),
-    });
+      ...(linkedJobId ? { jobId: linkedJobId } : {}),
+    };
+    await notifyMaster(title, `${line}\n${calledAt}`, pushPayload);
+    if (assignedTechId && typeof notifyApi.notifyUser === 'function') {
+      await notifyApi.notifyUser(
+        assignedTechId,
+        'Звонил клиент (ответила секретарь)',
+        `${line}\n${calledAt}`,
+        { ...pushPayload, type: linkedJobId ? 'job' : 'call' }
+      );
+    }
   } catch (error) {
     console.warn('notifyCallOutcome:', error.message);
   }
@@ -3445,16 +3533,37 @@ exports.dialAction = functions.https.onRequest(voiceDialRuntime, async (req, res
       if (inbound && (missed || callerGone)) {
         try {
           const calledAt = voiceFacts.formatTorontoStamp();
+          const techId = String(data.assignedTechnicianId || '').trim();
+          const techName = String(data.assignedTechnicianName || '').trim();
+          const linkedJobId = String(data.jobId || data.createdJobId || '').trim();
+          const missedTitle = techId
+            ? `Пропущенный звонок у мастера ${techName}`.trim()
+            : 'Пропущенный звонок';
           await notifyMaster(
-            'Пропущенный звонок',
+            missedTitle,
             `${data.fromNumber || ''}\n${calledAt}`,
             {
               type: 'call',
               callSid,
               from: data.fromNumber || '',
               calledAt,
+              ...(linkedJobId ? { jobId: linkedJobId } : {}),
             }
           );
+          if (techId && typeof notifyApi.notifyUser === 'function') {
+            await notifyApi.notifyUser(
+              techId,
+              'Пропущенный звонок клиента',
+              `${data.fromNumber || ''}\n${calledAt}`,
+              {
+                type: linkedJobId ? 'job' : 'call',
+                callSid,
+                from: data.fromNumber || '',
+                calledAt,
+                ...(linkedJobId ? { jobId: linkedJobId } : {}),
+              }
+            );
+          }
         } catch (error) {
           console.warn('dialAction missed notify:', error.message);
         }
@@ -3912,7 +4021,8 @@ exports.callRecordingAudio = onRequestV2(
   async (req, res) => {
     setCors(res);
     if (handleOptions(req, res)) return;
-    if (!(await requireAppUser(req, res))) return;
+    const user = await technicians.requireAnyAppUser(req, res);
+    if (!user) return;
     const requested = String(req.query.callId || req.body.callId || '').trim();
     if (!requested) {
       res.status(400).send('callId required');
@@ -3922,6 +4032,19 @@ exports.callRecordingAudio = onRequestV2(
       const callId = await resolveLoggedCallId(requested);
       const snap = await callsRef.doc(callId).get();
       const data = snap.exists ? snap.data() || {} : {};
+      if (!user.isOwner) {
+        const linkedJobId = String(data.jobId || data.createdJobId || '').trim();
+        if (!linkedJobId) {
+          res.status(403).send('Forbidden');
+          return;
+        }
+        const jobSnap = await jobsRef.doc(linkedJobId).get();
+        const jobData = jobSnap.exists ? jobSnap.data() || {} : {};
+        if (String(jobData.assignedTo || '').trim() !== user.uid) {
+          res.status(403).send('Forbidden');
+          return;
+        }
+      }
       if (String(req.query.lang || '').toLowerCase() === 'ru') {
         await serveRussianDub(callId, data, res);
         return;
@@ -5227,7 +5350,7 @@ exports.mergeDuplicateJobs = functions.https.onRequest(async (req, res) => {
 exports.registerFcmToken = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
-  const user = await requireAppUser(req, res);
+  const user = await technicians.requireAnyAppUser(req, res);
   if (!user) return;
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'POST required' });
@@ -5243,7 +5366,14 @@ exports.registerFcmToken = functions.https.onRequest(async (req, res) => {
   }
 
   try {
-    await registerDeviceToken({ token: token.trim(), platform, deviceId, previousToken, userId: user.uid });
+    await registerDeviceToken({
+      token: token.trim(),
+      platform,
+      deviceId,
+      previousToken,
+      userId: user.uid,
+      role: user.isOwner ? 'owner' : 'technician',
+    });
     console.log('registerFcmToken: устройство зарегистрировано');
     res.json({ success: true });
   } catch (error) {
@@ -5259,14 +5389,28 @@ exports.registerFcmToken = functions.https.onRequest(async (req, res) => {
 exports.sendSms = functions.https.onRequest(async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
-  if (!(await requireAppUser(req, res))) return;
+  const user = await technicians.requireAnyAppUser(req, res);
+  if (!user) return;
 
   if (!client) {
     res.status(500).json({ error: 'Twilio не настроен (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN)' });
     return;
   }
 
-    const { to, body, clientId, bodyRu, fallbackBody, visitBooking, isReactionEcho } = req.body || {};
+  const { to, body, clientId, jobId, bodyRu, fallbackBody, visitBooking, isReactionEcho } = req.body || {};
+  const trimmedJobId = String(jobId || (visitBooking && visitBooking.jobId) || '').trim();
+  if (!user.isOwner) {
+    if (!trimmedJobId) {
+      res.status(403).json({ error: 'Мастер может отправлять SMS только из карточки своего заказа' });
+      return;
+    }
+    const jobSnap = await jobsRef.doc(trimmedJobId).get();
+    const jobData = jobSnap.exists ? jobSnap.data() || {} : {};
+    if (String(jobData.assignedTo || '').trim() !== user.uid) {
+      res.status(403).json({ error: 'Доступ к заказу закрыт' });
+      return;
+    }
+  }
   const mediaUrls = Array.isArray((req.body || {}).mediaUrls)
     ? (req.body.mediaUrls)
         .map((url) => String(url || '').trim())
@@ -5374,6 +5518,8 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
       direction: 'outbound',
       status: message.status,
       clientId: clientId || null,
+      ...(trimmedJobId ? { jobId: trimmedJobId } : {}),
+      ...(!user.isOwner ? { sentByTechnicianId: user.uid } : {}),
       channel: 'sms',
       mediaUrls,
       createdAt: FieldValue.serverTimestamp(),
@@ -5698,12 +5844,32 @@ async function processIncomingSmsData(docRef, data) {
 
   if (!alreadyProcessed && !confirmHandled) {
     try {
+      const openJob = await findOpenJobForContact({
+        phone: from,
+        clientId: matchedClient ? matchedClient.id : null,
+      }).catch(() => null);
+      if (docRef && openJob && openJob.id) {
+        await docRef.set({ jobId: openJob.id }, { merge: true }).catch(() => {});
+      }
       await notifyMaster(title, preview, {
         type: 'sms',
         from: from || '',
         messageId: docRef ? docRef.id : sid || '',
         clientId: matchedClient ? matchedClient.id : '',
+        ...(openJob && openJob.id ? { jobId: openJob.id } : {}),
       });
+      if (
+        openJob &&
+        technicians.isAssignedToTechnician(openJob) &&
+        typeof notifyApi.notifyUser === 'function'
+      ) {
+        await notifyApi.notifyUser(openJob.assignedTo, title, preview, {
+          type: 'job',
+          from: from || '',
+          messageId: docRef ? docRef.id : sid || '',
+          jobId: openJob.id,
+        });
+      }
     } catch (error) {
       console.error('incomingSms notify error:', error.message);
     }

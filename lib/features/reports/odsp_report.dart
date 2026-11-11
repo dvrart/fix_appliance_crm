@@ -173,9 +173,28 @@ class OdspReportFigures {
     ReportMetrics? etransferMetrics,
     required List<Expense> expenses,
   }) {
-    final card = cardMetrics ?? metrics.forMethod(ReportPayMethod.card);
+    // Заявки независимых частных мастеров не входят в личный отчёт ODSP владельца.
+    final hasTechJobs = metrics.invoices.any((i) => i.job.isAssignedToTechnician) ||
+        metrics.payments.any((p) => p.job.isAssignedToTechnician);
+    final effectiveMetrics = hasTechJobs
+        ? ReportMetrics.build(
+            jobs: {
+              for (final inv in metrics.invoices)
+                if (!inv.job.isAssignedToTechnician) inv.job.id: inv.job,
+              for (final p in metrics.payments)
+                if (!p.job.isAssignedToTechnician) p.job.id: p.job,
+            }.values.toList(),
+            start: periodStart,
+            endExclusive: DateTime(
+              periodEndInclusive.year,
+              periodEndInclusive.month,
+              periodEndInclusive.day + 1,
+            ),
+          )
+        : metrics;
+    final card = cardMetrics ?? effectiveMetrics.forMethod(ReportPayMethod.card);
     final etransfer =
-        etransferMetrics ?? metrics.forMethod(ReportPayMethod.etransfer);
+        etransferMetrics ?? effectiveMetrics.forMethod(ReportPayMethod.etransfer);
     double sumCategory(String id) {
       var total = 0.0;
       for (final item in expenses) {
@@ -227,8 +246,8 @@ class OdspReportFigures {
       saleOfGoods: 0,
       serviceIncome: card.labourSales + etransfer.labourSales,
       otherIncome: card.tips + etransfer.tips,
-      costOfGoodsPurchased: metrics.partsCost + partsReceipts,
-      costFromInvoices: metrics.partsCost,
+      costOfGoodsPurchased: effectiveMetrics.partsCost + partsReceipts,
+      costFromInvoices: effectiveMetrics.partsCost,
       costFromReceipts: partsReceipts,
       suppliesAndEquipment:
           sumCategory(ExpenseCategories.supplies.id) +
@@ -396,7 +415,8 @@ class _OdspReportPageState extends State<OdspReportPage> {
     for (final snap in docs) {
       final data = snap.data() as Map<String, dynamic>? ?? <String, dynamic>{};
       try {
-        jobs.add(Job.fromMap(data, snap.id));
+        final job = Job.fromMap(data, snap.id);
+        if (!job.isAssignedToTechnician) jobs.add(job);
       } catch (_) {
         continue;
       }

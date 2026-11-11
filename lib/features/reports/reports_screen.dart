@@ -25,6 +25,7 @@ import 'tax_workbook_view.dart';
 import 'tax_writeoff_guide_page.dart';
 import '../expenses/expenses_screen.dart';
 import '../jobs/job_details/job_details_screen.dart';
+import '../technicians/technician_settlements_screen.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/widgets/dispose_on_close.dart';
 import '../../services/error_log_service.dart';
@@ -288,6 +289,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
         foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
         actions: [
+          IconButton(
+            tooltip: context.tr('Расчёт с мастерами', 'Technician settlements'),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const TechnicianSettlementsScreen(),
+              ),
+            ),
+            icon: const Icon(Icons.engineering_outlined),
+          ),
           IconButton(
             tooltip: context.tr('Отчёт для ODSP', 'ODSP report'),
             onPressed: () => Navigator.push(
@@ -3396,7 +3407,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
     for (final snap in docs) {
       final data = snap.data() as Map<String, dynamic>? ?? <String, dynamic>{};
       try {
-        jobs.add(Job.fromMap(data, snap.id));
+        final job = Job.fromMap(data, snap.id);
+        // Счета независимых мастеров идут по их реквизитам и HST, поэтому в
+        // личный финансовый отчёт и T2 владельца не смешиваются.
+        if (!job.isAssignedToTechnician) jobs.add(job);
       } catch (_) {
         continue;
       }

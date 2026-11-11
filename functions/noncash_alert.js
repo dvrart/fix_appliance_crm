@@ -19,6 +19,7 @@ const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { notifyMaster } = require('./notify');
 
 const COMPANY_ID = 'fix_appliance_ca';
+const OWNER_UID = 'Ew8vDgXvuMMwt9gYQUOi7rujNxO2';
 const NONCASH_MONTH_LIMIT = 800;
 const TORONTO = 'America/Toronto';
 const STRIPE_ID_FIELDS = ['stripePaymentIntentId', 'stripeSessionId', 'stripeInvoiceId', 'stripeRefundId'];
@@ -71,11 +72,16 @@ function paymentMonthKey(raw) {
   return '';
 }
 
+function isTechnicianJob(job) {
+  const assigned = String((job && job.assignedTo) || '').trim();
+  return Boolean(assigned) && assigned !== OWNER_UID;
+}
+
 /** Сколько пришло безналом за месяц `monthKey` ('2026-10') по списку заявок. */
 function nonCashTotalForMonth(jobs, monthKey) {
   let total = 0;
   for (const job of jobs) {
-    if (!job || job.deletedAt || !Array.isArray(job.documents)) continue;
+    if (!job || job.deletedAt || isTechnicianJob(job) || !Array.isArray(job.documents)) continue;
     for (const doc of job.documents) {
       if (!isInvoiceDoc(doc) || !Array.isArray(doc.payments)) continue;
       const rows = doc.payments.filter((p) => p && typeof p === 'object');

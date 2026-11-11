@@ -25,9 +25,12 @@ import 'pages/pricing_settings_page.dart';
 import 'pages/secretary_learn_page.dart';
 import 'pages/service_area_settings_page.dart';
 import 'pages/sticker_printer_settings_page.dart';
+import 'pages/technicians_settings_page.dart';
 import 'pages/work_days_settings_page.dart';
 import '../../models/secretary_lesson.dart';
+import '../../models/technician.dart';
 import '../../services/secretary_learn_service.dart';
+import '../../services/technician_service.dart';
 import 'widgets/company_logo.dart';
 import 'widgets/settings_ui.dart';
 
@@ -195,6 +198,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             color: const Color(0xFF2E7D32),
                             onTap: () =>
                                 _open(context, const CarePlanSettingsPage()),
+                          ),
+                          ValueListenableBuilder<List<TechnicianProfile>>(
+                            valueListenable: TechnicianService.list,
+                            builder: (context, techs, _) {
+                              final activeCount =
+                                  techs.where((t) => t.active).length;
+                              return SettingsHubTile(
+                                title: context.tr('Мастера', 'Technicians'),
+                                subtitle: activeCount > 0
+                                    ? '${context.tr('Активно', 'Active')}: $activeCount'
+                                    : context.tr(
+                                        'Доступ и расчёты',
+                                        'Access & payouts',
+                                      ),
+                                icon: Icons.engineering_outlined,
+                                color: const Color(0xFF00897B),
+                                onTap: () => _open(
+                                  context,
+                                  const TechniciansSettingsPage(),
+                                ),
+                              );
+                            },
                           ),
                         ],
                       ),

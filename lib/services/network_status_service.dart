@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/constants.dart';
+import '../models/technician.dart';
 import 'auth_service.dart';
 import 'offline_queue_service.dart';
 
@@ -60,8 +61,10 @@ class NetworkStatusService {
         );
 
     // Заявки — единственное, что мастер правит в поле, поэтому считаем именно их.
-    _jobs = company
-        .collection('jobs')
+    final Query<Map<String, dynamic>> jobsQuery = userId == kOwnerUid
+        ? company.collection('jobs')
+        : company.collection('jobs').where('assignedTo', isEqualTo: userId);
+    _jobs = jobsQuery
         .snapshots(includeMetadataChanges: true)
         .listen((snapshot) {
           var pending = 0;

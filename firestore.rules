@@ -1,18 +1,11 @@
 rules_version = '2';
 
-// Доступ к базе — только аккаунт владельца, по uid.
-//
-// Раньше здесь стояло `request.auth != null`, и этого было мало: провайдер
-// email+password позволяет любому желающему завести аккаунт через публичный
-// REST API Firebase (web API key лежит прямо внутри APK). Такой аккаунт
-// проходил проверку `auth != null` и получал полный доступ к базе клиентов,
-// счетов, переписки и записей звонков.
-//
-// Cloud Functions ходят через Admin SDK и правила обходят, поэтому телефонный
-// секретарь, SMS, Stripe и еженедельная копия от этого не зависят.
-//
-// Второй телефон владельцу менять правила не требует — это тот же аккаунт.
-// Если появится второй мастер, его uid добавляется в owners().
+// Доступ к базе:
+// 1. Владелец (по фиксированному uid) — полный доступ ко всем коллекциям.
+// 2. Активный мастер (документ `companies/fix_appliance_ca/technicians/{uid}` с `active != false`) —
+//    видит и обновляет СТРОГО только назначенные ему заявки (`assignedTo == request.auth.uid`),
+//    сообщения и звонки по этим заявкам, а также свой профиль и историю своих расчётов.
+//    Общая база клиентов, чужие заказы, расходы, склад и отчёты владельца закрыты.
 service cloud.firestore {
   match /databases/{database}/documents {
     function owners() {
@@ -20,6 +13,101 @@ service cloud.firestore {
     }
     function isOwner() {
       return request.auth != null && request.auth.uid in owners();
+    }
+    function isActiveTech() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/companies/fix_appliance_ca/technicians/$(request.auth.uid))
+        && get(/databases/$(database)/documents/companies/fix_appliance_ca/technicians/$(request.auth.uid)).data.active != false;
+    }
+    function isTechJob(jobId) {
+      return isActiveTech()
+        && jobId is string
+        && jobId != ''
+        && exists(/databases/$(database)/documents/companies/fix_appliance_ca/jobs/$(jobId))
+        && get(/databases/$(database)/documents/companies/fix_appliance_ca/jobs/$(jobId)).data.assignedTo == request.auth.uid;
+    }
+
+    match /companies/fix_appliance_ca/technicians/{techId} {
+      allow read: if isOwner() || (request.auth != null && request.auth.uid == techId);
+      allow write: if isOwner();
+    }
+
+    match /companies/fix_appliance_ca/technician_settlements/{settlementId} {
+      allow read: if isOwner() || (isActiveTech() && resource.data.technicianId == request.auth.uid);
+      allow write: if isOwner();
+    }
+
+    match /companies/fix_appliance_ca/jobs/{jobId} {
+      allow read: if isOwner() || (isActiveTech() && resource.data.assignedTo == request.auth.uid);
+      allow create, delete: if isOwner();
+      allow update: if isOwner() || (
+        isActiveTech()
+        && resource.data.assignedTo == request.auth.uid
+        && request.resource.data.assignedTo == request.auth.uid
+        && request.resource.data.get('deletedAt', null) == resource.data.get('deletedAt', null)
+      );
+
+      match /messages/{msgId} {
+        allow read, create: if isOwner() || isTechJob(jobId);
+        allow update, delete: if isOwner();
+      }
+
+      match /changes/{changeId} {
+        allow read, create: if isOwner() || isTechJob(jobId);
+        allow update, delete: if isOwner();
+      }
+    }
+
+    match /companies/fix_appliance_ca/messages/{msgId} {
+      allow read: if isOwner() || isTechJob(resource.data.get('jobId', ''));
+      allow create, delete: if isOwner();
+      allow update: if isOwner() || (
+        isTechJob(resource.data.get('jobId', ''))
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'bodyRu', 'reaction'])
+      );
+    }
+
+    match /companies/fix_appliance_ca/calls/{callId} {
+      allow read: if isOwner()
+        || isTechJob(resource.data.get('jobId', ''))
+        || isTechJob(resource.data.get('createdJobId', ''));
+      allow write: if isOwner();
+    }
+
+    match /companies/fix_appliance_ca/service_guide/{guideId} {
+      allow read: if isOwner() || isActiveTech();
+      allow write: if isOwner();
+    }
+
+    match /companies/fix_appliance_ca/statuses/{statusId} {
+      allow read: if isOwner() || isActiveTech();
+      allow write: if isOwner();
+    }
+
+    match /companies/fix_appliance_ca/catalogs/{catalogId} {
+      allow read: if isOwner() || isActiveTech();
+      allow write: if isOwner();
+    }
+
+    match /companies/fix_appliance_ca/settings/{settingId} {
+      allow read: if isOwner()
+        || (isActiveTech() && settingId in [
+          'config',
+          'documents',
+          'sms_templates',
+          'job_statuses',
+          'catalog',
+          'service_guide_meta'
+        ])
+        || (isActiveTech() && (
+          settingId == 'pending_cell_call_' + request.auth.uid ||
+          settingId == 'pending_outbound_call_' + request.auth.uid
+        ));
+      allow write: if isOwner()
+        || (isActiveTech() && (
+          settingId == 'pending_cell_call_' + request.auth.uid ||
+          settingId == 'pending_outbound_call_' + request.auth.uid
+        ));
     }
 
     match /{document=**} {

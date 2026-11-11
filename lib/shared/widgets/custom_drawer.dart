@@ -19,6 +19,9 @@ import '../../features/finance/documents_list_screen.dart';
 import '../../features/search/global_search_overlay.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/settings/widgets/company_logo.dart';
+import '../../features/technicians/technician_earnings_screen.dart';
+import '../../features/technicians/technician_settlements_screen.dart';
+import '../../services/auth_service.dart';
 import '../app_nav.dart';
 import '../unsaved_navigation_gate.dart';
 
@@ -119,12 +122,16 @@ class _CustomDrawerState extends State<CustomDrawer> {
                             CompanyLogo(
                               url: docs?.logoUrl,
                               size: 64,
-                              onTap: () => _openSettings(context),
+                              onTap: TechnicianService.isTechnician
+                                  ? null
+                                  : () => _openSettings(context),
                             ),
                             const SizedBox(width: 14),
                             Expanded(
                               child: GestureDetector(
-                                onTap: () => _openSettings(context),
+                                onTap: TechnicianService.isTechnician
+                                    ? null
+                                    : () => _openSettings(context),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
@@ -164,6 +171,56 @@ class _CustomDrawerState extends State<CustomDrawer> {
                   stream: _config,
                   builder: (context, snapshot) {
                     final config = snapshot.data ?? <String, dynamic>{};
+                    if (TechnicianService.isTechnician) {
+                      final techTiles = <Widget>[
+                        _buildTile(
+                          context,
+                          title: context.tr(
+                            'Ошибка и диагностика',
+                            'Errors & diagnostics',
+                          ),
+                          icon: Icons.troubleshoot,
+                          color: const Color(0xFFD32F2F),
+                          onTap: () =>
+                              _open(context, const DiagnosticsScreen()),
+                        ),
+                        _buildTile(
+                          context,
+                          title: context.tr('Активные заявки', 'Active jobs'),
+                          icon: Icons.assignment_outlined,
+                          color: AppColors.primary,
+                          onTap: () => _open(context, const ActiveJobsScreen()),
+                        ),
+                        _buildTile(
+                          context,
+                          title: context.tr('Моя прибыль', 'My earnings'),
+                          icon: Icons.account_balance_wallet_outlined,
+                          color: const Color(0xFF22C55E),
+                          onTap: () => _open(
+                            context,
+                            const TechnicianEarningsScreen(),
+                          ),
+                        ),
+                        _buildTile(
+                          context,
+                          title: context.tr('Выйти', 'Sign out'),
+                          icon: Icons.logout_rounded,
+                          color: const Color(0xFFE53935),
+                          onTap: () async {
+                            await _dismiss(context);
+                            await AuthService.signOut();
+                          },
+                        ),
+                      ];
+                      return GridView.count(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                        crossAxisCount: 2,
+                        crossAxisSpacing: 16,
+                        mainAxisSpacing: 16,
+                        childAspectRatio: 1,
+                        children: techTiles,
+                      );
+                    }
                     final tiles = <Widget>[
                       if (SettingsService.menuFlag(config, 'menuShowAi'))
                         _buildTile(
@@ -245,6 +302,17 @@ class _CustomDrawerState extends State<CustomDrawer> {
                           color: Colors.teal,
                           onTap: () =>
                               _open(context, const DocumentsListScreen()),
+                        ),
+                      if (TechnicianService.list.value.isNotEmpty)
+                        _buildTile(
+                          context,
+                          title: context.tr('Мастера', 'Technicians'),
+                          icon: Icons.engineering_outlined,
+                          color: const Color(0xFF00897B),
+                          onTap: () => _open(
+                            context,
+                            const TechnicianSettlementsScreen(),
+                          ),
                         ),
                       _buildTile(
                         context,

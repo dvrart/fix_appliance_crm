@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/api_keys.dart';
+import '../models/technician.dart';
 
 /// Firebase Auth: автоматический вход владельца и ID-токен для защищённых
 /// HTTP-функций и правил Firestore/Storage.
@@ -15,8 +16,16 @@ import '../core/api_keys.dart';
 class AuthService {
   AuthService._();
 
+  static User? _safeCurrentUser() {
+    try {
+      return FirebaseAuth.instance.currentUser;
+    } catch (_) {
+      return null;
+    }
+  }
+
   static final ValueNotifier<User?> user =
-      ValueNotifier<User?>(FirebaseAuth.instance.currentUser);
+      ValueNotifier<User?>(_safeCurrentUser());
 
   static String _cachedIdToken = '';
   static DateTime _cachedAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -27,8 +36,15 @@ class AuthService {
   static const _kPassword = 'auth_saved_password';
 
   /// Вшиты ли учётные данные владельца прямо в сборку.
+  /// В сборке для мастеров (`TECH_APP=true`) встроенный вход владельца отключён.
   static bool get hasBuiltInCredentials =>
-      kOwnerEmail.trim().isNotEmpty && kOwnerPassword.isNotEmpty;
+      !kTechnicianAppBuild &&
+      kOwnerEmail.trim().isNotEmpty &&
+      kOwnerPassword.isNotEmpty;
+
+  /// Причина принудительного выхода (например, «Доступ отключён владельцем»).
+  static final ValueNotifier<String> forcedSignOutNotice =
+      ValueNotifier<String>('');
 
   /// true пока идёт тихое восстановление сессии — AppLockGate
   /// показывает заставку вместо экрана входа.
@@ -75,6 +91,7 @@ class AuthService {
   // ------------------------------------------------ ручной вход
 
   static Future<void> signIn(String email, String password) async {
+    forcedSignOutNotice.value = '';
     await FirebaseAuth.instance.signInWithEmailAndPassword(
       email: email.trim(),
       password: password,
@@ -83,6 +100,25 @@ class AuthService {
     user.value = u;
     if (u != null) await _refreshToken(u);
     unawaited(_saveCredentials(email.trim(), password));
+  }
+
+  static Future<void> signOut({String reason = ''}) async {
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _cachedIdToken = '';
+    if (reason.trim().isNotEmpty) {
+      forcedSignOutNotice.value = reason.trim();
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kEmail);
+      await prefs.remove(_kPassword);
+    } catch (_) {}
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (_) {}
+    user.value = null;
+    autoSigningIn.value = false;
   }
 
   // ------------------------------------------------ авто-вход
@@ -102,8 +138,8 @@ class AuthService {
   static Future<bool> tryAutoSignIn() async {
     if (signedIn) return true;
     try {
-      String email = kOwnerEmail.trim();
-      String password = kOwnerPassword;
+      String email = kTechnicianAppBuild ? '' : kOwnerEmail.trim();
+      String password = kTechnicianAppBuild ? '' : kOwnerPassword;
       if (email.isEmpty || password.isEmpty) {
         final prefs = await SharedPreferences.getInstance();
         email = (prefs.getString(_kEmail) ?? '').trim();

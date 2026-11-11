@@ -27,6 +27,8 @@ const COLLECTIONS = [
   'secretary_lessons',
   'shipment_events',
   'short_links',
+  'technicians',
+  'technician_settlements',
 ];
 
 /// Подколлекции внутри заявок: чат по заявке и история правок.

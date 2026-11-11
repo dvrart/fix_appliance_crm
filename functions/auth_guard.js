@@ -137,7 +137,13 @@ function requireTwilioSignature(req, res) {
   return false;
 }
 
+function isOwnerUid(uid) {
+  return typeof uid === 'string' && APP_OWNER_UIDS.has(uid.trim());
+}
+
 module.exports = {
+  APP_OWNER_UIDS,
+  isOwnerUid,
   requireAppUser,
   verifyAppUser,
   requireTwilioSignature,

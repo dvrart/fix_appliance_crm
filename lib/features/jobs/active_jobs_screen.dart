@@ -15,9 +15,11 @@ import '../../services/job_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/sms_service.dart';
 import '../../services/status_service.dart';
+import '../../services/technician_service.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/widgets/job_agenda_card.dart';
 import '../../shared/widgets/job_status_filter_bar.dart';
+import '../../shared/widgets/technician_filter_bar.dart';
 import 'basket_screen.dart';
 import 'job_details/job_details_screen.dart';
 
@@ -50,68 +52,90 @@ class ActiveJobsScreen extends StatelessWidget {
         foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
       ),
-      body: StreamBuilder<List<Job>>(
-        stream: JobService.streamAll(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return Center(
-              child: CircularProgressIndicator(color: AppColors.accent),
-            );
-          }
-          final jobs =
-              snapshot.data!
-                  .where(
-                    (job) => target == null
-                        ? !JobStatuses.isClosed(job.status)
-                        : job.hasVisitOn(target),
-                  )
-                  .toList()
-                ..sort(_compare);
+      body: Column(
+        children: [
+          const TechnicianFilterBar(),
+          Expanded(
+            child: ValueListenableBuilder<String>(
+              valueListenable: TechnicianFilterState.selected,
+              builder: (context, techFilter, _) {
+                return StreamBuilder<List<Job>>(
+                  stream: JobService.streamAll(),
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return Center(
+                        child: CircularProgressIndicator(
+                          color: AppColors.accent,
+                        ),
+                      );
+                    }
+                    final jobs =
+                        snapshot.data!
+                            .where(
+                              (job) =>
+                                  TechnicianFilterState.matches(
+                                    job,
+                                    techFilter,
+                                  ) &&
+                                  (target == null
+                                      ? !JobStatuses.isClosed(job.status)
+                                      : job.hasVisitOn(target)),
+                            )
+                            .toList()
+                          ..sort(_compare);
 
-          if (jobs.isEmpty) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  target == null
-                      ? 'Нет активных заявок'.tr
-                      : 'На сегодня визитов нет'.tr,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: AppColors.inkMuted, height: 1.35),
-                ),
-              ),
-            );
-          }
+                    if (jobs.isEmpty) {
+                      return Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(
+                            target == null
+                                ? 'Нет активных заявок'.tr
+                                : 'На сегодня визитов нет'.tr,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: AppColors.inkMuted,
+                              height: 1.35,
+                            ),
+                          ),
+                        ),
+                      );
+                    }
 
-          return ListView.builder(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
-            itemCount: jobs.length,
-            itemBuilder: (context, index) {
-              final job = jobs[index];
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 5),
-                child: JobAgendaCard(
-                  job: job,
-                  forceCompact: true,
-                  visit: target == null
-                      ? job.latestVisit
-                      : (job.visitOn(target) ?? job.latestVisit),
-                  onTap: () {
-                    AppNav.openCard(
-                      context,
-                      key: AppNav.jobKey(job.id),
-                      builder: (_) => JobDetailsScreen(
-                        jobId: job.id,
-                        clientId: job.clientId,
-                        jobData: job.toMap(),
-                      ),
+                    return ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
+                      itemCount: jobs.length,
+                      itemBuilder: (context, index) {
+                        final job = jobs[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 5),
+                          child: JobAgendaCard(
+                            job: job,
+                            forceCompact: true,
+                            visit: target == null
+                                ? job.latestVisit
+                                : (job.visitOn(target) ?? job.latestVisit),
+                            onTap: () {
+                              AppNav.openCard(
+                                context,
+                                key: AppNav.jobKey(job.id),
+                                builder: (_) => JobDetailsScreen(
+                                  jobId: job.id,
+                                  clientId: job.clientId,
+                                  jobData: job.toMap(),
+                                ),
+                              );
+                            },
+                          ),
+                        );
+                      },
                     );
                   },
-                ),
-              );
-            },
-          );
-        },
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -195,6 +219,7 @@ class _AllVisitsScreenState extends State<AllVisitsScreen> {
   }
 
   void _bindMessageStreams() {
+    if (TechnicianService.isTechnician) return;
     try {
       final unreadStream =
           widget.unreadMessagesStream ??
