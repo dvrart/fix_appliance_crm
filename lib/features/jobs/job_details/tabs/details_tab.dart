@@ -216,38 +216,6 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  Future<void> _smsSelected() async {
-    final contact = await _pickContact('Кому написать?'.tr);
-    if (contact == null || !mounted) return;
-    ctrl.setChatRole(contact.id);
-    await AppNav.openCard(
-      context,
-      key: AppNav.chatKey(
-        phone: contact.phone,
-        email: contact.email.contains('@') ? contact.email : null,
-        jobId: ctrl.jobId,
-      ),
-      builder: (context) => ConversationScreen(
-        phoneNumber: contact.phone,
-        email: contact.email.contains('@') ? contact.email : null,
-        contactName: contact.displayName,
-        clientId: ctrl.clientId,
-        jobId: ctrl.jobId,
-        recipients: [
-          for (final item in ctrl.chatContacts)
-            ConversationPeer(
-              id: item.id,
-              label: item.label,
-              name: item.displayName,
-              phone: item.phone,
-              email: item.email,
-            ),
-        ],
-        onRecipientChanged: (peer) => ctrl.setChatRole(peer.id),
-      ),
-    );
-  }
-
   void _showStatusMenu() {
     showModalBottomSheet(
       sheetAnimationStyle: AppMotion.sheet,
@@ -2651,19 +2619,6 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  Widget _smsButton() {
-    final phone = _bestContactPhone();
-    return _contactActionButton(
-      onPressed: _smsSelected,
-      onLongPress: phone.isNotEmpty
-          ? () => AppFeedback.copy(context, phone)
-          : null,
-      background: const Color(0xFF1E88E5),
-      foreground: Colors.white,
-      child: const Icon(Icons.sms, size: 28, color: Colors.white),
-    );
-  }
-
   Widget _buildContactActions() {
     return Material(
       color: AppColors.card,
@@ -2672,12 +2627,11 @@ class _DetailsTabState extends State<DetailsTab> {
         top: false,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-          child: Row(
-            children: [
-              Expanded(child: _callButton()),
-              const SizedBox(width: 8),
-              Expanded(child: _smsButton()),
-            ],
+          child: Center(
+            child: FractionallySizedBox(
+              widthFactor: 0.5,
+              child: _callButton(),
+            ),
           ),
         ),
       ),
@@ -3395,11 +3349,13 @@ class _DetailsTabState extends State<DetailsTab> {
               textAlign: TextAlign.center,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 24,
                 height: 1.06,
                 fontWeight: FontWeight.w900,
-                color: Color(0xFF1E88E5),
+                color: AppColors.isDark
+                    ? const Color(0xFF90CAF9)
+                    : const Color(0xFF0D3B7A),
                 letterSpacing: 0.3,
               ),
             ),
