@@ -8,6 +8,7 @@ import 'maps_service.dart';
 import 'network_status_service.dart';
 import '../core/l10n/app_locale.dart';
 import 'status_service.dart';
+import 'technician_service.dart';
 
 /// Сервис для работы с настройками
 class SettingsService {
@@ -846,8 +847,18 @@ class SettingsService {
   }
 
   static Future<String> takeNextDocumentNumber(String type) async {
-    final current = await loadDocumentSettings();
     final isEstimate = type == 'Estimate';
+    if (TechnicianService.isTechnician) {
+      final now = DateTime.now();
+      final prefix = isEstimate ? 'EST' : 'INV';
+      final init = TechnicianService.selfProfile.value?.initials ?? 'T';
+      final y = (now.year % 100).toString().padLeft(2, '0');
+      final m = now.month.toString().padLeft(2, '0');
+      final d = now.day.toString().padLeft(2, '0');
+      final t = '${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
+      return '$prefix-$init-$y$m$d-$t';
+    }
+    final current = await loadDocumentSettings();
     final next = isEstimate ? current.nextEstimateNumber : current.nextInvoiceNumber;
     final label = current.formattedNumber(next <= 0 ? 1 : next);
     await saveDocumentSettings(

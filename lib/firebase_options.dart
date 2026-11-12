@@ -60,13 +60,13 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyBfoaSmrZwSBJ4Hz3TZ8wTMAIoC0WNwHrg',
-    appId: '1:772324431093:ios:c906214ef15ddd782fe1bc',
+    appId: '1:772324431093:ios:938ae81b4f55fc382fe1bc',
     messagingSenderId: '772324431093',
     projectId: 'fix-appliance-crm',
     storageBucket: 'fix-appliance-crm.firebasestorage.app',
     iosClientId:
-        '772324431093-4c3i2h5mp922o9gnlnoaq2jg4i5esocr.apps.googleusercontent.com',
-    iosBundleId: 'com.example.fixApplianceCrm',
+        '772324431093-61r6bh5qd98kmm5u7t3vucmo4l2ja5sh.apps.googleusercontent.com',
+    iosBundleId: 'ca.fixappliance.crm',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(

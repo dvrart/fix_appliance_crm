@@ -1,0 +1,30 @@
+{
+  "name": "Fix Appliance — Мастер",
+  "short_name": "FIX Мастер",
+  "description": "Рабочее приложение мастера Fix Appliance",
+  "start_url": "/tech/",
+  "scope": "/tech/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#14557F",
+  "theme_color": "#14557F",
+  "icons": [
+    {
+      "src": "/tech/icons/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/tech/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/tech/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

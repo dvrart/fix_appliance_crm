@@ -7,6 +7,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:twilio_voice/twilio_voice.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/app_commands.dart';
 import '../core/api_keys.dart';
@@ -785,6 +786,15 @@ class TwilioService {
             false;
       } catch (e) {
         debugPrint('TwilioService: placeCellularCall: $e');
+      }
+    } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      try {
+        placed = await launchUrl(
+          Uri(scheme: 'tel', path: shop),
+          mode: LaunchMode.externalApplication,
+        );
+      } catch (e) {
+        debugPrint('TwilioService: iOS tel launch: $e');
       }
     }
     if (!placed) {

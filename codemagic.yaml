@@ -1,0 +1,44 @@
+workflows:
+  ios-technician-testflight:
+    name: FIX Appliance Technician (iOS TestFlight)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Fix Appliance App Store Connect
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: ca.fixappliance.crm
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      vars:
+        BUNDLE_ID: "ca.fixappliance.crm"
+    scripts:
+      - name: Подготовка ключей сборки (без реквизитов владельца)
+        script: |
+          cp lib/core/api_keys.example.dart lib/core/api_keys.dart
+          if [ -n "${GOOGLE_MAPS_API_KEY:-}" ]; then
+            sed -i '' "s/YOUR_GOOGLE_MAPS_API_KEY/${GOOGLE_MAPS_API_KEY}/g" lib/core/api_keys.dart
+            echo "GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}" >> ios/Flutter/Release.xcconfig
+          fi
+      - name: Установка пакетов Flutter
+        script: |
+          flutter pub get
+      - name: Подпись приложения Xcode
+        script: |
+          xcode-project use-profiles
+      - name: Сборка IPA для мастеров (TECH_APP=true)
+        script: |
+          BUILD_NUMBER=$(($(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || echo 0) + 1))
+          flutter build ipa --release \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=TECH_APP=true \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true

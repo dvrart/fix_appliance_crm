@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../core/app_commands.dart';
 import 'firestore_service.dart';
 import 'network_status_service.dart';
+import 'technician_service.dart';
 import '../models/warehouse_item.dart';
 
 /// Сервис для работы со складом
@@ -146,6 +147,7 @@ class WarehouseService {
     Map<String, dynamic> doc, {
     required bool reverse,
   }) async {
+    if (TechnicianService.isTechnician) return;
     if (!shouldApplyStock(doc, reverse: reverse)) return;
     final deltas = stockDeltas(doc, reverse: reverse);
     for (final entry in deltas.entries) {
@@ -161,6 +163,7 @@ class WarehouseService {
     Map<String, dynamic> before,
     Map<String, dynamic> after,
   ) async {
+    if (TechnicianService.isTechnician) return;
     final deltas = stockChangeDeltas(before, after);
     for (final entry in deltas.entries) {
       await adjustQuantity(entry.key, entry.value);

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CLIENT_ID</key>
+	<string>772324431093-61r6bh5qd98kmm5u7t3vucmo4l2ja5sh.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.772324431093-61r6bh5qd98kmm5u7t3vucmo4l2ja5sh</string>
+	<key>API_KEY</key>
+	<string>AIzaSyBfoaSmrZwSBJ4Hz3TZ8wTMAIoC0WNwHrg</string>
+	<key>GCM_SENDER_ID</key>
+	<string>772324431093</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>ca.fixappliance.crm</string>
+	<key>PROJECT_ID</key>
+	<string>fix-appliance-crm</string>
+	<key>STORAGE_BUCKET</key>
+	<string>fix-appliance-crm.firebasestorage.app</string>
+	<key>IS_ADS_ENABLED</key>
+	<false></false>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false></false>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true></true>
+	<key>IS_GCM_ENABLED</key>
+	<true></true>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true></true>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:772324431093:ios:938ae81b4f55fc382fe1bc</string>
+</dict>
+</plist>

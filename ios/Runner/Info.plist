@@ -2,14 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-<key>NSLocationWhenInUseUsageDescription</key>
-<string>Нам нужна геопозиция для расчета времени в пути к клиенту</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Fix Appliance Crm</string>
+	<string>FIX Appliance</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -26,8 +24,39 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>GMSApiKey</key>
+	<string>$(GOOGLE_MAPS_API_KEY)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>tel</string>
+		<string>sms</string>
+		<string>mailto</string>
+		<string>https</string>
+		<string>comgooglemaps</string>
+		<string>waze</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Bluetooth используется для подключения аудиогарнитуры во время рабочих звонков и сервисного оборудования.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Bluetooth используется для подключения сервисного оборудования.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Камера нужна для съёмки шильдиков техники, фото выполненного ремонта и чеков запчастей.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Face ID используется для быстрой разблокировки рабочего приложения.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Нам нужна геопозиция для расчета времени в пути к клиенту</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Микрофон нужен для рабочих звонков клиентам и голосового ввода заметок по ремонту.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Доступ нужен для сохранения фотографий заказа и документов.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Доступ к фотогалерее нужен для прикрепления фото техники и чеков запчастей к заказу.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Распознавание речи используется для быстрого голосового заполнения отчётов о ремонте.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -51,6 +80,13 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>voip</string>
+		<string>fetch</string>
+		<string>remote-notification</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
