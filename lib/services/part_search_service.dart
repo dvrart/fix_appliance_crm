@@ -133,12 +133,23 @@ class PartSearchResult {
 
   PartOffer? get cheapestOverall => offers.isEmpty ? null : offers.first;
 
+  PartOffer? get cheapestAftermarket {
+    for (final offer in offers) {
+      if (offer.isOem == false) return offer;
+    }
+    return null;
+  }
+
   PartOffer? get cheapestOem {
     for (final offer in offers) {
       if (offer.isOem == true) return offer;
     }
     return null;
   }
+
+  String get amazonSearchUrl => partNumber.trim().isEmpty
+      ? ''
+      : 'https://www.amazon.ca/s?k=${Uri.encodeQueryComponent(partNumber.trim())}';
 
   Map<String, dynamic> toToolJson() {
     if (needsClarification) {
@@ -180,8 +191,11 @@ class PartSearchResult {
       'verified_in_stock_count': offers.length,
       if (cheapestOverall != null)
         'cheapest_in_stock': cheapestOverall!.toToolJson(),
+      if (cheapestAftermarket != null)
+        'cheapest_aftermarket_or_amazon': cheapestAftermarket!.toToolJson(),
       if (cheapestOem != null) 'cheapest_oem_in_stock': cheapestOem!.toToolJson(),
-      'offers': [for (final offer in offers.take(8)) offer.toToolJson()],
+      if (amazonSearchUrl.isNotEmpty) 'amazon_ca_search_url': amazonSearchUrl,
+      'offers': [for (final offer in offers.take(10)) offer.toToolJson()],
     };
   }
 }
@@ -329,6 +343,12 @@ class PartSearchService {
     'foreverpro',
     'ami parts',
     'lunaparts',
+    'supplying demand',
+    'partsbroz',
+    'fetechmate',
+    'seentech',
+    'edgewater',
+    'upgraded',
   ];
 
   static String _t(String ru, String en) => AppLocale.instance.t(ru, en);
@@ -525,6 +545,7 @@ class PartSearchService {
         brand: brand,
       ),
       _searchDuckDuckGoCanada(canonicalPart),
+      _searchDuckDuckGoBudget(canonicalPart),
     ]);
 
     final warehouseMatches = parallelResults[0] as List<WarehousePartMatch>;
@@ -533,6 +554,7 @@ class PartSearchService {
         parallelResults[2]
             as ({List<PartOffer> offers, int checked, int rejected});
     final ddgLinks = parallelResults[3] as List<PartCandidateLink>;
+    final budgetDdgLinks = parallelResults[4] as List<PartCandidateLink>;
 
     final mergedInterchange = <String>{
       ...identified.replaces.map((e) => e.trim().toUpperCase()),
@@ -574,28 +596,42 @@ class PartSearchService {
         .where((h) => h.isNotEmpty)
         .toSet();
 
-    final candidateMap = <String, PartCandidateLink>{};
-    for (final link in [...identified.groundedLinks, ...ddgLinks]) {
+    final budgetCandidates = <String, PartCandidateLink>{};
+    final oemCandidates = <String, PartCandidateLink>{};
+    for (final link in [
+      ...budgetDdgLinks,
+      ...identified.groundedLinks,
+      ...ddgLinks,
+    ]) {
       final clean = cleanProductUrl(link.url);
       if (clean == null) continue;
       final uri = Uri.tryParse(clean);
       if (uri == null || !isLikelyProductUrl(uri)) continue;
       final host = _cleanHost(uri.host);
       if (shopifyHosts.contains(host)) continue;
-      candidateMap.putIfAbsent(
-        clean,
-        () => PartCandidateLink(
-          url: clean,
-          title: link.title,
-          snippet: link.snippet,
-          source: link.source,
-        ),
+      final cand = PartCandidateLink(
+        url: clean,
+        title: link.title,
+        snippet: link.snippet,
+        source: link.source,
       );
+      if (_isBudgetMarketplaceHost(host)) {
+        budgetCandidates.putIfAbsent(clean, () => cand);
+      } else {
+        oemCandidates.putIfAbsent(clean, () => cand);
+      }
     }
+
+    // Обязательно берём и дешёвые варианты (Amazon.ca / eBay / Walmart), и оригинальные магазины OEM,
+    // чтобы дорогие сайты никогда не вытесняли Amazon.ca из очереди проверки!
+    final selectedCandidates = <PartCandidateLink>[
+      ...budgetCandidates.values.take(6),
+      ...oemCandidates.values.take(6),
+    ];
 
     final verifiedWeb = await _verifyCandidateLinks(
       apiKey: apiKey,
-      candidates: candidateMap.values.take(8).toList(),
+      candidates: selectedCandidates,
       canonicalPart: canonicalPart,
       allowedNumbers: allAllowed,
       brand: brand,
@@ -796,6 +832,34 @@ class PartSearchService {
     return true;
   }
 
+  static bool _isBudgetMarketplaceHost(String host) =>
+      host.contains('amazon.') ||
+      host.contains('ebay.') ||
+      host.contains('walmart.');
+
+  @visibleForTesting
+  static bool isAmazonBotChallenge(int statusCode, String html, String host) {
+    if (!host.contains('amazon.')) return false;
+    if (statusCode == 503 || statusCode == 429) return true;
+    final low = html.toLowerCase();
+    if (low.contains('validatecaptcha') ||
+        low.contains('api-services-support@amazon') ||
+        low.contains('automated access to amazon') ||
+        low.contains('enter the characters you see below') ||
+        low.contains('robot check')) {
+      return true;
+    }
+    if (html.length < 9000 &&
+        !low.contains('looking for something?') &&
+        !low.contains('we couldn\'t find that page') &&
+        !low.contains('currently unavailable') &&
+        !low.contains('producttitle') &&
+        !low.contains('add-to-cart')) {
+      return true;
+    }
+    return false;
+  }
+
   @visibleForTesting
   static bool isSoft404OrOutOfStockHtml(String html, String host) {
     final low = html.toLowerCase();
@@ -803,11 +867,6 @@ class PartSearchService {
       if (low.contains('looking for something?') ||
           low.contains('we couldn\'t find that page') ||
           low.contains('currently unavailable')) {
-        return true;
-      }
-      if (html.length < 9000 &&
-          !low.contains('producttitle') &&
-          !low.contains('add-to-cart')) {
         return true;
       }
     }
@@ -1102,8 +1161,16 @@ class PartSearchService {
       return true;
     }
     if (combined.contains('genuine oem') ||
-        combined.contains('official') ||
+        combined.contains('authentic oem') ||
         combined.contains('factory original')) {
+      return true;
+    }
+    if (host.contains('amazon.') ||
+        host.contains('ebay.') ||
+        host.contains('walmart.')) {
+      return false;
+    }
+    if (combined.contains('official')) {
       return true;
     }
     final cleanBrand = brand.trim().toLowerCase();
@@ -1265,8 +1332,7 @@ class PartSearchService {
   ) async {
     final query =
         '"$canonicalPart" (site:partselect.ca OR site:reliableparts.ca '
-        'OR site:amresupply.com OR site:applianceparts.homedepot.ca '
-        'OR site:amazon.ca OR site:walmart.ca OR site:ebay.ca OR site:bestbuy.ca)';
+        'OR site:amresupply.com OR site:applianceparts.homedepot.ca)';
     final uri = Uri.parse(
       'https://html.duckduckgo.com/html/?q=${Uri.encodeQueryComponent(query)}',
     );
@@ -1276,6 +1342,24 @@ class PartSearchService {
       return parseDuckDuckGoHtml(resp.body);
     } catch (e) {
       debugPrint('PartSearchService ddg: $e');
+      return const [];
+    }
+  }
+
+  static Future<List<PartCandidateLink>> _searchDuckDuckGoBudget(
+    String canonicalPart,
+  ) async {
+    final query =
+        '"$canonicalPart" (site:amazon.ca OR site:ebay.ca OR site:walmart.ca)';
+    final uri = Uri.parse(
+      'https://html.duckduckgo.com/html/?q=${Uri.encodeQueryComponent(query)}',
+    );
+    try {
+      final resp = await _httpGet(uri, timeout: const Duration(seconds: 7));
+      if (resp.statusCode != 200) return const [];
+      return parseDuckDuckGoHtml(resp.body);
+    } catch (e) {
+      debugPrint('PartSearchService ddg budget: $e');
       return const [];
     }
   }
@@ -1342,8 +1426,10 @@ Input:
 Mandatory verification rules:
 1. If NO part number is given AND NO model number is given, and multiple incompatible OEM parts exist for different models of this brand/appliance, DO NOT GUESS. Set NEEDS_CLARIFICATION: YES and explain briefly in Russian in CLARIFY_RU that the model number from the rating plate (or old part number) is required.
 2. If a model number IS provided, search official parts diagrams for that exact model to verify the exact OEM part number. If an explicit part number was also given, check whether it actually fits that model; if another OEM part number is the true factory part for that model, report the true factory OEM part in OEM_PART and warn clearly in Russian in COMPAT_NOTE_RU.
-3. Search Google for Canadian appliance part stores selling that exact OEM part number in CAD right now (partselect.ca, reliableparts.ca, amresupply.com, partsofcanada.com, xpartsupply.com, appliancepartscanada.ca, applianceparts.homedepot.ca, amazon.ca, walmart.ca, ebay.ca, bestbuy.ca).
-4. Write your findings and ALWAYS finish with these exact tagged lines at the very end:
+3. Search Google for BOTH:
+   a) Cheap / aftermarket & Prime options on amazon.ca ("<OEM_PART> site:amazon.ca"), ebay.ca, walmart.ca, and xpartsupply.com; AND
+   b) Genuine OEM options at Canadian parts distributors (amresupply.com, partsofcanada.com, appliancepartscanada.ca, reliableparts.ca, partselect.ca).
+4. Write your findings (include any direct amazon.ca/dp/... product URLs you found in BUDGET_URLS) and ALWAYS finish with these exact tagged lines at the very end:
 NEEDS_CLARIFICATION: <YES or NO>
 CLARIFY_RU: <Russian clarification question if NEEDS_CLARIFICATION is YES, otherwise empty>
 OEM_PART: <exact primary OEM part number, e.g. W10876537 or 00631200 or DC47-00019A>
@@ -1352,6 +1438,7 @@ PART_NAME_EN: <concise English part name>
 REPLACES: <comma-separated verified cross-reference / superseded part numbers>
 FITS_MODEL: <YES, NO, or UNKNOWN>
 COMPAT_NOTE_RU: <1 concise Russian sentence about verified compatibility or assembly notes>
+BUDGET_URLS: <comma-separated direct https://www.amazon.ca/.../dp/... or https://www.ebay.ca/itm/... URLs found, or NONE>
 ''';
 
     final res = await _callGeminiRest(
@@ -1405,6 +1492,18 @@ COMPAT_NOTE_RU: <1 concise Russian sentence about verified compatibility or asse
       'NO' => false,
       _ => null,
     };
+    final explicitBudgetUrls = tag('BUDGET_URLS')
+        .split(RegExp(r'[\s,;]+'))
+        .map((s) => s.replaceAll('`', '').replaceAll('*', '').trim())
+        .where((s) => s.startsWith('http'))
+        .map(
+          (u) => PartCandidateLink(
+            url: u,
+            title: oemPart.isNotEmpty ? oemPart : explicitPartNumber,
+            source: 'google_budget',
+          ),
+        )
+        .toList();
 
     return _GroundedIdentification(
       needsClarification: needsClarify,
@@ -1415,7 +1514,7 @@ COMPAT_NOTE_RU: <1 concise Russian sentence about verified compatibility or asse
       replaces: replaces,
       fitsModel: fitsModel,
       compatNoteRu: tag('COMPAT_NOTE_RU'),
-      groundedLinks: resolvedLinks,
+      groundedLinks: [...explicitBudgetUrls, ...resolvedLinks],
     );
   }
 
@@ -1500,11 +1599,13 @@ COMPAT_NOTE_RU: <1 concise Russian sentence about verified compatibility or asse
           }
 
           if (isCloudflareChallenge(resp.statusCode, resp.body) ||
+              isAmazonBotChallenge(resp.statusCode, resp.body, host) ||
               resp.statusCode == 403) {
-            if (!textMatchesAllowedPart(
-              '${cand.url} ${cand.title} ${cand.snippet}',
-              allowedNumbers,
-            )) {
+            if (!host.contains('amazon.') &&
+                !textMatchesAllowedPart(
+                  '${cand.url} ${cand.title} ${cand.snippet}',
+                  allowedNumbers,
+                )) {
               return (
                 offer: null,
                 cfBlocked: false,
@@ -1520,6 +1621,9 @@ COMPAT_NOTE_RU: <1 concise Russian sentence about verified compatibility or asse
           }
 
           final html = resp.body;
+          if (isAmazonBotChallenge(resp.statusCode, html, host)) {
+            return (offer: null, cfBlocked: true, rejected: false, cand: cand);
+          }
           if (isSoft404OrOutOfStockHtml(html, host)) {
             return (offer: null, cfBlocked: false, rejected: true, cand: cand);
           }
@@ -1604,7 +1708,7 @@ COMPAT_NOTE_RU: <1 concise Russian sentence about verified compatibility or asse
     if (needsUrlContext.isNotEmpty &&
         apiKey.isNotEmpty &&
         apiKey != 'YOUR_GEMINI_API_KEY') {
-      final batch = needsUrlContext.take(6).toList();
+      final batch = needsUrlContext.take(10).toList();
       final batchVerified = await _verifyBatchWithUrlContext(
         apiKey: apiKey,
         candidates: batch,

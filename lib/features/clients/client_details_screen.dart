@@ -105,28 +105,55 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     super.dispose();
   }
 
-  Future<void> _makeCall(String phone, String name) async {
-    final peers = await ConversationPeer.loadForClient(
-      clientId: widget.clientId,
-      name: name,
-      phone: phone,
+  Future<void> _makeCall(
+    String phone,
+    String name, {
+    List<String> extraPhones = const [],
+  }) async {
+    // В карточке клиента звоним строго по личным номерам самого клиента (хозяина).
+    // Номера арендаторов с объектов в карточке клиента не показываем — выбор
+    // «Хозяин / Арендатор на месте» доступен только внутри конкретной заявки.
+    final ownerPhones = <String>[];
+    final seen = <String>{};
+    for (final raw in [phone, ...extraPhones]) {
+      final trimmed = raw.trim();
+      final norm = SmsService.normalizePhone(trimmed);
+      if (norm.length >= 10 && seen.add(norm)) {
+        ownerPhones.add(trimmed);
+      }
+    }
+    if (ownerPhones.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Нет телефона'.tr)));
+      return;
+    }
+    if (ownerPhones.length == 1) {
+      await CallScreen.open(
+        context,
+        phoneNumber: ownerPhones.first,
+        contactName: name,
+      );
+      return;
+    }
+    final peers = [
+      for (var i = 0; i < ownerPhones.length; i++)
+        ConversationPeer(
+          id: i == 0 ? 'owner' : 'owner-extra-$i',
+          label: i == 0 ? 'Основной'.tr : 'Доп. телефон'.tr,
+          name: name,
+          phone: ownerPhones[i],
+        ),
+    ];
+    final chosen = await ConversationPeer.pick(
+      context,
+      peers,
+      title: 'Кому позвонить?'.tr,
+      phoneOnly: true,
     );
-    if (!mounted) return;
-    final chosen = peers.isEmpty
-        ? ConversationPeer(
-            id: 'owner',
-            label: 'Хозяин'.tr,
-            name: name,
-            phone: phone,
-          )
-        : await ConversationPeer.pick(
-            context,
-            peers,
-            title: 'Кому позвонить?'.tr,
-            phoneOnly: true,
-          );
     if (chosen == null || !mounted || chosen.phone.trim().isEmpty) return;
-    CallScreen.open(
+    await CallScreen.open(
       context,
       phoneNumber: chosen.phone,
       contactName: chosen.displayName,
@@ -495,7 +522,11 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                             icon: Icons.phone,
                             label: 'Позвонить'.tr,
                             color: const Color(0xFF25D366),
-                            onTap: () => _makeCall(phone, name),
+                            onTap: () => _makeCall(
+                              phone,
+                              name,
+                              extraPhones: extraPhones,
+                            ),
                             onLongPress: phone.isNotEmpty ? () => AppFeedback.copy(context, phone) : null,
                           ),
                           const SizedBox(width: 16),
@@ -678,6 +709,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         );
       }
       for (final contact in loc.contacts) {
+        if (contact.role != 'owner') continue;
         cards.addAll(_contactCards(contact, mainPhone));
       }
     }

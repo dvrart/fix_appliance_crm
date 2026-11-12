@@ -152,12 +152,22 @@ void main() {
   });
 
   group('проверка HTML и отсев пустых/недоступных карточек', () {
-    test('ловит мёртвый ASIN Amazon и товары OutOfStock', () {
+    test('ловит мёртвый ASIN Amazon и товары OutOfStock, но не выбрасывает антибот-проверку Amazon', () {
       expect(
         PartSearchService.isSoft404OrOutOfStockHtml(
           '<html><body>Looking for something? We are sorry.</body></html>',
           'amazon.ca',
         ),
+        isTrue,
+      );
+      const captchaHtml =
+          '<html><body>Enter the characters you see below validateCaptcha</body></html>';
+      expect(
+        PartSearchService.isSoft404OrOutOfStockHtml(captchaHtml, 'amazon.ca'),
+        isFalse,
+      );
+      expect(
+        PartSearchService.isAmazonBotChallenge(200, captchaHtml, 'amazon.ca'),
         isTrue,
       );
       expect(

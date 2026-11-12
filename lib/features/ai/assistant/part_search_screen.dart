@@ -366,6 +366,36 @@ class _PartSearchScreenState extends State<PartSearchScreen> {
                   cheapestOemUrl != cheapestUrl,
             ),
           ],
+        if (result.amazonSearchUrl.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () {
+              AppFeedback.pleasant();
+              final uri = Uri.tryParse(result.amazonSearchUrl);
+              if (uri != null) {
+                unawaited(
+                  launchUrl(uri, mode: LaunchMode.externalApplication),
+                );
+              }
+            },
+            icon: const Icon(Icons.shopping_bag_outlined, size: 19),
+            label: Text(
+              context.tr(
+                'Все варианты ${result.partNumber} на Amazon.ca',
+                'All ${result.partNumber} options on Amazon.ca',
+              ),
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: const Color(0xFFD97706),
+              side: const BorderSide(color: Color(0xFFF59E0B), width: 1.4),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }

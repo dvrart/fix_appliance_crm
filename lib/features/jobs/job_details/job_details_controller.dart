@@ -1969,7 +1969,9 @@ class JobChatContact {
   bool get hasEmail => normalizedEmail.contains('@');
 
   bool get isOwner =>
-      id == 'client' || id == 'owner' || label == 'Хозяин'.tr;
+      id == 'client' ||
+      id.startsWith('owner') ||
+      label == 'Хозяин'.tr;
 
   String get displayName => name.isEmpty ? label : name;
 
