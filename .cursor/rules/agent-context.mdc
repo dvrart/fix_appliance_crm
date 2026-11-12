@@ -2877,3 +2877,13 @@ require('firebase-admin')` в проекте больше нет ни одног
 - **Приложение мастеров для iPhone (11.11.2026):**
   1. **Веб-приложение (PWA)** в `hosting/public/tech/` — живой адрес `https://doc.fix-appliance.ca/tech/` (и `https://fxapca.web.app/tech/`), ставится из Safari на экран «Домой» бесплатно без Apple Developer.
   2. **Нативный iOS под TestFlight:** зарегистрировано приложение `ca.fixappliance.crm` в Firebase (`ios/Runner/GoogleService-Info.plist`), настроены разрешения `Info.plist`, ключ карт в `AppDelegate.swift`, звонок через мост на iOS (`TwilioService.placeViaCell`) и сценарий облачной сборки `codemagic.yaml` (`TECH_APP=true`).
+- **Раздача APK мастерам (11.11.2026, выбор FIX — ссылка на своём сайте):** свежий
+  `app-arm64-v8a-release.apk` сборки `TECH_APP=true` кладётся в
+  `hosting/public/download/fix-master.apk` и уходит `firebase deploy --only hosting`; адрес
+  `https://doc.fix-appliance.ca/download/fix-master.apk` (зеркало `fxapca.web.app`), Hosting
+  сам отдаёт тип `application/vnd.android.package-archive`. В git файл **не кладём** — 101 МБ,
+  GitHub не принимает больше 100 МБ, поэтому `hosting/public/download/*.apk` в `.gitignore`.
+  Обновление версии для мастеров = пересобрать, перезаписать этот файл, задеплоить хостинг.
+  Проверка, что сборка действительно мастерская: в `lib/arm64-v8a/libapp.so` внутри APK **нет**
+  строк `kOwnerEmail` / `kOwnerPassword` (в сборке владельца они там есть). Внутри APK лежат
+  ключи Maps/Gemini — ссылку нигде не публиковать, давать только мастерам.

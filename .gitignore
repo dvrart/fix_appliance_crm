@@ -64,6 +64,10 @@ fix_appliance_crm/
 screen*.png
 functions/tmp_*.js
 
+# APK для мастеров: лежит на хостинге (/download/), в репозиторий не кладём —
+# GitHub не принимает файлы больше 100 МБ.
+hosting/public/download/*.apk
+
 # �������� ���� �������. ���� ����� ����� ��� ����������� (~/keys),
 # ����� ������ ��������� �� ���������� �������.
 android/key.properties
