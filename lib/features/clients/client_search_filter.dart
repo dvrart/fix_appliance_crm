@@ -75,6 +75,7 @@ class _ClientJobTexts {
     texts.descriptions.addAll([
       job.description,
       job.solution,
+      for (final r in job.recalls) ...[r.description, r.report],
       for (final appliance in job.appliances) ...[
         appliance.type,
         appliance.brand,

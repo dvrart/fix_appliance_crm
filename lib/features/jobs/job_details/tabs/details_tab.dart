@@ -592,6 +592,9 @@ class _DetailsTabState extends State<DetailsTab> {
     ]);
     if (followUp) {
       await ctrl.updateStatus(followUpStatus);
+      if (followUpStatus == JobStatuses.repeatVisit) {
+        await ctrl.addRecallForDate(effectiveStartAt);
+      }
     } else if (moving && ctrl.currentStatus != moveStatus) {
       await ctrl.updateStatus(moveStatus);
     }
@@ -654,7 +657,12 @@ class _DetailsTabState extends State<DetailsTab> {
         ctrl.trackingNumber.trim().isNotEmpty ||
         ctrl.amazonOrderId.trim().isNotEmpty ||
         ctrl.trackingCarrier.trim().isNotEmpty;
-    final hasInfo = !emptyInfo || packing.isNotEmpty || hasTracking;
+    final hasInfo =
+        !emptyInfo ||
+        ctrl.currentSolution.trim().isNotEmpty ||
+        ctrl.recalls.any((r) => r.isNotEmpty) ||
+        packing.isNotEmpty ||
+        hasTracking;
 
     final callItems = ctrl.callItems;
     final totalCalls = callItems.length + ctrl.otherClientCalls.length;
@@ -687,10 +695,40 @@ class _DetailsTabState extends State<DetailsTab> {
             onLongPress: emptyInfo
                 ? null
                 : () => AppFeedback.copy(context, description),
-            icon: Icon(
-              Icons.info_outline_rounded,
-              size: 34,
-              color: AppColors.primary,
+            icon: Stack(
+              alignment: Alignment.center,
+              clipBehavior: Clip.none,
+              children: [
+                Icon(
+                  Icons.info_outline_rounded,
+                  size: 34,
+                  color: AppColors.primary,
+                ),
+                if (ctrl.recalls.isNotEmpty)
+                  Positioned(
+                    bottom: -14,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF59E0B),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        ctrl.recalls.length == 1
+                            ? context.tr('Повтор', 'Recall')
+                            : '${context.tr('Повтор', 'Recall')} ${ctrl.recalls.length}',
+                        style: const TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
@@ -1354,25 +1392,44 @@ class _DetailsTabState extends State<DetailsTab> {
 
   /// Заявка привязана к паспорту техники, а отчёт пуст: на странице по QR
   /// тогда будет только дата без того, что сделали. Спрашиваем до закрытия.
-  bool get _reportMissing =>
-      ((ctrl.jobData['applianceIds'] as List?) ?? const []).isNotEmpty &&
-      ctrl.currentSolution.trim().isEmpty;
+  /// Если по заявке есть повторный выезд — проверяем именно отчёт последнего повтора,
+  /// не затирая отчёт первого ремонта.
+  bool get _reportMissing {
+    final hasPassport =
+        ((ctrl.jobData['applianceIds'] as List?) ?? const []).isNotEmpty;
+    if (!hasPassport) return false;
+    if (ctrl.recalls.isNotEmpty) {
+      return ctrl.recalls.last.report.trim().isEmpty;
+    }
+    return ctrl.currentSolution.trim().isEmpty;
+  }
 
   /// Отчёт по гарантийной технике. Пустую строку лист не отдаёт.
   Future<bool> _askForReport({String existing = ''}) async {
+    final hasRecall = ctrl.recalls.isNotEmpty;
+    final draftProblem = hasRecall &&
+            ctrl.recalls.last.description.trim().isNotEmpty
+        ? ctrl.recalls.last.description
+        : ctrl.currentDescription;
     final text = await WarrantyReportSheet.ask(
       context,
       existing: existing,
-      draftProblem: ctrl.currentDescription,
+      draftProblem: draftProblem,
       invoiceItems: _invoiceItemNames(),
     );
     if (text == null || text.trim().isEmpty) return false;
-    await ctrl.updateProblemAndSolution(
-      problem: ctrl.currentDescription == 'Нет описания'
-          ? ''
-          : ctrl.currentDescription,
-      solution: text.trim(),
-    );
+    if (hasRecall) {
+      final updated = List<JobRecall>.from(ctrl.recalls);
+      updated[updated.length - 1] = updated.last.copyWith(report: text.trim());
+      await ctrl.updateRecalls(updated);
+    } else {
+      await ctrl.updateProblemAndSolution(
+        problem: ctrl.currentDescription == 'Нет описания'
+            ? ''
+            : ctrl.currentDescription,
+        solution: text.trim(),
+      );
+    }
     await ctrl.commitChanges();
     return true;
   }
@@ -2352,6 +2409,10 @@ class _DetailsTabState extends State<DetailsTab> {
                                 key: _iconsBarKey,
                                 child: _buildQuickIconBar(),
                               ),
+                              if (ctrl.recalls.isNotEmpty) ...[
+                                const SizedBox(height: 6),
+                                _buildRecallSummaryCards(),
+                              ],
                               const SizedBox(height: 6),
                             ],
                           ),
@@ -2371,6 +2432,159 @@ class _DetailsTabState extends State<DetailsTab> {
         ),
         // Маршрут, звонок и SMS — всегда под пальцем, не уезжают с прокруткой.
         _buildContactActions(),
+      ],
+    );
+  }
+
+  Widget _buildRecallSummaryCards() {
+    final firstDesc = ctrl.currentDescription.trim() == 'Нет описания'
+        ? ''
+        : ctrl.currentDescription.trim();
+    final firstRep = ctrl.currentSolution.trim();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (firstDesc.isNotEmpty || firstRep.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 5),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => openJobInfoEditor(
+                context,
+                ctrl,
+                initialRecallIndex: -1,
+              ),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.card,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: AppColors.primary.withValues(alpha: 0.28),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      context.tr('1-й ремонт', '1st repair'),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.primaryOnCard,
+                      ),
+                    ),
+                    if (firstDesc.isNotEmpty)
+                      Text(
+                        firstDesc,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12.5, color: AppColors.ink),
+                      ),
+                    if (firstRep.isNotEmpty)
+                      Text(
+                        '✓ $firstRep',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF2E7D32),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        for (var i = 0; i < ctrl.recalls.length; i++)
+          Padding(
+            padding: EdgeInsets.only(
+              bottom: i == ctrl.recalls.length - 1 ? 0 : 5,
+            ),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => openJobInfoEditor(
+                context,
+                ctrl,
+                initialRecallIndex: i,
+              ),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.tint(const Color(0xFFF59E0B), 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: const Color(0xFFF59E0B).withValues(alpha: 0.6),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.replay_circle_filled_rounded,
+                          size: 15,
+                          color: Color(0xFFD97706),
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          ctrl.recalls.length == 1
+                              ? '${context.tr('Повторный выезд', 'Recall')} · ${DateFormat('d MMM', AppLocale.instance.dateLocale).format(ctrl.recalls[i].date)}'
+                              : '${context.tr('Повторный выезд', 'Recall')} #${i + 1} · ${DateFormat('d MMM', AppLocale.instance.dateLocale).format(ctrl.recalls[i].date)}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFFB45309),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    if (!ctrl.recalls[i].isNotEmpty)
+                      Text(
+                        context.tr(
+                          'Нажмите, чтобы добавить описание и отчёт повтора',
+                          'Tap to add recall issue and report',
+                        ),
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontStyle: FontStyle.italic,
+                          color: AppColors.inkMuted,
+                        ),
+                      )
+                    else ...[
+                      if (ctrl.recalls[i].description.trim().isNotEmpty)
+                        Text(
+                          ctrl.recalls[i].description.trim(),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 12.5, color: AppColors.ink),
+                        ),
+                      if (ctrl.recalls[i].report.trim().isNotEmpty)
+                        Text(
+                          '✓ ${ctrl.recalls[i].report.trim()}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF2E7D32),
+                          ),
+                        ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }

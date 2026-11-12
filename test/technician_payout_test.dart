@@ -226,4 +226,39 @@ void main() {
     );
     expect(figures.serviceIncome, closeTo(180.0, 0.001));
   });
+
+  test('повторные выезды (recalls) хранят свои описания и отчёты отдельно от первого ремонта', () {
+    final r1 = JobRecall(
+      id: 'rec_1',
+      date: DateTime(2026, 11, 10, 14),
+      description: 'Снова течёт снизу',
+      report: 'Подтянул хомут патрубка помпы',
+      reportEn: 'Tightened the drain pump hose clamp.',
+    );
+    // При правке только описания перевод отчёта сохраняется:
+    final sameReport = r1.copyWith(description: 'Капает при отжиме');
+    expect(sameReport.reportEn, 'Tightened the drain pump hose clamp.');
+
+    // При изменении самого отчёта старый перевод сбрасывается для нового автоперевода:
+    final changedReport = r1.copyWith(report: 'Заменил патрубок целиком');
+    expect(changedReport.reportEn, isEmpty);
+
+    final job = Job(
+      id: 'j-recall',
+      clientId: 'c-1',
+      clientName: 'John',
+      clientPhone: '4165550100',
+      clientAddress: '1 Main St',
+      description: 'Не сливает воду',
+      solution: 'Заменил сливную помпу',
+      recalls: [r1],
+      createdAt: DateTime(2026, 11, 1),
+    );
+    final roundTrip = Job.fromMap(job.toMap(), job.id);
+    expect(roundTrip.description, 'Не сливает воду');
+    expect(roundTrip.solution, 'Заменил сливную помпу');
+    expect(roundTrip.recalls, hasLength(1));
+    expect(roundTrip.recalls.single.description, 'Снова течёт снизу');
+    expect(roundTrip.recalls.single.report, 'Подтянул хомут патрубка помпы');
+  });
 }

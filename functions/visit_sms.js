@@ -1265,25 +1265,77 @@ async function translateReportIfNeeded(jobId, before, after) {
   if (!after || !jobId) return;
   const ids = Array.isArray(after.applianceIds) ? after.applianceIds.filter(Boolean) : [];
   if (!ids.length) return;
+
+  const patch = {};
   const text = String(after.solution || '').trim();
-  if (!text) return;
-  if (before && String(before.solution || '').trim() === text && String(after.solutionEn || '').trim()) {
-    return;
+  const prevText = before ? String(before.solution || '').trim() : '';
+  const hasExistingEn = Boolean(String(after.solutionEn || '').trim());
+  if (text && !(before && prevText === text && hasExistingEn)) {
+    if (!/[А-Яа-яЁё]/.test(text)) {
+      if (String(after.solutionEn || '') !== text) {
+        patch.solutionEn = text;
+      }
+    } else {
+      try {
+        const english = String(
+          await require('./report_translate').translateServiceReport(text) || '',
+        ).trim();
+        if (english && !/[А-Яа-яЁё]/.test(english)) {
+          patch.solutionEn = english;
+        }
+      } catch (error) {
+        console.error('passport report translate:', error.message);
+      }
+    }
   }
-  if (!/[А-Яа-яЁё]/.test(text)) {
-    if (String(after.solutionEn || '') === text) return;
-    await companyRef().collection('jobs').doc(jobId).set({ solutionEn: text }, { merge: true });
-    return;
+
+  // Также переводим отчёты каждого повторного выезда (recalls[i].report -> reportEn).
+  if (Array.isArray(after.recalls) && after.recalls.length) {
+    const prevById = new Map();
+    if (before && Array.isArray(before.recalls)) {
+      for (const r of before.recalls) {
+        if (r && r.id) prevById.set(String(r.id), r);
+      }
+    }
+    let recallsChanged = false;
+    const nextRecalls = [];
+    for (const raw of after.recalls) {
+      if (!raw || typeof raw !== 'object') continue;
+      const item = { ...raw };
+      const rText = String(item.report || '').trim();
+      const prev = item.id ? prevById.get(String(item.id)) : null;
+      const prevRep = prev ? String(prev.report || '').trim() : '';
+      const existingEn = String(item.reportEn || '').trim();
+      if (rText && !(prev && prevRep === rText && existingEn)) {
+        if (!/[А-Яа-яЁё]/.test(rText)) {
+          if (existingEn !== rText) {
+            item.reportEn = rText;
+            recallsChanged = true;
+          }
+        } else {
+          try {
+            const english = String(
+              await require('./report_translate').translateServiceReport(rText) || '',
+            ).trim();
+            if (english && !/[А-Яа-яЁё]/.test(english)) {
+              item.reportEn = english;
+              recallsChanged = true;
+            }
+          } catch (error) {
+            console.error('passport recall report translate:', error.message);
+          }
+        }
+      }
+      nextRecalls.push(item);
+    }
+    if (recallsChanged) {
+      patch.recalls = nextRecalls;
+    }
   }
-  let english = '';
-  try {
-    english = String(await require('./report_translate').translateServiceReport(text) || '').trim();
-  } catch (error) {
-    console.error('passport report translate:', error.message);
-    return;
+
+  if (Object.keys(patch).length) {
+    await companyRef().collection('jobs').doc(jobId).set(patch, { merge: true });
   }
-  if (!english || /[А-Яа-яЁё]/.test(english)) return;
-  await companyRef().collection('jobs').doc(jobId).set({ solutionEn: english }, { merge: true });
 }
 
 async function recordJobChanges(before, after, jobId) {

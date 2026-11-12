@@ -153,19 +153,40 @@ function buildHistory(appliance, jobs) {
   const entries = [];
   for (const job of jobs) {
     if (!job || job.deletedAt || isCancelledStatus(job.status) || job.mergedIntoJobId) continue;
-    const date = jobServiceDate(job);
-    if (!date) continue;
-    entries.push({
-      date,
-      kind: job.carePlanKind === 'maintenance' ? 'Maintenance' : 'Repair',
-      // Незакрытая заявка с выездом — диагностика, ремонт ещё не сделан.
-      label: isCompletedStatus(job.status) || toDate(job.completedAt) ? '' : 'Inspected',
-      report: reportText(job),
-      items: invoiceItemNames(job),
-      by: latin(job.technicianName),
-      shop: latin(job.servicedByShop),
-      phone: telHref(job.servicedByPhone),
-    });
+    const recalls = Array.isArray(job.recalls) ? job.recalls : [];
+    const doneDates = doneVisitDates(job);
+    const primaryDate = recalls.length && doneDates.length
+      ? doneDates[doneDates.length - 1]
+      : jobServiceDate(job);
+    if (primaryDate) {
+      entries.push({
+        date: primaryDate,
+        kind: job.carePlanKind === 'maintenance' ? 'Maintenance' : 'Repair',
+        // Незакрытая заявка с выездом — диагностика, ремонт ещё не сделан.
+        label: isCompletedStatus(job.status) || toDate(job.completedAt) || recalls.length ? '' : 'Inspected',
+        report: reportText(job),
+        items: invoiceItemNames(job),
+        by: latin(job.technicianName),
+        shop: latin(job.servicedByShop),
+        phone: telHref(job.servicedByPhone),
+      });
+    }
+    for (const r of recalls) {
+      if (!r || typeof r !== 'object') continue;
+      const rDate = toDate(r.date);
+      const rReport = latin(r.reportEn || r.report).slice(0, 600);
+      if (!rDate || (!rReport && !isCompletedStatus(job.status))) continue;
+      entries.push({
+        date: rDate,
+        kind: 'Repair',
+        label: 'Warranty follow-up',
+        report: rReport,
+        items: [],
+        by: latin(job.technicianName),
+        shop: latin(job.servicedByShop),
+        phone: telHref(job.servicedByPhone),
+      });
+    }
   }
   for (const log of Array.isArray(appliance.serviceLog) ? appliance.serviceLog : []) {
     const date = toDate(log && log.date);

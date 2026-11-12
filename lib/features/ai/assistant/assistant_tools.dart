@@ -63,6 +63,15 @@ class AssistantTools {
       ...summary,
       'contact_name': job.contactName,
       if (job.solution.trim().isNotEmpty) 'solution': job.solution,
+      if (job.recalls.isNotEmpty)
+        'recalls': [
+          for (final r in job.recalls)
+            {
+              'date': r.date.toIso8601String(),
+              'description': r.description,
+              'report': r.report,
+            },
+        ],
       if (job.expectedParts.isNotEmpty) 'expected_parts': job.expectedParts,
       'packing_notes': job.packingNotes,
       'tracking': {

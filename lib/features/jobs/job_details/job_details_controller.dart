@@ -93,6 +93,7 @@ class JobDetailsController extends ChangeNotifier {
   String currentStatus = 'Новая';
   String currentDescription = 'Нет описания';
   String currentSolution = '';
+  List<JobRecall> recalls = [];
   bool hasJobSite = false;
   String jobSiteName = '';
   String jobSitePhone = '';
@@ -187,6 +188,7 @@ class JobDetailsController extends ChangeNotifier {
     currentStatus = jobData['status'] ?? 'Новая';
     currentDescription = jobData['description'] ?? 'Нет описания';
     currentSolution = (jobData['solution'] ?? '').toString();
+    recalls = JobRecall.parseList(jobData['recalls']);
 
     scheduledAt =
         _parseDate(jobData['scheduledAt']) ??
@@ -380,6 +382,10 @@ class JobDetailsController extends ChangeNotifier {
         }
         if (data.containsKey('solution')) {
           currentSolution = (data['solution'] ?? currentSolution).toString();
+        }
+        if (data.containsKey('recalls')) {
+          recalls = JobRecall.parseList(data['recalls']);
+          jobData['recalls'] = data['recalls'];
         }
         if (data.containsKey('applianceType')) {
           jobData['applianceType'] = data['applianceType'];
@@ -1159,7 +1165,38 @@ class JobDetailsController extends ChangeNotifier {
   }) async {
     currentDescription = problem.isEmpty ? 'Нет описания' : problem;
     currentSolution = solution;
+    jobData['description'] = problem;
+    jobData['solution'] = solution;
     _queue({'description': problem, 'solution': solution});
+  }
+
+  Future<void> updateRecalls(List<JobRecall> next) async {
+    final sorted = List<JobRecall>.from(next)
+      ..sort((a, b) => a.date.compareTo(b.date));
+    recalls = sorted;
+    final serialized = [for (final r in sorted) r.toMap()];
+    jobData['recalls'] = serialized;
+    _queue({'recalls': serialized});
+    notifyListeners();
+  }
+
+  Future<void> addRecallForDate(DateTime date) async {
+    // Если уже есть незаполненный повторный выезд — просто обновляем ему дату визита,
+    // чтобы не плодить пустые дубли при повторном выборе даты.
+    if (recalls.isNotEmpty && !recalls.last.isNotEmpty) {
+      final updated = List<JobRecall>.from(recalls);
+      updated[updated.length - 1] = updated.last.copyWith(date: date);
+      await updateRecalls(updated);
+      return;
+    }
+    final sameDayExists = recalls.any(
+      (r) =>
+          r.date.year == date.year &&
+          r.date.month == date.month &&
+          r.date.day == date.day,
+    );
+    if (sameDayExists) return;
+    await updateRecalls([...recalls, JobRecall.create(date: date)]);
   }
 
   /// Изменить дату/время ближайшего визита (или снять все визиты, если [newValue] == null)

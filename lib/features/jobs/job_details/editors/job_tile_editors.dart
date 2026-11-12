@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
 
 import '../../../../core/app_feedback.dart';
 import '../../../../core/constants.dart';
@@ -183,6 +184,7 @@ class _TrackingOrderDraft {
 class _JobInfo {
   final String problem;
   final String solution;
+  final List<JobRecall> recalls;
   final String packing;
   final List<JobTrackingOrder> trackingOrders;
   final int durationMinutes;
@@ -190,6 +192,7 @@ class _JobInfo {
   const _JobInfo({
     required this.problem,
     required this.solution,
+    this.recalls = const [],
     required this.packing,
     required this.trackingOrders,
     required this.durationMinutes,
@@ -203,11 +206,20 @@ class _JobInfo {
     return true;
   }
 
+  bool sameRecalls(_JobInfo other) {
+    if (recalls.length != other.recalls.length) return false;
+    for (var i = 0; i < recalls.length; i++) {
+      if (recalls[i] != other.recalls[i]) return false;
+    }
+    return true;
+  }
+
   @override
   bool operator ==(Object other) =>
       other is _JobInfo &&
       problem == other.problem &&
       solution == other.solution &&
+      sameRecalls(other) &&
       packing == other.packing &&
       sameTracking(other) &&
       durationMinutes == other.durationMinutes;
@@ -216,22 +228,77 @@ class _JobInfo {
   int get hashCode => Object.hash(
     problem,
     solution,
+    Object.hashAll(recalls),
     packing,
     Object.hashAll(trackingOrders),
     durationMinutes,
   );
 }
 
+class _RecallDraft {
+  final String id;
+  DateTime date;
+  final String initialReport;
+  final String initialReportEn;
+  final TextEditingController description;
+  final TextEditingController report;
+
+  _RecallDraft({
+    required this.id,
+    required this.date,
+    required String initialDescription,
+    required this.initialReport,
+    required this.initialReportEn,
+  }) : description = TextEditingController(text: initialDescription),
+       report = TextEditingController(text: initialReport);
+
+  factory _RecallDraft.fromRecall(JobRecall r) => _RecallDraft(
+    id: r.id,
+    date: r.date,
+    initialDescription: _cleanJobText(r.description),
+    initialReport: _cleanJobText(r.report),
+    initialReportEn: r.reportEn,
+  );
+
+  JobRecall toRecall() {
+    final cleanDesc = _cleanJobText(description.text);
+    final cleanRep = _cleanJobText(report.text);
+    return JobRecall(
+      id: id,
+      date: date,
+      description: cleanDesc,
+      report: cleanRep,
+      reportEn: cleanRep == initialReport ? initialReportEn : '',
+    );
+  }
+
+  void dispose() {
+    description.dispose();
+    report.dispose();
+  }
+}
+
 Future<void> openJobInfoEditor(
   BuildContext context,
-  JobDetailsController ctrl,
-) async {
+  JobDetailsController ctrl, {
+  int? initialRecallIndex,
+}) async {
   final initialOrders = ctrl.trackingOrders.isNotEmpty
       ? List<JobTrackingOrder>.from(ctrl.trackingOrders)
       : JobTrackingOrder.parseList(ctrl.jobData);
+  final initialRecalls = List<JobRecall>.from(ctrl.recalls);
+  final firstVisitAt = ctrl.visits.isNotEmpty
+      ? ctrl.visits.first.startAt
+      : null;
+  final defaultRecallIndex = initialRecallIndex ??
+      ((ctrl.currentStatus == JobStatuses.repeatVisit &&
+              initialRecalls.isNotEmpty)
+          ? initialRecalls.length - 1
+          : -1);
   final before = _JobInfo(
     problem: _cleanJobText(ctrl.currentDescription),
     solution: _cleanJobText(ctrl.currentSolution),
+    recalls: initialRecalls,
     packing: packingItemsFromNotes(ctrl.packingNotes).join('\n'),
     trackingOrders: initialOrders,
     durationMinutes: ctrl.durationMinutes,
@@ -240,6 +307,8 @@ Future<void> openJobInfoEditor(
     context,
     _JobInfoEditorPage(
       initial: before,
+      firstVisitDate: firstVisitAt,
+      initialRecallIndex: defaultRecallIndex,
       trackingStatus: ctrl.trackingStatus,
       applianceType: _primaryApplianceField(ctrl, 'type', 'applianceType'),
       applianceBrand: _primaryApplianceField(ctrl, 'brand', 'brand'),
@@ -259,6 +328,9 @@ Future<void> openJobInfoEditor(
       problem: after.problem,
       solution: after.solution,
     );
+  }
+  if (!after.sameRecalls(before)) {
+    await ctrl.updateRecalls(after.recalls);
   }
   if (after.packing != before.packing) {
     await ctrl.updatePackingNotes(after.packing);
@@ -408,12 +480,16 @@ String _primaryApplianceField(
 
 class _JobInfoEditorPage extends StatefulWidget {
   final _JobInfo initial;
+  final DateTime? firstVisitDate;
+  final int initialRecallIndex;
   final String trackingStatus;
   final String applianceType;
   final String applianceBrand;
   final ValueChanged<String>? onAutoTranslatedProblem;
   const _JobInfoEditorPage({
     required this.initial,
+    this.firstVisitDate,
+    this.initialRecallIndex = -1,
     required this.trackingStatus,
     this.applianceType = '',
     this.applianceBrand = '',
@@ -442,6 +518,8 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   late final TabController _tabs;
   late final TextEditingController _problem;
   late final TextEditingController _solution;
+  late final List<_RecallDraft> _recallDrafts;
+  int _selectedRecallIndex = -1;
   late final TextEditingController _packingInput;
   late final List<_TrackingOrderDraft> _trackingDrafts;
   late final List<String> _packing;
@@ -451,6 +529,18 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   int _hapticTab = 0;
   bool _translating = false;
   bool _swapLock = false;
+
+  TextEditingController get _activeProblemController =>
+      (_selectedRecallIndex >= 0 &&
+              _selectedRecallIndex < _recallDrafts.length)
+          ? _recallDrafts[_selectedRecallIndex].description
+          : _problem;
+
+  TextEditingController get _activeSolutionController =>
+      (_selectedRecallIndex >= 0 &&
+              _selectedRecallIndex < _recallDrafts.length)
+          ? _recallDrafts[_selectedRecallIndex].report
+          : _solution;
 
   Color get _plainTint =>
       Color.alphaBlend(AppColors.primary.withValues(alpha: 0.08), AppColors.card);
@@ -466,6 +556,13 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     _baselineProblem = initial.problem;
     _problem = TextEditingController(text: initial.problem);
     _solution = TextEditingController(text: initial.solution);
+    _recallDrafts = [
+      for (final r in initial.recalls) _RecallDraft.fromRecall(r),
+    ];
+    if (widget.initialRecallIndex >= 0 &&
+        widget.initialRecallIndex < _recallDrafts.length) {
+      _selectedRecallIndex = widget.initialRecallIndex;
+    }
     _packingInput = TextEditingController();
     _trackingDrafts = initial.trackingOrders.isNotEmpty
         ? [
@@ -485,6 +582,9 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     _tabs.dispose();
     _problem.dispose();
     _solution.dispose();
+    for (final r in _recallDrafts) {
+      r.dispose();
+    }
     _packingInput.dispose();
     for (final draft in _trackingDrafts) {
       draft.dispose();
@@ -521,6 +621,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     return _JobInfo(
       problem: _cleanJobText(_problem.text),
       solution: _cleanJobText(_solution.text),
+      recalls: [for (final r in _recallDrafts) r.toRecall()],
       packing: [..._packing, if (typed.isNotEmpty) typed].join('\n'),
       trackingOrders: _currentTrackingOrders,
       durationMinutes: _duration,
@@ -530,10 +631,133 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   _JobInfo get _baseline => _JobInfo(
     problem: _cleanJobText(_baselineProblem),
     solution: widget.initial.solution,
+    recalls: widget.initial.recalls,
     packing: widget.initial.packing,
     trackingOrders: widget.initial.trackingOrders,
     durationMinutes: widget.initial.durationMinutes,
   );
+
+  void _addNewRecall() {
+    AppFeedback.pleasant();
+    final created = JobRecall.create(date: DateTime.now());
+    setState(() {
+      _recallDrafts.add(_RecallDraft.fromRecall(created));
+      _selectedRecallIndex = _recallDrafts.length - 1;
+      _tabs.animateTo(0);
+    });
+  }
+
+  Future<void> _pickRecallDate(int index) async {
+    if (index < 0 || index >= _recallDrafts.length) return;
+    final current = _recallDrafts[index].date;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: current,
+      firstDate: DateTime(2022),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _recallDrafts[index].date = DateTime(
+        picked.year,
+        picked.month,
+        picked.day,
+        current.hour,
+        current.minute,
+      );
+    });
+  }
+
+  void _removeRecall(int index) {
+    if (index < 0 || index >= _recallDrafts.length) return;
+    AppFeedback.selection();
+    setState(() {
+      final removed = _recallDrafts.removeAt(index);
+      removed.dispose();
+      if (_selectedRecallIndex >= _recallDrafts.length) {
+        _selectedRecallIndex = _recallDrafts.length - 1;
+      }
+    });
+  }
+
+  String _shortDay(DateTime d) =>
+      DateFormat('d MMM', AppLocale.instance.dateLocale).format(d);
+
+  Widget _buildRecallSelectorBar() {
+    if (_recallDrafts.isEmpty) return const SizedBox.shrink();
+    final firstLabel = widget.firstVisitDate != null
+        ? '${context.tr('1-й ремонт', '1st repair')} (${_shortDay(widget.firstVisitDate!)})'
+        : context.tr('1-й ремонт', '1st repair');
+    return Container(
+      width: double.infinity,
+      color: AppColors.card,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            ChoiceChip(
+              label: Text(firstLabel),
+              selected: _selectedRecallIndex == -1,
+              onSelected: (_) {
+                FocusScope.of(context).unfocus();
+                setState(() => _selectedRecallIndex = -1);
+              },
+              selectedColor: AppColors.primary.withValues(alpha: 0.2),
+              labelStyle: TextStyle(
+                fontSize: 12.5,
+                fontWeight: _selectedRecallIndex == -1
+                    ? FontWeight.w800
+                    : FontWeight.w600,
+                color: AppColors.ink,
+              ),
+            ),
+            for (var i = 0; i < _recallDrafts.length; i++) ...[
+              const SizedBox(width: 6),
+              InputChip(
+                avatar: const Icon(
+                  Icons.replay_circle_filled_rounded,
+                  size: 17,
+                  color: Color(0xFFD97706),
+                ),
+                label: GestureDetector(
+                  onLongPress: () => _pickRecallDate(i),
+                  child: Text(
+                    _recallDrafts.length == 1
+                        ? '${context.tr('Повторный выезд', 'Recall')} (${_shortDay(_recallDrafts[i].date)})'
+                        : '${context.tr('Повтор', 'Recall')} #${i + 1} (${_shortDay(_recallDrafts[i].date)})',
+                  ),
+                ),
+                selected: _selectedRecallIndex == i,
+                onSelected: (_) {
+                  FocusScope.of(context).unfocus();
+                  setState(() => _selectedRecallIndex = i);
+                },
+                onDeleted: _selectedRecallIndex == i
+                    ? () => _removeRecall(i)
+                    : null,
+                deleteIconColor: Colors.red.shade600,
+                selectedColor: const Color(0xFFF59E0B).withValues(alpha: 0.25),
+                labelStyle: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: _selectedRecallIndex == i
+                      ? FontWeight.w800
+                      : FontWeight.w600,
+                  color: AppColors.ink,
+                ),
+              ),
+            ],
+            const SizedBox(width: 6),
+            ActionChip(
+              avatar: const Icon(Icons.add, size: 16),
+              label: Text(context.tr('Ещё повтор', 'Add recall')),
+              onPressed: _addNewRecall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   bool get _dirty => _current != _baseline;
 
@@ -638,6 +862,9 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
               ),
             Expanded(
               child: TextField(
+                key: ValueKey(
+                  'pane_${_selectedRecallIndex}_${identical(controller, _activeProblemController) ? 'p' : 's'}',
+                ),
                 controller: controller,
                 onChanged: (_) {
                   if (!_swapLock) {
@@ -1203,6 +1430,21 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
               foregroundColor: Colors.white,
               automaticallyImplyLeading: false,
               actions: [
+                TextButton.icon(
+                  onPressed: _addNewRecall,
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  ),
+                  icon: const Icon(Icons.replay_rounded, size: 19),
+                  label: Text(
+                    context.tr('+ Повтор', '+ Recall'),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
                 IconButton(
                   tooltip: context.tr('Ошибка и диагностика', 'Diagnostics'),
                   onPressed: _openDiagnostics,
@@ -1212,6 +1454,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
             ),
             body: Column(
               children: [
+                _buildRecallSelectorBar(),
                 AnimatedBuilder(
                   animation: _tabs.animation!,
                   builder: (context, _) {
@@ -1235,8 +1478,19 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                           fontSize: 14,
                         ),
                         tabs: [
-                          Tab(text: context.tr('Описание', 'Description')),
-                          Tab(text: 'Отчет'.tr),
+                          Tab(
+                            text: _selectedRecallIndex < 0
+                                ? context.tr('Описание', 'Description')
+                                : context.tr(
+                                    'Описание (повтор)',
+                                    'Recall issue',
+                                  ),
+                          ),
+                          Tab(
+                            text: _selectedRecallIndex < 0
+                                ? 'Отчет'.tr
+                                : context.tr('Отчет (повтор)', 'Recall report'),
+                          ),
                         ],
                       ),
                     );
@@ -1250,15 +1504,25 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                         tint: _problemTint,
                         fieldFill: _problemFieldFill,
                         accent: _problemAccent,
-                        controller: _problem,
-                        hint: 'Нажмите, чтобы добавить описание...'.tr,
+                        controller: _activeProblemController,
+                        hint: _selectedRecallIndex < 0
+                            ? 'Нажмите, чтобы добавить описание...'.tr
+                            : context.tr(
+                                'С чем клиент обратился повторно...',
+                                'What happened on the recall...',
+                              ),
                       ),
                       _textPane(
                         tint: _solutionTint,
                         fieldFill: _solutionFieldFill,
                         accent: _solutionAccent,
-                        controller: _solution,
-                        hint: 'Что сделали, какая деталь, результат...'.tr,
+                        controller: _activeSolutionController,
+                        hint: _selectedRecallIndex < 0
+                            ? 'Что сделали, какая деталь, результат...'.tr
+                            : context.tr(
+                                'Что сделали на повторном выезде...',
+                                'What was done on the recall...',
+                              ),
                       ),
                     ],
                   ),

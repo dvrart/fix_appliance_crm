@@ -150,6 +150,36 @@ test('an unfinished job with a completed visit shows as an inspection, not a rep
   assert.equal(history[0].report, 'Evaporator fan rattling - motor ordered');
 });
 
+test('a recall visit adds its own Warranty follow-up row without overwriting the first repair', () => {
+  const history = passport._internals.buildHistory({}, [
+    {
+      applianceIds: ['k7m2x9qa3f'],
+      status: 'Завершено',
+      completedAt: new Date('2026-11-10T16:00:00Z'),
+      solution: 'Заменил замок люка',
+      solutionEn: 'Replaced the door lock assembly.',
+      visits: [
+        { outcome: 'done', startAt: new Date('2026-11-01T14:00:00Z') },
+        { outcome: 'done', startAt: new Date('2026-11-10T15:00:00Z') },
+      ],
+      recalls: [
+        {
+          id: 'rec_1',
+          date: '2026-11-10T15:00:00Z',
+          description: 'Снова мигает замок',
+          report: 'Подогнул ответный крючок люка и проверил замок',
+          reportEn: 'Adjusted the door strike alignment and verified lock operation.',
+        },
+      ],
+    },
+  ]);
+  assert.equal(history.length, 2);
+  assert.equal(history[0].label, 'Warranty follow-up');
+  assert.equal(history[0].report, 'Adjusted the door strike alignment and verified lock operation.');
+  assert.equal(history[1].label, '');
+  assert.equal(history[1].report, 'Replaced the door lock assembly.');
+});
+
 test('a visiting technician can add a record; Russian and scripts never reach the page', async () => {
   store.set(`${COMPANY}/appliances/k7m2x9qa3f`, { type: 'Washer', brand: 'LG', status: 'active', serviceLog: [] });
   const bad = await passport._internals.addOutsideNote('k7m2x9qa3f', { shop: '  ', work: 'Fixed it' });

@@ -577,6 +577,111 @@ class DocumentPayMethods {
   bool get hasAny => deposit.isNotEmpty || balance.isNotEmpty;
 }
 
+class JobRecall {
+  final String id;
+  final DateTime date;
+  final String description;
+  final String report;
+  final String reportEn;
+
+  const JobRecall({
+    required this.id,
+    required this.date,
+    this.description = '',
+    this.report = '',
+    this.reportEn = '',
+  });
+
+  factory JobRecall.create({
+    DateTime? date,
+    String description = '',
+    String report = '',
+  }) {
+    final now = DateTime.now();
+    return JobRecall(
+      id: 'rec_${now.microsecondsSinceEpoch}',
+      date: date ?? now,
+      description: description,
+      report: report,
+    );
+  }
+
+  bool get isNotEmpty =>
+      description.trim().isNotEmpty || report.trim().isNotEmpty;
+
+  JobRecall copyWith({
+    String? id,
+    DateTime? date,
+    String? description,
+    String? report,
+    String? reportEn,
+  }) {
+    final nextReport = report ?? this.report;
+    // Если текст отчёта изменился и новый reportEn явно не передали — сбрасываем старый перевод,
+    // чтобы сервер перевёл свежий отчёт для QR-паспорта.
+    final nextReportEn = reportEn ??
+        (nextReport.trim() == this.report.trim() ? this.reportEn : '');
+    return JobRecall(
+      id: id ?? this.id,
+      date: date ?? this.date,
+      description: description ?? this.description,
+      report: nextReport,
+      reportEn: nextReportEn,
+    );
+  }
+
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'date': date.toIso8601String(),
+    'description': description,
+    'report': report,
+    if (reportEn.trim().isNotEmpty) 'reportEn': reportEn,
+  };
+
+  factory JobRecall.fromMap(Map<String, dynamic> map) {
+    DateTime parsedDate = DateTime.now();
+    final rawDate = map['date'];
+    if (rawDate is Timestamp) {
+      parsedDate = rawDate.toDate();
+    } else if (rawDate is DateTime) {
+      parsedDate = rawDate;
+    } else if (rawDate != null) {
+      parsedDate = DateTime.tryParse(rawDate.toString()) ?? DateTime.now();
+    }
+    return JobRecall(
+      id: (map['id'] ?? 'rec_${parsedDate.millisecondsSinceEpoch}').toString(),
+      date: parsedDate,
+      description: (map['description'] ?? '').toString(),
+      report: (map['report'] ?? '').toString(),
+      reportEn: (map['reportEn'] ?? '').toString(),
+    );
+  }
+
+  static List<JobRecall> parseList(dynamic raw) {
+    if (raw is! List) return const [];
+    final out = <JobRecall>[];
+    for (final item in raw) {
+      if (item is Map) {
+        out.add(JobRecall.fromMap(Map<String, dynamic>.from(item)));
+      }
+    }
+    out.sort((a, b) => a.date.compareTo(b.date));
+    return out;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is JobRecall &&
+      id == other.id &&
+      date.millisecondsSinceEpoch == other.date.millisecondsSinceEpoch &&
+      description == other.description &&
+      report == other.report;
+
+  @override
+  int get hashCode =>
+      Object.hash(id, date.millisecondsSinceEpoch, description, report);
+}
+
 class Job {
   final String id;
   final String clientId;
@@ -597,6 +702,7 @@ class Job {
   final List<JobAppliance> appliances;
   final String description;
   final String solution;
+  final List<JobRecall> recalls;
   final String status;
   final String priority;
   final String? assignedTo; // ID мастера (для 1-3 мастеров)
@@ -683,6 +789,7 @@ class Job {
     this.appliances = const [],
     this.description = '',
     this.solution = '',
+    this.recalls = const [],
     this.status = 'Вызов',
     this.priority = '🟢 Обычный',
     this.assignedTo,
@@ -1484,6 +1591,7 @@ class Job {
       appliances: appliancesList,
       description: map['description'] ?? '',
       solution: (map['solution'] ?? '').toString(),
+      recalls: JobRecall.parseList(map['recalls']),
       status: map['status'] ?? 'Вызов',
       priority: map['priority'] ?? '🟢 Обычный',
       assignedTo: map['assignedTo'],
@@ -1561,6 +1669,8 @@ class Job {
       'serialNumber': primaryAppliance?.serialNumber ?? '',
       'description': description,
       'solution': solution,
+      if (recalls.isNotEmpty)
+        'recalls': [for (final r in recalls) r.toMap()],
       'status': status,
       'priority': priority,
       'assignedTo': assignedTo,
@@ -1621,6 +1731,7 @@ class Job {
     List<JobAppliance>? appliances,
     String? description,
     String? solution,
+    List<JobRecall>? recalls,
     String? status,
     String? priority,
     String? assignedTo,
@@ -1679,6 +1790,7 @@ class Job {
       appliances: appliances ?? this.appliances,
       description: description ?? this.description,
       solution: solution ?? this.solution,
+      recalls: recalls ?? this.recalls,
       status: status ?? this.status,
       priority: priority ?? this.priority,
       assignedTo: clearAssignedTo ? null : (assignedTo ?? this.assignedTo),
