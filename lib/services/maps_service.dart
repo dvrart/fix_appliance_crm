@@ -677,11 +677,13 @@ class MapsService {
     int width = 600,
     int height = 220,
     int zoom = 16,
+    LatLng? center,
   }) {
     final lat = point.latitude;
     final lng = point.longitude;
+    final c = center ?? point;
     return 'https://maps.googleapis.com/maps/api/staticmap'
-        '?center=$lat,$lng&zoom=$zoom&size=${width}x$height&scale=2'
+        '?center=${c.latitude},${c.longitude}&zoom=$zoom&size=${width}x$height&scale=2'
         '&markers=color:red%7C$lat,$lng&key=$kGoogleApiKey';
   }
 

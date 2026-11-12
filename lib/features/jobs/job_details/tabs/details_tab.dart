@@ -2363,18 +2363,18 @@ class _DetailsTabState extends State<DetailsTab> {
               final minScreenHeight = (viewport.maxHeight - topPad - bottomPad)
                   .clamp(0.0, double.infinity);
               final fixedEstimate =
-                  316.0 +
+                  216.0 +
                   (ctrl.visits.length > 1 ? 44.0 : 0.0) +
                   (ctrl.needsReview ? 116.0 : 0.0) +
                   (_twinJob != null ? 124.0 : 0.0);
               final totalFlex =
                   (minScreenHeight - fixedEstimate + _measuredDelta).clamp(
-                    190.0,
-                    480.0,
+                    260.0,
+                    540.0,
                   );
-              _currentQuickIconHeight = (totalFlex * 0.34).clamp(80.0, 114.0);
-              final mapHeight = (totalFlex - _currentQuickIconHeight - 8.0)
-                  .clamp(110.0, 320.0);
+              _currentQuickIconHeight = (totalFlex * 0.26).clamp(80.0, 114.0);
+              final mapHeight = (totalFlex - _currentQuickIconHeight - 6.0)
+                  .clamp(220.0, 400.0);
               _measureLayoutGap();
               return SingleChildScrollView(
                 controller: _scrollController,
@@ -3443,92 +3443,211 @@ class _DetailsTabState extends State<DetailsTab> {
     }
   }
 
+  static final RegExp _postalOrProvinceTail = RegExp(
+    r'^(?:(?:AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT|Ontario)\s+)?'
+    r'[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d$'
+    r'|^(?:AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT|Ontario)$',
+    caseSensitive: false,
+  );
+
+  static final RegExp _countryTail = RegExp(
+    r'^(?:Canada|Канада|CA|USA|US)$',
+    caseSensitive: false,
+  );
+
+  static final RegExp _inlinePostalSuffix = RegExp(
+    r'\s+(?:(?:AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT|Ontario)\s+)?'
+    r'[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d$',
+    caseSensitive: false,
+  );
+
+  static List<String> _trimmedAddressParts(String address) {
+    final parts = address
+        .split(',')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList();
+    while (parts.isNotEmpty && _countryTail.hasMatch(parts.last)) {
+      parts.removeLast();
+    }
+    while (parts.length >= 2 && _postalOrProvinceTail.hasMatch(parts.last)) {
+      parts.removeLast();
+    }
+    if (parts.isNotEmpty) {
+      final stripped = parts.last.replaceFirst(_inlinePostalSuffix, '').trim();
+      if (stripped.isNotEmpty) parts[parts.length - 1] = stripped;
+    }
+    return parts;
+  }
+
+  static String _cityFromCleanParts(String address) {
+    final parts = _trimmedAddressParts(address);
+    if (parts.length >= 2) return parts.last;
+    return Job.cityFromAddress(address);
+  }
+
   String _workCity() {
-    final fromAddress = Job.cityFromAddress(ctrl.workAddress.trim());
+    final fromAddress = _cityFromCleanParts(ctrl.workAddress.trim());
     if (fromAddress.isNotEmpty) return fromAddress;
     final fromJob = (ctrl.jobData['city'] ?? '').toString().trim();
     if (fromJob.isNotEmpty) return fromJob;
-    final fromPlace = Job.cityFromAddress(_verifiedPlace?.address ?? '');
+    final fromPlace = _cityFromCleanParts(_verifiedPlace?.address ?? '');
     if (fromPlace.isNotEmpty) return fromPlace;
     return '';
   }
 
-  Widget _buildMapTravelTimeBadge() {
+  String _workStreet(String address, String city) {
+    if (!MapsService.hasRoutableAddress(address)) return '';
+    final parts = _trimmedAddressParts(address);
+    if (parts.isEmpty) return '';
+    if (parts.length >= 2) {
+      return parts.sublist(0, parts.length - 1).join(', ');
+    }
+    final single = parts.first;
+    if (city.isNotEmpty && _sameText(single, city)) return '';
+    if (RegExp(r'\d').hasMatch(single) || city.isNotEmpty) return single;
+    return '';
+  }
+
+  Future<void> _onMapTap() async {
+    final current = _verifiedPlace;
+    if (current?.location != null) {
+      await _openHouseMapSheet(current!);
+      return;
+    }
+    final address = ctrl.workAddress.trim();
+    if (!MapsService.hasRoutableAddress(address)) {
+      await _openNavigator();
+      return;
+    }
+    final resolved = await MapsService.resolvePlace(address);
+    if (!mounted) return;
+    if (resolved?.location != null) {
+      setState(() => _verifiedPlace = resolved);
+      await _openHouseMapSheet(resolved!);
+      return;
+    }
+    await _openNavigator();
+  }
+
+  Widget _buildGoogleMapsRouteButton({required String address}) {
     final travelHint = ctrl.travelTime.trim();
     final hasTravelTime =
         travelHint.isNotEmpty && travelHint != 'GO' && travelHint != '...';
-    final label = ctrl.isLoadingTime
-        ? '...'
-        : (hasTravelTime ? travelHint : 'Маршрут'.tr);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3.5),
-      decoration: BoxDecoration(
-        color: AppColors.accent.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(999),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.22),
-            blurRadius: 4,
-            offset: const Offset(0, 1),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (ctrl.isLoadingTime)
-            const SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(
-                strokeWidth: 1.8,
-                color: Colors.black87,
-              ),
-            )
-          else
-            const Icon(
-              Icons.directions_car_rounded,
-              size: 14,
-              color: Colors.black87,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 215),
+      child: Material(
+        color: AppColors.accent,
+        elevation: 3,
+        shadowColor: Colors.black.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(11),
+        child: InkWell(
+          onTap: _openNavigator,
+          onLongPress: address.isNotEmpty
+              ? () => AppFeedback.copy(context, address)
+              : null,
+          borderRadius: BorderRadius.circular(11),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 24,
+                  height: 24,
+                  alignment: Alignment.center,
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const _GoogleMapsPinIcon(size: 16),
+                ),
+                const SizedBox(width: 7),
+                Flexible(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Проложить маршрут'.tr,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.black,
+                          height: 1.1,
+                        ),
+                      ),
+                      if (ctrl.isLoadingTime || hasTravelTime) ...[
+                        const SizedBox(height: 1.5),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (ctrl.isLoadingTime)
+                              const SizedBox(
+                                width: 10,
+                                height: 10,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.6,
+                                  color: Colors.black87,
+                                ),
+                              )
+                            else
+                              const Icon(
+                                Icons.directions_car_rounded,
+                                size: 12,
+                                color: Colors.black87,
+                              ),
+                            const SizedBox(width: 3),
+                            Flexible(
+                              child: Text(
+                                ctrl.isLoadingTime ? '...' : travelHint,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.black87,
+                                  height: 1.05,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
             ),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w900,
-                color: Colors.black87,
-                height: 1.1,
-              ),
-            ),
           ),
-        ],
+        ),
       ),
     );
   }
 
   /// Одна секция «Где работа» под «Датой визита»: слева имя, телефон и город
   /// в рамке; справа карта, а прямо на карте сверху время в пути и снизу «Дом найден».
-  Widget _buildJobSiteCard({double mapHeight = 160}) {
+  Widget _buildJobSiteCard({double mapHeight = 240}) {
     final address = ctrl.workAddress.trim();
     final hasAddress = MapsService.hasRoutableAddress(address);
     final place = _verifiedPlace;
+    final hasPoint = place?.location != null;
     final houseFound =
         hasAddress &&
         !_verifyingAddress &&
         place != null &&
         place.isHouse &&
-        place.location != null;
+        hasPoint;
     final outsideArea =
         hasAddress && !_verifyingAddress && place?.insideServiceArea == false;
     final phone = _bestContactPhone();
     final city = _workCity();
-    final cityOrHint = city.isNotEmpty
-        ? city
-        : (hasAddress ? address : 'Адрес не указан'.tr);
+    final street = _workStreet(address, city);
+    final cityBadgeText = !hasAddress
+        ? 'Адрес не указан'.tr
+        : (city.isNotEmpty ? city : (street.isEmpty ? address : ''));
     final copyText = [
       ctrl.contactName.trim(),
       if (phone.isNotEmpty) phone,
@@ -3537,185 +3656,222 @@ class _DetailsTabState extends State<DetailsTab> {
 
     final warnState = !hasAddress || (!_verifyingAddress && !houseFound);
     final borderColor = outsideArea
-        ? Colors.red.withValues(alpha: 0.4)
+        ? Colors.red.withValues(alpha: 0.55)
         : warnState
-        ? Colors.orange.withValues(alpha: 0.4)
-        : AppColors.primary.withValues(alpha: 0.25);
-    final bgColor = warnState
-        ? Colors.orange.withValues(alpha: 0.08)
-        : AppColors.card;
+        ? Colors.orange.withValues(alpha: 0.55)
+        : AppColors.primary.withValues(alpha: 0.32);
 
-    final cityFrameColor = hasAddress
-        ? AppColors.primaryOnCard
-        : Colors.orange.shade800;
+    final cityBg = hasAddress ? AppColors.primary : Colors.orange.shade800;
+    final onCityBg = cityBg.computeLuminance() > 0.55
+        ? Colors.black
+        : Colors.white;
 
-    final info = InkWell(
-      onTap: _editJobSite,
-      onLongPress: copyText.isEmpty
-          ? null
-          : () => AppFeedback.copy(context, copyText),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Text(
-              ctrl.contactName.toUpperCase(),
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 24,
-                height: 1.06,
-                fontWeight: FontWeight.w900,
-                color: AppColors.isDark
-                    ? const Color(0xFF90CAF9)
-                    : const Color(0xFF0D3B7A),
-                letterSpacing: 0.3,
-              ),
-            ),
-            if (phone.isNotEmpty) ...[
-              const SizedBox(height: 4),
+    final infoOverlay = Material(
+      color: AppColors.card.withValues(alpha: 0.92),
+      elevation: 2,
+      shadowColor: Colors.black.withValues(alpha: 0.25),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: borderColor, width: 1.0),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _editJobSite,
+        onLongPress: copyText.isEmpty
+            ? null
+            : () => AppFeedback.copy(context, copyText),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
               Text(
-                Formatters.formatPhone(phone),
+                ctrl.contactName.toUpperCase(),
                 textAlign: TextAlign.center,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: 15.5,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.ink,
-                ),
-              ),
-            ],
-            const SizedBox(height: 5),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              decoration: BoxDecoration(
-                color: cityFrameColor.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(9),
-                border: Border.all(
-                  color: cityFrameColor.withValues(alpha: 0.42),
-                  width: 1.3,
-                ),
-              ),
-              child: Text(
-                cityOrHint,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 18,
-                  height: 1.12,
+                  fontSize: 20,
+                  height: 1.08,
                   fontWeight: FontWeight.w900,
-                  color: cityFrameColor,
+                  color: AppColors.isDark
+                      ? const Color(0xFF90CAF9)
+                      : const Color(0xFF0D3B7A),
+                  letterSpacing: 0.3,
                 ),
               ),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(11),
-        border: Border.all(color: borderColor),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          info,
-          Padding(
-            padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
-            child: _buildHouseMapPreview(
-              place,
-              height: mapHeight,
-              hasAddress: hasAddress,
-              verifying: _verifyingAddress,
-              houseFound: houseFound,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildHouseMapPreview(
-    MapPlace? place, {
-    required double height,
-    required bool hasAddress,
-    required bool verifying,
-    required bool houseFound,
-  }) {
-    final hasPoint = place?.location != null;
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(9),
-      child: Material(
-        color: Colors.grey.shade200,
-        child: InkWell(
-          onTap: hasPoint ? () => _openHouseMapSheet(place!) : _editJobSite,
-          child: SizedBox(
-            height: height,
-            width: double.infinity,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                if (hasPoint)
-                  Image.network(
-                    MapsService.getStaticMapUrlForPoint(
-                      place!.location!,
-                      width: 600,
-                      height: 320,
-                      zoom: 16,
-                    ),
-                    fit: BoxFit.cover,
-                    cacheWidth: 600,
-                    errorBuilder: (context, error, stackTrace) => Container(
-                      color: Colors.grey.shade200,
-                      alignment: Alignment.center,
-                      child: Icon(
-                        Icons.map_outlined,
-                        size: 32,
-                        color: Colors.grey.shade500,
-                      ),
-                    ),
-                  )
-                else
-                  Center(
-                    child: Icon(
-                      Icons.map_outlined,
-                      size: 34,
-                      color: Colors.grey.shade500,
-                    ),
-                  ),
-                Positioned(
-                  top: 6,
-                  left: 6,
-                  right: 6,
-                  child: Center(child: _buildMapTravelTimeBadge()),
-                ),
-                Positioned(
-                  bottom: 6,
-                  left: 6,
-                  right: 6,
-                  child: Center(
-                    child: _buildAddressVerifyBadge(
-                      hasAddress: hasAddress,
-                      verifying: verifying,
-                      houseFound: houseFound,
-                    ),
+              if (phone.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  Formatters.formatPhone(phone),
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    height: 1.12,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.ink,
                   ),
                 ),
               ],
-            ),
+              if (street.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  street,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    height: 1.15,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.ink,
+                  ),
+                ),
+              ],
+              if (cityBadgeText.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 3.5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: cityBg,
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: [
+                      BoxShadow(
+                        color: cityBg.withValues(alpha: 0.30),
+                        blurRadius: 4,
+                        offset: const Offset(0, 1),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        hasAddress
+                            ? Icons.location_on_rounded
+                            : Icons.edit_location_alt_outlined,
+                        size: 15,
+                        color: onCityBg,
+                      ),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          hasAddress ? cityBadgeText.toUpperCase() : cityBadgeText,
+                          textAlign: TextAlign.center,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 15.5,
+                            height: 1.12,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0.4,
+                            color: onCityBg,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
+      ),
+    );
+
+    final mapPlaceholderBg = AppColors.isDark
+        ? const Color(0xFF1F2733)
+        : Colors.grey.shade200;
+
+    return Container(
+      width: double.infinity,
+      height: mapHeight,
+      decoration: BoxDecoration(
+        color: mapPlaceholderBg,
+        borderRadius: BorderRadius.circular(11),
+        border: Border.all(color: borderColor, width: 1.2),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Material(
+            color: mapPlaceholderBg,
+            child: InkWell(
+              onTap: _onMapTap,
+              child: hasPoint
+                  ? Image.network(
+                      MapsService.getStaticMapUrlForPoint(
+                        place!.location!,
+                        width: 600,
+                        height: 420,
+                        zoom: 16,
+                        center: LatLng(
+                          place.location!.latitude + 0.00075,
+                          place.location!.longitude,
+                        ),
+                      ),
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      height: double.infinity,
+                      cacheWidth: 900,
+                      errorBuilder: (context, error, stackTrace) => Container(
+                        color: mapPlaceholderBg,
+                        alignment: const Alignment(0, 0.32),
+                        child: Icon(
+                          Icons.map_outlined,
+                          size: 38,
+                          color: Colors.grey.shade500,
+                        ),
+                      ),
+                    )
+                  : Align(
+                      alignment: const Alignment(0, 0.32),
+                      child: Icon(
+                        Icons.map_outlined,
+                        size: 38,
+                        color: Colors.grey.shade500,
+                      ),
+                    ),
+            ),
+          ),
+          Positioned(
+            top: 6,
+            left: 6,
+            right: 6,
+            child: infoOverlay,
+          ),
+          Positioned(
+            left: 8,
+            right: 8,
+            bottom: 8,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: (hasAddress || _verifyingAddress)
+                      ? Align(
+                          alignment: Alignment.bottomLeft,
+                          child: _buildAddressVerifyBadge(
+                            hasAddress: hasAddress,
+                            verifying: _verifyingAddress,
+                            houseFound: houseFound,
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                ),
+                const SizedBox(width: 6),
+                _buildGoogleMapsRouteButton(address: address),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -3751,12 +3907,16 @@ class _DetailsTabState extends State<DetailsTab> {
               ),
             ),
             const SizedBox(width: 5),
-            Text(
-              'Проверка адреса...'.tr,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-                color: Colors.grey.shade700,
+            Flexible(
+              child: Text(
+                'Проверка адреса...'.tr,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.grey.shade700,
+                ),
               ),
             ),
           ],
@@ -3779,6 +3939,8 @@ class _DetailsTabState extends State<DetailsTab> {
         ),
         child: Text(
           'Адрес не указан'.tr,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.w800,
@@ -3813,12 +3975,16 @@ class _DetailsTabState extends State<DetailsTab> {
         children: [
           Icon(icon, size: 13, color: color),
           const SizedBox(width: 4),
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              color: color,
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: color,
+              ),
             ),
           ),
         ],
@@ -4288,6 +4454,84 @@ class _PhoneListIcon extends StatelessWidget {
       ),
     );
   }
+}
+
+class _GoogleMapsPinIcon extends StatelessWidget {
+  final double size;
+
+  const _GoogleMapsPinIcon({this.size = 16});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      height: size,
+      child: const CustomPaint(painter: _GoogleMapsPinPainter()),
+    );
+  }
+}
+
+class _GoogleMapsPinPainter extends CustomPainter {
+  const _GoogleMapsPinPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final cx = w / 2;
+    final pin = Path()
+      ..moveTo(cx, h * 0.96)
+      ..cubicTo(w * 0.10, h * 0.58, w * 0.10, h * 0.05, cx, h * 0.05)
+      ..cubicTo(w * 0.90, h * 0.05, w * 0.90, h * 0.58, cx, h * 0.96)
+      ..close();
+
+    canvas.save();
+    canvas.clipPath(pin);
+
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, w, h),
+      Paint()..color = const Color(0xFF4285F4),
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(w * 0.24, 0)
+        ..lineTo(w, 0)
+        ..lineTo(w, h * 0.46)
+        ..lineTo(cx, h * 0.40)
+        ..close(),
+      Paint()..color = const Color(0xFFEA4335),
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(0, 0)
+        ..lineTo(w * 0.42, 0)
+        ..lineTo(cx, h * 0.40)
+        ..lineTo(0, h * 0.52)
+        ..close(),
+      Paint()..color = const Color(0xFFFBBC04),
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(0, h * 0.46)
+        ..lineTo(cx, h * 0.38)
+        ..lineTo(w, h * 0.34)
+        ..lineTo(w * 0.56, h * 0.72)
+        ..lineTo(0, h * 0.78)
+        ..close(),
+      Paint()..color = const Color(0xFF34A853),
+    );
+
+    canvas.restore();
+
+    canvas.drawCircle(
+      Offset(cx, h * 0.36),
+      w * 0.16,
+      Paint()..color = Colors.white,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _HouseMapSheet extends StatefulWidget {
