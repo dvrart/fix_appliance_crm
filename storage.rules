@@ -4,6 +4,8 @@ rules_version = '2';
 // 1. Владелец (по uid) — полный доступ.
 // 2. Активный мастер — чтение и загрузка фото/чеков/подписей только по назначенным
 //    лично ему заявкам (`jobs/{jobId}`), а также загрузка исходящих вложений для SMS/PDF.
+// 3. Тестировщик в тестовой копии CRM — чтение и загрузка файлов строго внутри
+//    своей персональной папки `companies/$('tester_' + request.auth.uid)/**`.
 service firebase.storage {
   match /b/{bucket}/o {
     function owners() {
@@ -21,6 +23,19 @@ service firebase.storage {
       return isActiveTech()
         && firestore.exists(/databases/(default)/documents/companies/fix_appliance_ca/jobs/$(jobId))
         && firestore.get(/databases/(default)/documents/companies/fix_appliance_ca/jobs/$(jobId)).data.assignedTo == request.auth.uid;
+    }
+    function isActiveTester(uid) {
+      return request.auth != null
+        && request.auth.uid == uid
+        && (
+          !firestore.exists(/databases/(default)/documents/testers/$(uid))
+          || firestore.get(/databases/(default)/documents/testers/$(uid)).data.get('active', true) != false
+        );
+    }
+    function isOwnTesterCompany(companyId) {
+      return request.auth != null
+        && companyId == 'tester_' + request.auth.uid
+        && isActiveTester(request.auth.uid);
     }
     function underLimit(maxBytes) {
       return request.resource.size < maxBytes;
@@ -55,6 +70,12 @@ service firebase.storage {
     match /companies/fix_appliance_ca/{allPaths=**} {
       allow read, delete: if isOwner();
       allow create, update: if isOwner() && underLimit(25 * 1024 * 1024);
+    }
+
+    // Isolated storage for each external tester (`companies/tester_<uid>/**`).
+    match /companies/{companyId}/{allPaths=**} {
+      allow read, delete: if isOwner() || isOwnTesterCompany(companyId);
+      allow create, update: if (isOwner() || isOwnTesterCompany(companyId)) && underLimit(25 * 1024 * 1024);
     }
   }
 }

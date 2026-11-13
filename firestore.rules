@@ -6,6 +6,9 @@ rules_version = '2';
 //    видит и обновляет СТРОГО только назначенные ему заявки (`assignedTo == request.auth.uid`),
 //    сообщения и звонки по этим заявкам, а также свой профиль и историю своих расчётов.
 //    Общая база клиентов, чужие заказы, расходы, склад и отчёты владельца закрыты.
+// 3. Тестировщик в тестовой копии CRM — читает и пишет СТРОГО только в свою
+//    отдельную базу `companies/$('tester_' + request.auth.uid)/**`, не имея
+//    никакого доступа к `companies/fix_appliance_ca/**` и чужим тестовым базам.
 service cloud.firestore {
   match /databases/{database}/documents {
     function owners() {
@@ -25,6 +28,33 @@ service cloud.firestore {
         && jobId != ''
         && exists(/databases/$(database)/documents/companies/fix_appliance_ca/jobs/$(jobId))
         && get(/databases/$(database)/documents/companies/fix_appliance_ca/jobs/$(jobId)).data.assignedTo == request.auth.uid;
+    }
+    function isActiveTester(uid) {
+      return request.auth != null
+        && request.auth.uid == uid
+        && (
+          !exists(/databases/$(database)/documents/testers/$(uid))
+          || get(/databases/$(database)/documents/testers/$(uid)).data.get('active', true) != false
+        );
+    }
+    function isOwnTesterCompany(companyId) {
+      return request.auth != null
+        && companyId == 'tester_' + request.auth.uid
+        && isActiveTester(request.auth.uid);
+    }
+
+    match /testers/{testerId} {
+      allow read: if isOwner() || (request.auth != null && request.auth.uid == testerId);
+      allow create: if isOwner() || (
+        request.auth != null
+        && request.auth.uid == testerId
+        && request.resource.data.get('active', true) == true
+      );
+      allow update: if isOwner() || (
+        isActiveTester(testerId)
+        && request.resource.data.get('active', true) == resource.data.get('active', true)
+      );
+      allow delete: if isOwner();
     }
 
     match /companies/fix_appliance_ca/technicians/{techId} {
@@ -108,6 +138,14 @@ service cloud.firestore {
           settingId == 'pending_cell_call_' + request.auth.uid ||
           settingId == 'pending_outbound_call_' + request.auth.uid
         ));
+    }
+
+    match /companies/{companyId} {
+      allow read, write: if isOwner() || isOwnTesterCompany(companyId);
+
+      match /{document=**} {
+        allow read, write: if isOwner() || isOwnTesterCompany(companyId);
+      }
     }
 
     match /{document=**} {
