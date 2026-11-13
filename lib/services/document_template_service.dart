@@ -37,6 +37,7 @@ class DocumentSendData {
   final double subtotal;
   final double tax;
   final double taxRate;
+  final String taxScope;
   final double total;
   final double paid;
   final double due;
@@ -64,6 +65,7 @@ class DocumentSendData {
     required this.subtotal,
     required this.tax,
     required this.taxRate,
+    this.taxScope = 'all',
     required this.total,
     required this.paid,
     required this.due,
@@ -765,7 +767,7 @@ class DocumentTemplateService {
                   children: [
                     _pdfTotalRow('Subtotal', Formatters.formatCurrency(data.subtotal)),
                     _pdfTotalRow(
-                      _pdfTaxLabel(data.taxRate),
+                      _pdfTaxLabel(data.taxRate, scope: data.taxScope),
                       Formatters.formatCurrency(data.tax),
                     ),
                     pw.Divider(),
@@ -901,11 +903,12 @@ class DocumentTemplateService {
     return 0;
   }
 
-  static String _pdfTaxLabel(double rate) {
-    if ((rate - 0.13).abs() < 0.0001) return 'HST (13%)';
-    if ((rate - 0.05).abs() < 0.0001) return 'GST (5%)';
+  static String _pdfTaxLabel(double rate, {String scope = 'all'}) {
+    final suffix = scope == 'parts' ? ' (Parts)' : '';
+    if ((rate - 0.13).abs() < 0.0001) return 'HST (13%)$suffix';
+    if ((rate - 0.05).abs() < 0.0001) return 'GST (5%)$suffix';
     if (rate <= 0) return 'Tax (0%)';
-    return 'Tax (${(rate * 100).round()}%)';
+    return 'Tax (${(rate * 100).round()}%)$suffix';
   }
 
   static String _paymentMethodEn(String method) {

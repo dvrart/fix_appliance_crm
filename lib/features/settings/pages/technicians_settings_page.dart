@@ -180,6 +180,17 @@ class _TechniciansSettingsPageState extends State<TechniciansSettingsPage> {
     );
   }
 
+  static String _taxModeLabel(BuildContext context, String mode) {
+    switch (mode) {
+      case TechnicianProfile.taxModeAll:
+        return context.tr('Запчасти и работа', 'Parts & labour');
+      case TechnicianProfile.taxModeParts:
+        return context.tr('Только запчасти', 'Parts only');
+      default:
+        return context.tr('Без налога', 'No tax');
+    }
+  }
+
   Widget _buildRow(BuildContext context, TechnicianProfile tech) {
     final busy = _toggling.contains(tech.uid);
     return ListTile(
@@ -203,7 +214,8 @@ class _TechniciansSettingsPageState extends State<TechniciansSettingsPage> {
       ),
       subtitle: Text(
         '${tech.email} · ${context.tr('Мастеру', 'Tech')} ${tech.clampedTechPercent.toStringAsFixed(0)}% / ${context.tr('Мне', 'Me')} ${tech.ownerSharePercent.toStringAsFixed(0)}%'
-        '${tech.hasOwnTax ? ' · HST' : ''}',
+        ' · ${context.tr('Налог', 'Tax')}: ${_taxModeLabel(context, tech.effectiveTaxMode)}'
+        '${tech.hasOwnTax ? ' (HST)' : ''}',
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
       ),
@@ -237,6 +249,7 @@ class _TechnicianEditorPageState extends State<_TechnicianEditorPage> {
 
   late int _colorValue;
   late bool _collectsHst;
+  late String _taxMode;
   late bool _active;
 
   bool _dirty = false;
@@ -262,6 +275,7 @@ class _TechnicianEditorPageState extends State<_TechnicianEditorPage> {
     _etransferCtrl = TextEditingController(text: t?.etransferEmail ?? '');
     _colorValue = t?.colorValue ?? TechnicianProfile.palette.first;
     _collectsHst = t?.collectsHst ?? false;
+    _taxMode = t?.effectiveTaxMode ?? TechnicianProfile.taxModeNone;
     _active = t?.active ?? true;
 
     for (final c in [
@@ -364,6 +378,7 @@ class _TechnicianEditorPageState extends State<_TechnicianEditorPage> {
           collectsHst: _collectsHst,
           hstNumber: _hstCtrl.text.trim(),
           etransferEmail: _etransferCtrl.text.trim(),
+          taxMode: _taxMode,
           active: _active,
         );
       } else {
@@ -378,6 +393,7 @@ class _TechnicianEditorPageState extends State<_TechnicianEditorPage> {
           collectsHst: _collectsHst,
           hstNumber: _hstCtrl.text.trim(),
           etransferEmail: _etransferCtrl.text.trim(),
+          taxMode: _taxMode,
         );
       }
       if (!mounted) return true;
@@ -633,6 +649,50 @@ class _TechnicianEditorPageState extends State<_TechnicianEditorPage> {
                         ),
                         border: const OutlineInputBorder(),
                       ),
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String>(
+                      initialValue: _taxMode,
+                      decoration: InputDecoration(
+                        labelText: context.tr(
+                          'Налог по умолчанию в счетах мастера',
+                          'Default invoice tax mode',
+                        ),
+                        border: const OutlineInputBorder(),
+                      ),
+                      items: [
+                        DropdownMenuItem(
+                          value: TechnicianProfile.taxModeAll,
+                          child: Text(
+                            context.tr(
+                              'На запчасти и работу (HST)',
+                              'Parts & labour (HST)',
+                            ),
+                          ),
+                        ),
+                        DropdownMenuItem(
+                          value: TechnicianProfile.taxModeParts,
+                          child: Text(
+                            context.tr(
+                              'Только на запчасти (HST)',
+                              'Parts only (HST)',
+                            ),
+                          ),
+                        ),
+                        DropdownMenuItem(
+                          value: TechnicianProfile.taxModeNone,
+                          child: Text(
+                            context.tr('Без налога (0%)', 'No tax (0%)'),
+                          ),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setState(() {
+                          _taxMode = value;
+                          _dirty = true;
+                        });
+                      },
                     ),
                     const SizedBox(height: 8),
                     SwitchListTile(

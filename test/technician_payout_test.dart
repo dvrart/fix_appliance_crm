@@ -261,4 +261,22 @@ void main() {
     expect(roundTrip.recalls.single.description, 'Снова течёт снизу');
     expect(roundTrip.recalls.single.report, 'Подтянул хомут патрубка помпы');
   });
+
+  test('профиль мастера хранит индивидуальный режим налога (parts / all / none)', () {
+    final partsTech = TechnicianProfile.fromMap({
+      'name': 'Alex',
+      'email': 'alex@example.test',
+      'collectsHst': false,
+      'taxMode': TechnicianProfile.taxModeParts,
+    }, 't-parts');
+    expect(partsTech.effectiveTaxMode, TechnicianProfile.taxModeParts);
+    expect(partsTech.toMap()['taxMode'], TechnicianProfile.taxModeParts);
+
+    final legacyNoHst = TechnicianProfile.fromMap({
+      'name': 'Bob',
+      'email': 'bob@example.test',
+      'collectsHst': false,
+    }, 't-legacy');
+    expect(legacyNoHst.effectiveTaxMode, TechnicianProfile.taxModeNone);
+  });
 }

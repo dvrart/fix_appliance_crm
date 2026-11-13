@@ -768,18 +768,6 @@ class SmsService {
       )
           .timeout(const Duration(seconds: 40));
       if (response.statusCode == 200) {
-        if (bodyRu != null && bodyRu.trim().isNotEmpty) {
-          try {
-            final payload = json.decode(response.body);
-            final id = payload['id']?.toString();
-            if (id != null && id.isNotEmpty) {
-              await _ref.doc(id).set(
-                {'bodyRu': bodyRu.trim()},
-                SetOptions(merge: true),
-              );
-            }
-          } catch (_) {}
-        }
         lastError = '';
         return true;
       }
@@ -857,7 +845,7 @@ class SmsService {
       return (emoji: emoji, quoted: quoted);
     }
     final google = RegExp(
-      r'^\u200a?(\S+)\u200a?\s*to\s+[“"]([\s\S]+)[”"]$',
+      r'^\u200a?([^\s\u200a]+?)\u200a?\s*to\s+[“"]([\s\S]+)[”"]$',
     ).firstMatch(text);
     if (google != null) {
       return (emoji: google.group(1)!, quoted: google.group(2)!);

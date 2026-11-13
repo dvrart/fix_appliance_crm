@@ -329,6 +329,30 @@ function effectiveBusinessName(profile) {
   return n || 'Technician';
 }
 
+function techTaxMode(profile) {
+  const raw = String(profile?.taxMode || '').trim().toLowerCase();
+  if (raw === 'all' || raw === 'parts' || raw === 'none') return raw;
+  return hasOwnTax(profile) ? 'all' : 'none';
+}
+
+function techTaxOptionValue(doc) {
+  const rate = num(doc?.taxRate, 0);
+  const scope = String(doc?.taxScope || '').trim().toLowerCase();
+  if (rate <= 0.001 || scope === 'none') return 'none';
+  const prefix = Math.abs(rate - 0.05) < 0.001 ? 'gst' : 'hst';
+  return `${prefix}_${scope === 'parts' ? 'parts' : 'all'}`;
+}
+
+function parseTechTaxOption(val) {
+  switch (val) {
+    case 'hst_all': return { taxRate: 0.13, taxScope: 'all' };
+    case 'hst_parts': return { taxRate: 0.13, taxScope: 'parts' };
+    case 'gst_all': return { taxRate: 0.05, taxScope: 'all' };
+    case 'gst_parts': return { taxRate: 0.05, taxScope: 'parts' };
+    default: return { taxRate: 0, taxScope: 'none' };
+  }
+}
+
 function hasOwnTax(profile) {
   const hst = String(profile?.hstNumber || '').trim();
   const collects = typeof profile?.collectsHst === 'boolean' ? profile.collectsHst : Boolean(hst);
@@ -1752,7 +1776,9 @@ function renderJobDetailOverlay(job) {
     const docs = (Array.isArray(job.documents) ? job.documents : [])
       .map((d, idx) => ({ doc: d, idx }))
       .filter((x) => x.doc && !x.doc.deletedAt);
-    const taxAllowed = hasOwnTax(state.techProfile);
+    const mode = techTaxMode(state.techProfile);
+    const taxAllowed = hasOwnTax(state.techProfile) || mode !== 'none';
+    const partsOnlyAllowed = !hasOwnTax(state.techProfile) && mode === 'parts';
 
     bodyHtml = `
       <div class="hero-card" style="padding:13px 15px">
@@ -1794,15 +1820,24 @@ function renderJobDetailOverlay(job) {
                       <strong style="margin-left:6px">#${esc(d.number || idx + 1)}</strong>
                     </div>
                     <select class="select" data-doc-tax="${idx}" style="width:auto;padding:5px 8px;font-size:13px;font-weight:700" ${!taxAllowed ? 'disabled' : ''}>
-                      ${
-                        taxAllowed
-                          ? `
-                          <option value="0.13" ${Math.abs(num(d.taxRate, 0) - 0.13) < 0.001 ? 'selected' : ''}>HST 13%</option>
-                          <option value="0.05" ${Math.abs(num(d.taxRate, 0) - 0.05) < 0.001 ? 'selected' : ''}>GST 5%</option>
-                          <option value="0" ${num(d.taxRate, 0) <= 0.001 ? 'selected' : ''}>No tax 0%</option>
-                          `
-                          : `<option value="0" selected>No tax 0%</option>`
-                      }
+                      ${(() => {
+                        const cur = techTaxOptionValue(d);
+                        if (!taxAllowed) return `<option value="none" selected>No tax 0%</option>`;
+                        const opts = partsOnlyAllowed
+                          ? [
+                              ['hst_parts', tr('HST 13% · запчасти', 'HST 13% · parts')],
+                              ['gst_parts', tr('GST 5% · запчасти', 'GST 5% · parts')],
+                              ['none', 'No tax 0%'],
+                            ]
+                          : [
+                              ['hst_all', tr('HST 13% · всё', 'HST 13% · all')],
+                              ['hst_parts', tr('HST 13% · запчасти', 'HST 13% · parts')],
+                              ['gst_all', tr('GST 5% · всё', 'GST 5% · all')],
+                              ['gst_parts', tr('GST 5% · запчасти', 'GST 5% · parts')],
+                              ['none', 'No tax 0%'],
+                            ];
+                        return opts.map(([v, label]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`).join('');
+                      })()}
                     </select>
                   </div>
 
@@ -2244,7 +2279,9 @@ function bindJobDetailEvents(root, job) {
     btn.addEventListener('click', async () => {
       const docType = btn.getAttribute('data-create-doc');
       const docs = Array.isArray(job.documents) ? [...job.documents] : [];
-      const taxRate = hasOwnTax(state.techProfile) ? 0.13 : 0;
+      const mode = techTaxMode(state.techProfile);
+      const taxRate = mode === 'none' ? 0 : 0.13;
+      const taxScope = mode;
       const newDoc = {
         type: docType,
         number: generateTechDocNumber(job, docType),
@@ -2255,6 +2292,7 @@ function bindJobDetailEvents(root, job) {
         billToAddress: jobDisplayAddress(job),
         items: [],
         taxRate,
+        taxScope,
         payments: [],
         createdAt: new Date().toISOString(),
       };
@@ -2269,7 +2307,10 @@ function bindJobDetailEvents(root, job) {
       const idx = Number(sel.getAttribute('data-doc-tax'));
       const docs = Array.isArray(job.documents) ? [...job.documents] : [];
       if (!docs[idx]) return;
-      docs[idx] = { ...docs[idx], taxRate: hasOwnTax(state.techProfile) ? num(e.target.value, 0) : 0 };
+      const mode = techTaxMode(state.techProfile);
+      const allowed = hasOwnTax(state.techProfile) || mode !== 'none';
+      const parsed = allowed ? parseTechTaxOption(e.target.value) : { taxRate: 0, taxScope: 'none' };
+      docs[idx] = { ...docs[idx], taxRate: parsed.taxRate, taxScope: parsed.taxScope };
       await updateDoc(doc(db, 'companies', COMPANY_ID, 'jobs', job.id), { documents: docs });
     });
   });

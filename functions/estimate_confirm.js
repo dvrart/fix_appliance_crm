@@ -105,7 +105,18 @@ exports.estimateConfirm = functions.https.onRequest(async (req, res) => {
     const total = items.reduce((sum, item) => sum + Number(item.qty || 1) * Number(item.price || 0), 0);
     const rawTaxRate = Number(doc.taxRate || 0);
     const taxRate = rawTaxRate > 1 ? rawTaxRate / 100 : rawTaxRate;
-    const tax = total * taxRate;
+    const taxScope = String(doc.taxScope || '').trim().toLowerCase();
+    const partsTotal = items.reduce((sum, item) => {
+      if (!item || typeof item !== 'object' || item.labourDiscount === true) return sum;
+      const kind = String(item.type || '').toLowerCase();
+      const isPart = kind.includes('part') || kind.includes('запчаст') ||
+        (!kind && Boolean(item.warehouseItemId || item.costPrice != null));
+      return isPart ? sum + Number(item.qty || 1) * Number(item.price || 0) : sum;
+    }, 0);
+    const taxable = taxRate <= 0 || taxScope === 'none'
+      ? 0
+      : (taxScope === 'parts' ? Math.max(0, partsTotal) : total);
+    const tax = taxable * taxRate;
     const grand = total + tax;
     const name = escapeHtml(job.clientName || 'there');
     const already = String(doc.estimateStatus || '') === 'approved';

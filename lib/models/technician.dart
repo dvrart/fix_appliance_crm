@@ -40,8 +40,29 @@ class TechnicianProfile {
   final String hstNumber;
   final String etransferEmail;
 
+  /// Режим налога по умолчанию для счетов мастера: `'all'`, `'parts'`, `'none'`.
+  /// Если не задан явно — определяется по [hasOwnTax].
+  final String taxMode;
+
   final bool active;
   final DateTime? createdAt;
+
+  static const String taxModeNone = 'none';
+  static const String taxModeParts = 'parts';
+  static const String taxModeAll = 'all';
+
+  static String normalizeTaxMode(String? raw, {bool fallbackAll = false}) {
+    switch ((raw ?? '').trim().toLowerCase()) {
+      case taxModeAll:
+        return taxModeAll;
+      case taxModeParts:
+        return taxModeParts;
+      case taxModeNone:
+        return taxModeNone;
+      default:
+        return fallbackAll ? taxModeAll : taxModeNone;
+    }
+  }
 
   const TechnicianProfile({
     required this.uid,
@@ -54,6 +75,7 @@ class TechnicianProfile {
     this.collectsHst = false,
     this.hstNumber = '',
     this.etransferEmail = '',
+    this.taxMode = '',
     this.active = true,
     this.createdAt,
   });
@@ -84,6 +106,9 @@ class TechnicianProfile {
       collectsHst ? hstNumber.trim() : '';
 
   bool get hasOwnTax => effectiveHstNumber.isNotEmpty;
+
+  String get effectiveTaxMode =>
+      normalizeTaxMode(taxMode, fallbackAll: hasOwnTax);
 
   String get initials {
     final parts = displayName
@@ -151,6 +176,10 @@ class TechnicianProfile {
       collectsHst: collects,
       hstNumber: hst,
       etransferEmail: (map['etransferEmail'] ?? '').toString().trim(),
+      taxMode: normalizeTaxMode(
+        map['taxMode']?.toString(),
+        fallbackAll: collects && hst.isNotEmpty,
+      ),
       active: map['active'] != false,
       createdAt: _parseTechDate(map['createdAt']),
     );
@@ -168,6 +197,7 @@ class TechnicianProfile {
       'collectsHst': collectsHst,
       'hstNumber': hstNumber.trim(),
       'etransferEmail': etransferEmail.trim(),
+      'taxMode': effectiveTaxMode,
       'active': active,
       if (createdAt != null) 'createdAt': Timestamp.fromDate(createdAt!),
     };
@@ -184,6 +214,7 @@ class TechnicianProfile {
     bool? collectsHst,
     String? hstNumber,
     String? etransferEmail,
+    String? taxMode,
     bool? active,
     DateTime? createdAt,
   }) {
@@ -198,6 +229,7 @@ class TechnicianProfile {
       collectsHst: collectsHst ?? this.collectsHst,
       hstNumber: hstNumber ?? this.hstNumber,
       etransferEmail: etransferEmail ?? this.etransferEmail,
+      taxMode: taxMode ?? this.taxMode,
       active: active ?? this.active,
       createdAt: createdAt ?? this.createdAt,
     );

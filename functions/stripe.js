@@ -106,21 +106,37 @@ async function getOrCreateTipPrice() {
   return price.id;
 }
 
+function isPartItem(item) {
+  if (!item || typeof item !== 'object') return false;
+  if (item.labourDiscount === true) return false;
+  const kind = String(item.type || '').toLowerCase();
+  if (kind.includes('part') || kind.includes('запчаст')) return true;
+  if (kind.includes('service') || kind.includes('labour') || kind.includes('labor') || kind.includes('работ') || kind.includes('услуг')) return false;
+  return Boolean(item.warehouseItemId || item.costPrice != null);
+}
+
 function calcDocTotals(doc) {
   const items = Array.isArray(doc.items) ? doc.items : [];
   const taxRate = Number(doc.taxRate) || 0;
+  const taxScope = String(doc.taxScope || '').trim().toLowerCase();
   let subtotal = 0;
+  let partsSubtotal = 0;
   for (const item of items) {
     const qty = Number(item.qty) || 1;
     const price = Number(item.price) || 0;
-    subtotal += qty * price;
+    const line = qty * price;
+    subtotal += line;
+    if (isPartItem(item)) partsSubtotal += line;
   }
-  const tax = subtotal * taxRate;
+  const taxable = taxRate <= 0 || taxScope === 'none'
+    ? 0
+    : (taxScope === 'parts' ? Math.max(0, partsSubtotal) : subtotal);
+  const tax = taxable * taxRate;
   const total = subtotal + tax;
   const payments = Array.isArray(doc.payments) ? doc.payments : [];
   const paid = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
   const due = Math.max(0, total - paid);
-  return { items, taxRate, subtotal, tax, total, paid, due };
+  return { items, taxRate, taxScope, subtotal, tax, total, paid, due };
 }
 
 /**
@@ -944,14 +960,7 @@ function asMoney(value) {
 }
 
 function invoiceDocTotal(doc) {
-  const items = Array.isArray(doc.items) ? doc.items : [];
-  let subtotal = 0;
-  for (const item of items) {
-    if (!item || typeof item !== 'object') continue;
-    const qty = item.qty == null ? 1 : asMoney(item.qty);
-    subtotal += qty * asMoney(item.price);
-  }
-  return subtotal + subtotal * asMoney(doc.taxRate);
+  return calcDocTotals(doc).total;
 }
 
 function invoiceDocPaid(doc) {

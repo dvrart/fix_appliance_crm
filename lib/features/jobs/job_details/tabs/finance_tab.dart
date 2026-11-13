@@ -260,7 +260,8 @@ class _FinanceTabState extends State<FinanceTab> {
           List<Map<String, dynamic>>.from(ctrl.builderItems),
         ),
       ),
-      'taxRate': ctrl.builderTaxRate,
+      'taxRate': _techTaxLockedToZero() ? 0.0 : ctrl.builderTaxRate,
+      'taxScope': _techTaxLockedToZero() ? 'none' : ctrl.builderTaxScope,
       'payments': <Map<String, dynamic>>[],
       'createdAt': DateTime.now().toIso8601String(),
     };
@@ -324,6 +325,7 @@ class _FinanceTabState extends State<FinanceTab> {
         'billToAddress': recipient.address,
         'items': items,
         'taxRate': estimate['taxRate'] ?? 0.0,
+        'taxScope': Job.documentTaxScope(estimate),
         'payments': <Map<String, dynamic>>[],
         'createdAt': DateTime.now().toIso8601String(),
         'fromEstimateNumber': estimate['number'],
@@ -532,7 +534,8 @@ class _FinanceTabState extends State<FinanceTab> {
     ];
     final subtotal = ctrl.calcSubtotal(items);
     final taxRate = _money(doc['taxRate'], 0.0);
-    final tax = ctrl.calcTax(subtotal, taxRate);
+    final taxScope = Job.documentTaxScope(doc);
+    final tax = ctrl.calcDocTax(items, taxRate, taxScope: taxScope);
     final total = ctrl.calcTotal(subtotal, tax);
     final paid = ctrl.calcPaid(doc['payments'] ?? []);
     final due = ctrl.calcDue(total, paid);
@@ -866,7 +869,7 @@ class _FinanceTabState extends State<FinanceTab> {
                             [
                               'Subtotal \$${subtotal.toStringAsFixed(2)}',
                               if (tax > 0.009)
-                                'Tax ${(taxRate * 100).round()}% \$${tax.toStringAsFixed(2)}',
+                                'Tax ${(taxRate * 100).round()}%${taxScope == 'parts' ? ' (${'запчасти'.tr})' : ''} \$${tax.toStringAsFixed(2)}',
                               if (!isEstimate && paid > 0.009)
                                 '${'Оплачено'.tr} \$${paid.toStringAsFixed(2)}',
                               if (!isEstimate && due > 0.009 && paid > 0.009)
@@ -1218,7 +1221,13 @@ class _FinanceTabState extends State<FinanceTab> {
       ),
     );
     final subtotal = ctrl.calcSubtotal(shownItems);
-    final tax = ctrl.calcTax(subtotal, ctrl.builderTaxRate);
+    final effectiveRate = _techTaxLockedToZero() ? 0.0 : ctrl.builderTaxRate;
+    final effectiveScope = _techTaxLockedToZero() ? 'none' : ctrl.builderTaxScope;
+    final tax = ctrl.calcDocTax(
+      shownItems,
+      effectiveRate,
+      taxScope: effectiveScope,
+    );
     final total = ctrl.calcTotal(subtotal, tax);
     final canSave = ctrl.builderItems.isNotEmpty;
 
@@ -1451,44 +1460,21 @@ class _FinanceTabState extends State<FinanceTab> {
                         style: TextStyle(fontSize: 12.5, color: AppColors.ink),
                       ),
                       const SizedBox(width: 8),
-                      DropdownButton<double>(
-                        value: _techTaxLockedToZero() ? 0.0 : ctrl.builderTaxRate,
-                        isDense: true,
-                        underline: const SizedBox.shrink(),
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.primaryOnCard,
+                      Expanded(
+                        child: _buildTaxModeDropdown(
+                          rate: effectiveRate,
+                          scope: effectiveScope,
+                          onChanged: _techTaxLockedToZero()
+                              ? null
+                              : (nextRate, nextScope) {
+                                  setState(() {
+                                    ctrl.builderTaxRate = nextRate;
+                                    ctrl.builderTaxScope = nextScope;
+                                  });
+                                },
                         ),
-                        items: _techTaxLockedToZero()
-                            ? const [
-                                DropdownMenuItem(
-                                  value: TaxRates.none,
-                                  child: Text('No tax 0%'),
-                                ),
-                              ]
-                            : const [
-                                DropdownMenuItem(
-                                  value: TaxRates.hst,
-                                  child: Text('HST 13%'),
-                                ),
-                                DropdownMenuItem(
-                                  value: TaxRates.gst,
-                                  child: Text('GST 5%'),
-                                ),
-                                DropdownMenuItem(
-                                  value: TaxRates.none,
-                                  child: Text('No tax 0%'),
-                                ),
-                              ],
-                        onChanged: _techTaxLockedToZero()
-                            ? null
-                            : (value) {
-                                if (value == null) return;
-                                setState(() => ctrl.builderTaxRate = value);
-                              },
                       ),
-                      const Spacer(),
+                      const SizedBox(width: 8),
                       Text(
                         '\$${tax.toStringAsFixed(2)}',
                         style: const TextStyle(
@@ -2225,15 +2211,120 @@ class _FinanceTabState extends State<FinanceTab> {
   }
 
   bool _techTaxLockedToZero() {
-    final assignedUid = (ctrl.jobData['assignedTo'] ?? '').toString().trim();
-    if (assignedUid.isEmpty || assignedUid == kOwnerUid) {
-      if (!TechnicianService.isTechnician) return false;
-      final self = TechnicianService.selfProfile.value;
-      return self == null || !self.hasOwnTax;
+    if (TechnicianService.isOwner) return false;
+    final self = TechnicianService.selfProfile.value;
+    if (self == null) return true;
+    return !self.hasOwnTax && self.effectiveTaxMode == TechnicianProfile.taxModeNone;
+  }
+
+  static String _taxChoiceValue(double rate, String scope) {
+    if (rate <= 0.0001 || scope == 'none') return 'none';
+    final prefix = (rate - TaxRates.gst).abs() < 0.001 ? 'gst' : 'hst';
+    return '${prefix}_${scope == 'parts' ? 'parts' : 'all'}';
+  }
+
+  static ({double rate, String scope}) _parseTaxChoice(String value) {
+    switch (value) {
+      case 'hst_all':
+        return (rate: TaxRates.hst, scope: 'all');
+      case 'hst_parts':
+        return (rate: TaxRates.hst, scope: 'parts');
+      case 'gst_all':
+        return (rate: TaxRates.gst, scope: 'all');
+      case 'gst_parts':
+        return (rate: TaxRates.gst, scope: 'parts');
+      default:
+        return (rate: TaxRates.none, scope: 'none');
     }
-    final tech = TechnicianService.byId(assignedUid);
-    if (tech == null) return TechnicianService.isTechnician;
-    return !tech.hasOwnTax;
+  }
+
+  Widget _buildTaxModeDropdown({
+    required double rate,
+    required String scope,
+    required void Function(double rate, String scope)? onChanged,
+  }) {
+    final lockedZero = _techTaxLockedToZero();
+    final self = TechnicianService.isTechnician
+        ? TechnicianService.selfProfile.value
+        : null;
+    final partsOnlyAllowed = TechnicianService.isTechnician &&
+        self != null &&
+        !self.hasOwnTax &&
+        self.effectiveTaxMode == TechnicianProfile.taxModeParts;
+    final items = <DropdownMenuItem<String>>[
+      if (!lockedZero && !partsOnlyAllowed) ...[
+        DropdownMenuItem(
+          value: 'hst_all',
+          child: Text(
+            'HST 13% · ${context.tr('Запчасти и работа', 'Parts & labour')}',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        DropdownMenuItem(
+          value: 'hst_parts',
+          child: Text(
+            'HST 13% · ${context.tr('Только запчасти', 'Parts only')}',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        DropdownMenuItem(
+          value: 'gst_all',
+          child: Text(
+            'GST 5% · ${context.tr('Запчасти и работа', 'Parts & labour')}',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        DropdownMenuItem(
+          value: 'gst_parts',
+          child: Text(
+            'GST 5% · ${context.tr('Только запчасти', 'Parts only')}',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ] else if (!lockedZero && partsOnlyAllowed) ...[
+        DropdownMenuItem(
+          value: 'hst_parts',
+          child: Text(
+            'HST 13% · ${context.tr('Только запчасти', 'Parts only')}',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        DropdownMenuItem(
+          value: 'gst_parts',
+          child: Text(
+            'GST 5% · ${context.tr('Только запчасти', 'Parts only')}',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+      DropdownMenuItem(
+        value: 'none',
+        child: Text(context.tr('Без налога 0%', 'No tax 0%')),
+      ),
+    ];
+    final candidate = _taxChoiceValue(rate, scope);
+    final currentValue = items.any((e) => e.value == candidate)
+        ? candidate
+        : items.first.value!;
+    return DropdownButton<String>(
+      value: currentValue,
+      isDense: true,
+      isExpanded: true,
+      underline: const SizedBox.shrink(),
+      style: TextStyle(
+        fontSize: 12.5,
+        fontWeight: FontWeight.w700,
+        color: AppColors.primaryOnCard,
+      ),
+      items: items,
+      onChanged: onChanged == null || lockedZero
+          ? null
+          : (value) {
+              if (value == null) return;
+              final parsed = _parseTaxChoice(value);
+              onChanged(parsed.rate, parsed.scope);
+            },
+    );
   }
 
   Future<String?> _pickAndUploadPartReceipt({
@@ -2810,7 +2901,8 @@ class _FinanceTabState extends State<FinanceTab> {
 
     final subtotal = ctrl.calcSubtotal(items);
     final taxRate = _money(doc['taxRate'], 0.0);
-    final tax = ctrl.calcTax(subtotal, taxRate);
+    final taxScope = Job.documentTaxScope(doc);
+    final tax = ctrl.calcDocTax(items, taxRate, taxScope: taxScope);
     final total = ctrl.calcTotal(subtotal, tax);
     final paid = ctrl.calcPaid(payments);
     final due = ctrl.calcDue(total, paid);
@@ -3093,10 +3185,53 @@ class _FinanceTabState extends State<FinanceTab> {
                                   ),
                                 ),
                               _buildTotalRow('Subtotal', subtotal),
-                              _buildTotalRow(
-                                'Tax (${(taxRate * 100).round()}%)',
-                                tax,
-                              ),
+                              if (itemsEditable && !_techTaxLockedToZero())
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 2),
+                                  child: Row(
+                                    children: [
+                                      const Text('Tax'),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: _buildTaxModeDropdown(
+                                          rate: taxRate,
+                                          scope: taxScope,
+                                          onChanged: _busy
+                                              ? null
+                                              : (nextRate, nextScope) async {
+                                                  setState(() => _busy = true);
+                                                  try {
+                                                    await ctrl.updateDocument(
+                                                      docIndex,
+                                                      {
+                                                        ...doc,
+                                                        'taxRate': nextRate,
+                                                        'taxScope': nextScope,
+                                                      },
+                                                    );
+                                                  } finally {
+                                                    if (mounted) {
+                                                      setState(() => _busy = false);
+                                                    }
+                                                  }
+                                                },
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        Formatters.formatCurrency(tax),
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                )
+                              else
+                                _buildTotalRow(
+                                  'Tax (${(taxRate * 100).round()}%${taxScope == 'parts' ? ' · ${context.tr('запчасти', 'parts')}' : ''})',
+                                  tax,
+                                ),
                               const Divider(height: 10),
                               _buildTotalRow('Total', total, isBold: true),
                               if (paid > 0)
@@ -4487,7 +4622,8 @@ class _FinanceTabState extends State<FinanceTab> {
     if (!mounted) return;
     final items = doc['items'] as List? ?? [];
     final subtotal = ctrl.calcSubtotal(items);
-    final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
+    final taxScope = Job.documentTaxScope(doc);
+    final tax = ctrl.calcDocTax(items, doc['taxRate'] ?? 0.0, taxScope: taxScope);
     final total = ctrl.calcTotal(subtotal, tax);
     final paid = ctrl.calcPaid(doc['payments'] ?? []);
     final due = ctrl.calcDue(total, paid);
@@ -4520,6 +4656,7 @@ class _FinanceTabState extends State<FinanceTab> {
         subtotal: subtotal,
         tax: tax,
         taxRate: _money(doc['taxRate']),
+        taxScope: taxScope,
         total: total,
         paid: paid,
         due: due,
@@ -4561,8 +4698,13 @@ class _FinanceTabState extends State<FinanceTab> {
     if (_busy) return;
     if (documentIndex < 0 || documentIndex >= ctrl.documents.length) return;
     final doc = ctrl.documents[documentIndex];
-    final subtotal = ctrl.calcSubtotal(doc['items'] ?? []);
-    final tax = ctrl.calcTax(subtotal, doc['taxRate'] ?? 0.0);
+    final items = doc['items'] as List? ?? [];
+    final subtotal = ctrl.calcSubtotal(items);
+    final tax = ctrl.calcDocTax(
+      items,
+      doc['taxRate'] ?? 0.0,
+      taxScope: Job.documentTaxScope(doc),
+    );
     final total = ctrl.calcTotal(subtotal, tax);
     final paid = ctrl.calcPaid(doc['payments'] ?? []);
     final due = ctrl.calcDue(total, paid);

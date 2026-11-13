@@ -400,4 +400,35 @@ void main() {
       expect(Job.documentCreatedAt({'createdAt': 42}), isNull);
     });
   });
+
+  group('налог только на запчасти / весь счёт / без налога', () {
+    test('taxScope=parts считает налог только со строк запчастей', () {
+      final doc = {
+        'type': 'Invoice',
+        'taxRate': 0.13,
+        'taxScope': 'parts',
+        'items': [
+          {'name': 'Диагностика и работа', 'type': 'Service', 'qty': 1, 'price': 200.0},
+          {'name': 'Drain pump', 'type': 'Part', 'qty': 2, 'price': 50.0},
+        ],
+      };
+      expect(Job.documentSubtotal(doc), closeTo(300.0, 0.001));
+      expect(Job.documentTaxableSubtotal(doc), closeTo(100.0, 0.001));
+      expect(Job.documentTax(doc), closeTo(13.0, 0.001));
+      expect(Job.documentTotal(doc), closeTo(313.0, 0.001));
+    });
+
+    test('taxScope=none обнуляет налог даже при ненулевой ставке', () {
+      final doc = {
+        'type': 'Invoice',
+        'taxRate': 0.13,
+        'taxScope': 'none',
+        'items': [
+          {'name': 'Drain pump', 'type': 'Part', 'qty': 1, 'price': 100.0},
+        ],
+      };
+      expect(Job.documentTax(doc), 0.0);
+      expect(Job.documentTotal(doc), closeTo(100.0, 0.001));
+    });
+  });
 }

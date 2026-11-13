@@ -55,10 +55,21 @@ export function documentSubtotal(doc) {
 }
 
 export function documentTax(doc) {
-  const sub = documentSubtotal(doc);
   const rate = num(doc?.taxRate, 0);
-  if (sub <= 0 || rate <= 0) return 0;
-  return Math.round(sub * rate * 100) / 100;
+  const scope = String(doc?.taxScope || '').trim().toLowerCase();
+  if (rate <= 0 || scope === 'none') return 0;
+  let base = 0;
+  if (scope === 'parts') {
+    const items = Array.isArray(doc?.items) ? doc.items : [];
+    for (const item of items) {
+      if (!item || typeof item !== 'object' || !isPartItem(item)) continue;
+      base += num(item.qty ?? 1, 1) * num(item.price, 0);
+    }
+  } else {
+    base = documentSubtotal(doc);
+  }
+  if (base <= 0) return 0;
+  return Math.round(base * rate * 100) / 100;
 }
 
 export function documentTotal(doc) {

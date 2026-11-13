@@ -312,6 +312,54 @@ $conversationText
     }
   }
 
+  /// Предварительная оценка поломки для мастера (вкладка «Совет» в Информации).
+  static Future<String> diagnosePreliminary({
+    required String applianceType,
+    String brand = '',
+    String model = '',
+    String serialNumber = '',
+    required String problemDescription,
+  }) async {
+    final problem = problemDescription.trim();
+    if (problem.isEmpty || problem == 'Нет описания') return '';
+    if (kGeminiApiKey == 'YOUR_GEMINI_API_KEY' || kGeminiApiKey.isEmpty) {
+      return '';
+    }
+    final tech = [
+      applianceType.trim(),
+      brand.trim(),
+      if (model.trim().isNotEmpty) 'модель ${model.trim()}',
+      if (serialNumber.trim().isNotEmpty) 'S/N ${serialNumber.trim()}',
+    ].where((s) => s.isNotEmpty).join(' · ');
+
+    final prompt = '''
+Ты — опытный мастер по ремонту бытовой техники в Канаде (Онтарио).
+Дай короткую, практическую предварительную оценку проблемы перед выездом или диагностикой.
+
+Техника: ${tech.isEmpty ? 'не указана' : tech}
+Жалоба клиента: $problem
+
+Ответь на русском языке, чётко и без воды (без приветствий):
+1. В чём может быть причина (2–4 наиболее вероятные причины по порядку).
+2. Что проверить первым делом на месте (быстрые шаги диагностики, замеры).
+3. Какие запчасти могут понадобиться.
+
+Пиши простым языком мастера, максимум 10–12 коротких строк.
+''';
+
+    for (final name in ['gemini-flash-lite-latest', 'gemini-flash-latest']) {
+      try {
+        final m = GenerativeModel(model: name, apiKey: kGeminiApiKey);
+        final response = await m
+            .generateContent([Content.text(prompt)])
+            .timeout(const Duration(seconds: 20));
+        final text = (response.text ?? '').trim();
+        if (text.isNotEmpty) return text;
+      } catch (_) {}
+    }
+    return '';
+  }
+
   /// Подсказка по запчастям на основе описания проблемы
   static Future<List<String>> suggestParts({
     required String applianceType,

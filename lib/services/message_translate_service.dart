@@ -170,6 +170,12 @@ class MessageTranslateService {
     return cyr == 0 && lat > 0 || lat > cyr;
   }
 
+  static String? cachedEnglish(String text) {
+    final t = text.trim();
+    if (t.isEmpty || !looksRussian(t)) return t;
+    return _enCache[t];
+  }
+
   static Future<String> toEnglish(String text) async {
     final t = text.trim();
     if (t.isEmpty || !looksRussian(t)) return t;

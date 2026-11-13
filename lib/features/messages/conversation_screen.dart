@@ -886,6 +886,15 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   static const List<String> _reactionEmojis = ['👍', '❤️', '😂', '😊', '🙏', '❗'];
+  static const List<String> _allSmileys = [
+    '😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣',
+    '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😘',
+    '😋', '😜', '🤔', '🤗', '🤩', '🥳', '😎', '😢',
+    '😭', '😮', '😲', '🥺', '😤', '😡', '👍', '👎',
+    '👌', '✌️', '🤝', '👏', '🙌', '🙏', '💪', '❤️',
+    '🔥', '⭐', '✨', '💯', '🎉', '✅', '❌', '❓',
+    '❗', '🔧', '🏠', '🚗', '⏰', '📞',
+  ];
   final Map<String, String> _optimisticReactions = {};
 
   String _effectiveReaction(SmsMessage message) =>
@@ -925,36 +934,77 @@ class _ConversationScreenState extends State<ConversationScreen>
     final chosen = await showModalBottomSheet<String>(
       sheetAnimationStyle: AppMotion.sheet,
       context: context,
+      isScrollControlled: true,
       backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (sheetContext) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              for (final emoji in _reactionEmojis)
-                InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: () => Navigator.pop(sheetContext, emoji),
-                  child: Container(
-                    width: 46,
-                    height: 46,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: current == emoji
-                          ? AppColors.accent.withValues(alpha: 0.35)
-                          : AppColors.cardMuted,
-                      border: current == emoji
-                          ? Border.all(color: AppColors.primary, width: 1.5)
-                          : null,
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  for (final emoji in _reactionEmojis)
+                    InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: () => Navigator.pop(sheetContext, emoji),
+                      child: Container(
+                        width: 44,
+                        height: 44,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: current == emoji
+                              ? AppColors.accent.withValues(alpha: 0.35)
+                              : AppColors.cardMuted,
+                          border: current == emoji
+                              ? Border.all(color: AppColors.primary, width: 1.5)
+                              : null,
+                        ),
+                        child: Text(emoji, style: const TextStyle(fontSize: 23)),
+                      ),
                     ),
-                    child: Text(emoji, style: const TextStyle(fontSize: 24)),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Divider(height: 1),
+              const SizedBox(height: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 210),
+                child: SingleChildScrollView(
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      for (final emoji in _allSmileys)
+                        InkWell(
+                          borderRadius: BorderRadius.circular(10),
+                          onTap: () => Navigator.pop(sheetContext, emoji),
+                          child: Container(
+                            width: 42,
+                            height: 42,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(10),
+                              color: current == emoji
+                                  ? AppColors.accent.withValues(alpha: 0.35)
+                                  : AppColors.cardMuted,
+                              border: current == emoji
+                                  ? Border.all(color: AppColors.primary, width: 1.5)
+                                  : null,
+                            ),
+                            child: Text(emoji, style: const TextStyle(fontSize: 22)),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
+              ),
             ],
           ),
         ),
@@ -967,7 +1017,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   Widget _buildSelectionReactionBar(SmsMessage message) {
     final current = _effectiveReaction(message);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: AppColors.card,
         border: Border(top: BorderSide(color: AppColors.border)),
@@ -980,8 +1030,8 @@ class _ConversationScreenState extends State<ConversationScreen>
               customBorder: const CircleBorder(),
               onTap: () => _applyReaction(message, emoji),
               child: Container(
-                width: 40,
-                height: 40,
+                width: 38,
+                height: 38,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
@@ -989,9 +1039,27 @@ class _ConversationScreenState extends State<ConversationScreen>
                       ? AppColors.accent.withValues(alpha: 0.35)
                       : AppColors.cardMuted,
                 ),
-                child: Text(emoji, style: const TextStyle(fontSize: 21)),
+                child: Text(emoji, style: const TextStyle(fontSize: 20)),
               ),
             ),
+          InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () => _pickMessageReaction(message),
+            child: Container(
+              width: 38,
+              height: 38,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.cardMuted,
+              ),
+              child: Icon(
+                Icons.emoji_emotions_outlined,
+                size: 20,
+                color: AppColors.primaryOnCard,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1310,7 +1378,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     final text = _textController.text.trim();
     if (text.length >= 3) {
       _translateDebounce = Timer(
-        const Duration(milliseconds: 1500),
+        const Duration(milliseconds: 500),
         () => _warmTranslation(text),
       );
     }
@@ -1506,19 +1574,19 @@ class _ConversationScreenState extends State<ConversationScreen>
       }
 
       var englishBody = text;
-      var russianBody = text;
+      var russianBody = '';
       if (text.isNotEmpty && MessageTranslateService.looksRussian(text)) {
-        englishBody = await MessageTranslateService.toEnglish(text);
         russianBody = text;
-        if (MessageTranslateService.failedEnglish(text, englishBody)) {
+        final cached = MessageTranslateService.cachedEnglish(text);
+        if (cached != null && !MessageTranslateService.failedEnglish(text, cached)) {
+          englishBody = cached;
+        } else {
+          // Сервер sendSms / sendEmail переводит кириллицу сам — не делаем
+          // лишний последовательный запрос /translateMessage перед отправкой.
           englishBody = text;
         }
       } else if (text.isNotEmpty) {
         englishBody = text;
-        // Russian translation for owner's display is non-blocking — don't hold up send
-        if (MessageTranslateService.needsRussian(text)) {
-          unawaited(MessageTranslateService.toRussian(text)); // warms cache
-        }
       }
 
       final bool ok;
@@ -1557,7 +1625,14 @@ class _ConversationScreenState extends State<ConversationScreen>
 
       if (!ok) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось отправить сообщение'.tr), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text(
+              _channel == ConversationChannel.sms
+                  ? SmsService.failureText()
+                  : 'Не удалось отправить сообщение'.tr,
+            ),
+            backgroundColor: Colors.red,
+          ),
         );
         _textController.text = text;
         setState(() {
@@ -3214,7 +3289,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     );
   }
 
-  Future<void> _openComposeSheet() async {
+  Future<void> _openComposeSheet({bool initialShowEmoji = false}) async {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -3228,6 +3303,7 @@ class _ConversationScreenState extends State<ConversationScreen>
           initialText: _textController.text,
           channel: _channel,
           sending: _isSending,
+          initialShowEmoji: initialShowEmoji,
           onChanged: (value) => _textController.text = value,
           onSend: () async {
             Navigator.pop(sheetContext);
@@ -3794,6 +3870,20 @@ class _ConversationScreenState extends State<ConversationScreen>
                               minHeight: 32,
                             ),
                             padding: EdgeInsets.zero,
+                            icon: const Icon(Icons.emoji_emotions_outlined, size: 18),
+                            color: AppColors.inkMuted,
+                            tooltip: 'Смайлики'.tr,
+                            onPressed: _isSending
+                                ? null
+                                : () => _openComposeSheet(initialShowEmoji: true),
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            constraints: const BoxConstraints(
+                              minWidth: 32,
+                              minHeight: 32,
+                            ),
+                            padding: EdgeInsets.zero,
                             icon: const Icon(Icons.library_books_outlined, size: 18),
                             color: AppColors.inkMuted,
                             tooltip: context.tr('Выбрать шаблон', 'Choose template'),
@@ -3866,6 +3956,7 @@ class ComposeMessageSheet extends StatefulWidget {
   final String initialText;
   final ConversationChannel channel;
   final bool sending;
+  final bool initialShowEmoji;
   final ValueChanged<String> onChanged;
   final Future<void> Function() onSend;
   final Future<void> Function(DateTime sendAt)? onSchedule;
@@ -3875,6 +3966,7 @@ class ComposeMessageSheet extends StatefulWidget {
     required this.initialText,
     required this.channel,
     required this.sending,
+    this.initialShowEmoji = false,
     required this.onChanged,
     required this.onSend,
     this.onSchedule,
@@ -3885,6 +3977,12 @@ class ComposeMessageSheet extends StatefulWidget {
 }
 
 class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
+  static const List<String> _composeEmojis = [
+    '😊', '👍', '🙏', '❤️', '👋', '😂', '😄', '🤝',
+    '👌', '✅', '❗', '❓', '🔧', '🛠️', '🏠', '🚗',
+    '⏰', '📅', '📞', '💬', '📸', '🔥', '⭐', '💯',
+  ];
+
   late final TextEditingController _controller;
   final GlobalKey _polishKey = GlobalKey();
   bool _polishing = false;
@@ -3893,12 +3991,26 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
   int _polishVariant = 0;
   String _emojiLevel = 'normal';
   bool _showPolishMenu = false;
+  late bool _showEmojiPicker;
 
   @override
   void initState() {
     super.initState();
+    _showEmojiPicker = widget.initialShowEmoji;
     _controller = TextEditingController(text: widget.initialText);
     _controller.addListener(() => widget.onChanged(_controller.text));
+  }
+
+  void _insertEmoji(String emoji) {
+    final text = _controller.text;
+    final sel = _controller.selection;
+    final start = sel.isValid && sel.start >= 0 ? sel.start : text.length;
+    final end = sel.isValid && sel.end >= 0 ? sel.end : text.length;
+    final next = text.replaceRange(start, end, emoji);
+    _controller.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: start + emoji.length),
+    );
   }
 
   @override
@@ -4083,6 +4195,19 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
                   ],
                 ),
               ),
+              const SizedBox(width: 6),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Смайлики'.tr,
+                onPressed: () => setState(() => _showEmojiPicker = !_showEmojiPicker),
+                icon: Icon(
+                  _showEmojiPicker
+                      ? Icons.keyboard_alt_outlined
+                      : Icons.emoji_emotions_outlined,
+                  size: 21,
+                  color: _showEmojiPicker ? AppColors.primary : AppColors.inkMuted,
+                ),
+              ),
               const Spacer(),
               if (widget.onSchedule != null) ...[
                 Tooltip(
@@ -4126,6 +4251,34 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
               ),
             ],
           ),
+          if (_showEmojiPicker) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.cardMuted,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                alignment: WrapAlignment.center,
+                children: [
+                  for (final emoji in _composeEmojis)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => _insertEmoji(emoji),
+                      child: Container(
+                        width: 38,
+                        height: 36,
+                        alignment: Alignment.center,
+                        child: Text(emoji, style: const TextStyle(fontSize: 22)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

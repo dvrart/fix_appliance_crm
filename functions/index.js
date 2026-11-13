@@ -3151,6 +3151,48 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
     sendTwiml(res, twimlHangup(silent ? '' : say, language));
   }
   const merged = { ...(callData || {}), ...updates };
+  const rawTranscript = String(merged.transcription || '').trim();
+  if (
+    rawTranscript &&
+    hasLatin(rawTranscript) &&
+    !isRussianTranscript(merged.transcriptionRu || '')
+  ) {
+    try {
+      const enSource = !isRussianTranscript(rawTranscript) ? rawTranscript : '';
+      const shouldSummarize = !String(merged.summary || '').trim() && rawTranscript.length > 20;
+      const [ruResult, sumResult] = await Promise.all([
+        !isRussianTranscript(rawTranscript)
+          ? translateCallTranscriptFull(rawTranscript, 'ai').catch(() => '')
+          : Promise.resolve(relabelTranscript(rawTranscript, 'ai')),
+        shouldSummarize
+          ? generateContentWithModelFallback([
+              {
+                text: `Краткое резюме этого телефонного разговора на русском, 2–4 предложения. Только резюме.\n\n${rawTranscript}`,
+              },
+            ])
+              .then((r) => stripModelFences((r.response && r.response.text()) || '').trim())
+              .catch(() => '')
+          : Promise.resolve(''),
+      ]);
+      const ru = String(ruResult || '').trim();
+      const summary = String(sumResult || '').trim();
+      const patch = {};
+      if (enSource && !String(merged.transcriptionEn || '').trim()) {
+        patch.transcriptionEn = enSource;
+      }
+      if (ru && isRussianTranscript(ru)) {
+        patch.transcriptionRu = ru;
+        patch.transcription = pickLongestRussianTranscript(ru, rawTranscript, enSource);
+      }
+      if (summary) patch.summary = summary;
+      if (Object.keys(patch).length) {
+        Object.assign(merged, patch);
+        await callsRef.doc(callSid).set(patch, { merge: true });
+      }
+    } catch (error) {
+      console.warn('finishAiReception translate:', error.message);
+    }
+  }
   const jobId = updates.createdJobId || callData.createdJobId || null;
   if (jobId) {
     attachLiveCallNotesToJob({
@@ -4161,12 +4203,12 @@ function hasLatin(text) {
   return /[A-Za-z]/.test(String(text || ''));
 }
 
-function skipTranslate(text) {
+function skipTranslate(text, to = '') {
   const t = String(text || '').trim();
   if (!t) return true;
-  if (t.length < 3 && !hasCyrillic(t)) return true;
+  if (t.length < 2 && !hasCyrillic(t)) return true;
   if (/^[\d\s.,:+\-/#]+$/.test(t)) return true;
-  if (/^(1|2|0|5|yes|no|ok|ок|да|нет)$/i.test(t.replace(/[.!,]/g, ''))) return true;
+  if (to !== 'ru' && /^(1|2|0|5|yes|no|ok|ок|да|нет)$/i.test(t.replace(/[.!,]/g, ''))) return true;
   return false;
 }
 
@@ -4248,12 +4290,29 @@ ${t}`,
   return out && hasCyrillic(out) ? out : t;
 }
 
+const QUICK_RU_REPLIES = {
+  yes: 'Да',
+  yep: 'Да',
+  yeah: 'Да',
+  no: 'Нет',
+  nope: 'Нет',
+  ok: 'Ок',
+  okay: 'Ок',
+  sure: 'Конечно',
+  thanks: 'Спасибо',
+  'thank you': 'Спасибо',
+};
+
 async function translateChat(text, to) {
   const t = String(text || '').trim();
-  if (!t || skipTranslate(t)) return t;
+  if (!t || skipTranslate(t, to)) return t;
   if (to === 'en' && !hasCyrillic(t)) return t;
   if (to === 'ru' && hasCyrillic(t) && !hasLatin(t)) return t;
   if (to === 'ru' && !hasLatin(t)) return t;
+  if (to === 'ru') {
+    const quick = QUICK_RU_REPLIES[t.toLowerCase().replace(/[.!,\s]+$/g, '')];
+    if (quick) return quick;
+  }
   const isDialogue = /(^|\n)\s*(ИИ|AI|Клиент|Client|User|Assistant)\s*:/i.test(t);
   const instruction =
     to === 'en'
@@ -4262,6 +4321,22 @@ async function translateChat(text, to) {
         ? 'Переведи этот диалог на естественный русский. Сохрани метки говорящих ИИ: и Клиент: на каждой строке. Нельзя выкидывать реплики ИИ. Верни ТОЛЬКО диалог, без кавычек и пояснений.'
         : 'Переведи сообщение клиента мастеру на естественный русский. Имена, адреса, модели и ссылки не меняй. Верни ТОЛЬКО перевод, без кавычек и пояснений.';
   const rules = to === 'en' ? 'You translate for an appliance repair shop in Ontario.' : TRANSLATE_RULES;
+  // Короткие одиночные SMS быстрее переводить через Gemini Flash Lite,
+  // чтобы отправка и онлайн-перевод не ждали reasoning-модель OpenAI.
+  if (!isDialogue && t.length <= 600 && genAI) {
+    try {
+      const result = await generateContentWithModelFallback([
+        { text: `${rules}\n\n${instruction}\n\n${t}` },
+      ]);
+      const out = stripModelFences(String((result.response && result.response.text()) || '')).trim();
+      if (out) {
+        if (to === 'ru' && hasCyrillic(out)) return out;
+        if (to === 'en' && hasLatin(out) && !hasCyrillic(out)) return out;
+      }
+    } catch (error) {
+      console.warn('translateChat Gemini fast:', error.message);
+    }
+  }
   if (OPENAI_API_KEY) {
     try {
       const parsed = await openaiJsonResponse(
@@ -4691,12 +4766,13 @@ async function processRecordingWithAiOnce(callId, recordingUrl) {
         shopWho,
       });
     }
-    const transcriptionEn = pickLongestTranscript(
-      fromAudioEn,
-      liveEn,
-      liveTranscription,
-      liveLabeled
-    );
+    const transcriptionEn =
+      pickLongestTranscript(
+        fromAudioEn,
+        liveEn,
+        !isRussianTranscript(liveTranscription) ? liveTranscription : '',
+        !isRussianTranscript(liveLabeled) ? liveLabeled : ''
+      ) || pickLongestTranscript(liveTranscription, liveLabeled);
     // Один голос на всю расшифровку — это не молчаливый клиент, а слипшиеся
     // дорожки: вместе с его репликами пропадают имя, адрес и описание поломки.
     if (speakerCount(transcriptionEn) < 2) {
@@ -5386,7 +5462,29 @@ exports.registerFcmToken = functions.https.onRequest(async (req, res) => {
 // SMS: отправка сообщения из приложения
 // ============================================================================
 
-exports.sendSms = functions.https.onRequest(async (req, res) => {
+async function loadSmsSendSettings() {
+  try {
+    const settings = db.collection('companies').doc(COMPANY_ID).collection('settings');
+    const [configSnap, docsSnap] = await Promise.all([
+      settings.doc('config').get(),
+      settings.doc('documents').get(),
+    ]);
+    const config = configSnap.exists ? configSnap.data() || {} : {};
+    const docs = docsSnap.exists ? docsSnap.data() || {} : {};
+    return {
+      header: sanitizeSmsHeader(docs.smsHeader, docs.companyName),
+      reviewUrl: config.googleReviewUrl,
+      company: docs.companyName,
+    };
+  } catch (error) {
+    console.warn('loadSmsSendSettings:', error.message);
+    return { header: '', reviewUrl: '', company: '' };
+  }
+}
+
+exports.sendSms = functions.https.onRequest(
+  { timeoutSeconds: 60, memory: '512MiB', invoker: 'public' },
+  async (req, res) => {
   if (handleOptions(req, res)) return;
   setCors(res);
   const user = await technicians.requireAnyAppUser(req, res);
@@ -5451,12 +5549,17 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
       res.json({ success: true, sid: message.sid, id: '' });
       return;
     }
-    const header = await getSmsHeader();
     let sendBody = body || '';
     let storedRu = typeof bodyRu === 'string' ? bodyRu.trim() : '';
-    if (hasCyrillic(sendBody)) {
+    const needEn = hasCyrillic(sendBody);
+    const [smsCfg, translatedEn] = await Promise.all([
+      loadSmsSendSettings(),
+      needEn ? translateChat(sendBody, 'en') : Promise.resolve(sendBody),
+    ]);
+    const header = smsCfg.header;
+    if (needEn) {
       storedRu = storedRu || sendBody;
-      sendBody = await translateChat(sendBody, 'en');
+      sendBody = translatedEn;
       if (hasCyrillic(sendBody) && !hasLatin(sendBody)) {
         res.status(500).json({ error: 'Не удалось перевести SMS на английский' });
         return;
@@ -5465,7 +5568,10 @@ exports.sendSms = functions.https.onRequest(async (req, res) => {
       // латиница в тексте была, и проверка выше такое пропускала.
       sendBody = smsText.latinizeSms(sendBody, 'sendSms');
     }
-    const review = await prepareReviewSms(sendBody || '');
+    const review = await smsLinks.prepareReviewSms(sendBody || '', {
+      reviewUrl: smsCfg.reviewUrl,
+      company: smsCfg.company,
+    });
     sendBody = review.body;
     const text = withSmsHeader(sendBody || '', header);
     const fallbackRaw = smsText.latinizeSms(
@@ -5793,8 +5899,42 @@ exports.processIncomingSms = onDocumentWritten({
   if (!after?.exists) return;
   const data = after.data() || {};
   const before = event.data.before.exists ? event.data.before.data() || {} : {};
-  if (data.processingVersion !== 2 || data.direction !== 'inbound' || data.channel !== 'sms' ||
-      !data.smsProcessingRequestId || before.smsProcessingRequestId === data.smsProcessingRequestId) return;
+  const isInboundSms =
+    data.processingVersion === 2 &&
+    data.direction === 'inbound' &&
+    data.channel === 'sms' &&
+    Boolean(data.smsProcessingRequestId) &&
+    before.smsProcessingRequestId !== data.smsProcessingRequestId;
+
+  if (!isInboundSms) {
+    // Онлайн-перевод всех остальных сообщений (авто-SMS, исходящие на английском,
+    // письма) сразу при записи в Firestore — без задержки при отправке и открытии.
+    const body = String(data.body || '').trim();
+    const bodyRu = String(data.bodyRu || '').trim();
+    const needsRu =
+      !data.deletedAt &&
+      data.isReactionEcho !== true &&
+      (data.channel === 'sms' || data.channel === 'email') &&
+      !data.autoBodyRuAt &&
+      body.length > 0 &&
+      hasLatin(body) &&
+      !skipTranslate(body, 'ru') &&
+      (!bodyRu || bodyRu === body || !hasCyrillic(bodyRu));
+    if (needsRu && (genAI || OPENAI_API_KEY)) {
+      try {
+        const ru = String((await translateChat(body, 'ru')) || '').trim();
+        const patch = { autoBodyRuAt: FieldValue.serverTimestamp() };
+        if (ru && ru !== body && hasCyrillic(ru)) {
+          patch.bodyRu = ru;
+        }
+        await after.ref.set(patch, { merge: true });
+      } catch (error) {
+        console.warn('autoTranslateMessage:', error.message);
+      }
+    }
+    return;
+  }
+
   await withProcessingLease({
     db, ref: after.ref, field: 'smsProcessingLease',
     shouldRun: (current) => !messageAiBlocked(current) &&
@@ -5814,6 +5954,20 @@ async function processIncomingSmsData(docRef, data) {
   const preview = body.trim() ? body.trim().slice(0, 80) : twilioMedia.length ? 'Фото' : 'Новое сообщение';
   const senderLabel = voiceFacts.stripClientPrefix(matchedClient?.fullName || '', from);
   const title = senderLabel ? `SMS от ${senderLabel}` : 'Новое SMS';
+  const existingRu = String(data.bodyRu || '').trim();
+  const shouldTranslate =
+    Boolean(docRef) &&
+    !alreadyProcessed &&
+    String(body || '').trim().length > 0 &&
+    hasLatin(body) &&
+    (!existingRu || existingRu === body.trim() || !hasCyrillic(existingRu));
+  const translatePromise = shouldTranslate
+    ? translateChat(body, 'ru').catch((error) => {
+        console.warn('incomingSms translate:', error.message);
+        return '';
+      })
+    : Promise.resolve('');
+
   let confirmHandled = false;
   if (!alreadyProcessed) {
     try {
@@ -5824,6 +5978,16 @@ async function processIncomingSmsData(docRef, data) {
       });
     } catch (error) {
       console.error('incomingSms confirm error:', error);
+    }
+  }
+
+  const ruRaw = String((await translatePromise) || '').trim();
+  const ruValid = ruRaw && ruRaw !== body.trim() && hasCyrillic(ruRaw) ? ruRaw : '';
+  if (docRef && ruValid) {
+    try {
+      await docRef.set({ bodyRu: ruValid }, { merge: true });
+    } catch (error) {
+      console.warn('incomingSms save bodyRu:', error.message);
     }
   }
 
@@ -5872,17 +6036,6 @@ async function processIncomingSmsData(docRef, data) {
       }
     } catch (error) {
       console.error('incomingSms notify error:', error.message);
-    }
-  }
-
-  if (docRef && !alreadyProcessed && !confirmHandled && String(body || '').trim()) {
-    try {
-      const ru = await translateChat(body, 'ru');
-      if (ru && ru.trim() && ru.trim() !== String(body).trim()) {
-        await docRef.set({ bodyRu: ru.trim() }, { merge: true });
-      }
-    } catch (error) {
-      console.warn('incomingSms translate:', error.message);
     }
   }
 

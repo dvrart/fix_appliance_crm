@@ -10,6 +10,7 @@ import '../../../../core/constants.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/utils/thumb_image.dart';
 import '../../../../models/job.dart';
+import '../../../../services/ai_service.dart';
 import '../../../../services/catalog_service.dart';
 import '../../../../services/message_translate_service.dart';
 import '../../../../shared/widgets/appliance_picture.dart';
@@ -312,6 +313,17 @@ Future<void> openJobInfoEditor(
       trackingStatus: ctrl.trackingStatus,
       applianceType: _primaryApplianceField(ctrl, 'type', 'applianceType'),
       applianceBrand: _primaryApplianceField(ctrl, 'brand', 'brand'),
+      applianceModel: _primaryApplianceField(ctrl, 'model', 'model'),
+      applianceSerial: _primaryApplianceField(
+        ctrl,
+        'serialNumber',
+        'serialNumber',
+      ),
+      initialAdvice: ctrl.aiAdvice,
+      initialAdviceFor: ctrl.aiAdviceFor,
+      onAdviceGenerated: (advice, forProblem) {
+        unawaited(ctrl.updateAiAdvice(advice, forProblem));
+      },
       onAutoTranslatedProblem: (translated) {
         unawaited(
           ctrl.updateProblemAndSolution(
@@ -485,6 +497,11 @@ class _JobInfoEditorPage extends StatefulWidget {
   final String trackingStatus;
   final String applianceType;
   final String applianceBrand;
+  final String applianceModel;
+  final String applianceSerial;
+  final String initialAdvice;
+  final String initialAdviceFor;
+  final void Function(String advice, String forProblem)? onAdviceGenerated;
   final ValueChanged<String>? onAutoTranslatedProblem;
   const _JobInfoEditorPage({
     required this.initial,
@@ -493,6 +510,11 @@ class _JobInfoEditorPage extends StatefulWidget {
     required this.trackingStatus,
     this.applianceType = '',
     this.applianceBrand = '',
+    this.applianceModel = '',
+    this.applianceSerial = '',
+    this.initialAdvice = '',
+    this.initialAdviceFor = '',
+    this.onAdviceGenerated,
     this.onAutoTranslatedProblem,
   });
 
@@ -508,6 +530,12 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
       AppColors.isDark ? const Color(0xFF2B1216) : const Color(0xFFFFEBEE);
   static Color get _problemAccent =>
       AppColors.isDark ? const Color(0xFFFF8A80) : const Color(0xFFC62828);
+  static Color get _adviceTint =>
+      AppColors.isDark ? const Color(0xFF132A46) : const Color(0xFFBBDEFB);
+  static Color get _adviceFieldFill =>
+      AppColors.isDark ? const Color(0xFF0E2036) : const Color(0xFFE3F2FD);
+  static Color get _adviceAccent =>
+      AppColors.isDark ? const Color(0xFF64B5F6) : const Color(0xFF1565C0);
   static Color get _solutionTint =>
       AppColors.isDark ? const Color(0xFF163822) : const Color(0xFFC8E6C9);
   static Color get _solutionFieldFill =>
@@ -529,6 +557,8 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   int _hapticTab = 0;
   bool _translating = false;
   bool _swapLock = false;
+  final Map<String, String> _adviceCache = {};
+  bool _loadingAdvice = false;
 
   TextEditingController get _activeProblemController =>
       (_selectedRecallIndex >= 0 &&
@@ -549,13 +579,17 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   void initState() {
     super.initState();
     final initial = widget.initial;
-    _tabs = TabController(length: 2, vsync: this);
+    _tabs = TabController(length: 3, vsync: this);
     _tabAnimation = _tabs.animation;
     _tabAnimation?.addListener(_onTabAnimation);
     _tabs.addListener(_onTabs);
     _baselineProblem = initial.problem;
     _problem = TextEditingController(text: initial.problem);
     _solution = TextEditingController(text: initial.solution);
+    if (widget.initialAdvice.trim().isNotEmpty &&
+        widget.initialAdviceFor.trim().isNotEmpty) {
+      _adviceCache[widget.initialAdviceFor.trim()] = widget.initialAdvice.trim();
+    }
     _recallDrafts = [
       for (final r in initial.recalls) _RecallDraft.fromRecall(r),
     ];
@@ -573,6 +607,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     _packing = packingItemsFromNotes(initial.packing);
     _duration = initial.durationMinutes;
     unawaited(_autoTranslateProblemIfNeeded());
+    unawaited(_ensureAdvice());
   }
 
   @override
@@ -608,7 +643,37 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
   void _onTabs() {
     if (!mounted) return;
     _buzzTab(_tabs.index);
+    if (_tabs.index == 1) {
+      unawaited(_ensureAdvice());
+    }
     if (!_tabs.indexIsChanging) setState(() {});
+  }
+
+  Future<void> _ensureAdvice({bool force = false}) async {
+    final problem = _activeProblemController.text.trim();
+    if (problem.isEmpty || problem == 'Нет описания') return;
+    if (!force && (_adviceCache[problem] ?? '').trim().isNotEmpty) return;
+    if (_loadingAdvice) return;
+    if (mounted) setState(() => _loadingAdvice = true);
+    try {
+      final result = await AiService.diagnosePreliminary(
+        applianceType: widget.applianceType,
+        brand: widget.applianceBrand,
+        model: widget.applianceModel,
+        serialNumber: widget.applianceSerial,
+        problemDescription: problem,
+      );
+      if (!mounted) return;
+      final clean = result.trim();
+      if (clean.isNotEmpty) {
+        _adviceCache[problem] = clean;
+        if (_selectedRecallIndex < 0) {
+          widget.onAdviceGenerated?.call(clean, problem);
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _loadingAdvice = false);
+    }
   }
 
   List<JobTrackingOrder> get _currentTrackingOrders => [
@@ -841,6 +906,116 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
     fontWeight: FontWeight.w800,
     color: AppColors.inkMuted,
   );
+
+  Widget _advicePane() {
+    final problem = _activeProblemController.text.trim();
+    final advice = (_adviceCache[problem] ?? '').trim();
+    final hasProblem = problem.isNotEmpty && problem != 'Нет описания';
+    return ColoredBox(
+      color: _adviceTint,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        child: Container(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: _adviceFieldFill,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: _adviceAccent.withValues(alpha: 0.65),
+              width: 1.4,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 6, 4),
+                child: Row(
+                  children: [
+                    Icon(Icons.auto_awesome, size: 17, color: _adviceAccent),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        context.tr(
+                          'Предварительная оценка ИИ',
+                          'AI preliminary assessment',
+                        ),
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          color: _adviceAccent,
+                        ),
+                      ),
+                    ),
+                    if (advice.isNotEmpty)
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: context.tr('Копировать', 'Copy'),
+                        icon: Icon(Icons.copy_rounded, size: 18, color: _adviceAccent),
+                        onPressed: () => AppFeedback.copy(context, advice),
+                      ),
+                    if (hasProblem)
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: context.tr('Обновить совет', 'Refresh advice'),
+                        icon: Icon(Icons.refresh_rounded, size: 19, color: _adviceAccent),
+                        onPressed: _loadingAdvice
+                            ? null
+                            : () => _ensureAdvice(force: true),
+                      ),
+                  ],
+                ),
+              ),
+              if (_loadingAdvice)
+                const LinearProgressIndicator(minHeight: 2),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(14, 6, 14, 14),
+                  child: !hasProblem
+                      ? Text(
+                          context.tr(
+                            'Сначала опишите поломку на вкладке «Описание» — ИИ подскажет вероятные причины и что проверить.',
+                            'Describe the issue in the Description tab first — AI will suggest likely causes and what to check.',
+                          ),
+                          style: TextStyle(
+                            color: AppColors.inkMuted,
+                            fontSize: 14,
+                            height: 1.45,
+                          ),
+                        )
+                      : advice.isEmpty
+                          ? Text(
+                              _loadingAdvice
+                                  ? context.tr(
+                                      'ИИ анализирует проблему…',
+                                      'AI is analyzing the issue…',
+                                    )
+                                  : context.tr(
+                                      'Не удалось получить совет. Нажмите обновить справа сверху.',
+                                      'Could not load advice. Tap refresh above.',
+                                    ),
+                              style: TextStyle(
+                                color: AppColors.inkMuted,
+                                fontSize: 14,
+                                height: 1.45,
+                              ),
+                            )
+                          : Text(
+                              advice,
+                              style: TextStyle(
+                                color: AppColors.ink,
+                                fontSize: 14.5,
+                                height: 1.45,
+                              ),
+                            ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _textPane({
     required Color tint,
@@ -1458,13 +1633,16 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                 AnimatedBuilder(
                   animation: _tabs.animation!,
                   builder: (context, _) {
-                    final t = _tabs.animation!.value.clamp(0.0, 1.0);
-                    final tint = Color.lerp(_problemTint, _solutionTint, t)!;
-                    final accent = Color.lerp(
-                      _problemAccent,
-                      _solutionAccent,
-                      t,
-                    )!;
+                    final t = _tabs.animation!.value.clamp(0.0, 2.0);
+                    final Color tint;
+                    final Color accent;
+                    if (t <= 1.0) {
+                      tint = Color.lerp(_problemTint, _adviceTint, t)!;
+                      accent = Color.lerp(_problemAccent, _adviceAccent, t)!;
+                    } else {
+                      tint = Color.lerp(_adviceTint, _solutionTint, t - 1.0)!;
+                      accent = Color.lerp(_adviceAccent, _solutionAccent, t - 1.0)!;
+                    }
                     return Material(
                       color: tint,
                       child: TabBar(
@@ -1485,6 +1663,9 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                                     'Описание (повтор)',
                                     'Recall issue',
                                   ),
+                          ),
+                          Tab(
+                            text: context.tr('Совет', 'Advice'),
                           ),
                           Tab(
                             text: _selectedRecallIndex < 0
@@ -1512,6 +1693,7 @@ class _JobInfoEditorPageState extends State<_JobInfoEditorPage>
                                 'What happened on the recall...',
                               ),
                       ),
+                      _advicePane(),
                       _textPane(
                         tint: _solutionTint,
                         fieldFill: _solutionFieldFill,

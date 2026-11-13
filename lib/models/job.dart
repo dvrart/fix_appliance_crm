@@ -1249,12 +1249,41 @@ class Job {
     return total;
   }
 
+  /// Область начисления налога по документу:
+  /// `'all'` — на весь счёт (работа + запчасти),
+  /// `'parts'` — только на запчасти,
+  /// `'none'` — без налога.
+  static String documentTaxScope(Map doc) {
+    final rate = _toDouble(doc['taxRate']);
+    if (rate <= 0) return 'none';
+    final raw = (doc['taxScope'] ?? '').toString().trim().toLowerCase();
+    if (raw == 'parts') return 'parts';
+    if (raw == 'none') return 'none';
+    return 'all';
+  }
+
+  static double documentTaxableSubtotal(Map doc) {
+    final scope = documentTaxScope(doc);
+    if (scope == 'none') return 0;
+    if (scope != 'parts') return documentSubtotal(doc);
+    final items = doc['items'];
+    if (items is! List) return 0;
+    var total = 0.0;
+    for (final item in items) {
+      if (item is! Map) continue;
+      if (!isPartItem(item)) continue;
+      final qty = _toDouble(item['qty'] ?? 1);
+      total += qty * _toDouble(item['price']);
+    }
+    return total < 0 ? 0.0 : total;
+  }
+
   static double documentTotal(Map doc) {
     return documentSubtotal(doc) + documentTax(doc);
   }
 
   static double documentTax(Map doc) {
-    return documentSubtotal(doc) * _toDouble(doc['taxRate']);
+    return documentTaxableSubtotal(doc) * _toDouble(doc['taxRate']);
   }
 
   static double documentPaid(Map doc) {

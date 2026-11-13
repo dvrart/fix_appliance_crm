@@ -60,6 +60,7 @@ class JobDetailsController extends ChangeNotifier {
     _calculateTravelTime();
     _listenClient();
     _syncClientNameFromJob();
+    unawaited(ensureAiAdvice());
   }
 
   void _syncClientNameFromJob() {
@@ -108,6 +109,7 @@ class JobDetailsController extends ChangeNotifier {
   List<Map<String, dynamic>> documents = [];
   List<Map<String, dynamic>> builderItems = [];
   double builderTaxRate = TaxRates.hst;
+  String builderTaxScope = 'all'; // 'all' | 'parts' | 'none'
   int? viewingDocumentIndex;
   StreamSubscription<DocumentSnapshot>? _jobSubscription;
   StreamSubscription<DocumentSnapshot>? _clientSub;
@@ -400,6 +402,8 @@ class JobDetailsController extends ChangeNotifier {
           'sourceEmailFrom',
           'sourceEmailSubject',
           'sourceEmailPreview',
+          'aiAdvice',
+          'aiAdviceFor',
         ]) {
           if (data.containsKey(key)) jobData[key] = data[key];
         }
@@ -441,12 +445,15 @@ class JobDetailsController extends ChangeNotifier {
           }
         } catch (_) {}
       }
-      builderTaxRate = (tech != null && tech.hasOwnTax) ? TaxRates.hst : 0.0;
+      final mode = tech?.effectiveTaxMode ?? TechnicianProfile.taxModeNone;
+      builderTaxScope = mode;
+      builderTaxRate = mode == TechnicianProfile.taxModeNone ? 0.0 : TaxRates.hst;
       if (!_disposed) notifyListeners();
       return;
     }
     final config = await SettingsService.loadConfig();
     builderTaxRate = SettingsService.readDefaultTaxRate(config);
+    builderTaxScope = builderTaxRate <= 0 ? 'none' : 'all';
     if (!_disposed) notifyListeners();
   }
 
@@ -1159,6 +1166,55 @@ class JobDetailsController extends ChangeNotifier {
     _queue({'description': description});
   }
 
+  String get aiAdvice => (jobData['aiAdvice'] ?? '').toString();
+  String get aiAdviceFor => (jobData['aiAdviceFor'] ?? '').toString();
+  bool _loadingAiAdvice = false;
+
+  Future<void> updateAiAdvice(String advice, String forProblem) async {
+    final clean = advice.trim();
+    final source = forProblem.trim();
+    if (clean.isEmpty) return;
+    jobData['aiAdvice'] = clean;
+    jobData['aiAdviceFor'] = source;
+    notifyListeners();
+    await JobService.update(jobId, {
+      'aiAdvice': clean,
+      'aiAdviceFor': source,
+    });
+  }
+
+  Future<void> ensureAiAdvice({bool force = false}) async {
+    if (_disposed || _loadingAiAdvice) return;
+    final problem = currentDescription.trim();
+    if (problem.isEmpty || problem == 'Нет описания') return;
+    if (!force &&
+        aiAdvice.trim().isNotEmpty &&
+        aiAdviceFor.trim() == problem) {
+      return;
+    }
+    _loadingAiAdvice = true;
+    try {
+      final rawApps = jobData['appliances'];
+      final firstApp = (rawApps is List && rawApps.isNotEmpty && rawApps.first is Map)
+          ? rawApps.first as Map
+          : null;
+      final advice = await AiService.diagnosePreliminary(
+        applianceType:
+            (firstApp?['type'] ?? jobData['applianceType'] ?? '').toString(),
+        brand: (firstApp?['brand'] ?? jobData['brand'] ?? '').toString(),
+        model: (firstApp?['model'] ?? jobData['model'] ?? '').toString(),
+        serialNumber:
+            (firstApp?['serialNumber'] ?? jobData['serialNumber'] ?? '').toString(),
+        problemDescription: problem,
+      );
+      if (_disposed || advice.trim().isEmpty) return;
+      await updateAiAdvice(advice, problem);
+    } catch (_) {
+    } finally {
+      _loadingAiAdvice = false;
+    }
+  }
+
   Future<void> updateProblemAndSolution({
     required String problem,
     required String solution,
@@ -1168,6 +1224,7 @@ class JobDetailsController extends ChangeNotifier {
     jobData['description'] = problem;
     jobData['solution'] = solution;
     _queue({'description': problem, 'solution': solution});
+    unawaited(ensureAiAdvice());
   }
 
   Future<void> updateRecalls(List<JobRecall> next) async {
@@ -1960,6 +2017,18 @@ class JobDetailsController extends ChangeNotifier {
 
   double calcTax(double subtotal, dynamic rate) {
     return subtotal * _asDouble(rate, 0);
+  }
+
+  double calcDocTax(
+    List<dynamic> items,
+    dynamic rate, {
+    String taxScope = 'all',
+  }) {
+    return Job.documentTax({
+      'items': items,
+      'taxRate': _asDouble(rate, 0),
+      'taxScope': taxScope,
+    });
   }
 
   double calcTotal(double subtotal, double tax) {

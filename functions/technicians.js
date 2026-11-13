@@ -135,6 +135,10 @@ function sanitizeTechFields(body = {}, existing = {}) {
     ? body.collectsHst
     : (typeof existing.collectsHst === 'boolean' ? existing.collectsHst : Boolean(hstNumber));
   const etransferEmail = String(body.etransferEmail ?? existing.etransferEmail ?? '').trim();
+  const rawTaxMode = String(body.taxMode ?? existing.taxMode ?? '').trim().toLowerCase();
+  const taxMode = ['all', 'parts', 'none'].includes(rawTaxMode)
+    ? rawTaxMode
+    : (collectsHst && Boolean(hstNumber) ? 'all' : 'none');
   const active = typeof body.active === 'boolean'
     ? body.active
     : existing.active !== false;
@@ -149,6 +153,7 @@ function sanitizeTechFields(body = {}, existing = {}) {
     collectsHst,
     hstNumber,
     etransferEmail,
+    taxMode,
     active,
   };
 }
@@ -339,12 +344,26 @@ function summarizeJobPayout(job, profitSharePercent = 50) {
       continue;
     }
     const items = Array.isArray(doc.items) ? doc.items : [];
+    const taxRate = Number(doc.taxRate) || 0;
+    const taxScope = String(doc.taxScope || '').trim().toLowerCase();
     let subtotal = 0;
+    let partsSubtotal = 0;
     for (const item of items) {
       if (!item || typeof item !== 'object') continue;
-      subtotal += (Number(item.qty ?? 1) || 0) * (Number(item.price) || 0);
+      const line = (Number(item.qty ?? 1) || 0) * (Number(item.price) || 0);
+      subtotal += line;
+      const kind = String(item.type || '').toLowerCase();
+      const isPart =
+        item.labourDiscount !== true &&
+        (kind.includes('part') ||
+          kind.includes('запчаст') ||
+          (!kind && (item.warehouseItemId || item.costPrice != null)));
+      if (isPart) partsSubtotal += line;
     }
-    const tax = subtotal * (Number(doc.taxRate) || 0);
+    const taxable = taxRate <= 0 || taxScope === 'none'
+      ? 0
+      : (taxScope === 'parts' ? Math.max(0, partsSubtotal) : subtotal);
+    const tax = taxable * taxRate;
     const total = subtotal + tax;
 
     let docPaid = 0;

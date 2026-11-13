@@ -1196,31 +1196,35 @@ module.exports = function createEmailModule({
       throw error;
     }
 
-    if (typeof processInboundAi === 'function' && runAi && (body.trim() || preloadedImages.length)) {
-      processInboundAi({
-        messageId: added.id,
-        from: fromEmail,
-        body: [subject, body].filter(Boolean).join('\n'),
-        twilioMedia: [],
-        clientId,
-        clientName: matched ? matched.fullName || matched.name || '' : '',
-        preloadedImages,
-        channel: 'email',
-        intake: treatIntake,
-        websiteForm: isWebsite,
-        emailFingerprint: fingerprint,
-      }).catch((error) => console.warn('email inbound AI:', error.message));
-    }
+    const aiPromise =
+      typeof processInboundAi === 'function' && runAi && (body.trim() || preloadedImages.length)
+        ? processInboundAi({
+            messageId: added.id,
+            from: fromEmail,
+            body: [subject, body].filter(Boolean).join('\n'),
+            twilioMedia: [],
+            clientId,
+            clientName: matched ? matched.fullName || matched.name || '' : '',
+            preloadedImages,
+            channel: 'email',
+            intake: treatIntake,
+            websiteForm: isWebsite,
+            emailFingerprint: fingerprint,
+          }).catch((error) => console.warn('email inbound AI:', error.message))
+        : Promise.resolve();
 
-    if (typeof translateChat === 'function' && body.trim()) {
-      translateChat(body, 'ru')
-        .then((ru) => {
-          if (ru && ru.trim() && ru.trim() !== body.trim()) {
-            return added.update({ bodyRu: ru.trim() });
-          }
-        })
-        .catch((error) => console.warn('email inbound translate:', error.message));
-    }
+    const translatePromise =
+      typeof translateChat === 'function' && body.trim()
+        ? translateChat(body, 'ru')
+            .then((ru) => {
+              if (ru && ru.trim() && ru.trim() !== body.trim() && /[А-Яа-яЁё]/.test(ru)) {
+                return added.update({ bodyRu: ru.trim() });
+              }
+            })
+            .catch((error) => console.warn('email inbound translate:', error.message))
+        : Promise.resolve();
+
+    await Promise.allSettled([aiPromise, translatePromise]);
 
     const isFresh = Date.now() - created.getTime() < 24 * 60 * 60 * 1000;
     // Письма с сайта сначала проверяет ИИ (processInboundAi): push о реальной

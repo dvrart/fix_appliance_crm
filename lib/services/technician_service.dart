@@ -207,6 +207,7 @@ class TechnicianService {
     bool collectsHst = false,
     String hstNumber = '',
     String etransferEmail = '',
+    String? taxMode,
   }) async {
     final res = await _callManage({
       'action': 'create',
@@ -220,6 +221,7 @@ class TechnicianService {
       'collectsHst': collectsHst,
       'hstNumber': hstNumber.trim(),
       'etransferEmail': etransferEmail.trim(),
+      'taxMode': ?taxMode,
     });
     final map = res['technician'] is Map
         ? Map<String, dynamic>.from(res['technician'] as Map)
@@ -240,6 +242,7 @@ class TechnicianService {
     bool collectsHst = false,
     String hstNumber = '',
     String etransferEmail = '',
+    String? taxMode,
     bool active = true,
   }) async {
     await _callManage({
@@ -255,6 +258,7 @@ class TechnicianService {
       'collectsHst': collectsHst,
       'hstNumber': hstNumber.trim(),
       'etransferEmail': etransferEmail.trim(),
+      'taxMode': ?taxMode,
       'active': active,
     });
   }

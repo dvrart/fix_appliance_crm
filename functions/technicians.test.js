@@ -185,3 +185,23 @@ test('summarizeJobPayout считает долю владельца и учит�
   assert.equal(Math.round(summary.netProfit), 250);
   assert.equal(Math.round(summary.dueToOwner), 225);
 });
+
+test('summarizeJobPayout учитывает taxScope=parts и не облагает работу налогом', () => {
+  const jobPartsTaxOnly = {
+    documents: [{
+      type: 'Invoice',
+      taxRate: 0.13,
+      taxScope: 'parts',
+      items: [
+        { name: 'Service', type: 'Service', qty: 1, price: 200 },
+        { name: 'Pump', type: 'Part', qty: 1, price: 100, costPrice: 60, partSource: 'owner' },
+      ],
+      // Subtotal 300 + HST only on part (13) = 313.
+      payments: [{ amount: 313, method: 'e-Transfer' }],
+    }],
+  };
+  const summary = technicians.summarizeJobPayout(jobPartsTaxOnly, 50);
+  assert.equal(Math.round(summary.revenueExTax), 300);
+  assert.equal(Math.round(summary.netProfit), 240);
+  assert.equal(Math.round(summary.dueToOwner), 180);
+});
