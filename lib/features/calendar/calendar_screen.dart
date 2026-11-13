@@ -1622,7 +1622,9 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
       size: iconSize,
     );
     final radius = BorderRadius.circular(
-      _calendarController.view == CalendarView.month ? 4 : 8,
+      _calendarController.view == CalendarView.month
+          ? 4
+          : (cardSize.shortestSide <= 22 ? 5 : 8),
     );
     final hasTime = !app.isAllDay && (visit?.hasTime ?? true);
     final timeStr = DateFormat('HH:mm').format(app.startTime);
@@ -1839,7 +1841,9 @@ class _CalendarScreenState extends State<CalendarScreen> with UiSettingsAware {
         decoration: BoxDecoration(
           color: color,
           borderRadius: BorderRadius.circular(
-            _calendarController.view == CalendarView.month ? 4 : 8,
+            _calendarController.view == CalendarView.month
+                ? 4
+                : (shape.size.shortestSide <= 22 ? 5 : 8),
           ),
         ),
         child: Center(
@@ -2329,41 +2333,42 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
     required double dayWidth,
     required Size cardSize,
   }) {
-    final fullWidth = dates.length == 1 && dayWidth > cardSize.width + 8;
-    final itemWidth = fullWidth
-        ? dayWidth - 8
-        : (dayWidth - 2 < cardSize.width
-              ? (dayWidth - 2).clamp(16.0, cardSize.width)
-              : cardSize.width);
-    final itemSize = Size(itemWidth, cardSize.height);
+    if (dates.length == 1) {
+      final fullWidth = dayWidth > cardSize.width + 8;
+      final itemWidth = fullWidth
+          ? dayWidth - 8
+          : (dayWidth - 2 < cardSize.width
+                ? (dayWidth - 2).clamp(16.0, cardSize.width)
+                : cardSize.width);
+      final itemSize = Size(itemWidth, cardSize.height);
+      final list = allDayByDate.first;
+      final hasDragPreview =
+          _draggingApp != null &&
+          _draggingAllDay &&
+          _draggingTime != null &&
+          _sameDay(_draggingTime!, dates.first) &&
+          !list.any((a) => a.id.toString() == _draggingApp!.id.toString());
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(width: _rulerWidth),
-          for (var i = 0; i < dates.length; i++)
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(width: _rulerWidth),
             Expanded(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  for (var j = 0; j < allDayByDate[i].length; j++) ...[
+                  for (var j = 0; j < list.length; j++) ...[
                     if (j > 0) const SizedBox(height: 2),
                     _buildAllDayCard(
-                      app: allDayByDate[i][j],
+                      app: list[j],
                       size: itemSize,
                       dayWidth: dayWidth,
                     ),
                   ],
-                  if (_draggingApp != null &&
-                      _draggingAllDay &&
-                      _draggingTime != null &&
-                      _sameDay(_draggingTime!, dates[i]) &&
-                      !allDayByDate[i].any(
-                        (a) => a.id.toString() == _draggingApp!.id.toString(),
-                      )) ...[
-                    if (allDayByDate[i].isNotEmpty) const SizedBox(height: 2),
+                  if (hasDragPreview) ...[
+                    if (list.isNotEmpty) const SizedBox(height: 2),
                     SizedBox(
                       width: itemSize.width,
                       height: itemSize.height,
@@ -2378,6 +2383,77 @@ class _AdaptiveCalendarPageState extends State<_AdaptiveCalendarPage> {
                     ),
                   ],
                 ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    const double compactHeight = 19.0;
+    const double gap = 2.0;
+    const double minChipWidth = 18.0;
+    final usableWidth = (dayWidth - 2).clamp(minChipWidth, double.infinity);
+    final maxPerRow = usableWidth >= 3 * minChipWidth + 2 * gap + 0.5
+        ? 3
+        : (usableWidth >= 2 * minChipWidth + gap + 0.5 ? 2 : 1);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(width: _rulerWidth),
+          for (var i = 0; i < dates.length; i++)
+            Expanded(
+              child: Builder(
+                builder: (context) {
+                  final list = allDayByDate[i];
+                  final hasDragPreview =
+                      _draggingApp != null &&
+                      _draggingAllDay &&
+                      _draggingTime != null &&
+                      _sameDay(_draggingTime!, dates[i]) &&
+                      !list.any(
+                        (a) => a.id.toString() == _draggingApp!.id.toString(),
+                      );
+                  final totalCount = list.length + (hasDragPreview ? 1 : 0);
+                  if (totalCount == 0) return const SizedBox.shrink();
+                  final cols = totalCount.clamp(1, maxPerRow);
+                  final itemWidth = cols == 1
+                      ? usableWidth.clamp(minChipWidth, cardSize.width)
+                      : ((usableWidth - gap * (cols - 1) - 0.5) / cols).clamp(
+                          minChipWidth,
+                          cardSize.width,
+                        );
+                  final itemSize = Size(itemWidth, compactHeight);
+                  return Wrap(
+                    spacing: gap,
+                    runSpacing: gap,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      for (var j = 0; j < list.length; j++)
+                        _buildAllDayCard(
+                          app: list[j],
+                          size: itemSize,
+                          dayWidth: dayWidth,
+                        ),
+                      if (hasDragPreview)
+                        SizedBox(
+                          width: itemSize.width,
+                          height: itemSize.height,
+                          child: Opacity(
+                            opacity: 0.75,
+                            child: widget.cardBuilder(
+                              _draggingApp!,
+                              itemSize,
+                              forDragFeedback: true,
+                            ),
+                          ),
+                        ),
+                    ],
+                  );
+                },
               ),
             ),
         ],
