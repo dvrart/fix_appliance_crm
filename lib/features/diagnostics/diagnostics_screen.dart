@@ -5,6 +5,7 @@ import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../core/utils/bilingual_search.dart';
 import '../../services/error_log_service.dart';
 import '../../services/service_guide_service.dart';
 import '../../shared/widgets/app_bar_save.dart';
@@ -282,6 +283,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           .where((w) => w.isNotEmpty)
           .toList();
       if (words.every((w) => hay.contains(w))) return true;
+      if (BilingualSearch.matches(hay, query)) return true;
       return false;
     }
     return true;

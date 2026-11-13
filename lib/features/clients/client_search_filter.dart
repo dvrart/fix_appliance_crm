@@ -1,3 +1,4 @@
+import '../../core/utils/bilingual_search.dart';
 import '../../models/client.dart';
 import '../../models/job.dart';
 import '../../services/client_service.dart';
@@ -135,22 +136,9 @@ String _fold(String value) => value.toLowerCase().trim();
 
 final _wordSeparator = RegExp(r'[^a-z0-9а-яё]+');
 
-String _compact(String value) =>
-    value.toLowerCase().replaceAll(_wordSeparator, '');
-
 bool _containsWord(List<String> values, String word) {
-  final compactWord = _compact(word);
   for (final value in values) {
-    final v = _fold(value);
-    if (v.contains(word)) return true;
-    // Номер детали пишут как угодно: «W10 348-269» = «W10348269».
-    if (compactWord.length >= 3 && _compact(v).contains(compactWord)) {
-      return true;
-    }
-    // Окончания слов: «машина» находит «машине», «стиральн» — «стиральной».
-    for (final part in v.split(_wordSeparator)) {
-      if (part.startsWith(word)) return true;
-    }
+    if (BilingualSearch.matchesWord(value, word)) return true;
   }
   return false;
 }

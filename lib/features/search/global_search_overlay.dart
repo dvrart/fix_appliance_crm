@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/motion.dart';
+import '../../core/utils/bilingual_search.dart';
 import '../../models/models.dart';
 import '../../services/services.dart';
 import '../../shared/app_nav.dart';
@@ -534,8 +535,9 @@ class _Hits {
 int _rank(String haystack, String q) {
   final value = haystack.toLowerCase();
   if (value.startsWith(q)) return 0;
-  if (value.contains(q)) return 1;
-  return 2;
+  if (value.contains(q) || BilingualSearch.phoneticStartsWith(value, q)) return 1;
+  if (BilingualSearch.matches(value, q)) return 2;
+  return 3;
 }
 
 Future<_Hits> _search(String raw) async {
@@ -557,13 +559,15 @@ Future<_Hits> _search(String raw) async {
     });
 
   final jobs = allJobs.where((j) {
-    return j.clientName.toLowerCase().contains(q) ||
-        ClientService.queryMatchesPhone(j.clientPhone, raw) ||
-        j.description.toLowerCase().contains(q) ||
-        j.applianceType.toLowerCase().contains(q) ||
-        j.applianceBrand.toLowerCase().contains(q) ||
-        j.workAddress.toLowerCase().contains(q) ||
-        j.status.toLowerCase().contains(q);
+    return ClientService.queryMatchesPhone(j.clientPhone, raw) ||
+        BilingualSearch.matchesAny([
+          j.clientName,
+          j.description,
+          j.applianceType,
+          j.applianceBrand,
+          j.workAddress,
+          j.status,
+        ], raw);
   }).toList()
     ..sort((a, b) {
       final byRank = _rank(a.clientName, q).compareTo(_rank(b.clientName, q));
@@ -572,11 +576,14 @@ Future<_Hits> _search(String raw) async {
     });
 
   final items = allItems.where((w) {
-    return w.name.toLowerCase().contains(q) ||
-        w.partNumber.toLowerCase().contains(q) ||
-        (w.modelNumber ?? '').toLowerCase().contains(q) ||
-        w.category.toLowerCase().contains(q) ||
-        (w.barcode ?? '').toLowerCase().contains(q);
+    return WarehouseItem.numberMatches(raw, w.searchNumbers) ||
+        BilingualSearch.matchesAny([
+          w.name,
+          w.partNumber,
+          w.modelNumber ?? '',
+          w.category,
+          w.barcode ?? '',
+        ], raw);
   }).toList()
     ..sort((a, b) {
       final byRank = _rank(a.name, q).compareTo(_rank(b.name, q));

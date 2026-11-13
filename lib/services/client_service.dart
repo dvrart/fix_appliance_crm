@@ -6,6 +6,7 @@ import 'package:flutter/scheduler.dart';
 
 import '../core/app_commands.dart';
 import '../core/constants.dart';
+import '../core/utils/bilingual_search.dart';
 import '../models/client.dart';
 import '../models/location.dart';
 import 'care_plan_service.dart';
@@ -757,7 +758,7 @@ class ClientService {
     if (q.isEmpty) return true;
     final digits = q.replaceAll(RegExp(r'\D'), '');
     if (digits.length >= 3 && hasPhone(client, query)) return true;
-    return _searchBlob(client).contains(q);
+    return BilingualSearch.matches(_searchBlob(client), query);
   }
 
   static bool matchesMap(Map<String, dynamic> data, String id, String query) {

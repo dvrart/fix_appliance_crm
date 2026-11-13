@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/constants.dart';
+import '../../core/utils/bilingual_search.dart';
 import 'keyboard_safe.dart';
 import '../../core/l10n/app_locale.dart';
 
@@ -133,7 +134,7 @@ class _CatalogPickerSheetState extends State<_CatalogPickerSheet> {
                 final q = _query.trim().toLowerCase();
                 final filtered = q.isEmpty
                     ? all
-                    : all.where((s) => s.toLowerCase().contains(q)).toList();
+                    : all.where((s) => BilingualSearch.matches(s, _query)).toList();
                 final exactMatch = all.any((s) => s.toLowerCase() == q);
 
                 if (!snapshot.hasData) {

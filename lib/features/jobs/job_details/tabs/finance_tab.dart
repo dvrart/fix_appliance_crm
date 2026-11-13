@@ -10,6 +10,7 @@ import '../../../../core/app_feedback.dart';
 import '../../../../core/constants.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/motion.dart';
+import '../../../../core/utils/bilingual_search.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/utils/number_input.dart';
 import '../../../../models/client.dart';
@@ -1788,7 +1789,7 @@ class _FinanceTabState extends State<FinanceTab> {
                   : warehouse.where((item) {
                       // По номеру ищем так же, как на складе: с «заменяет
                       // номера» и без оглядки на дефисы в артикуле.
-                      return item.name.toLowerCase().contains(query) ||
+                      return BilingualSearch.matches(item.name, raw) ||
                           WarehouseItem.numberMatches(raw, item.searchNumbers);
                     }).take(6).toList();
 

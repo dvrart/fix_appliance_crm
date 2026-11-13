@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/utils/bilingual_search.dart';
+
 /// Подсвечивает совпадения поискового запроса жёлтым.
 class HighlightText extends StatelessWidget {
   final String text;
@@ -64,6 +66,35 @@ class HighlightText extends StatelessWidget {
     if (spans.length == 1 && spans.first is TextSpan) {
       final only = spans.first as TextSpan;
       if (only.style == null) {
+        final cross = BilingualSearch.crossScriptMatchRanges(text, q);
+        if (cross.isNotEmpty) {
+          final crossSpans = <InlineSpan>[];
+          var pos = 0;
+          for (final r in cross) {
+            if (r.start > pos) {
+              crossSpans.add(TextSpan(text: text.substring(pos, r.start)));
+            }
+            crossSpans.add(
+              TextSpan(
+                text: text.substring(r.start, r.end),
+                style: const TextStyle(
+                  backgroundColor: highlightColor,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            );
+            pos = r.end;
+          }
+          if (pos < text.length) {
+            crossSpans.add(TextSpan(text: text.substring(pos)));
+          }
+          return Text.rich(
+            TextSpan(style: style, children: crossSpans),
+            maxLines: maxLines,
+            overflow: overflow ?? TextOverflow.clip,
+            textAlign: textAlign,
+          );
+        }
         return Text(
           text,
           style: style,

@@ -1,5 +1,8 @@
+import 'package:fix_appliance_crm/core/utils/bilingual_search.dart';
 import 'package:fix_appliance_crm/features/clients/client_search_filter.dart';
+import 'package:fix_appliance_crm/models/client.dart';
 import 'package:fix_appliance_crm/models/job.dart';
+import 'package:fix_appliance_crm/services/client_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Поиск клиентов по фильтрам (просьба FIX 25.10.2026): город, имя,
@@ -175,5 +178,45 @@ void main() {
       all(will, const [ClientSearchCriterion(ClientSearchField.city, '')]),
       isTrue,
     );
+  });
+
+  group('двуязычный поиск (латиница ↔ кириллица)', () {
+    test('кириллический запрос находит латинские имена и наоборот', () {
+      final artemLat = Client(id: 'c1', fullName: 'Artem Ivanov', phone: '4165550101');
+      final artemCyr = Client(id: 'c2', fullName: 'Артём Иванов', phone: '4165550102');
+      final john = Client(id: 'c3', fullName: 'John Smith', phone: '4165550103');
+      final johnCyr = Client(id: 'c4', fullName: 'Джон Смит', phone: '4165550104');
+      final brad = Client(id: 'c5', fullName: 'Brad Miller', phone: '4165550105');
+
+      expect(ClientService.matchesClient(artemLat, 'артем'), isTrue);
+      expect(ClientService.matchesClient(artemCyr, 'артем'), isTrue);
+      expect(ClientService.matchesClient(artemLat, 'artem'), isTrue);
+      expect(ClientService.matchesClient(artemCyr, 'artem'), isTrue);
+      expect(ClientService.matchesClient(artemCyr, 'artyom'), isTrue);
+
+      expect(ClientService.matchesClient(john, 'джон'), isTrue);
+      expect(ClientService.matchesClient(johnCyr, 'john'), isTrue);
+      expect(ClientService.matchesClient(john, 'джон смит'), isTrue);
+      expect(ClientService.matchesClient(johnCyr, 'john smith'), isTrue);
+
+      expect(ClientService.matchesClient(brad, 'брэд'), isTrue);
+      expect(ClientService.matchesClient(brad, 'брад'), isTrue);
+      expect(ClientService.matchesClient(john, 'артем'), isFalse);
+    });
+
+    test('поиск в фильтрах клиентов (имя, город, описание) работает в обеих раскладках', () {
+      expect(hit(will, ClientSearchField.city, 'брэнтфорд'), isTrue);
+      expect(hit(will, ClientSearchField.city, 'брантфорд'), isTrue);
+      expect(hit(sue, ClientSearchField.city, 'симко'), isTrue);
+      expect(hit(frank, ClientSearchField.name, 'фрэнк миллер'), isTrue);
+      expect(hit(sue, ClientSearchField.description, 'бош'), isTrue);
+      expect(hit(sue, ClientSearchField.all, 'аргайл'), isTrue);
+    });
+
+    test('crossScriptMatchRanges находит слова для подсветки через алфавит', () {
+      final ranges = BilingualSearch.crossScriptMatchRanges('Artem Ivanov', 'артем');
+      expect(ranges, hasLength(1));
+      expect('Artem Ivanov'.substring(ranges.first.start, ranges.first.end), 'Artem');
+    });
   });
 }

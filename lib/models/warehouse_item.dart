@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../core/utils/bilingual_search.dart';
+
 /// Запчасть / товар на складе
 class WarehouseItem {
   final String id;
@@ -218,8 +220,8 @@ class WarehouseItem {
   static bool matchesSearch(Map<String, dynamic> data, String query) {
     final text = query.trim();
     if (text.isEmpty) return true;
-    final name = '${data['name'] ?? ''}'.toUpperCase();
-    if (name.contains(text.toUpperCase())) return true;
+    final name = '${data['name'] ?? ''}';
+    if (BilingualSearch.matches(name, text)) return true;
     return numberMatches(text, searchNumbersOf(data));
   }
 
