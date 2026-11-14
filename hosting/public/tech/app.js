@@ -51,7 +51,7 @@ const FIREBASE_CONFIG = {
   storageBucket: 'fix-appliance-crm.firebasestorage.app',
 };
 
-const COMPANY_ID = 'fix_appliance_ca';
+let COMPANY_ID = 'fix_appliance_ca';
 const FUNCTIONS_URL = 'https://us-central1-fix-appliance-crm.cloudfunctions.net';
 const CALL_AUDIO_URL = 'https://callrecordingaudio-wmdrqa3n7q-uc.a.run.app';
 
@@ -418,8 +418,12 @@ async function fetchShopPhoneIfNeeded() {
   if (!auth.currentUser) return state.shopPhone;
   try {
     const token = await auth.currentUser.getIdToken();
-    const identity = `tech_${auth.currentUser.uid}`;
-    const res = await fetch(`${FUNCTIONS_URL}/twilioAccessToken?identity=${encodeURIComponent(identity)}`, {
+    const isTesterScope = COMPANY_ID.startsWith('tester_');
+    const identity = isTesterScope
+      ? `tester_${auth.currentUser.uid}`
+      : `tech_${auth.currentUser.uid}`;
+    const suffix = isTesterScope ? '&tester=1' : '';
+    const res = await fetch(`${FUNCTIONS_URL}/twilioAccessToken?identity=${encodeURIComponent(identity)}${suffix}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
@@ -433,9 +437,25 @@ async function fetchShopPhoneIfNeeded() {
   return state.shopPhone;
 }
 
-function bindUserStreams(user) {
+async function resolveCompanyForUser(uid) {
+  if (!uid || uid === OWNER_UID) return 'fix_appliance_ca';
+  try {
+    const testerSnap = await getDoc(doc(db, 'testers', uid));
+    if (testerSnap.exists()) {
+      const data = testerSnap.data() || {};
+      if (data.role === 'technician' && data.parentCompanyId) {
+        return String(data.parentCompanyId).trim();
+      }
+    }
+  } catch (_) {}
+  return 'fix_appliance_ca';
+}
+
+async function bindUserStreams(user) {
   clearStreams();
   const uid = user.uid;
+  COMPANY_ID = await resolveCompanyForUser(uid);
+  if (state.user?.uid !== uid) return;
   const companyDoc = doc(db, 'companies', COMPANY_ID);
 
   if (uid === OWNER_UID) {
@@ -654,7 +674,9 @@ async function uploadJobAttachment(job, file, kind = 'photo') {
   const blob = await compressImageFile(file);
   const prefix = kind === 'part_receipt' ? 'part_receipt' : 'photo';
   const fileName = `${prefix}_${Date.now()}.jpg`;
-  const path = `jobs/${job.id}/attachments/${fileName}`;
+  const path = COMPANY_ID.startsWith('tester_')
+    ? `companies/${COMPANY_ID}/jobs/${job.id}/attachments/${fileName}`
+    : `jobs/${job.id}/attachments/${fileName}`;
   const sRef = storageRef(storage, path);
   await uploadBytes(sRef, blob, { contentType: 'image/jpeg' });
   const url = await getDownloadURL(sRef);
