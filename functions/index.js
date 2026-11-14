@@ -1769,20 +1769,37 @@ const HOURS_POLICY_VERSION = 4;
 // VOICE_MODEL_CANDIDATES.
 // Gemini Live ведёт звонки, OpenAI Realtime ждёт в запасе (решение FIX,
 // 06.10.2026). Меняется полем voiceProvider в settings/ai_voice без выкатки.
-const DEFAULT_VOICE_PROVIDER = process.env.VOICE_PROVIDER === 'openai' ? 'openai' : 'gemini';
-// gpt-4o-mini-realtime-preview в API больше нет; живые модели на нашем ключе —
-// gpt-realtime (полная, по умолчанию — у неё живее интонация) и
-// gpt-realtime-mini (дешевле, но в трубке звучит ненатурально).
+const DEFAULT_VOICE_PROVIDER = (() => {
+  const raw = String(process.env.VOICE_PROVIDER || '').trim().toLowerCase();
+  if (raw === 'openai-live' || raw === 'gpt-live-1' || raw === 'live') return 'gpt-live-1';
+  if (raw === 'openai' || raw === 'openai-realtime' || raw === 'gpt-realtime-2.1' || raw === 'gpt-realtime-2.1-mini') {
+    return 'openai';
+  }
+  return 'gemini';
+})();
 const DEFAULT_OPENAI_REALTIME_MODEL =
-  process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime';
+  process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-2.1';
 const DEFAULT_OPENAI_VOICE = process.env.OPENAI_VOICE || 'marin';
 const DEFAULT_GEMINI_VOICE = process.env.GEMINI_VOICE || 'Aoede';
 
 function voiceEngineSettings(voice = {}) {
   const provider = String(voice.voiceProvider || '').trim().toLowerCase();
+  const allowed = new Set([
+    'gemini',
+    'gemini-3.8-live',
+    'gemini-live',
+    'openai-live',
+    'gpt-live-1',
+    'live',
+    'openai',
+    'openai-realtime',
+    'gpt-realtime-2.1',
+    'gpt-realtime-2.1-mini',
+  ]);
   return {
-    voiceProvider: provider === 'gemini' || provider === 'openai' ? provider : DEFAULT_VOICE_PROVIDER,
+    voiceProvider: allowed.has(provider) ? provider : DEFAULT_VOICE_PROVIDER,
     openaiModel: String(voice.openaiModel || '').trim() || DEFAULT_OPENAI_REALTIME_MODEL,
+    openaiTranscribeModel: String(voice.openaiTranscribeModel || '').trim() || undefined,
     openaiVoice: String(voice.openaiVoice || '').trim() || DEFAULT_OPENAI_VOICE,
     // Темп речи проверяет релей; здесь просто пробрасываем, что задал владелец.
     openaiSpeed: voice.openaiSpeed,
@@ -2943,11 +2960,23 @@ async function startAiReception(req, res, callSid, options = {}) {
 
 // Каким движком подписан звонок. Релей перезапишет это поле тем провайдером,
 // который реально поднялся; здесь — ожидание на момент снятия трубки.
-const LIVE_ENGINES = new Set(['gemini-live', 'openai-realtime']);
+const LIVE_ENGINES = new Set(['gemini-live', 'openai-realtime', 'openai-live']);
 
 function liveEngineName(profile) {
   if (!OPENAI_API_KEY) return 'gemini-live';
-  return profile && profile.voiceProvider === 'gemini' ? 'gemini-live' : 'openai-realtime';
+  const provider = String((profile && profile.voiceProvider) || '').trim().toLowerCase();
+  const model = String((profile && profile.openaiModel) || '').trim().toLowerCase();
+  if (
+    provider === 'openai-live' ||
+    provider === 'gpt-live-1' ||
+    provider === 'live' ||
+    (provider === 'openai' && model === 'gpt-live-1')
+  ) {
+    return 'openai-live';
+  }
+  return provider === 'gemini' || provider === 'gemini-3.8-live' || provider === 'gemini-live'
+    ? 'gemini-live'
+    : 'openai-realtime';
 }
 
 async function completeAiPickup(callSid, data, greeting, { live = false, engine = 'gemini-live' } = {}) {

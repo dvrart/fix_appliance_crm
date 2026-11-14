@@ -10,6 +10,7 @@ class SecretaryCost {
   static const twilioOutboundPerMin = 0.014;
   static const mediaStreamPerMin = 0.0044;
   static const geminiLivePerMin = 0.02;
+  static const openAiLivePerMin = 0.05;
   static const openAiRealtimePerMin = 0.06;
   static const analyticsPerMin = 0.002;
   static const recordingPerMin = 0.0025;
@@ -48,11 +49,14 @@ class SecretaryCost {
       phone += minutes *
           (call.isIncoming ? twilioInboundPerMin : twilioOutboundPerMin);
       if (answeredByAi(call)) {
-        final openAi = call.aiReception?['engine'] == 'openai-realtime';
+        final engine = call.aiReception?['engine'];
+        final aiPerMin = engine == 'openai-realtime'
+            ? openAiRealtimePerMin
+            : engine == 'openai-live'
+                ? openAiLivePerMin
+                : geminiLivePerMin;
         phone += minutes * mediaStreamPerMin;
-        ai += minutes *
-            ((openAi ? openAiRealtimePerMin : geminiLivePerMin) +
-                analyticsPerMin);
+        ai += minutes * (aiPerMin + analyticsPerMin);
       }
       if (call.hasRecording) {
         recording += minutes * (recordingPerMin + transcriptionPerMin);

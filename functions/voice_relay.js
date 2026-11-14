@@ -32,19 +32,27 @@ const sessions = new Map();
 // 2.5-…-09-2025 убрана: Google её больше не перечисляет.
 const GEMINI_MODELS = [
   process.env.GEMINI_LIVE_MODEL || 'gemini-3.8-live',
-  'gemini-2.5-flash-native-audio-preview-12-2025',
 ];
 
-// Проверено живым сокетом 06.10.2026 нашим боевым setup: поднимаются
-// gpt-realtime-mini и gpt-realtime, обе за ~0,4–1,0 с до session.updated.
-// gpt-4o-mini-realtime-preview этому ключу уже недоступна, её в API нет —
-// ставить её основной значило бы платить отказом за каждый звонок.
-// Основная — полная: на mini FIX услышал «мягко, но неестественно», у полной
-// заметно живее интонация. Дешёвая остаётся как 'gpt-realtime-mini' в
-// настройке openaiModel, если захочется экономить.
-const DEFAULT_OPENAI_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime';
-// Расшифровка речи звонящего. Живёт отдельно от голосовой модели.
-const OPENAI_TRANSCRIBE_MODEL = 'gpt-4o-mini-transcribe';
+const DEFAULT_OPENAI_LIVE_MODEL = 'gpt-live-1';
+const OPENAI_REALTIME_MODELS = [
+  'gpt-realtime-2.1',
+  'gpt-realtime-2.1-mini',
+  'gpt-realtime',
+  'gpt-realtime-mini',
+];
+const DEFAULT_OPENAI_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-2.1';
+// Расшифровка речи звонящего в Realtime API. Поддерживает переключение между
+// gpt-transcribe, gpt-live-transcribe и прежней gpt-4o-mini-transcribe.
+const OPENAI_TRANSCRIBE_MODELS = [
+  'gpt-transcribe',
+  'gpt-live-transcribe',
+  'gpt-4o-mini-transcribe',
+];
+const OPENAI_TRANSCRIBE_MODEL =
+  OPENAI_TRANSCRIBE_MODELS.find(
+    (item) => item === String(process.env.OPENAI_TRANSCRIBE_MODEL || '').trim().toLowerCase()
+  ) || 'gpt-transcribe';
 // marin и cedar — самые живые из GA-голосов, проверены на нашем ключе
 // 06.10.2026. coral был по умолчанию до 06.10.2026: в трубке он звучит мягко,
 // но ненатурально, поэтому основным стал marin. Все варианты переключаются
@@ -58,15 +66,39 @@ const DEFAULT_OPENAI_SPEED = 1;
 // Zephyr звучит сухо; Aoede теплее. Остальные — на выбор из настроек.
 const GEMINI_VOICES = ['Aoede', 'Kore', 'Leda', 'Zephyr'];
 const DEFAULT_GEMINI_VOICE = 'Aoede';
-const VOICE_PROVIDERS = ['openai', 'gemini'];
-// Основной провайдер — Gemini Live (решение FIX, 06.10.2026: после прослушивания
-// в трубке он ему ближе). OpenAI остаётся запасным и включается обратно одним
-// полем voiceProvider в settings/ai_voice, без выкатки.
+const VOICE_PROVIDERS = [
+  'gemini',
+  'gemini-3.8-live',
+  'gemini-live',
+  'openai-live',
+  'gpt-live-1',
+  'live',
+  'openai',
+  'openai-realtime',
+  'gpt-realtime-2.1',
+  'gpt-realtime-2.1-mini',
+];
+// Основной провайдер по умолчанию — Gemini Live; переключение между
+// gpt-live-1, gemini-3.8-live и gpt-realtime-2.1 идёт через settings/ai_voice
+// (voiceProvider / openaiModel) или переменные окружения без пересборки кода.
 const DEFAULT_VOICE_PROVIDER = 'gemini';
 // Как звонок подписан в Firestore. 'relay' — резервный Gather с фиксированным
 // приветствием; index.js по этим же именам понимает, что звонок вёл живой голос.
-const LIVE_ENGINE_BY_PROVIDER = { openai: 'openai-realtime', gemini: 'gemini-live' };
+const LIVE_ENGINE_BY_PROVIDER = {
+  'openai-live': 'openai-live',
+  openai: 'openai-realtime',
+  gemini: 'gemini-live',
+};
 const LIVE_ENGINES = new Set(Object.values(LIVE_ENGINE_BY_PROVIDER));
+
+// Жёсткий потолок длительности звонка (по умолчанию 10 минут) и таймаут
+// ожидания session.closed для посекундной тарификации gpt-live-1 ($0.05/мин).
+const MAX_CALL_DURATION_MS = (() => {
+  const raw = Number(process.env.VOICE_MAX_CALL_DURATION_MS);
+  return Number.isFinite(raw) && raw >= 60000 && raw <= 3600000 ? Math.round(raw) : 10 * 60 * 1000;
+})();
+const GPT_LIVE_CLOSE_TIMEOUT_MS = 2000;
+const GPT_LIVE_TURN_END_MS = 600;
 
 /// Значение из настроек, но только из белого списка: опечатка в Firestore не
 /// должна оставлять звонок без голоса.
@@ -106,8 +138,38 @@ function sendEnd(ws) {
   sendJson(ws, { type: 'end' });
 }
 
-function uniqueModels() {
-  return [...new Set(GEMINI_MODELS.map((name) => String(name || '').trim()).filter(Boolean))];
+function uniqueModels(session) {
+  const list =
+    session && Array.isArray(session.geminiModels) && session.geminiModels.length
+      ? session.geminiModels
+      : GEMINI_MODELS;
+  return [...new Set(list.map((name) => String(name || '').trim()).filter(Boolean))];
+}
+
+function normalizeVoiceProvider(rawProvider, rawOpenaiModel) {
+  const picked = pickFrom(rawProvider, VOICE_PROVIDERS, DEFAULT_VOICE_PROVIDER);
+  const model = String(rawOpenaiModel || '').trim().toLowerCase();
+  if (
+    picked === 'openai-live' ||
+    picked === 'gpt-live-1' ||
+    picked === 'live' ||
+    (picked === 'openai' && model === 'gpt-live-1')
+  ) {
+    return 'openai-live';
+  }
+  if (
+    picked === 'openai' ||
+    picked === 'openai-realtime' ||
+    picked === 'gpt-realtime-2.1' ||
+    picked === 'gpt-realtime-2.1-mini'
+  ) {
+    return 'openai';
+  }
+  return 'gemini';
+}
+
+function isOpenaiProvider(provider) {
+  return provider === 'openai' || provider === 'openai-live';
 }
 
 /// Цепочка попыток на один звонок: первый шаг — то, что выбрано в настройках,
@@ -117,21 +179,37 @@ function uniqueModels() {
 function buildLiveChain(session) {
   const openaiReady = Boolean(deps && deps.openaiApiKey);
   const geminiReady = Boolean(deps && deps.geminiApiKey);
+  const rawProvider = String((session && session.voiceProvider) || '').trim().toLowerCase();
+  const rawModel = String((session && session.openaiModel) || '').trim();
+  const realtimeModel =
+    rawProvider === 'gpt-realtime-2.1-mini'
+      ? 'gpt-realtime-2.1-mini'
+      : rawModel && !/^gpt-live/i.test(rawModel)
+        ? rawModel
+        : DEFAULT_OPENAI_MODEL;
+  const liveStep = {
+    provider: 'openai-live',
+    model: DEFAULT_OPENAI_LIVE_MODEL,
+  };
   const openaiStep = {
     provider: 'openai',
-    model: String((session && session.openaiModel) || '').trim() || DEFAULT_OPENAI_MODEL,
+    model: realtimeModel,
   };
-  const geminiSteps = uniqueModels().map((model) => ({ provider: 'gemini', model }));
+  const geminiSteps = uniqueModels(session).map((model) => ({ provider: 'gemini', model }));
   // Значение по умолчанию разрешаем здесь же: иначе сессия без настройки
   // собирала бы цепочку не тем провайдером, чем заявлено в DEFAULT.
-  const provider = pickFrom(
+  const provider = normalizeVoiceProvider(
     session && session.voiceProvider,
-    VOICE_PROVIDERS,
-    DEFAULT_VOICE_PROVIDER
+    session && session.openaiModel
   );
-  const wantsGemini = provider === 'gemini';
   const steps = [];
-  if (wantsGemini) {
+  if (provider === 'openai-live') {
+    if (openaiReady) steps.push(liveStep);
+    if (geminiReady) steps.push(...geminiSteps);
+    if (openaiReady) steps.push(openaiStep);
+    return steps;
+  }
+  if (provider === 'gemini') {
     if (geminiReady) steps.push(...geminiSteps);
     if (openaiReady) steps.push(openaiStep);
     return steps;
@@ -156,7 +234,7 @@ function hasNextLiveStep(session) {
 /// держатся все страховки: они не должны знать, кто сейчас говорит.
 function liveSocket(session) {
   if (!session) return null;
-  return session.provider === 'openai' ? session.openaiWs : session.geminiWs;
+  return isOpenaiProvider(session.provider) ? session.openaiWs : session.geminiWs;
 }
 
 function liveSocketOpen(session) {
@@ -307,6 +385,21 @@ function openOpenaiSocket(apiKey, model) {
       perMessageDeflate: false,
     }
   );
+}
+
+/// Сокет к полнодуплексной модели OpenAI GPT-Live-1 (/v1/live/sessions).
+/// Модель передаётся строго в session.start, без query-параметров в URL.
+function openOpenaiLiveSocket(apiKey, model = DEFAULT_OPENAI_LIVE_MODEL) {
+  if (deps && typeof deps.openOpenaiLiveSocket === 'function') {
+    return deps.openOpenaiLiveSocket(apiKey, model);
+  }
+  if (deps && typeof deps.openOpenaiSocket === 'function') {
+    return deps.openOpenaiSocket(apiKey, model, { live: true });
+  }
+  return new WebSocket('wss://api.openai.com/v1/live/sessions', {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    perMessageDeflate: false,
+  });
 }
 
 function outsideAreaRule(profile, thenWhat) {
@@ -581,6 +674,11 @@ function buildSetup(model, systemText, withTools, resumeHandle, options = {}) {
 /// Манеру речи задаёт промпт (блок VOICE DELIVERY), а не температура.
 function buildOpenaiSession(session, withTools, instructions) {
   const voice = pickFrom(session && session.openaiVoice, OPENAI_VOICES, DEFAULT_OPENAI_VOICE);
+  const transcribeModel = pickFrom(
+    session && session.openaiTranscribeModel,
+    OPENAI_TRANSCRIBE_MODELS,
+    OPENAI_TRANSCRIBE_MODEL
+  );
   const asked = Number(session && session.openaiSpeed);
   const speed = Number.isFinite(asked) && asked >= OPENAI_SPEED_RANGE[0] && asked <= OPENAI_SPEED_RANGE[1]
     ? asked
@@ -594,7 +692,7 @@ function buildOpenaiSession(session, withTools, instructions) {
       audio: {
         input: {
           format: { type: 'audio/pcmu' },
-          transcription: { model: OPENAI_TRANSCRIBE_MODEL, language: 'en' },
+          transcription: { model: transcribeModel, language: 'en' },
           turn_detection: {
             type: 'server_vad',
             threshold: 0.6,
@@ -610,6 +708,69 @@ function buildOpenaiSession(session, withTools, instructions) {
       },
       tools: withTools ? openaiToolDeclarations() : [],
       tool_choice: 'auto',
+    },
+  };
+}
+
+const GPT_LIVE_DELEGATION_POLICY = `Backchannel policy: Use moderate, natural backchannels without talking over the caller.
+
+Interruption policy: Stop speaking immediately when the caller interrupts. Listen to what they say.
+
+Delegation policy:
+Backend tools:
+- check_service_area: verify if the caller's city or postal code in Ontario is within FIX-APPLIANCE CA coverage.
+- check_calendar_slots: check available technician appointment windows and existing caller appointments (get_caller_appointments).
+- book_or_update_appointment: create, reschedule, or cancel an appliance repair visit in CRM/Calendar (cancel_appointment).
+Generate <|SpawnThinking|> when:
+- The caller wants to check availability, book, reschedule, or cancel a repair appointment.
+- The caller provides or corrects their address, postal code, appliance issue, or preferred time window.
+- The caller asks about pricing, diagnostic fees, or service area coverage.
+Do not generate <|SpawnThinking|> when:
+- The caller greets you or asks you to repeat something you already said.
+- You need a brief clarification (such as asking for their name, phone number, or appliance brand) before checking the system.
+Generate <|SpawnThinking|> before giving an answer that depends on backend work. Do not guess the result while waiting.`;
+
+function ensureGptLiveInstructions(baseText, withTools = true) {
+  const base = String(baseText || '').trim();
+  if (base.includes('<|SpawnThinking|>') && base.includes('Delegation policy:')) {
+    return base;
+  }
+  if (!withTools) {
+    return [
+      base,
+      'Backchannel policy: Use moderate, natural backchannels without talking over the caller.',
+      'Interruption policy: Stop speaking immediately when the caller interrupts. Listen to what they say.',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  return [base, GPT_LIVE_DELEGATION_POLICY].filter(Boolean).join('\n\n');
+}
+
+/// Настройка полнодуплексной сессии OpenAI GPT-Live-1 (/v1/live/sessions).
+/// Отправляется в session.start сразу после открытия сокета; звук от Twilio
+/// ждёт серверного события session.started. Формат audio/pcmu 8000 Гц родной
+/// для Twilio Media Streams — ресемплинг не требуется.
+function buildGptLiveSession(session, withTools = true, instructions = '') {
+  const voice = pickFrom(session && session.openaiVoice, OPENAI_VOICES, DEFAULT_OPENAI_VOICE);
+  const text = ensureGptLiveInstructions(
+    instructions || (session && session.systemText) || '',
+    withTools
+  );
+  return {
+    type: 'session.start',
+    event_id: 'evt_start_001',
+    session: {
+      model: DEFAULT_OPENAI_LIVE_MODEL,
+      store: false,
+      instructions: text,
+      audio: {
+        format: { type: 'audio/pcmu', rate: 8000 },
+        output: { voice },
+      },
+      delegation: {
+        type: 'client',
+      },
     },
   };
 }
@@ -807,6 +968,12 @@ async function persistSession(session, extra) {
     appointmentOnly: onlyAppointment,
     pendingCancellation: session.pendingCancellation || null,
   };
+  if (Number.isFinite(Number(session.voiceSeconds))) {
+    reception.voiceSeconds = Number(session.voiceSeconds);
+  }
+  if (Array.isArray(session.transcriptSegments) && session.transcriptSegments.length) {
+    reception.transcriptSegments = session.transcriptSegments.slice(-200);
+  }
   if (extra && extra.done) reception.done = true;
   // aiRelayComplete по этой метке не поднимает поток заново, а кладёт трубку.
   if (session.hangupReason) reception.hangup = session.hangupReason;
@@ -907,10 +1074,50 @@ async function runBackgroundExtract(session) {
   }
 }
 
+function clearMaxCallDuration(session) {
+  if (session.maxDurationTimer) {
+    clearTimeout(session.maxDurationTimer);
+    session.maxDurationTimer = null;
+  }
+}
+
+function armMaxCallDuration(session) {
+  clearMaxCallDuration(session);
+  if (session.closed) return;
+  session.maxDurationTimer = setTimeout(() => {
+    session.maxDurationTimer = null;
+    if (session.closed) return;
+    console.warn(`voiceLive max call duration reached ${session.callSid}`);
+    session.hangupReason = 'max_duration';
+    onLiveStop(session)
+      .catch((error) => console.warn('voiceLive max duration stop:', error.message))
+      .finally(() => closeTwilio(session));
+  }, MAX_CALL_DURATION_MS);
+}
+
+function clearGptLiveTurnEnd(session) {
+  if (session.gptLiveTurnTimer) {
+    clearTimeout(session.gptLiveTurnTimer);
+    session.gptLiveTurnTimer = null;
+  }
+}
+
+function armGptLiveTurnEnd(session) {
+  clearGptLiveTurnEnd(session);
+  if (session.closed || session.provider !== 'openai-live') return;
+  session.gptLiveTurnTimer = setTimeout(() => {
+    session.gptLiveTurnTimer = null;
+    if (session.closed || session.provider !== 'openai-live') return;
+    onLiveTurnFinished(session);
+  }, GPT_LIVE_TURN_END_MS);
+}
+
 function clearSessionTimers(session) {
   clearReplyWatchdog(session);
   clearSilence(session);
   clearAuthGrace(session);
+  clearMaxCallDuration(session);
+  clearGptLiveTurnEnd(session);
   if (session.extractTimer) {
     clearTimeout(session.extractTimer);
     session.extractTimer = null;
@@ -924,21 +1131,52 @@ function clearSessionTimers(session) {
 /// Закрыть живой голос насовсем: поднимается socketGen, поэтому обработчик
 /// close уже ничего не переподнимет. Для «сетап не приняли, пробуем
 /// следующего» есть dropLiveSocketForRetry.
+/// На gpt-live-1 перед закрытием обязательно шлём session.close, дожидаемся
+/// session.closed (чтобы сохранить финальный voiceSeconds) и закрываем сокет
+/// принудительно через 2 секунды, если сервер не ответил.
 function closeLive(session) {
   if (session.livePing) {
     clearInterval(session.livePing);
     session.livePing = null;
   }
-  const open = [session.geminiWs, session.openaiWs].filter(Boolean);
+  clearGptLiveTurnEnd(session);
+  const geminiWs = session.geminiWs;
+  const openaiWs = session.openaiWs;
+  const wasGptLive = session.provider === 'openai-live';
   session.geminiWs = null;
   session.openaiWs = null;
   session.ready = false;
   session.responseActive = false;
   session.socketGen = (session.socketGen || 0) + 1;
-  for (const ws of open) {
+  if (geminiWs) {
     try {
-      if (ws.readyState === 1) ws.close();
-      else ws.terminate();
+      if (geminiWs.readyState === 1) geminiWs.close();
+      else geminiWs.terminate();
+    } catch (_) {}
+  }
+  if (openaiWs) {
+    if (wasGptLive && openaiWs.readyState === 1) {
+      try {
+        sendJson(openaiWs, { type: 'session.close' });
+      } catch (_) {}
+      if (session.gptLiveCloseTimer) clearTimeout(session.gptLiveCloseTimer);
+      session.gptLiveClosingWs = openaiWs;
+      session.gptLiveCloseTimer = setTimeout(() => {
+        session.gptLiveCloseTimer = null;
+        session.gptLiveClosingWs = null;
+        try {
+          if (openaiWs.readyState === 1) openaiWs.close();
+          else if (typeof openaiWs.terminate === 'function') openaiWs.terminate();
+        } catch (_) {}
+      }, GPT_LIVE_CLOSE_TIMEOUT_MS);
+      if (session.gptLiveCloseTimer && typeof session.gptLiveCloseTimer.unref === 'function') {
+        session.gptLiveCloseTimer.unref();
+      }
+      return;
+    }
+    try {
+      if (openaiWs.readyState === 1) openaiWs.close();
+      else openaiWs.terminate();
     } catch (_) {}
   }
 }
@@ -1152,11 +1390,39 @@ function nudgeSilence(session, stage) {
 /// turnComplete=true просит ответить сейчас.
 function sendPrompt(session, turns, turnComplete = true) {
   if (turnComplete) session.promptedTurn = true;
+  if (session.provider === 'openai-live') {
+    sendGptLiveTurns(session, turns, turnComplete);
+    return;
+  }
   if (session.provider === 'openai') {
     sendOpenaiTurns(session, turns, turnComplete);
     return;
   }
   sendJson(session.geminiWs, { clientContent: { turns, turnComplete } });
+}
+
+function sendGptLiveTurns(session, turns, turnComplete) {
+  const ws = session.openaiWs;
+  if (!ws || ws.readyState !== 1) return;
+  const chunks = [];
+  for (const turn of turns || []) {
+    const text = (turn.parts || [])
+      .map((part) => String((part && part.text) || '').trim())
+      .filter(Boolean)
+      .join('\n');
+    if (!text) continue;
+    const role = turn.role === 'model' || turn.role === 'assistant' ? 'Assistant' : 'Caller';
+    chunks.push((turns || []).length > 1 ? `${role}: ${text}` : text);
+  }
+  const content = chunks.join('\n').trim().slice(0, 1500);
+  if (!content) return;
+  session.gptLiveEventSeq = Number(session.gptLiveEventSeq || 0) + 1;
+  sendJson(ws, {
+    type: turnComplete ? 'session.commentary.append' : 'session.thinking.append',
+    event_id: `evt_prompt_${session.gptLiveEventSeq}`,
+    delegation_id: null,
+    content,
+  });
 }
 
 /// Те же реплики, но в терминах Realtime: элементы беседы и, если ход закрыт,
@@ -1313,6 +1579,10 @@ function forwardCallerAudio(session, payload) {
   if (!mulaw.length) return true;
   const pcm8 = mulawToPcm16(mulaw);
   noteInboundLevel(session, pcm8);
+  if (session.provider === 'openai-live') {
+    sendJson(ws, { type: 'session.input_audio.append', audio: payload });
+    return true;
+  }
   if (session.provider === 'openai') {
     // Родной формат: отдаём ровно то, что пришло от Twilio, без апсемплинга.
     sendJson(ws, { type: 'input_audio_buffer.append', audio: payload });
@@ -1937,6 +2207,340 @@ async function handleOpenaiToolCall(session, message) {
   }
 }
 
+// ── OpenAI GPT-Live-1 (/v1/live/sessions) ──────────────────────────────────
+
+function appendGptLiveDeltaText(prev, delta) {
+  const chunk = String(delta || '');
+  if (!chunk) return String(prev || '');
+  const current = String(prev || '');
+  if (!current) return chunk.replace(/^\s+/, '');
+  if (/^[\s.,!?;:'")\]}-]/.test(chunk) || /[\s-]$/.test(current)) {
+    return `${current}${chunk}`;
+  }
+  if (/[.!?]$/.test(current) && /^[A-Za-zА-Яа-яЁё0-9]/.test(chunk)) {
+    return `${current} ${chunk}`;
+  }
+  return `${current}${chunk}`;
+}
+
+function appendGptLiveTranscript(session, field, delta, startMs, endMs) {
+  const chunk = String(delta || '');
+  if (!chunk.trim() && !session[field]) return;
+  const role = field === 'userPartial' ? 'user' : 'assistant';
+  session.transcriptSegments = session.transcriptSegments || [];
+  session.transcriptSegments.push({
+    role,
+    text: chunk,
+    startMs: Number.isFinite(Number(startMs)) ? Number(startMs) : null,
+    endMs: Number.isFinite(Number(endMs)) ? Number(endMs) : null,
+  });
+  if (session.transcriptSegments.length > 400) {
+    session.transcriptSegments.shift();
+  }
+  if (field === 'userPartial') {
+    session.lastInputAt = Date.now();
+    session.heardChunks = Number(session.heardChunks || 0) + 1;
+    noteCallerHeard(session);
+    armReplyWatchdog(session);
+  } else {
+    clearReplyWatchdog(session);
+    session.lastOutputAt = Date.now();
+  }
+  session.language = 'en';
+  session[field] = appendGptLiveDeltaText(session[field], chunk);
+}
+
+function extractPlaceForAreaCheck(session, lastUser) {
+  const text = String(lastUser || '').trim();
+  const postalMatch = text.match(/\b([A-Za-z]\d[A-Za-z]\s*\d[A-Za-z]\d)\b/);
+  if (postalMatch) return postalMatch[1].toUpperCase();
+  const extracted = (session && session.extracted) || {};
+  const fromExtracted = [extracted.address, extracted.city, extracted.postal_code]
+    .filter(Boolean)
+    .join(', ')
+    .trim();
+  if (fromExtracted && fromExtracted !== session.lastCheckedPlace) {
+    return fromExtracted;
+  }
+  const ignore = new Set([
+    'the morning', 'the afternoon', 'the evening', 'my house', 'my home',
+    'my place', 'my kitchen', 'my basement', 'my garage', 'my laundry',
+    'my fridge', 'my dryer', 'my washer', 'my dishwasher', 'my oven', 'my stove',
+    'a repair', 'an appointment', 'ontario',
+  ]);
+  const pattern =
+    /\b(?:come out to|come to|travel to|service|cover|work in|go to|out to|live in|located in|in|at|near)\s+([A-Z][A-Za-z0-9 .'-]{1,42}?)(?=\s+(?:to\s+fix|for\s+a|on\s+|right\s+now|today|tomorrow|and\s+|because\s+)\b|[?.!,]|$)/i;
+  const match = text.match(pattern);
+  if (match) {
+    const candidate = match[1].replace(/[.,!?]+$/, '').trim();
+    if (candidate && !ignore.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+  return '';
+}
+
+function inferDelegationActions(session, lastUser) {
+  const text = String(lastUser || '').trim();
+  const actions = [];
+  if (session.pendingCancellation) {
+    actions.push({
+      name: 'cancel_appointment',
+      args: {
+        job_id: session.pendingCancellation.jobId,
+        visit_id: session.pendingCancellation.visitId,
+        confirmed: true,
+      },
+    });
+    return actions;
+  }
+  if (/\b(cancel|cancellation)\b|отмен/i.test(text)) {
+    actions.push({ name: 'cancel_appointment', args: {} });
+    return actions;
+  }
+  if (
+    /\b(my appointment|my visit|my booking|existing appointment|upcoming visit|when is (the|my)|what time is (the|my)|do i have (a|an) (appointment|visit|booking)|check my (appointment|visit|schedule)|reschedule|move my)\b/i.test(
+      text
+    )
+  ) {
+    actions.push({ name: 'get_caller_appointments', args: {} });
+    return actions;
+  }
+  const place = extractPlaceForAreaCheck(session, text);
+  if (place && deps && typeof deps.checkServiceArea === 'function') {
+    session.lastCheckedPlace = place;
+    actions.push({ name: 'check_service_area', args: { place } });
+  }
+  return actions;
+}
+
+function formatDelegationResult(session, name, res) {
+  if (!res || typeof res !== 'object') return String(res || '');
+  if (name === 'check_service_area') {
+    const place = res.place || 'the requested location';
+    if (res.inside === true) {
+      return `Service area check for ${place}: inside coverage (inside=true). Confirm we travel there and continue with the repair intake. ${compactKnown(session)}`;
+    }
+    if (res.inside === false) {
+      return `Service area check for ${place}: outside coverage (inside=false). Politely explain we do not travel that far, and ask if there is anything else.`;
+    }
+    return `Service area check for ${place}: uncertain (inside=null). Ask for their postal code, take the order anyway, and say the technician will confirm the trip.`;
+  }
+  if (name === 'get_caller_appointments') {
+    return `Caller schedule lookup: ${res.brief || (res.say ? res.say : JSON.stringify(res))}`;
+  }
+  if (name === 'cancel_appointment') {
+    return `Appointment cancellation (${res.status || (res.ok ? 'ok' : 'error')}): ${res.say || JSON.stringify(res)}`;
+  }
+  return JSON.stringify(res);
+}
+
+async function handleGptLiveDelegation(session, message) {
+  const delegation = (message && message.delegation) || {};
+  const delegationId = String(delegation.id || message.delegation_id || '').trim();
+  if (!delegationId) return;
+  session.handledDelegations = session.handledDelegations || new Set();
+  if (session.handledDelegations.has(delegationId)) return;
+  session.handledDelegations.add(delegationId);
+
+  flushPartial(session, 'userPartial');
+  clearReplyWatchdog(session);
+  session.toolPending = true;
+  try {
+    applyLocalExtract(session);
+    const lastUser = lastHistoryText(session, 'user');
+    const explicitTool = pick(delegation, 'tool', 'name') || pick(message, 'tool', 'name');
+    const explicitArgs =
+      pick(delegation, 'args', 'arguments') || pick(message, 'args', 'arguments') || {};
+    let commentary = '';
+
+    if (session.liveTools === false) {
+      commentary =
+        'Live calendar tools are unavailable right now. Ask the caller to text us for appointment changes, or continue taking their repair details.';
+    } else if (explicitTool) {
+      let parsedArgs = {};
+      try {
+        parsedArgs =
+          typeof explicitArgs === 'string' ? JSON.parse(explicitArgs || '{}') : explicitArgs || {};
+      } catch (_) {
+        parsedArgs = {};
+      }
+      if (explicitTool === 'end_call') {
+        console.warn(`voiceLive ignored hangup tool ${session.callSid}`);
+        cancelHangup(session);
+        commentary = 'You cannot hang up. Wait for the caller.';
+      } else {
+        const res = await runAppointmentTool(session, String(explicitTool), parsedArgs);
+        console.log(
+          `voice calendar ${session.callSid || '?'} ${explicitTool} ` +
+            `${res.status || res.error || (res.ok ? 'ok' : 'blocked')}`
+        );
+        commentary = formatDelegationResult(session, String(explicitTool), res);
+      }
+    } else if (deps && typeof deps.routeLiveDelegation === 'function') {
+      const routed = await deps.routeLiveDelegation(session, {
+        delegationId,
+        lastUser,
+        history: session.history,
+        extracted: session.extracted,
+      });
+      commentary = typeof routed === 'string' ? routed : JSON.stringify(routed);
+    } else {
+      const actions = inferDelegationActions(session, lastUser);
+      const parts = [];
+      for (const act of actions) {
+        const res = await runAppointmentTool(session, act.name, act.args);
+        console.log(
+          `voice calendar ${session.callSid || '?'} ${act.name} ` +
+            `${res.status || res.error || (res.ok ? 'ok' : 'blocked')}`
+        );
+        parts.push(formatDelegationResult(session, act.name, res));
+      }
+      if (!parts.length) {
+        parts.push(
+          `Order intake updated. ${compactKnown(session)} ` +
+            `Service call is $99, waived if they approve the repair after diagnosis. ` +
+            `Do not confirm a specific slot yourself; the technician will contact them to set the time.`
+        );
+      }
+      commentary = parts.join(' ');
+    }
+
+    const ws = session.openaiWs;
+    if (ws && ws.readyState === 1) {
+      sendJson(ws, {
+        type: 'session.commentary.append',
+        event_id: `del_${delegationId}`,
+        delegation_id: delegationId,
+        content: String(commentary || '').slice(0, 1500),
+      });
+    }
+    persistSessionSoon(session, { createJob: session.createJob });
+    scheduleBackgroundExtract(session);
+  } finally {
+    session.toolPending = false;
+  }
+}
+
+function handleGptLiveMessage(session, raw) {
+  let message;
+  try {
+    message = JSON.parse(String(raw));
+  } catch (_) {
+    return;
+  }
+  switch (String(message.type || '')) {
+    case 'session.started':
+      if (message.session && message.session.id) {
+        session.liveSessionId = String(message.session.id);
+      }
+      onLiveReady(session);
+      return;
+    case 'session.updated':
+      return;
+    case 'error': {
+      const text = String(
+        (message.error && (message.error.message || message.error.code)) || 'openai-live error'
+      );
+      session.liveError = text;
+      console.warn(`voiceLive openai-live error ${session.callSid}: ${text}`);
+      if (!session.ready) {
+        dropLiveSocketForRetry(session);
+        return;
+      }
+      if (
+        message.error &&
+        /moderation|content_filter|cutoff/i.test(
+          String(message.error.code || message.error.type || '')
+        )
+      ) {
+        clearGptLiveTurnEnd(session);
+        onLiveBargeIn(session);
+      }
+      return;
+    }
+    case 'session.interrupted':
+    case 'session.output_audio.interrupted':
+    case 'session.output_audio.truncated':
+    case 'input_audio_buffer.speech_started':
+      clearGptLiveTurnEnd(session);
+      onLiveBargeIn(session);
+      return;
+    case 'session.output_audio.delta': {
+      if (!message.delta) return;
+      noteLiveSpeaking(session);
+      sendTwilioMulaw(session, Buffer.from(message.delta, 'base64'));
+      armGptLiveTurnEnd(session);
+      return;
+    }
+    case 'session.input_transcript.delta': {
+      if (!message.delta) return;
+      if (session.speaking && String(message.delta).trim().length >= 2) {
+        clearGptLiveTurnEnd(session);
+        onLiveBargeIn(session);
+      }
+      appendGptLiveTranscript(
+        session,
+        'userPartial',
+        message.delta,
+        message.start_ms,
+        message.end_ms
+      );
+      return;
+    }
+    case 'session.output_transcript.delta': {
+      if (!message.delta) return;
+      if (session.userPartial) flushPartial(session, 'userPartial');
+      appendGptLiveTranscript(
+        session,
+        'assistantPartial',
+        message.delta,
+        message.start_ms,
+        message.end_ms
+      );
+      armGptLiveTurnEnd(session);
+      return;
+    }
+    case 'session.delegation.created':
+      session.toolTail = (session.toolTail || Promise.resolve())
+        .then(() => handleGptLiveDelegation(session, message))
+        .catch((error) => console.warn('voiceLive delegation:', error.message));
+      return;
+    case 'session.usage.updated':
+      if (message.usage && Number.isFinite(Number(message.usage.seconds))) {
+        session.voiceSeconds = Number(message.usage.seconds);
+      }
+      return;
+    case 'session.closed': {
+      if (message.usage && Number.isFinite(Number(message.usage.seconds))) {
+        session.voiceSeconds = Number(message.usage.seconds);
+      }
+      session.liveClosedReason = String(message.reason || '');
+      if (session.gptLiveCloseTimer) {
+        clearTimeout(session.gptLiveCloseTimer);
+        session.gptLiveCloseTimer = null;
+      }
+      const closingWs = session.gptLiveClosingWs || session.openaiWs;
+      session.gptLiveClosingWs = null;
+      if (closingWs) {
+        try {
+          if (closingWs.readyState === 1) closingWs.close();
+        } catch (_) {}
+      }
+      if (session.closed && session.callSid && deps && deps.callsRef) {
+        persistSession(session, {
+          done: true,
+          createJob: session.createJob || (deps.hasEnoughForJob && deps.hasEnoughForJob(session.extracted)),
+          serviceDeclined: voiceFacts.isServiceDeclined(session.extracted),
+        }).catch(() => {});
+      }
+      return;
+    }
+    default:
+      return;
+  }
+}
+
 // ── Gemini Live ────────────────────────────────────────────────────────────
 
 function handleGeminiMessage(session, raw) {
@@ -2042,7 +2646,7 @@ function attachLiveSocket(session, ws, step) {
   session.liveError = '';
   session.responseActive = false;
   session.engine = LIVE_ENGINE_BY_PROVIDER[provider] || 'gemini-live';
-  if (provider === 'openai') {
+  if (isOpenaiProvider(provider)) {
     session.openaiWs = ws;
     session.openaiModel = model;
     session.geminiWs = null;
@@ -2070,9 +2674,10 @@ function attachLiveSocket(session, ws, step) {
     sendJson(ws, session.setupPayload);
   });
   ws.on('message', (raw) => {
-    if (ws.liveGen !== session.socketGen) return;
+    if (ws.liveGen !== session.socketGen && ws !== session.gptLiveClosingWs) return;
     try {
-      if (provider === 'openai') handleOpenaiMessage(session, raw);
+      if (provider === 'openai-live') handleGptLiveMessage(session, raw);
+      else if (provider === 'openai') handleOpenaiMessage(session, raw);
       else handleGeminiMessage(session, raw);
     } catch (error) {
       console.error(`voiceLive ${provider} message:`, error.message);
@@ -2137,6 +2742,11 @@ const RESTART_NOTE =
 /// расходятся только оболочка настройки и адрес сокета.
 function openLiveStep(session, step, { tools, extra = '', resumeHandle = '' }) {
   const text = `${session.systemText || ''}${tools ? '' : NO_TOOLS_NOTE}${extra}`;
+  if (step.provider === 'openai-live') {
+    session.setupPayload = buildGptLiveSession(session, tools, text);
+    attachLiveSocket(session, openOpenaiLiveSocket(deps.openaiApiKey, step.model), step);
+    return;
+  }
   if (step.provider === 'openai') {
     session.setupPayload = buildOpenaiSession(session, tools, text);
     attachLiveSocket(session, openOpenaiSocket(deps.openaiApiKey, step.model), step);
@@ -2232,6 +2842,7 @@ function resumeLive(session, reason, { switchModel = false } = {}) {
 /// Если не поднялся никто, второй проход идёт без инструментов — звонок без
 /// календаря всё ещё лучше, чем звонок без голоса.
 function startLiveSession(session) {
+  armMaxCallDuration(session);
   session.liveChain = buildLiveChain(session);
   // Одна строка на звонок, по которой видно, почему говорит именно этот
   // провайдер: ключи (только наличие, не значения), что выбрано в настройках и
@@ -2357,6 +2968,11 @@ async function onLiveStart(session, message) {
   // умолчанию. Ключи проверяет buildLiveChain.
   session.voiceProvider = pickFrom(profile.voiceProvider, VOICE_PROVIDERS, DEFAULT_VOICE_PROVIDER);
   session.openaiModel = String(profile.openaiModel || '').trim() || DEFAULT_OPENAI_MODEL;
+  session.openaiTranscribeModel = pickFrom(
+    profile.openaiTranscribeModel,
+    OPENAI_TRANSCRIBE_MODELS,
+    OPENAI_TRANSCRIBE_MODEL
+  );
   session.openaiVoice = pickFrom(profile.openaiVoice, OPENAI_VOICES, DEFAULT_OPENAI_VOICE);
   session.openaiSpeed = profile.openaiSpeed;
   session.geminiVoice = pickFrom(profile.geminiVoice, GEMINI_VOICES, DEFAULT_GEMINI_VOICE);
@@ -2678,11 +3294,14 @@ module.exports = {
   liveSystemPrompt,
   buildSetup,
   buildOpenaiSession,
+  buildGptLiveSession,
   runAppointmentTool,
   // Внутренние шаги живого звонка — только для тестов.
   _internals: {
     handleGeminiMessage,
     handleOpenaiMessage,
+    handleGptLiveMessage,
+    handleGptLiveDelegation,
     startLiveSession,
     startGeminiLive: startLiveSession,
     buildLiveChain,
@@ -2693,7 +3312,8 @@ module.exports = {
     timing: {
       SILENCE_MS, PREFIX_MS, STALL_MS, SILENCE_CHECK_MS, SILENCE_HOLD_MS, SILENCE_GIVEUP_MS,
       SILENCE_HANGUP_MS, DEAF_VOICED_MS, LIVE_FAILURE_LIMIT, TWILIO_FRAME_BYTES,
-      CLICK_MAX_MS, CLICK_QUIET_MS,
+      CLICK_MAX_MS, CLICK_QUIET_MS, MAX_CALL_DURATION_MS, GPT_LIVE_CLOSE_TIMEOUT_MS,
+      GPT_LIVE_TURN_END_MS,
     },
   },
 };

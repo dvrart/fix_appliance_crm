@@ -1219,9 +1219,19 @@ class SettingsService {
     await updateConfig('aiAnswerEnabled', profile.enabled);
     await updateConfig('aiAnswerTimeoutSeconds', timeout);
     await FirestoreService.aiVoiceRef.set({
+      'voiceProvider': profile.voiceProvider,
       'liveIgnoresAppRules': true,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+  }
+
+  static Future<void> setAiVoiceProvider(String provider) async {
+    await settleWrite(
+      FirestoreService.aiVoiceRef.set({
+        'voiceProvider': provider.trim(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true)),
+    );
   }
 
   static Future<void> updateConfigMap(Map<String, dynamic> values) async {
@@ -1294,6 +1304,7 @@ class AiVoiceProfile {
     required this.instructions,
     this.learnedRules = const [],
     this.learningEnabled = true,
+    this.voiceProvider = 'gemini',
   });
 
   final bool enabled;
@@ -1312,8 +1323,23 @@ class AiVoiceProfile {
   final String instructions;
   final List<String> learnedRules;
   final bool learningEnabled;
+  final String voiceProvider;
 
   static const int defaultAngryCallbackMinutes = 30;
+
+  static String normalizeVoiceProvider(dynamic raw) {
+    final v = (raw ?? '').toString().trim().toLowerCase();
+    if (v == 'gpt-live-1' || v == 'openai-live' || v == 'live') {
+      return 'gpt-live-1';
+    }
+    if (v == 'openai' ||
+        v == 'openai-realtime' ||
+        v == 'gpt-realtime-2.1' ||
+        v == 'gpt-realtime-2.1-mini') {
+      return 'openai';
+    }
+    return 'gemini';
+  }
 
   factory AiVoiceProfile.fromMaps({
     required Map<String, dynamic> config,
@@ -1354,6 +1380,7 @@ class AiVoiceProfile {
           : instructions,
       learnedRules: _learnedLines(voice['learnedRules']),
       learningEnabled: voice['learningEnabled'] != false,
+      voiceProvider: normalizeVoiceProvider(voice['voiceProvider']),
     );
   }
 

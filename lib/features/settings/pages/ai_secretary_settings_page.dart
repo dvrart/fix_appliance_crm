@@ -28,6 +28,7 @@ class _AiSecretarySettingsPageState extends State<AiSecretarySettingsPage> {
   bool _saving = false;
   bool _enabled = true;
   int _timeout = SettingsService.defaultAiAnswerTimeoutSeconds;
+  String _voiceProvider = 'gemini';
   AiVoiceProfile? _profile;
   String _savedFp = '';
 
@@ -55,12 +56,13 @@ class _AiSecretarySettingsPageState extends State<AiSecretarySettingsPage> {
       _profile = profile;
       _enabled = profile.enabled;
       _timeout = profile.timeoutSeconds;
+      _voiceProvider = profile.voiceProvider;
       _loading = false;
       _savedFp = _fp();
     });
   }
 
-  String _fp() => '$_timeout|$_enabled';
+  String _fp() => '$_timeout|$_enabled|$_voiceProvider';
 
   bool get _dirty => !_loading && _fp() != _savedFp;
 
@@ -86,6 +88,7 @@ class _AiSecretarySettingsPageState extends State<AiSecretarySettingsPage> {
         instructions: current.instructions,
         learnedRules: current.learnedRules,
         learningEnabled: current.learningEnabled,
+        voiceProvider: _voiceProvider,
       ),
     );
     if (!mounted) return false;
@@ -99,6 +102,14 @@ class _AiSecretarySettingsPageState extends State<AiSecretarySettingsPage> {
   Future<void> _setEnabled(bool value) async {
     setState(() => _enabled = value);
     await SettingsService.updateConfig('aiAnswerEnabled', value);
+    if (!mounted) return;
+    setState(() => _savedFp = _fp());
+  }
+
+  Future<void> _setVoiceProvider(String provider) async {
+    if (_voiceProvider == provider) return;
+    setState(() => _voiceProvider = provider);
+    await SettingsService.setAiVoiceProvider(provider);
     if (!mounted) return;
     setState(() => _savedFp = _fp());
   }
@@ -148,6 +159,41 @@ class _AiSecretarySettingsPageState extends State<AiSecretarySettingsPage> {
               ),
               // «Ошибки секретаря» — одна плитка в общих настройках
               // (Подключения), с числом новых разборов.
+            ],
+          ),
+          SettingsTileSection(
+            title: context.tr('Голос (быстрое переключение)', 'Voice model (quick switch)'),
+            tiles: [
+              SettingsHubTile(
+                title: 'OpenAI GPT-Live-1',
+                subtitle: _voiceProvider == 'gpt-live-1'
+                    ? context.tr('Активен • Новый полнодуплексный голос', 'Active • Full-duplex')
+                    : context.tr('Новый полнодуплексный голос', 'New full-duplex voice'),
+                icon: Icons.graphic_eq,
+                color: Colors.teal,
+                active: _voiceProvider == 'gpt-live-1',
+                onTap: () => _setVoiceProvider('gpt-live-1'),
+              ),
+              SettingsHubTile(
+                title: 'Gemini 3.8 Live',
+                subtitle: _voiceProvider == 'gemini'
+                    ? context.tr('Активен • Прежний голос (резервная копия)', 'Active • Previous voice (backup)')
+                    : context.tr('Прежний голос — вернуться в 1 нажатие', 'Previous voice — 1-tap rollback'),
+                icon: Icons.restore,
+                color: Colors.blue,
+                active: _voiceProvider == 'gemini',
+                onTap: () => _setVoiceProvider('gemini'),
+              ),
+              SettingsHubTile(
+                title: 'OpenAI Realtime 2.1',
+                subtitle: _voiceProvider == 'openai'
+                    ? context.tr('Активен • Запасная модель OpenAI', 'Active • OpenAI Realtime 2.1')
+                    : context.tr('Запасная модель OpenAI', 'OpenAI Realtime 2.1 fallback'),
+                icon: Icons.record_voice_over_outlined,
+                color: Colors.indigo,
+                active: _voiceProvider == 'openai',
+                onTap: () => _setVoiceProvider('openai'),
+              ),
             ],
           ),
           Padding(

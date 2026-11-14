@@ -242,10 +242,10 @@ test('pause tuning preserves the voice, listening sensitivity and long-session c
 });
 
 test('the fallback list holds only models that exist, and the voice is configurable', () => {
-  // 3.1-flash-live-preview Google выключает 17.11.2026 — основной стала 3.8-live.
+  // 3.1-flash-live-preview и 2.5-flash-native-audio-preview-12-2025 Google
+  // выключает 17.11.2026 — в списке остаётся живая 3.8-live.
   assert.deepEqual(voiceRelay._internals.liveModels(), [
     'gemini-3.8-live',
-    'gemini-2.5-flash-native-audio-preview-12-2025',
   ]);
   const voiceOf = (voice) => voiceRelay.buildSetup('gemini-3.1-flash-live-preview', 'Shop rules', false, '', { voice })
     .setup.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName;
@@ -292,7 +292,10 @@ test('affective dialog is sent only where the server knows it, and is dropped if
 });
 
 test('a native-audio session that never opens is retried without the affective flag', (t) => {
-  const call = liveCall(t, { voiceProvider: 'gemini' });
+  const call = liveCall(t, {
+    voiceProvider: 'gemini',
+    geminiModels: ['gemini-3.8-live', 'gemini-2.5-flash-native-audio-preview-12-2025'],
+  });
   // Доводим звонок до запасной native-audio модели: две неудачи подряд.
   call.ready();
   call.modelSays('FixApplianceCA, this is Sarah — what can I do for you?');
@@ -711,7 +714,9 @@ function liveCall(t, sessionOverrides = {}) {
 }
 
 test('a model that keeps dropping is swapped for the next one, never looping "I\'m still here", then Gather', async (t) => {
-  const call = liveCall(t);
+  const call = liveCall(t, {
+    geminiModels: ['gemini-3.8-live', 'gemini-2.5-flash-native-audio-preview-12-2025'],
+  });
   assert.equal(voiceRelay._internals.timing.LIVE_FAILURE_LIMIT, 5);
   call.ready();
   call.current().server({ sessionResumptionUpdate: { newHandle: 'handle-1' } });
@@ -850,7 +855,9 @@ test('"hold on, let me check" buys a full minute before she checks the line', (t
 });
 
 test('a deaf model (caller audibly talks, Gemini hears nothing) is replaced, and the second time Gather takes over', async (t) => {
-  const call = liveCall(t);
+  const call = liveCall(t, {
+    geminiModels: ['gemini-3.8-live', 'gemini-2.5-flash-native-audio-preview-12-2025'],
+  });
   const { SILENCE_CHECK_MS } = voiceRelay._internals.timing;
   const talk = (ms) => {
     for (let at = 0; at < ms; at += 20) {
@@ -933,31 +940,33 @@ test('the provider chain falls back to Gemini and never offers a provider withou
     return steps.map((step) => `${step.provider}:${step.model}`);
   };
   const both = { geminiApiKey: 'g', openaiApiKey: 'o' };
-  assert.deepEqual(chain({ voiceProvider: 'openai', openaiModel: 'gpt-realtime' }, both), [
-    'openai:gpt-realtime',
+  assert.deepEqual(chain({ voiceProvider: 'openai', openaiModel: 'gpt-realtime-2.1' }, both), [
+    'openai:gpt-realtime-2.1',
     'gemini:gemini-3.8-live',
-    'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
+  ]);
+  // Выбран полнодуплексный gpt-live-1: дальше в запасе Gemini 3.8 Live и OpenAI Realtime 2.1.
+  assert.deepEqual(chain({ voiceProvider: 'gpt-live-1' }, both), [
+    'openai-live:gpt-live-1',
+    'gemini:gemini-3.8-live',
+    'openai:gpt-realtime-2.1',
   ]);
   // Выбран Gemini — он ведёт, OpenAI ждёт в конце очереди. Откат симметричный.
-  assert.deepEqual(chain({ voiceProvider: 'gemini', openaiModel: 'gpt-realtime' }, both), [
+  assert.deepEqual(chain({ voiceProvider: 'gemini', openaiModel: 'gpt-realtime-2.1' }, both), [
     'gemini:gemini-3.8-live',
-    'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
-    'openai:gpt-realtime',
+    'openai:gpt-realtime-2.1',
   ]);
   // По умолчанию (поле не задано) звонки ведёт Gemini.
   assert.deepEqual(chain({}, both), [
     'gemini:gemini-3.8-live',
-    'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
-    'openai:gpt-realtime',
+    'openai:gpt-realtime-2.1',
   ]);
   // Ключа OpenAI нет — звонки ведёт Gemini, как и раньше.
   assert.deepEqual(chain({ voiceProvider: 'openai' }, { geminiApiKey: 'g' }), [
     'gemini:gemini-3.8-live',
-    'gemini:gemini-2.5-flash-native-audio-preview-12-2025',
   ]);
   // Нет ключа Gemini — лучше OpenAI, чем тишина в трубке.
   assert.deepEqual(chain({ voiceProvider: 'gemini' }, { openaiApiKey: 'o' }), [
-    'openai:gpt-realtime',
+    'openai:gpt-realtime-2.1',
   ]);
   assert.deepEqual(chain({ voiceProvider: 'openai' }, {}), []);
 });
@@ -973,7 +982,7 @@ test('every call logs which keys were seen, so a missing key is never mistaken f
   assert.match(chain, /key:openai=yes/);
   assert.match(chain, /key:gemini=yes/);
   assert.match(chain, /settings=openai/);
-  assert.match(chain, /steps=\[openai:gpt-realtime -> gemini:/);
+  assert.match(chain, /steps=\[openai:gpt-realtime-2\.1 -> gemini:/);
   assert.equal(call.sockets.length, 1);
 });
 
@@ -989,7 +998,12 @@ test('the OpenAI session speaks Twilio\'s own audio format and declares the same
   // Родной формат Twilio в обе стороны: ни одного пересчёта частоты.
   assert.deepEqual(session.audio.input.format, { type: 'audio/pcmu' });
   assert.deepEqual(session.audio.output.format, { type: 'audio/pcmu' });
-  assert.deepEqual(session.audio.input.transcription, { model: 'gpt-4o-mini-transcribe', language: 'en' });
+  assert.deepEqual(session.audio.input.transcription, { model: 'gpt-transcribe', language: 'en' });
+  assert.deepEqual(
+    voiceRelay.buildOpenaiSession({ openaiTranscribeModel: 'gpt-live-transcribe' }, false, 'x')
+      .session.audio.input.transcription,
+    { model: 'gpt-live-transcribe', language: 'en' }
+  );
   assert.deepEqual(session.audio.input.turn_detection, {
     type: 'server_vad', threshold: 0.6, prefix_padding_ms: 300,
     silence_duration_ms: 500, create_response: true, interrupt_response: true,
@@ -1317,4 +1331,105 @@ test('bad stream keys are still rejected before starting Gemini', { timeout: 500
   const [code, reason] = await closed;
   assert.equal(code, 1008);
   assert.equal(reason.toString(), 'unauthorized');
+});
+
+// ── Полнодуплексная модель OpenAI GPT-Live-1 (/v1/live/sessions) ───────────
+
+test('GPT-Live-1: session.start uses strict /v1/live/sessions schema and <|SpawnThinking|> delegation policy', () => {
+  const start = voiceRelay.buildGptLiveSession({ openaiVoice: 'marin' }, true, 'You are Sarah at FixApplianceCA.');
+  assert.equal(start.type, 'session.start');
+  assert.equal(start.event_id, 'evt_start_001');
+  assert.equal(start.session.model, 'gpt-live-1');
+  assert.equal(start.session.store, false);
+  assert.deepEqual(start.session.audio, {
+    format: { type: 'audio/pcmu', rate: 8000 },
+    output: { voice: 'marin' },
+  });
+  assert.deepEqual(start.session.delegation, { type: 'client' });
+  // Запрещённые на /v1/live/sessions поля старого Realtime API отсутствуют.
+  assert.equal(start.session.turn_detection, undefined);
+  assert.equal(start.session.modalities, undefined);
+  assert.equal(start.session.output_modalities, undefined);
+  assert.equal(start.session.tools, undefined);
+  assert.equal(start.session.audio.input, undefined);
+  // Промпт содержит обязательные секции и маркер <|SpawnThinking|>.
+  assert.match(start.session.instructions, /Backchannel policy:/);
+  assert.match(start.session.instructions, /Interruption policy:/);
+  assert.match(start.session.instructions, /Delegation policy:/);
+  assert.match(start.session.instructions, /Backend tools:/);
+  assert.match(start.session.instructions, /Generate <\|SpawnThinking\|> when:/);
+  assert.match(start.session.instructions, /Do not generate <\|SpawnThinking\|> when:/);
+});
+
+test('GPT-Live-1: waits for session.started, streams audio/pcmu, delegates via session.delegation.created idempotently, and closes with session.close', async (t) => {
+  const checkedPlaces = [];
+  const call = openaiCall(t, {
+    checkServiceArea: async (place) => {
+      checkedPlaces.push(place);
+      return { ok: true, inside: true, place: `${place}, ON` };
+    },
+  });
+  // Переключаем звонок на gpt-live-1.
+  call.sockets.length = 0;
+  call.session.voiceProvider = 'gpt-live-1';
+  call.session.ready = false;
+  call.session.connecting = false;
+  call.session.liveStarted = false;
+  call.session.greeted = false;
+  voiceRelay._internals.startLiveSession(call.session);
+  assert.equal(call.sockets.length, 1);
+
+  // До session.started аудио звонящего копится в очереди и в сокет не уходит.
+  call.current().readyState = WebSocket.OPEN;
+  call.current().emit('open');
+  voiceRelay._internals.sendCallerAudio(call.session, LOUD_FRAME);
+  assert.equal(call.current().sent.filter((m) => m.type === 'session.input_audio.append').length, 0);
+
+  // Приходит session.started — сессия готова, приветствие и накопленный кадр уходят.
+  call.current().server({ type: 'session.started', session: { id: 'live_test_1', model: 'gpt-live-1' } });
+  assert.equal(call.session.provider, 'openai-live');
+  assert.equal(call.session.engine, 'openai-live');
+  assert.equal(call.current().sent.filter((m) => m.type === 'session.input_audio.append').length, 1);
+  assert.ok(call.current().sent.some((m) => m.type === 'session.commentary.append' && m.delegation_id === null));
+
+  // Дельты транскрипции склеиваются без разрыва слов и сохраняют таймкоды.
+  call.current().server({ type: 'session.output_transcript.delta', delta: ' Hi, this is', start_ms: 0, end_ms: 400 });
+  call.current().server({ type: 'session.output_transcript.delta', delta: ' Sarah at Fix', start_ms: 400, end_ms: 800 });
+  call.current().server({ type: 'session.output_transcript.delta', delta: 'ApplianceCA.', start_ms: 800, end_ms: 1200 });
+  call.current().server({ type: 'session.output_audio.delta', delta: Buffer.alloc(320, 0x7f).toString('base64') });
+  assert.equal(call.media().length, 2);
+
+  // Звонящий перебивает — в Twilio летит clear.
+  call.current().server({
+    type: 'session.input_transcript.delta',
+    delta: ' Do you guys come out to Ayr',
+    start_ms: 1400,
+    end_ms: 2600,
+  });
+  assert.ok(call.twilio.sent.some((m) => m.event === 'clear'));
+
+  // Делегирование (<|SpawnThinking|> -> session.delegation.created): инструмент
+  // вызывается ровно один раз на один delegation_id, ответ уходит в session.commentary.append.
+  const delegationEvent = {
+    type: 'session.delegation.created',
+    offset_ms: 2600,
+    delegation: { id: 'del_ayr_1', type: 'delegation', target: 'client' },
+  };
+  call.current().server(delegationEvent);
+  call.current().server(delegationEvent);
+  await call.flush();
+  assert.deepEqual(checkedPlaces, ['Ayr']);
+  const reply = call.current().sent.find(
+    (m) => m.type === 'session.commentary.append' && m.delegation_id === 'del_ayr_1'
+  );
+  assert.ok(reply);
+  assert.match(reply.content, /inside coverage/);
+
+  // Корректное закрытие: при закрытии сессии шлётся session.close, а session.closed пишет voiceSeconds.
+  const ws = call.current();
+  call.current().server({ type: 'session.usage.updated', usage: { seconds: 14 } });
+  assert.equal(call.session.voiceSeconds, 14);
+  ws.server({ type: 'session.closed', reason: 'close_requested', usage: { seconds: 19.5 } });
+  await call.flush();
+  assert.equal(call.session.voiceSeconds, 19.5);
 });
