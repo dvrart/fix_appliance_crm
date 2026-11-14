@@ -7,6 +7,7 @@ const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const COMPANY_ID = 'fix_appliance_ca';
 const OWNER_UID = 'Ew8vDgXvuMMwt9gYQUOi7rujNxO2';
 const TECH_CLIENT_PREFIX = 'tech_';
+const TESTER_CLIENT_PREFIX = 'tester_';
 
 function isOwnerUid(uid) {
   return typeof uid === 'string' && uid.trim() === OWNER_UID;
@@ -50,6 +51,40 @@ function uidFromTwilioClient(fromRaw) {
   const raw = String(fromRaw || '').trim().replace(/^client:/i, '');
   if (!raw.startsWith(TECH_CLIENT_PREFIX)) return '';
   return raw.slice(TECH_CLIENT_PREFIX.length).trim();
+}
+
+function testerTwilioIdentity(uid) {
+  const clean = String(uid || '').trim().replace(/[^a-zA-Z0-9_]/g, '_');
+  return `${TESTER_CLIENT_PREFIX}${clean}`;
+}
+
+function testerUidFromTwilioClient(fromRaw) {
+  const raw = String(fromRaw || '').trim().replace(/^client:/i, '');
+  if (!raw.startsWith(TESTER_CLIENT_PREFIX)) return '';
+  return raw.slice(TESTER_CLIENT_PREFIX.length).trim();
+}
+
+async function getActiveTester(uid, db = getFirestore(), { allowMissing = false } = {}) {
+  const clean = String(uid || '').trim();
+  if (!clean) return null;
+  try {
+    const snap = await db.collection('testers').doc(clean).get();
+    if (!snap.exists) {
+      return allowMissing
+        ? { uid: clean, companyId: `tester_${clean}`, active: true }
+        : null;
+    }
+    const data = snap.data() || {};
+    if (data.active === false) return null;
+    return {
+      uid: clean,
+      companyId: `tester_${clean}`,
+      ...data,
+    };
+  } catch (error) {
+    console.warn('getActiveTester:', error.message);
+    return null;
+  }
 }
 
 function isAssignedToTechnician(job) {
@@ -102,16 +137,39 @@ async function requireAnyAppUser(req, res, deps = {}) {
     res.status(401).json({ error: 'Unauthorized: Firebase ID token required' });
     return null;
   }
+  const wantsTester =
+    Boolean(req && req.query && req.query.tester === '1') ||
+    String((req && req.query && req.query.identity) || '').startsWith(TESTER_CLIENT_PREFIX);
   if (isOwnerUid(user.uid)) {
-    return { ...user, isOwner: true, technician: null };
+    return {
+      ...user,
+      isOwner: true,
+      isTester: wantsTester,
+      testerCompanyId: wantsTester ? `tester_${user.uid}` : '',
+      technician: null,
+    };
   }
   const tech = await getActiveTechnician(user.uid, db);
+  if (tech && !wantsTester) {
+    return { ...user, isOwner: false, isTester: false, technician: tech };
+  }
+  const tester = await getActiveTester(user.uid, db, { allowMissing: wantsTester });
+  if (tester) {
+    return {
+      ...user,
+      isOwner: false,
+      isTester: true,
+      tester,
+      testerCompanyId: tester.companyId || `tester_${user.uid}`,
+      technician: null,
+    };
+  }
   if (tech) {
-    return { ...user, isOwner: false, technician: tech };
+    return { ...user, isOwner: false, isTester: false, technician: tech };
   }
   const asOwner = await ownerGuard(req, res);
   if (asOwner) {
-    return { ...asOwner, isOwner: true, technician: null };
+    return { ...asOwner, isOwner: true, isTester: false, technician: null };
   }
   return null;
 }
@@ -421,10 +479,14 @@ function summarizeJobPayout(job, profitSharePercent = 50) {
 
 module.exports = {
   TECH_CLIENT_PREFIX,
+  TESTER_CLIENT_PREFIX,
   techTwilioIdentity,
   uidFromTwilioClient,
+  testerTwilioIdentity,
+  testerUidFromTwilioClient,
   isAssignedToTechnician,
   getActiveTechnician,
+  getActiveTester,
   findActiveTechnicianByCell,
   requireAnyAppUser,
   handleManageTechnician,

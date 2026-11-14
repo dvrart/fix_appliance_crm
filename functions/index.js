@@ -44,6 +44,8 @@ const TWILIO_API_KEY_SECRET = process.env.TWILIO_API_KEY_SECRET;
 const TWILIO_TWIML_APP_SID = process.env.TWILIO_TWIML_APP_SID;
 const TWILIO_PUSH_CREDENTIAL_SID = process.env.TWILIO_PUSH_CREDENTIAL_SID;
 const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
+const TESTER_TWILIO_PHONE_NUMBER =
+  process.env.TESTER_TWILIO_PHONE_NUMBER || '+15489000688';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 // Живой голос секретаря. Без этого ключа OpenAI Realtime в цепочку провайдеров
 // даже не попадает, и звонки ведёт Gemini Live, как раньше.
@@ -1192,9 +1194,17 @@ exports.twilioAccessToken = functions.https.onRequest(async (req, res) => {
       return;
     }
 
-    const identity = user.isOwner
-      ? (req.query.identity || req.body?.identity || MASTER_IDENTITY).toString()
-      : technicians.techTwilioIdentity(user.uid);
+    const requestedIdentity = String(
+      req.query.identity || req.body?.identity || ''
+    ).trim();
+    const wantsTester =
+      Boolean(user.isTester) ||
+      requestedIdentity.startsWith(technicians.TESTER_CLIENT_PREFIX);
+    const identity = wantsTester
+      ? technicians.testerTwilioIdentity(user.uid)
+      : (user.isOwner
+          ? (requestedIdentity || MASTER_IDENTITY).toString()
+          : technicians.techTwilioIdentity(user.uid));
 
     const AccessToken = twilio.jwt.AccessToken;
     const VoiceGrant = AccessToken.VoiceGrant;
@@ -1215,7 +1225,11 @@ exports.twilioAccessToken = functions.https.onRequest(async (req, res) => {
 
     // Номер мастерской нужен приложению, чтобы звонить клиенту через SIM:
     // телефон набирает мастерскую, сервер соединяет с клиентом.
-    res.json({ token: token.toJwt(), identity, shopNumber: TWILIO_PHONE_NUMBER || '' });
+    // Тестировщики звонят со второго номера (+15489000688), не с основного номера бизнеса.
+    const shopNumber = wantsTester
+      ? TESTER_TWILIO_PHONE_NUMBER
+      : (TWILIO_PHONE_NUMBER || '');
+    res.json({ token: token.toJwt(), identity, shopNumber });
   } catch (error) {
     console.error('Error generating token:', error);
     res.status(500).json({ error: error.message });
@@ -1232,9 +1246,25 @@ function firstScalar(value) {
 }
 
 function isOurTwilioNumber(value) {
-  const ours = digitsOf(TWILIO_PHONE_NUMBER);
   const theirs = digitsOf(value);
-  return ours.length >= 10 && theirs.length >= 10 && ours.slice(-10) === theirs.slice(-10);
+  if (theirs.length < 10) return false;
+  const tail = theirs.slice(-10);
+  const ours = digitsOf(TWILIO_PHONE_NUMBER);
+  const testerNum = digitsOf(TESTER_TWILIO_PHONE_NUMBER);
+  return (
+    (ours.length >= 10 && ours.slice(-10) === tail) ||
+    (testerNum.length >= 10 && testerNum.slice(-10) === tail)
+  );
+}
+
+function isTesterTwilioNumber(value) {
+  const theirs = digitsOf(value);
+  const testerNum = digitsOf(TESTER_TWILIO_PHONE_NUMBER);
+  return (
+    theirs.length >= 10 &&
+    testerNum.length >= 10 &&
+    theirs.slice(-10) === testerNum.slice(-10)
+  );
 }
 
 function isFromClient(body) {
@@ -1994,14 +2024,14 @@ async function getCompanyDisplayName() {
   }
 }
 
-function twimlDialPstn(req, toNumber) {
+function twimlDialPstn(req, toNumber, callerIdOverride = '', testerCompany = '') {
   const twiml = new twilio.twiml.VoiceResponse();
   // Запись на весь звонок, а не только на кусок `<Dial>`. Иначе у исходящего
   // из приложения Twilio отдаёт 1–7 секунд, хотя разговор шёл дольше: клиент
   // слышит расшифровку, а плеера нет. Дорожки те же — две, по сторонам.
   appendCallRecording(twiml, recordingUrl(req));
   const dial = twiml.dial({
-    callerId: TWILIO_PHONE_NUMBER,
+    callerId: callerIdOverride || TWILIO_PHONE_NUMBER,
     timeout: 25,
     answerOnBridge: false,
     action: dialActionUrl(req),
@@ -2014,6 +2044,7 @@ function twimlDialPstn(req, toNumber) {
       statusCallback: callRoute.withQuery(dialActionUrl(req), {
         stage: 'peer',
         parent: String(req.body.CallSid || '').trim(),
+        ...(testerCompany ? { testerCompany } : {}),
       }),
     },
     toNumber
@@ -2069,11 +2100,13 @@ function twimlDialMasterCell(req, fromNumber, routing, parentSid, timeoutSeconds
   });
 }
 
-async function logCall(callSid, data) {
+async function logCall(callSid, data, targetCompanyId = '') {
   if (!callSid) return;
   try {
     const { twilioTime, ...fields } = data;
-    const ref = callsRef.doc(callSid);
+    const ref = targetCompanyId
+      ? db.collection('companies').doc(targetCompanyId).collection('calls').doc(callSid)
+      : callsRef.doc(callSid);
     await db.runTransaction(async (tx) => {
       const existing = await tx.get(ref);
       const previous = existing.exists ? existing.data() || {} : {};
@@ -2095,11 +2128,13 @@ async function logCall(callSid, data) {
 }
 
 async function consumePendingOutboundJobId(dest, fromRaw = '') {
-  const techUid = technicians.uidFromTwilioClient(fromRaw);
+  const testerUid = technicians.testerUidFromTwilioClient(fromRaw);
+  const techUid = testerUid ? '' : technicians.uidFromTwilioClient(fromRaw);
+  const targetCompanyId = testerUid ? `tester_${testerUid}` : COMPANY_ID;
   const docId = techUid ? `pending_outbound_call_${techUid}` : 'pending_outbound_call';
   const ref = db
     .collection('companies')
-    .doc(COMPANY_ID)
+    .doc(targetCompanyId)
     .collection('settings')
     .doc(docId);
   try {
@@ -2127,27 +2162,37 @@ async function handleOutboundFromApp(req, res, source) {
   const dest = outboundDestination(req.body);
   const callSid = req.body.CallSid;
   const fromRaw = String(req.body.From || '');
-  const techUid = technicians.uidFromTwilioClient(fromRaw);
+  const testerUid = technicians.testerUidFromTwilioClient(fromRaw);
+  const techUid = testerUid ? '' : technicians.uidFromTwilioClient(fromRaw);
+  const testerCompanyId = testerUid ? `tester_${testerUid}` : '';
+  const callerNumber = testerUid
+    ? TESTER_TWILIO_PHONE_NUMBER
+    : (TWILIO_PHONE_NUMBER || '');
   const jobId = dest ? await consumePendingOutboundJobId(dest, fromRaw) : null;
   console.log(
-    `${source}: outbound from=${fromRaw} toParam=${req.body.To || ''} phone=${req.body.phone || ''} dest=${dest || '-'} job=${jobId || '-'}`
+    `${source}: outbound from=${fromRaw} callerId=${callerNumber} toParam=${req.body.To || ''} phone=${req.body.phone || ''} dest=${dest || '-'} job=${jobId || '-'}`
   );
-  await logCall(callSid, {
-    fromNumber: TWILIO_PHONE_NUMBER || '',
-    toNumber: dest || '',
-    direction: 'outbound',
-    status: 'in-progress',
-    twilioTime: req.body.Timestamp || req.body.StartTime,
-    ...(jobId ? { jobId } : {}),
-    ...(techUid ? { technicianId: techUid } : {}),
-  });
+  await logCall(
+    callSid,
+    {
+      fromNumber: callerNumber,
+      toNumber: dest || '',
+      direction: 'outbound',
+      status: 'in-progress',
+      twilioTime: req.body.Timestamp || req.body.StartTime,
+      ...(jobId ? { jobId } : {}),
+      ...(techUid ? { technicianId: techUid } : {}),
+      ...(testerUid ? { testerId: testerUid } : {}),
+    },
+    testerCompanyId
+  );
   if (!dest) {
     const twiml = new twilio.twiml.VoiceResponse();
     twiml.say({ language: 'ru-RU' }, 'Номер получателя не указан.');
     sendTwiml(res, twiml);
     return;
   }
-  sendTwiml(res, twimlDialPstn(req, dest));
+  sendTwiml(res, twimlDialPstn(req, dest, callerNumber, testerCompanyId));
 }
 
 async function findAssignedTechnicianForInboundCall(fromNumber) {
@@ -2238,8 +2283,8 @@ async function handleInboundToMaster(req, res, source, knownRouting = null) {
 // ещё в пути (плохой интернет): ждём её по секунде, не дольше четырёх раз.
 const CELL_BRIDGE_WAITS = 4;
 
-async function takePendingCellCall(callSid, docId = 'pending_cell_call') {
-  const ref = db.collection('companies').doc(COMPANY_ID).collection('settings').doc(docId);
+async function takePendingCellCall(callSid, docId = 'pending_cell_call', targetCompanyId = COMPANY_ID) {
+  const ref = db.collection('companies').doc(targetCompanyId).collection('settings').doc(docId);
   try {
     return await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -2259,12 +2304,62 @@ async function takePendingCellCall(callSid, docId = 'pending_cell_call') {
   }
 }
 
+async function takePendingTesterCellCall(callSid) {
+  try {
+    const testersSnap = await db.collection('testers').where('active', '==', true).get();
+    for (const doc of testersSnap.docs) {
+      const testerCompanyId = `tester_${doc.id}`;
+      const pending = await takePendingCellCall(callSid, 'pending_cell_call', testerCompanyId);
+      if (pending) {
+        return { ...pending, testerUid: doc.id, testerCompanyId };
+      }
+    }
+  } catch (error) {
+    console.warn('takePendingTesterCellCall:', error.message);
+  }
+  return null;
+}
+
 /**
  * Исходящий клиенту через сотовую: телефон мастера набрал номер мастерской,
  * приложение заранее записало, кому звонить. Клиент видит номер мастерской,
  * разговор пишется так же, как исходящий из приложения.
  */
 async function handleCellBridge(req, res, routing) {
+  if (isTesterTwilioNumber(req.body.To)) {
+    const callSid = req.body.CallSid;
+    const testerPending = await takePendingTesterCellCall(callSid);
+    if (testerPending) {
+      console.log(
+        `cellBridge tester=${testerPending.testerUid} ${callSid}: cell -> ${testerPending.phone}${testerPending.jobId ? ` job=${testerPending.jobId}` : ''}`
+      );
+      await logCall(
+        callSid,
+        {
+          fromNumber: TESTER_TWILIO_PHONE_NUMBER,
+          toNumber: testerPending.phone,
+          direction: 'outbound',
+          via: 'cell',
+          status: 'in-progress',
+          twilioTime: req.body.Timestamp || req.body.StartTime,
+          ...(testerPending.jobId ? { jobId: testerPending.jobId } : {}),
+          testerId: testerPending.testerUid,
+        },
+        testerPending.testerCompanyId
+      );
+      sendTwiml(
+        res,
+        twimlDialPstn(
+          req,
+          testerPending.phone,
+          TESTER_TWILIO_PHONE_NUMBER,
+          testerPending.testerCompanyId
+        )
+      );
+      return true;
+    }
+  }
+
   const isOwnerCell = Boolean(routing.cell) && callRoute.sameNumber(req.body.From, routing.cell);
   const techCaller = isOwnerCell ? null : await technicians.findActiveTechnicianByCell(req.body.From, db);
   if (!isOwnerCell && !techCaller) return false;
@@ -3422,15 +3517,17 @@ async function markCellScreen(parentSid, accepted, legSid) {
   }
 }
 
-async function markPeerAnswered(parentSid) {
+async function markPeerAnswered(parentSid, testerCompany = '') {
   if (!parentSid) return;
   try {
-    const ref = callsRef.doc(parentSid);
+    const ref = testerCompany
+      ? db.collection('companies').doc(testerCompany).collection('calls').doc(parentSid)
+      : callsRef.doc(parentSid);
     await ref.set({ peerAnsweredAt: FieldValue.serverTimestamp() }, { merge: true });
     const snap = await ref.get();
     // У звонка из приложения вибрирует само приложение по этой отметке.
     // У звонка через SIM приложение не на экране — шлём сигнал.
-    if (snap.exists && (snap.data() || {}).via === 'cell') await pingCallConnected(parentSid);
+    if (!testerCompany && snap.exists && (snap.data() || {}).via === 'cell') await pingCallConnected(parentSid);
   } catch (error) {
     console.warn('markPeerAnswered:', error.message);
   }
@@ -3438,6 +3535,7 @@ async function markPeerAnswered(parentSid) {
 
 async function handleCallStage(stage, req, res) {
   const parent = String((req.query && req.query.parent) || req.body.ParentCallSid || '').trim();
+  const testerCompany = String((req.query && req.query.testerCompany) || '').trim();
   if (stage === 'screen') {
     sendTwiml(res, callRoute.twimlCellScreen({
       acceptUrl: callRoute.withQuery(dialActionUrl(req), { stage: 'accept', parent }),
@@ -3454,7 +3552,7 @@ async function handleCallStage(stage, req, res) {
     sendTwiml(res, callRoute.twimlCellAccepted(accepted));
     return;
   }
-  if (stage === 'peer') await markPeerAnswered(parent);
+  if (stage === 'peer') await markPeerAnswered(parent, testerCompany);
   res.type('text/xml');
   res.send('<Response></Response>');
 }
@@ -5526,7 +5624,12 @@ exports.sendSms = functions.https.onRequest(
 
   const { to, body, clientId, jobId, bodyRu, fallbackBody, visitBooking, isReactionEcho } = req.body || {};
   const trimmedJobId = String(jobId || (visitBooking && visitBooking.jobId) || '').trim();
-  if (!user.isOwner) {
+  const isTesterSms = Boolean(user.isTester && user.testerCompanyId);
+  const senderTwilioNumber = isTesterSms ? TESTER_TWILIO_PHONE_NUMBER : TWILIO_PHONE_NUMBER;
+  const targetMessagesRef = isTesterSms
+    ? db.collection('companies').doc(user.testerCompanyId).collection('messages')
+    : messagesRef;
+  if (!user.isOwner && !isTesterSms) {
     if (!trimmedJobId) {
       res.status(403).json({ error: 'Мастер может отправлять SMS только из карточки своего заказа' });
       return;
@@ -5566,7 +5669,7 @@ exports.sendSms = functions.https.onRequest(
     if (isReactionEcho === true) {
       const tapbackText = String(body || '');
       const message = await client.messages.create({
-        from: TWILIO_PHONE_NUMBER,
+        from: senderTwilioNumber,
         to: e164,
         body: tapbackText,
       });
@@ -5611,7 +5714,7 @@ exports.sendSms = functions.https.onRequest(
       ? withSmsHeader(fallbackRaw, header)
       : '';
     const payload = {
-      from: TWILIO_PHONE_NUMBER,
+      from: senderTwilioNumber,
       to: e164,
       statusCallback: TWILIO_ACCOUNT_SID ? SMS_STATUS_CB : undefined,
     };
@@ -5625,7 +5728,7 @@ exports.sendSms = functions.https.onRequest(
       const result = await visitSms.sendApprovedBookingSms({
         ...visitBooking,
         to: e164,
-        messageData: { from: TWILIO_PHONE_NUMBER, body: text || '', bodyRu: storedRu },
+        messageData: { from: senderTwilioNumber, body: text || '', bodyRu: storedRu },
         send: () => client.messages.create({
           ...payload,
           statusCallback: `${SMS_STATUS_CB}?bookingRequestId=${encodeURIComponent(visitBooking.requestId)}`,
@@ -5642,9 +5745,9 @@ exports.sendSms = functions.https.onRequest(
       hasUrl: /https?:\/\//i.test(text),
     });
 
-    const docRef = await messagesRef.add({
+    const docRef = await targetMessagesRef.add({
       sid: message.sid,
-      from: TWILIO_PHONE_NUMBER,
+      from: senderTwilioNumber,
       to: e164,
       body: text || '',
       bodyRu: storedRu,
@@ -5654,7 +5757,7 @@ exports.sendSms = functions.https.onRequest(
       status: message.status,
       clientId: clientId || null,
       ...(trimmedJobId ? { jobId: trimmedJobId } : {}),
-      ...(!user.isOwner ? { sentByTechnicianId: user.uid } : {}),
+      ...(!user.isOwner && !isTesterSms ? { sentByTechnicianId: user.uid } : {}),
       channel: 'sms',
       mediaUrls,
       createdAt: FieldValue.serverTimestamp(),
