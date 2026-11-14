@@ -2127,11 +2127,19 @@ async function logCall(callSid, data, targetCompanyId = '') {
   }
 }
 
-async function consumePendingOutboundJobId(dest, fromRaw = '') {
+async function consumePendingOutboundJobId(
+  dest,
+  fromRaw = '',
+  targetCompanyOverride = '',
+  docIdOverride = ''
+) {
   const testerUid = technicians.testerUidFromTwilioClient(fromRaw);
   const techUid = testerUid ? '' : technicians.uidFromTwilioClient(fromRaw);
-  const targetCompanyId = testerUid ? `tester_${testerUid}` : COMPANY_ID;
-  const docId = techUid ? `pending_outbound_call_${techUid}` : 'pending_outbound_call';
+  const targetCompanyId =
+    targetCompanyOverride || (testerUid ? `tester_${testerUid}` : COMPANY_ID);
+  const docId =
+    docIdOverride ||
+    (techUid ? `pending_outbound_call_${techUid}` : 'pending_outbound_call');
   const ref = db
     .collection('companies')
     .doc(targetCompanyId)
@@ -2164,11 +2172,31 @@ async function handleOutboundFromApp(req, res, source) {
   const fromRaw = String(req.body.From || '');
   const testerUid = technicians.testerUidFromTwilioClient(fromRaw);
   const techUid = testerUid ? '' : technicians.uidFromTwilioClient(fromRaw);
-  const testerCompanyId = testerUid ? `tester_${testerUid}` : '';
+  let testerCompanyId = testerUid ? `tester_${testerUid}` : '';
+  let isTesterSubTech = false;
+  if (testerUid) {
+    const testerRecord = await technicians.getActiveTester(testerUid, db, {
+      allowMissing: true,
+    });
+    if (testerRecord && testerRecord.companyId) {
+      testerCompanyId = testerRecord.companyId;
+      isTesterSubTech = Boolean(testerRecord.isSubTech);
+    }
+  }
   const callerNumber = testerUid
     ? TESTER_TWILIO_PHONE_NUMBER
     : (TWILIO_PHONE_NUMBER || '');
-  const jobId = dest ? await consumePendingOutboundJobId(dest, fromRaw) : null;
+  const pendingDocId = isTesterSubTech
+    ? `pending_outbound_call_${testerUid}`
+    : '';
+  const jobId = dest
+    ? await consumePendingOutboundJobId(
+        dest,
+        fromRaw,
+        testerCompanyId,
+        pendingDocId
+      )
+    : null;
   console.log(
     `${source}: outbound from=${fromRaw} callerId=${callerNumber} toParam=${req.body.To || ''} phone=${req.body.phone || ''} dest=${dest || '-'} job=${jobId || '-'}`
   );
@@ -2182,6 +2210,7 @@ async function handleOutboundFromApp(req, res, source) {
       twilioTime: req.body.Timestamp || req.body.StartTime,
       ...(jobId ? { jobId } : {}),
       ...(techUid ? { technicianId: techUid } : {}),
+      ...(isTesterSubTech ? { technicianId: testerUid } : {}),
       ...(testerUid ? { testerId: testerUid } : {}),
     },
     testerCompanyId
@@ -2308,10 +2337,20 @@ async function takePendingTesterCellCall(callSid) {
   try {
     const testersSnap = await db.collection('testers').where('active', '==', true).get();
     for (const doc of testersSnap.docs) {
-      const testerCompanyId = `tester_${doc.id}`;
-      const pending = await takePendingCellCall(callSid, 'pending_cell_call', testerCompanyId);
+      const data = doc.data() || {};
+      const isSubTech = data.role === 'technician' && Boolean(data.parentCompanyId);
+      const testerCompanyId = isSubTech
+        ? String(data.parentCompanyId).trim()
+        : `tester_${doc.id}`;
+      const docId = isSubTech ? `pending_cell_call_${doc.id}` : 'pending_cell_call';
+      const pending = await takePendingCellCall(callSid, docId, testerCompanyId);
       if (pending) {
-        return { ...pending, testerUid: doc.id, testerCompanyId };
+        return {
+          ...pending,
+          testerUid: doc.id,
+          testerCompanyId,
+          isSubTech,
+        };
       }
     }
   } catch (error) {
@@ -5629,12 +5668,15 @@ exports.sendSms = functions.https.onRequest(
   const targetMessagesRef = isTesterSms
     ? db.collection('companies').doc(user.testerCompanyId).collection('messages')
     : messagesRef;
-  if (!user.isOwner && !isTesterSms) {
+  if ((!user.isOwner && !isTesterSms) || user.isTesterSubTech) {
     if (!trimmedJobId) {
       res.status(403).json({ error: 'Мастер может отправлять SMS только из карточки своего заказа' });
       return;
     }
-    const jobSnap = await jobsRef.doc(trimmedJobId).get();
+    const targetJobsRef = isTesterSms
+      ? db.collection('companies').doc(user.testerCompanyId).collection('jobs')
+      : jobsRef;
+    const jobSnap = await targetJobsRef.doc(trimmedJobId).get();
     const jobData = jobSnap.exists ? jobSnap.data() || {} : {};
     if (String(jobData.assignedTo || '').trim() !== user.uid) {
       res.status(403).json({ error: 'Доступ к заказу закрыт' });

@@ -4,8 +4,8 @@ rules_version = '2';
 // 1. Владелец (по uid) — полный доступ.
 // 2. Активный мастер — чтение и загрузка фото/чеков/подписей только по назначенным
 //    лично ему заявкам (`jobs/{jobId}`), а также загрузка исходящих вложений для SMS/PDF.
-// 3. Тестировщик в тестовой копии CRM — чтение и загрузка файлов строго внутри
-//    своей персональной папки `companies/$('tester_' + request.auth.uid)/**`.
+// 3. Тестировщик и его собственные мастера в тестовой копии CRM — чтение и загрузка
+//    файлов строго внутри папки этой тестовой базы `companies/{companyId}/**`.
 service firebase.storage {
   match /b/{bucket}/o {
     function owners() {
@@ -36,6 +36,15 @@ service firebase.storage {
       return request.auth != null
         && companyId == 'tester_' + request.auth.uid
         && isActiveTester(request.auth.uid);
+    }
+    function isTesterSubTechOf(companyId) {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/testers/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/testers/$(request.auth.uid)).data.get('active', true) != false
+        && firestore.get(/databases/(default)/documents/testers/$(request.auth.uid)).data.get('role', '') == 'technician'
+        && firestore.get(/databases/(default)/documents/testers/$(request.auth.uid)).data.get('parentCompanyId', '') == companyId
+        && firestore.exists(/databases/(default)/documents/companies/$(companyId)/technicians/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/companies/$(companyId)/technicians/$(request.auth.uid)).data.active != false;
     }
     function underLimit(maxBytes) {
       return request.resource.size < maxBytes;
@@ -72,10 +81,10 @@ service firebase.storage {
       allow create, update: if isOwner() && underLimit(25 * 1024 * 1024);
     }
 
-    // Isolated storage for each external tester (`companies/tester_<uid>/**`).
+    // Isolated storage for each external tester and their subcontractors (`companies/tester_<uid>/**`).
     match /companies/{companyId}/{allPaths=**} {
-      allow read, delete: if isOwner() || isOwnTesterCompany(companyId);
-      allow create, update: if (isOwner() || isOwnTesterCompany(companyId)) && underLimit(25 * 1024 * 1024);
+      allow read, delete: if isOwner() || isOwnTesterCompany(companyId) || isTesterSubTechOf(companyId);
+      allow create, update: if (isOwner() || isOwnTesterCompany(companyId) || isTesterSubTechOf(companyId)) && underLimit(25 * 1024 * 1024);
     }
   }
 }

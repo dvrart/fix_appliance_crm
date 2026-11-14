@@ -71,14 +71,30 @@ async function getActiveTester(uid, db = getFirestore(), { allowMissing = false 
     const snap = await db.collection('testers').doc(clean).get();
     if (!snap.exists) {
       return allowMissing
-        ? { uid: clean, companyId: `tester_${clean}`, active: true }
+        ? { uid: clean, companyId: `tester_${clean}`, role: 'owner', active: true }
         : null;
     }
     const data = snap.data() || {};
     if (data.active === false) return null;
+    const isSubTech = data.role === 'technician' && Boolean(data.parentCompanyId);
+    const targetCompanyId = isSubTech
+      ? String(data.parentCompanyId).trim()
+      : `tester_${clean}`;
+    if (isSubTech) {
+      const techSnap = await db
+        .collection('companies')
+        .doc(targetCompanyId)
+        .collection('technicians')
+        .doc(clean)
+        .get();
+      if (!techSnap.exists || (techSnap.data() || {}).active === false) {
+        return null;
+      }
+    }
     return {
       uid: clean,
-      companyId: `tester_${clean}`,
+      companyId: targetCompanyId,
+      isSubTech,
       ...data,
     };
   } catch (error) {
@@ -159,6 +175,7 @@ async function requireAnyAppUser(req, res, deps = {}) {
       ...user,
       isOwner: false,
       isTester: true,
+      isTesterSubTech: Boolean(tester.isSubTech),
       tester,
       testerCompanyId: tester.companyId || `tester_${user.uid}`,
       technician: null,
@@ -216,9 +233,11 @@ function sanitizeTechFields(body = {}, existing = {}) {
   };
 }
 
-async function disableTechnicianTokens(uid, db = getFirestore()) {
+async function disableTechnicianTokens(uid, db = getFirestore(), targetCompanyId = COMPANY_ID) {
   try {
-    const snap = await companyRef(db)
+    const snap = await db
+      .collection('companies')
+      .doc(targetCompanyId)
       .collection('fcm_tokens')
       .where('userId', '==', uid)
       .get();
@@ -234,21 +253,55 @@ async function disableTechnicianTokens(uid, db = getFirestore()) {
 }
 
 /**
- * HTTP-обработчик `manageTechnician` — доступен СТРОГО владельцу (`requireAppUser`).
+ * HTTP-обработчик `manageTechnician` — доступен владельцу (`requireAppUser`)
+ * или тестировщику-владельцу своей персональной базы `tester_<uid>`.
  */
 async function handleManageTechnician(req, res, deps = {}) {
-  const guard = deps.requireAppUser || require('./auth_guard').requireAppUser;
+  const guardMod = require('./auth_guard');
   const auth = deps.auth || require('firebase-admin/auth').getAuth();
   const db = deps.db || getFirestore();
 
-  const owner = await guard(req, res);
-  if (!owner) return;
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'POST required' });
     return;
   }
 
   const body = req.body || {};
+  const requestedCompanyId = String(body.companyId || '').trim();
+  const isTesterScope = requestedCompanyId.startsWith(TESTER_CLIENT_PREFIX);
+
+  let caller = null;
+  let targetCompanyId = COMPANY_ID;
+
+  if (isTesterScope && !deps.requireAppUser) {
+    const verify = deps.verifyAppUser || guardMod.verifyAppUser;
+    const verified = await verify(req);
+    if (!verified || !verified.uid) {
+      res.status(401).json({ error: 'Unauthorized: Firebase ID token required' });
+      return;
+    }
+    const expectedCompanyId = `tester_${verified.uid}`;
+    if (!isOwnerUid(verified.uid) && requestedCompanyId !== expectedCompanyId) {
+      res.status(403).json({ error: 'Forbidden: можно управлять только мастерами своей базы' });
+      return;
+    }
+    const testerRecord = await getActiveTester(verified.uid, db, { allowMissing: true });
+    if (!testerRecord || testerRecord.isSubTech) {
+      res.status(403).json({ error: 'Forbidden: доступ только для владельца базы' });
+      return;
+    }
+    caller = verified;
+    targetCompanyId = requestedCompanyId;
+  } else {
+    const guard = deps.requireAppUser || guardMod.requireAppUser;
+    caller = await guard(req, res);
+    if (!caller) return;
+    if (isTesterScope && isOwnerUid(caller.uid)) {
+      targetCompanyId = requestedCompanyId;
+    }
+  }
+
+  const targetTechsRef = db.collection('companies').doc(targetCompanyId).collection('technicians');
   const action = String(body.action || '').trim();
 
   try {
@@ -286,7 +339,21 @@ async function handleManageTechnician(req, res, deps = {}) {
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       };
-      await techniciansRef(db).doc(created.uid).set(record);
+      await targetTechsRef.doc(created.uid).set(record);
+      if (targetCompanyId.startsWith(TESTER_CLIENT_PREFIX)) {
+        await db.collection('testers').doc(created.uid).set({
+          uid: created.uid,
+          email: fields.email,
+          name: fields.name,
+          role: 'technician',
+          parentCompanyId: targetCompanyId,
+          parentOwnerUid: targetCompanyId.slice(TESTER_CLIENT_PREFIX.length),
+          companyId: targetCompanyId,
+          active: true,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
       res.json({
         success: true,
         uid: created.uid,
@@ -301,7 +368,7 @@ async function handleManageTechnician(req, res, deps = {}) {
         res.status(400).json({ error: 'Некорректный идентификатор мастера' });
         return;
       }
-      const docRef = techniciansRef(db).doc(uid);
+      const docRef = targetTechsRef.doc(uid);
       const snap = await docRef.get();
       if (!snap.exists) {
         res.status(404).json({ error: 'Профиль мастера не найден' });
@@ -334,7 +401,7 @@ async function handleManageTechnician(req, res, deps = {}) {
       await auth.updateUser(uid, authPatch);
       if (!fields.active) {
         await auth.revokeRefreshTokens(uid).catch(() => {});
-        await disableTechnicianTokens(uid, db);
+        await disableTechnicianTokens(uid, db, targetCompanyId);
       }
       await docRef.set(
         {
@@ -344,6 +411,17 @@ async function handleManageTechnician(req, res, deps = {}) {
         },
         { merge: true }
       );
+      if (targetCompanyId.startsWith(TESTER_CLIENT_PREFIX)) {
+        await db.collection('testers').doc(uid).set(
+          {
+            email: fields.email,
+            name: fields.name,
+            active: fields.active,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
       res.json({ success: true, uid, technician: { uid, ...fields } });
       return;
     }
@@ -358,12 +436,18 @@ async function handleManageTechnician(req, res, deps = {}) {
       await auth.updateUser(uid, { disabled: !active });
       if (!active) {
         await auth.revokeRefreshTokens(uid).catch(() => {});
-        await disableTechnicianTokens(uid, db);
+        await disableTechnicianTokens(uid, db, targetCompanyId);
       }
-      await techniciansRef(db).doc(uid).set(
+      await targetTechsRef.doc(uid).set(
         { active, updatedAt: FieldValue.serverTimestamp() },
         { merge: true }
       );
+      if (targetCompanyId.startsWith(TESTER_CLIENT_PREFIX)) {
+        await db.collection('testers').doc(uid).set(
+          { active, updatedAt: FieldValue.serverTimestamp() },
+          { merge: true }
+        );
+      }
       res.json({ success: true, uid, active });
       return;
     }
