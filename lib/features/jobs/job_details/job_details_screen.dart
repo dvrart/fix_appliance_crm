@@ -36,6 +36,54 @@ class JobDetailsScreen extends StatefulWidget {
     this.openDocumentIndex,
   });
 
+  static final List<_JobDetailsScreenState> _activeStack = [];
+
+  /// Открытая прямо сейчас на экране карточка заявки (для голосового ассистента),
+  /// чтобы команды «отправь сообщение» / «позвони» брали именно открытую карточку.
+  static ({
+    String jobId,
+    String clientId,
+    String phone,
+    String name,
+    String clientName,
+    String contactName,
+    String jobSiteName,
+  })? get activeTarget {
+    for (var i = _activeStack.length - 1; i >= 0; i--) {
+      final s = _activeStack[i];
+      if (!s.mounted) continue;
+      final route = ModalRoute.of(s.context);
+      if (route != null && !AppNav.isRouteOnActiveScreen(route)) continue;
+      final ctrl = s._controller;
+      final selected = ctrl.selectedChatContact;
+      final selectedPhone = (selected?.phone ?? '').trim();
+      final phone = selectedPhone.isNotEmpty
+          ? selectedPhone
+          : ctrl.contactPhone.trim();
+      final clientName = Client.stripClientWord(
+        (ctrl.jobData['clientName'] ?? '').toString(),
+      );
+      final selectedName = Client.stripClientWord(selected?.displayName);
+      final contactName = Client.stripClientWord(ctrl.contactName);
+      final name =
+          selectedName.isNotEmpty && !Client.isPlaceholderName(selectedName)
+          ? selectedName
+          : (contactName.isNotEmpty && !Client.isPlaceholderName(contactName)
+                ? contactName
+                : clientName);
+      return (
+        jobId: ctrl.jobId.trim(),
+        clientId: ctrl.clientId.trim(),
+        phone: phone,
+        name: name,
+        clientName: clientName,
+        contactName: contactName,
+        jobSiteName: ctrl.effectiveJobSiteName,
+      );
+    }
+    return null;
+  }
+
   @override
   State<JobDetailsScreen> createState() => _JobDetailsScreenState();
 }
@@ -48,6 +96,8 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
   @override
   void initState() {
     super.initState();
+    JobDetailsScreen._activeStack.remove(this);
+    JobDetailsScreen._activeStack.add(this);
     ErrorLogService.markScreen('Карточка заявки');
     _tabController = TabController(
       length: 3,
@@ -97,7 +147,15 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    JobDetailsScreen._activeStack.remove(this);
+    JobDetailsScreen._activeStack.add(this);
+  }
+
+  @override
   void dispose() {
+    JobDetailsScreen._activeStack.remove(this);
     _controller.removeListener(_onControllerChanged);
     UnsavedNavigationGate.pop(_allowNavigateAway);
     StaleRoutes.unwatchJob(widget.jobId, this);

@@ -802,10 +802,13 @@ IMPORTANT about multi-property clients: one client (landlord or property manager
     try {
       if (name == 'look_at_screen') {
         await _pushScreen(force: true);
+        final openCard = await AssistantTools.describeOpenScreen();
         result = {
           'ok': true,
           'seen': true,
-          'note': 'Снимок текущего экрана отправлен. Ответь по картинке.',
+          'open_card': ?openCard,
+          'note':
+              'Снимок текущего экрана отправлен. Ответь по картинке. Если дальше попросят написать/отправить SMS или позвонить этому клиенту на экране — обязательно передавай job_query="current".',
         };
       } else {
         result = await AssistantTools.handle(name, args);

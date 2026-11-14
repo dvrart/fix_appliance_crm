@@ -158,6 +158,28 @@ void main() {
         ),
         0,
       );
+      expect(
+        AssistantTools.matchScoreForTest(
+          'Ramy Bellamy Rd Kitchener Washer',
+          'amy',
+        ),
+        0,
+      );
+      expect(
+        AssistantTools.matchScoreForTest(
+          'Heather Christopher Kitchener Dishwasher',
+          'her',
+        ),
+        0,
+      );
+      expect(
+        AssistantTools.matchScoreForTest('Amy Smith', 'Эми'),
+        greaterThan(0),
+      );
+      expect(
+        AssistantTools.matchScoreForTest('Amy Smith', 'amy'),
+        100,
+      );
 
       final navKey = GlobalKey<NavigatorState>();
       AppNav.bindTabNavigator(() => navKey.currentState);

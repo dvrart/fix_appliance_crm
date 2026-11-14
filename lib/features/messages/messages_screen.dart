@@ -6,12 +6,15 @@ import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/utils/formatters.dart';
 import '../../models/client.dart';
+import '../../models/job.dart';
 import '../../services/client_service.dart';
 import '../../services/firestore_service.dart';
+import '../../services/job_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/sms_service.dart';
 import 'conversation_screen.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../shared/widgets/appliance_picture.dart';
 import '../../shared/widgets/dispose_on_close.dart';
 import '../../shared/widgets/email_field.dart';
 import '../../shared/widgets/selection_action_bar.dart';
@@ -43,6 +46,7 @@ class _MessagesScreenState extends State<MessagesScreen>
   Map<String, String> _watchedNames = const {};
   StreamSubscription? _configSub;
   late final Stream<List<Client>> _clientsStream;
+  late final Stream<List<Job>> _jobsStream;
   late final Stream<List<SmsMessage>> _smsStream;
   late final bool Function() _dismissSelection;
 
@@ -56,6 +60,7 @@ class _MessagesScreenState extends State<MessagesScreen>
     };
     AppCommands.addSelectionGuard(_dismissSelection);
     _clientsStream = ClientService.streamAll();
+    _jobsStream = JobService.streamAll();
     _smsStream = SmsService.streamAll();
     _configSub = FirestoreService.configRef.snapshots().listen((snap) {
       final data = (snap.data() as Map<String, dynamic>?) ?? {};
@@ -164,102 +169,115 @@ class _MessagesScreenState extends State<MessagesScreen>
         final clients = clientsSnapshot.data ?? [];
         final clientsById = {for (final c in clients) c.id: c};
 
-        return StreamBuilder<List<SmsMessage>>(
-          stream: _smsStream,
-          builder: (context, snapshot) {
-            if (snapshot.hasError) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(
-                    snapshot.error.toString(),
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.black54),
-                  ),
-                ),
-              );
-            }
-            if (!snapshot.hasData &&
-                snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            final conversations = SmsService.buildConversations(snapshot.data ?? [], clients);
-            _allMessages = snapshot.data ?? const [];
-
-            if (conversations.isEmpty) {
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.forum_outlined, size: 80, color: Colors.grey.shade300),
-                    const SizedBox(height: 16),
-                    Text('Нет сообщений'.tr, style: const TextStyle(fontSize: 18, color: Colors.grey)),
-                    const SizedBox(height: 8),
-                    Text(
-                      'SMS и письма от клиентов\nпоявятся здесь'.tr,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.grey),
+        return StreamBuilder<List<Job>>(
+          stream: _jobsStream,
+          builder: (context, jobsSnapshot) {
+            final jobs = jobsSnapshot.data ?? const <Job>[];
+            return StreamBuilder<List<SmsMessage>>(
+              stream: _smsStream,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        snapshot.error.toString(),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.black54),
+                      ),
                     ),
-                  ],
-                ),
-              );
-            }
+                  );
+                }
+                if (!snapshot.hasData &&
+                    snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
-            _idsByKey
-              ..clear()
-              ..addAll({
-                for (final conv in conversations) conv.selectKey: conv.messageIds,
-              });
-            return Stack(
-              fit: StackFit.expand,
-              children: [
-                Positioned.fill(
-                  child: ListView.separated(
-                    key: const PageStorageKey('messages-list'),
-                    controller: _scroll,
-                    itemCount: conversations.length,
-                    separatorBuilder: (_, _) =>
-                        const Divider(height: 1, indent: 72),
-                    itemBuilder: (context, index) {
-                      final conv = conversations[index];
-                      final client =
-                          conv.clientId != null ? clientsById[conv.clientId] : null;
-                      return ValueListenableBuilder<Set<String>>(
-                        key: ValueKey(conv.selectKey),
-                        valueListenable: _selected,
-                        builder: (context, selected, _) {
-                          return _buildConversationTile(
-                            context,
+                final conversations = SmsService.buildConversations(snapshot.data ?? [], clients);
+                _allMessages = snapshot.data ?? const [];
+
+                if (conversations.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.forum_outlined, size: 80, color: Colors.grey.shade300),
+                        const SizedBox(height: 16),
+                        Text('Нет сообщений'.tr, style: const TextStyle(fontSize: 18, color: Colors.grey)),
+                        const SizedBox(height: 8),
+                        Text(
+                          'SMS и письма от клиентов\nпоявятся здесь'.tr,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                _idsByKey
+                  ..clear()
+                  ..addAll({
+                    for (final conv in conversations) conv.selectKey: conv.messageIds,
+                  });
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Positioned.fill(
+                      child: ListView.separated(
+                        key: const PageStorageKey('messages-list'),
+                        controller: _scroll,
+                        itemCount: conversations.length,
+                        separatorBuilder: (_, _) =>
+                            const Divider(height: 1, indent: 72),
+                        itemBuilder: (context, index) {
+                          final conv = conversations[index];
+                          final client =
+                              conv.clientId != null ? clientsById[conv.clientId] : null;
+                          final applianceType = _applianceTypeForConversation(
                             conv,
                             client,
-                            selected.contains(conv.selectKey),
-                            selected.isNotEmpty,
+                            clients,
+                            jobs,
+                          );
+                          return ValueListenableBuilder<Set<String>>(
+                            key: ValueKey(conv.selectKey),
+                            valueListenable: _selected,
+                            builder: (context, selected, _) {
+                              return _buildConversationTile(
+                                context,
+                                conv,
+                                client,
+                                selected.contains(conv.selectKey),
+                                selected.isNotEmpty,
+                                applianceType: applianceType,
+                              );
+                            },
                           );
                         },
-                      );
-                    },
-                  ),
-                ),
-                ValueListenableBuilder<Set<String>>(
-                  valueListenable: _selected,
-                  builder: (context, selected, _) {
-                    if (selected.isEmpty) return const SizedBox.shrink();
-                    return Positioned(
-                      left: 0,
-                      right: 0,
-                      top: 0,
-                      child: SelectionActionBar(
-                        count: selected.length,
-                        onCancel: _clearSelection,
-                        onSelectAll: _selectAllVisible,
-                        onCopy: _copySelected,
-                        onDelete: _deleteSelected,
                       ),
-                    );
-                  },
-                ),
-              ],
+                    ),
+                    ValueListenableBuilder<Set<String>>(
+                      valueListenable: _selected,
+                      builder: (context, selected, _) {
+                        if (selected.isEmpty) return const SizedBox.shrink();
+                        return Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 0,
+                          child: SelectionActionBar(
+                            count: selected.length,
+                            onCancel: _clearSelection,
+                            onSelectAll: _selectAllVisible,
+                            onCopy: _copySelected,
+                            onDelete: _deleteSelected,
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                );
+              },
             );
           },
         );
@@ -293,13 +311,90 @@ class _MessagesScreenState extends State<MessagesScreen>
     );
   }
 
+  String? _applianceTypeForConversation(
+    SmsConversation conv,
+    Client? client,
+    List<Client> clients,
+    List<Job> jobs,
+  ) {
+    if (conv.isWebsite || jobs.isEmpty) return null;
+    final clientIds = <String>{};
+    final phones = <String>{};
+    final jobIds = <String>{};
+
+    final digits = ClientService.normalizePhone(conv.phoneNumber);
+    if (digits.length >= 10) phones.add(digits);
+    if ((conv.clientId ?? '').trim().isNotEmpty) {
+      clientIds.add(conv.clientId!.trim());
+    }
+    if (client != null && client.id.trim().isNotEmpty) {
+      clientIds.add(client.id.trim());
+    }
+    if ((conv.lastMessage.jobId ?? '').trim().isNotEmpty) {
+      jobIds.add(conv.lastMessage.jobId!.trim());
+    }
+
+    final email = SmsService.normalizeEmail(conv.email ?? client?.email ?? '');
+    for (final c in clients) {
+      if (c.isDeleted) continue;
+      final cPhone = ClientService.normalizePhone(c.phone);
+      final matched = clientIds.contains(c.id) ||
+          (cPhone.length >= 10 && phones.contains(cPhone)) ||
+          c.extraPhones.any((p) {
+            final ep = ClientService.normalizePhone(p);
+            return ep.length >= 10 && phones.contains(ep);
+          }) ||
+          c.locations.any(
+            (loc) => loc.contacts.any((ct) {
+              final cp = ClientService.normalizePhone(ct.phone);
+              return cp.length >= 10 && phones.contains(cp);
+            }),
+          ) ||
+          (email.contains('@') &&
+              SmsService.normalizeEmail(c.email ?? '') == email);
+      if (!matched) continue;
+      clientIds.add(c.id);
+      if (cPhone.length >= 10) phones.add(cPhone);
+      for (final ep in c.extraPhones) {
+        final norm = ClientService.normalizePhone(ep);
+        if (norm.length >= 10) phones.add(norm);
+      }
+    }
+
+    final matchedJobs = <String, Job>{};
+    for (final job in jobs) {
+      if (job.isDeleted || job.isMergedDuplicate) continue;
+      final byId = jobIds.contains(job.id);
+      final byClient =
+          job.clientId.trim().isNotEmpty &&
+          clientIds.contains(job.clientId.trim());
+      final cp = ClientService.normalizePhone(job.clientPhone);
+      final sp = ClientService.normalizePhone(job.jobSitePhone ?? '');
+      final byPhone =
+          (cp.length >= 10 && phones.contains(cp)) ||
+          (sp.length >= 10 && phones.contains(sp)) ||
+          job.extraPhones.any((p) {
+            final ep = ClientService.normalizePhone(p);
+            return ep.length >= 10 && phones.contains(ep);
+          });
+      if (byId || byClient || byPhone) {
+        matchedJobs[job.id] = job;
+      }
+    }
+
+    if (matchedJobs.isEmpty) return null;
+    if (matchedJobs.length > 1) return 'Техника';
+    return matchedJobs.values.first.appliancePictureType;
+  }
+
   Widget _buildConversationTile(
     BuildContext context,
     SmsConversation conv,
     Client? client,
     bool selected,
-    bool selecting,
-  ) {
+    bool selecting, {
+    String? applianceType,
+  }) {
     final name = _threadTitle(conv, client) ?? '';
     final isRegular =
         !conv.isWebsite &&
@@ -316,7 +411,9 @@ class _MessagesScreenState extends State<MessagesScreen>
         : last.displayBody;
     final isEmailThread =
         conv.isWebsite || last.isEmail || (conv.hasEmail && !conv.hasSms);
-    final avatar = _MessageChannelAvatar(isEmail: isEmailThread);
+    final avatar = applianceType != null
+        ? AppliancePicture(type: applianceType, size: 40)
+        : _MessageChannelAvatar(isEmail: isEmailThread);
 
     return ColoredBox(
       // Непрочитанное видно самой строкой, а не только цифрой справа: жёлтая

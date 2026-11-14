@@ -724,7 +724,7 @@ class ConversationScreen extends StatefulWidget {
       if (s.widget.embedded && !s.widget.embeddedVisible) continue;
       if (s.widget.websiteInbox) continue;
       final route = ModalRoute.of(s.context);
-      if (route != null && !route.isCurrent) continue;
+      if (route != null && !AppNav.isRouteOnActiveScreen(route)) continue;
       return (
         phone: s._phone.trim(),
         email: s._email.trim(),

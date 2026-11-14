@@ -94,10 +94,38 @@ class AppNav {
   static List<Route<dynamic>> pagesOf(NavigatorState navigator) =>
       _observers[navigator]?.pages ?? const <Route<dynamic>>[];
 
+  /// Проверяет, что маршрут находится наверху активного сейчас навигатора
+  /// (а не в скрытой вкладке [MainScreen] и не перекрыт корневым экраном).
+  static bool isRouteOnActiveScreen(Route<dynamic>? route) {
+    if (route == null || !route.isCurrent || !route.isActive) return false;
+    final nav = route.navigator;
+    if (nav == null) return true;
+    final rootNav = rootNavigatorKey.currentState;
+    if (rootNav != null && rootNav.mounted) {
+      if (identical(nav, rootNav)) return true;
+      if (rootNav.canPop()) return false;
+    }
+    final tabNav = activeTabNavigator;
+    if (tabNav != null) {
+      return identical(nav, tabNav);
+    }
+    return true;
+  }
+
   /// Ключ верхней открытой карточки (`card:job:...`, `card:client:...`, `card:chat:...`),
   /// если сейчас на экране открыта карточка.
   static String? get topCardKey {
-    for (final nav in [rootNavigatorKey.currentState, activeTabNavigator]) {
+    final rootNav = rootNavigatorKey.currentState;
+    if (rootNav != null && rootNav.mounted && rootNav.canPop()) {
+      final pages = pagesOf(rootNav);
+      for (var i = pages.length - 1; i >= 0; i--) {
+        final route = pages[i];
+        if (route.isActive && isCard(route)) {
+          return route.settings.name;
+        }
+      }
+    }
+    for (final nav in [activeTabNavigator, rootNav]) {
       if (nav == null) continue;
       final pages = pagesOf(nav);
       for (var i = pages.length - 1; i >= 0; i--) {

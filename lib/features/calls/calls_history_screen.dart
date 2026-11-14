@@ -5,8 +5,11 @@ import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
 import '../../models/client.dart';
+import '../../models/job.dart';
 import '../../services/client_service.dart';
+import '../../services/job_service.dart';
 import '../../shared/app_nav.dart';
+import '../../shared/widgets/appliance_picture.dart';
 import '../clients/client_details_screen.dart';
 import '../../services/comms_badge_service.dart';
 import '../../services/twilio_service.dart';
@@ -46,6 +49,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
   /// его звонки стояли в списке отдельными строками вперемешку с чужими.
   final Set<String> _expanded = <String>{};
   late final Stream<List<Client>> _clientsStream;
+  late final Stream<List<Job>> _jobsStream;
   late final Stream<List<CallRecord>> _callsStream;
   late final bool Function() _dismissSelection;
   List<String> _visibleIds = const [];
@@ -104,6 +108,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     };
     AppCommands.addSelectionGuard(_dismissSelection);
     _clientsStream = ClientService.streamAll();
+    _jobsStream = JobService.streamAll();
     _callsStream = widget.clientId == null
         ? TwilioService.getAllCalls()
         : TwilioService.streamForClient(
@@ -147,93 +152,180 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     return StreamBuilder<List<Client>>(
       stream: _clientsStream,
       builder: (context, clientsSnap) {
-        final names = _phoneNames(clientsSnap.data ?? const []);
-        return StreamBuilder<List<CallRecord>>(
-          stream: _callsStream,
-          builder: (context, snapshot) {
-            if (snapshot.hasError) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(
-                    snapshot.error.toString(),
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: AppColors.inkMuted),
-                  ),
-                ),
-              );
-            }
-            if (!snapshot.hasData &&
-                snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
+        final clients = clientsSnap.data ?? const <Client>[];
+        final names = _phoneNames(clients);
+        return StreamBuilder<List<Job>>(
+          stream: _jobsStream,
+          builder: (context, jobsSnap) {
+            final jobs = jobsSnap.data ?? const <Job>[];
+            return StreamBuilder<List<CallRecord>>(
+              stream: _callsStream,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        snapshot.error.toString(),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: AppColors.inkMuted),
+                      ),
+                    ),
+                  );
+                }
+                if (!snapshot.hasData &&
+                    snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
-            final calls = snapshot.data ?? [];
-            if (calls.isEmpty) {
-              return Center(
-                child: Text(
-                  'Нет звонков'.tr,
-                  style: TextStyle(color: AppColors.inkMuted, fontSize: 16),
-                ),
-              );
-            }
+                final calls = snapshot.data ?? [];
+                if (calls.isEmpty) {
+                  return Center(
+                    child: Text(
+                      'Нет звонков'.tr,
+                      style: TextStyle(color: AppColors.inkMuted, fontSize: 16),
+                    ),
+                  );
+                }
 
-            _visibleIds = [for (final call in calls) call.id];
-            final groups = _groupByNumber(calls);
-            return Stack(
-              fit: StackFit.expand,
-              children: [
-                Positioned.fill(
-                  child: ListView.builder(
-                  key: const PageStorageKey('calls-list'),
-                  controller: _scroll,
-                  padding: const EdgeInsets.all(16),
-                  itemCount: groups.length,
-                  itemBuilder: (context, index) {
-                    final group = groups[index];
-                    return ValueListenableBuilder<Set<String>>(
-                      key: ValueKey(group.key),
-                      valueListenable: _selected,
-                      builder: (context, selected, _) {
-                        return ValueListenableBuilder<DateTime>(
-                          valueListenable: CommsBadgeService.callsNewSince,
-                          builder: (context, newSince, _) {
-                            return _buildGroupCard(
-                              group,
-                              names,
-                              selected,
-                              newSince,
+                _visibleIds = [for (final call in calls) call.id];
+                final groups = _groupByNumber(calls);
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Positioned.fill(
+                      child: ListView.builder(
+                      key: const PageStorageKey('calls-list'),
+                      controller: _scroll,
+                      padding: const EdgeInsets.all(16),
+                      itemCount: groups.length,
+                      itemBuilder: (context, index) {
+                        final group = groups[index];
+                        final applianceType = _applianceTypeForGroup(
+                          group,
+                          clients,
+                          jobs,
+                        );
+                        return ValueListenableBuilder<Set<String>>(
+                          key: ValueKey(group.key),
+                          valueListenable: _selected,
+                          builder: (context, selected, _) {
+                            return ValueListenableBuilder<DateTime>(
+                              valueListenable: CommsBadgeService.callsNewSince,
+                              builder: (context, newSince, _) {
+                                return _buildGroupCard(
+                                  group,
+                                  names,
+                                  selected,
+                                  newSince,
+                                  applianceType: applianceType,
+                                );
+                              },
                             );
                           },
                         );
                       },
-                    );
-                  },
-                ),
-                ),
-                ValueListenableBuilder<Set<String>>(
-                  valueListenable: _selected,
-                  builder: (context, selected, _) {
-                    if (selected.isEmpty) return const SizedBox.shrink();
-                    return Positioned(
-                      left: 0,
-                      right: 0,
-                      top: 0,
-                      child: SelectionActionBar(
-                        count: selected.length,
-                        onCancel: _clearSelection,
-                        onSelectAll: _selectAllVisible,
-                        onDelete: _deleteSelected,
-                      ),
-                    );
-                  },
-                ),
-              ],
+                    ),
+                    ),
+                    ValueListenableBuilder<Set<String>>(
+                      valueListenable: _selected,
+                      builder: (context, selected, _) {
+                        if (selected.isEmpty) return const SizedBox.shrink();
+                        return Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 0,
+                          child: SelectionActionBar(
+                            count: selected.length,
+                            onCancel: _clearSelection,
+                            onSelectAll: _selectAllVisible,
+                            onDelete: _deleteSelected,
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                );
+              },
             );
           },
         );
       },
     );
+  }
+
+  String? _applianceTypeForGroup(
+    _CallGroup group,
+    List<Client> clients,
+    List<Job> jobs,
+  ) {
+    if (jobs.isEmpty) return null;
+    final call = group.latest;
+    final phone = call.isIncoming ? call.fromNumber : call.toNumber;
+    final digits = ClientService.normalizePhone(phone);
+    final clientIds = <String>{};
+    final phones = <String>{};
+    final jobIds = <String>{};
+
+    if (digits.length >= 10) phones.add(digits);
+    if ((widget.clientId ?? '').trim().isNotEmpty) {
+      clientIds.add(widget.clientId!.trim());
+    }
+    for (final item in group.calls) {
+      final cid = (item.clientId ?? '').trim();
+      if (cid.isNotEmpty) clientIds.add(cid);
+      final jid = (item.createdJobId ?? '').trim();
+      if (jid.isNotEmpty) jobIds.add(jid);
+    }
+
+    for (final client in clients) {
+      if (client.isDeleted) continue;
+      final cPhone = ClientService.normalizePhone(client.phone);
+      final matched = clientIds.contains(client.id) ||
+          (cPhone.length >= 10 && phones.contains(cPhone)) ||
+          client.extraPhones.any((p) {
+            final ep = ClientService.normalizePhone(p);
+            return ep.length >= 10 && phones.contains(ep);
+          }) ||
+          client.locations.any(
+            (loc) => loc.contacts.any((ct) {
+              final cp = ClientService.normalizePhone(ct.phone);
+              return cp.length >= 10 && phones.contains(cp);
+            }),
+          );
+      if (!matched) continue;
+      clientIds.add(client.id);
+      if (cPhone.length >= 10) phones.add(cPhone);
+      for (final ep in client.extraPhones) {
+        final norm = ClientService.normalizePhone(ep);
+        if (norm.length >= 10) phones.add(norm);
+      }
+    }
+
+    final matchedJobs = <String, Job>{};
+    for (final job in jobs) {
+      if (job.isDeleted || job.isMergedDuplicate) continue;
+      final byId = jobIds.contains(job.id);
+      final byClient =
+          job.clientId.trim().isNotEmpty &&
+          clientIds.contains(job.clientId.trim());
+      final cp = ClientService.normalizePhone(job.clientPhone);
+      final sp = ClientService.normalizePhone(job.jobSitePhone ?? '');
+      final byPhone =
+          (cp.length >= 10 && phones.contains(cp)) ||
+          (sp.length >= 10 && phones.contains(sp)) ||
+          job.extraPhones.any((p) {
+            final ep = ClientService.normalizePhone(p);
+            return ep.length >= 10 && phones.contains(ep);
+          });
+      if (byId || byClient || byPhone) {
+        matchedJobs[job.id] = job;
+      }
+    }
+
+    if (matchedJobs.isEmpty) return null;
+    if (matchedJobs.length > 1) return 'Техника';
+    return matchedJobs.values.first.appliancePictureType;
   }
 
   Map<String, String> _phoneNames(List<Client> clients) {
@@ -332,8 +424,9 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     _CallGroup group,
     Map<String, String> names,
     Set<String> selectedIds,
-    DateTime newSince,
-  ) {
+    DateTime newSince, {
+    String? applianceType,
+  }) {
     final call = group.latest;
     final selecting = selectedIds.isNotEmpty;
     final selected = group.ids.every(selectedIds.contains);
@@ -385,6 +478,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
           children: [
             _phoneIcon(
               call: call,
+              applianceType: applianceType,
               selecting: selecting,
               selected: selected,
               onSelect: () => _toggleGroupSelected(group),
@@ -591,6 +685,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
   /// иначе открылась бы карточка звонка, а не клиента.
   Widget _phoneIcon({
     required CallRecord call,
+    String? applianceType,
     required bool selecting,
     required bool selected,
     required VoidCallback onSelect,
@@ -609,21 +704,24 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
           children: [
             Column(
               children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: incoming
-                        ? const Color(0xFF2E7D32)
-                        : const Color(0xFF1565C0),
-                    shape: BoxShape.circle,
+                if (applianceType != null)
+                  AppliancePicture(type: applianceType, size: 44)
+                else
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: incoming
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFF1565C0),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      _directionIcon(call),
+                      color: Colors.white,
+                      size: 22,
+                    ),
                   ),
-                  child: Icon(
-                    _directionIcon(call),
-                    color: Colors.white,
-                    size: 22,
-                  ),
-                ),
                 const SizedBox(height: 4),
                 Text(
                   incoming ? 'Входящий'.tr : 'Исходящий'.tr,

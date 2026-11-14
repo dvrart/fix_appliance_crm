@@ -17,6 +17,7 @@ import '../../../services/settings_service.dart';
 import '../../../services/sms_service.dart';
 import '../../../shared/app_nav.dart';
 import '../../diagnostics/diagnostics_screen.dart';
+import '../../jobs/job_details/job_details_screen.dart';
 import '../../messages/conversation_screen.dart';
 import 'assistant_actions.dart';
 
@@ -134,29 +135,71 @@ class AssistantTools {
         clean == 'chat' ||
         clean == 'this' ||
         clean == 'here' ||
+        clean == 'her' ||
+        clean == 'him' ||
+        clean == 'them' ||
+        clean == 'client' ||
+        clean == 'the client' ||
         clean == 'this client' ||
+        clean == 'current client' ||
+        clean == 'open client' ||
+        clean == 'current job' ||
+        clean == 'open job' ||
+        clean == 'this job' ||
+        clean == 'current card' ||
+        clean == 'open card' ||
+        clean == 'this card' ||
+        clean == 'on screen' ||
         clean == 'current chat' ||
         clean == 'open chat' ||
         clean == 'текущая' ||
         clean == 'текущий' ||
         clean == 'текущему' ||
+        clean == 'текущая карточка' ||
+        clean == 'текущая заявка' ||
         clean == 'открытая' ||
         clean == 'открытый' ||
         clean == 'открытому' ||
+        clean == 'открытая карточка' ||
+        clean == 'открытая заявка' ||
+        clean == 'рабочая карточка' ||
         clean == 'открытый чат' ||
         clean == 'открытая переписка' ||
+        clean == 'на экране' ||
+        clean == 'экран' ||
+        clean == 'карточка' ||
+        clean == 'карточке' ||
+        clean == 'клиенту' ||
+        clean == 'клиентке' ||
+        clean == 'клиент' ||
         clean == 'этот клиент' ||
         clean == 'этому клиенту' ||
+        clean == 'этой клиентке' ||
         clean == 'сюда' ||
         clean == 'в этот чат' ||
         clean == 'эта' ||
         clean == 'эту' ||
         clean == 'этой' ||
         clean == 'этого' ||
-        clean == 'этому';
+        clean == 'этому' ||
+        clean == 'ей' ||
+        clean == 'ему' ||
+        clean == 'ней' ||
+        clean == 'нему' ||
+        clean == 'ним' ||
+        clean == 'им';
   }
 
   static Future<Job?> _resolveOpenScreenJob(List<Job> jobs) async {
+    final activeJob = JobDetailsScreen.activeTarget;
+    if (activeJob != null && activeJob.jobId.isNotEmpty) {
+      for (final job in jobs) {
+        if (job.id == activeJob.jobId) return job;
+      }
+      final fetched = await JobService.getById(activeJob.jobId);
+      if (fetched != null) return fetched;
+    }
+
     final activeChat = ConversationScreen.activeTarget;
     if (activeChat != null) {
       final jid = (activeChat.jobId ?? '').trim();
@@ -350,8 +393,15 @@ class AssistantTools {
       'синтия': 'cynthia',
       'кэтлин': 'kathleen',
       'эми': 'amy',
+      'эмма': 'emma',
+      'эмме': 'emma',
       'анна': 'anna',
+      'анне': 'anna',
+      'аня': 'anna',
+      'ане': 'anna',
       'энн': 'anne',
+      'ева': 'eva',
+      'еве': 'eva',
       'хелен': 'helen',
       'кэтрин': 'katherine',
       'кристина': 'christine',
@@ -545,7 +595,6 @@ class AssistantTools {
     final h = haystack.toLowerCase();
     final q = query.toLowerCase().trim();
     if (q.isEmpty || h.isEmpty) return 0;
-    if (h.contains(q)) return 100;
 
     final queryWords = q
         .split(RegExp(r'[^a-zA-Zа-яА-ЯёЁ0-9]+'))
@@ -557,6 +606,16 @@ class AssistantTools {
         .split(RegExp(r'[^a-zA-Zа-яА-ЯёЁ0-9]+'))
         .where((w) => w.length >= 2)
         .toList();
+    if (queryWords.length == 1) {
+      final single = queryWords.first;
+      if (hayWords.contains(single) ||
+          (single.length >= 4 && hayWords.any((hw) => hw.startsWith(single)))) {
+        return 100;
+      }
+    } else if (h.contains(q)) {
+      return 100;
+    }
+
     final hayPhonetics = hayWords.map(_phonetic).where((p) => p.isNotEmpty).toList();
 
     var matchedWords = 0;
@@ -632,6 +691,30 @@ class AssistantTools {
       if (job.id == query?.trim()) return job;
     }
 
+    // Если на экране открыта карточка заявки и запрос совпадает с ней —
+    // всегда выбираем именно открытую карточку, а не однофамильца/другую заявку.
+    final openScreenJob = await _resolveOpenScreenJob(jobs);
+    if (openScreenJob != null) {
+      final activeJob = JobDetailsScreen.activeTarget;
+      final openHaystack = [
+        openScreenJob.clientName,
+        openScreenJob.contactName,
+        openScreenJob.jobSiteName ?? '',
+        openScreenJob.workAddress,
+        openScreenJob.clientAddress,
+        openScreenJob.contactPhone,
+        openScreenJob.clientPhone,
+        activeJob?.name ?? '',
+        activeJob?.clientName ?? '',
+        activeJob?.contactName ?? '',
+        activeJob?.jobSiteName ?? '',
+        activeJob?.phone ?? '',
+      ].join(' ');
+      if (_matchScore(openHaystack, q) > 0) {
+        return openScreenJob;
+      }
+    }
+
     final digits = q.replaceAll(RegExp(r'\D'), '');
     if (digits.length >= 4) {
       for (final list in [
@@ -647,18 +730,27 @@ class AssistantTools {
       }
     }
 
+    final clients = await ClientService.loadAllOnce();
+    final clientNamesById = <String, String>{
+      for (final c in clients)
+        if (c.id.isNotEmpty && c.fullName.trim().isNotEmpty)
+          c.id: c.fullName.trim(),
+    };
+
     final now = DateTime.now().toUtc();
     Job? bestJob;
     var bestScore = 0;
     for (final job in pool) {
+      final cardClientName = clientNamesById[job.clientId] ?? '';
       final nameScore = _matchScore(
-        '${job.clientName} ${job.contactName} ${job.jobSiteName ?? ''}',
+        '${job.clientName} ${job.contactName} ${job.jobSiteName ?? ''} $cardClientName',
         q,
       );
       final fullHaystack = [
         job.clientName,
         job.contactName,
         job.jobSiteName ?? '',
+        cardClientName,
         job.workAddress,
         job.clientAddress,
         job.city ?? '',
@@ -841,6 +933,32 @@ class AssistantTools {
     return {'found': true, 'job': _jobSummary(job, detailed: true)};
   }
 
+  static Future<Map<String, dynamic>?> describeOpenScreen() async {
+    final jobs = await JobService.loadAllOnce();
+    final target = await _resolveOpenScreenSmsRecipient(jobs);
+    final activeJob = JobDetailsScreen.activeTarget;
+    if (target == null && activeJob == null) return null;
+    final job = target?.job;
+    return {
+      if ((job?.id ?? activeJob?.jobId ?? '').isNotEmpty)
+        'job_id': job?.id ?? activeJob?.jobId,
+      if ((target?.clientId ?? activeJob?.clientId ?? '').isNotEmpty)
+        'client_id': target?.clientId ?? activeJob?.clientId,
+      if ((target?.name ?? activeJob?.name ?? '').isNotEmpty)
+        'client_name': target?.name ?? activeJob?.name,
+      if ((activeJob?.clientName ?? job?.clientName ?? '').isNotEmpty)
+        'owner_name': activeJob?.clientName ?? job?.clientName,
+      if ((activeJob?.jobSiteName ?? job?.jobSiteName ?? '').isNotEmpty)
+        'job_site_name': activeJob?.jobSiteName ?? job?.jobSiteName,
+      if ((target?.phone ?? activeJob?.phone ?? '').isNotEmpty)
+        'phone': target?.phone ?? activeJob?.phone,
+      if (job != null && job.workAddress.trim().isNotEmpty)
+        'address': job.workAddress,
+      if (job != null)
+        'appliance': '${job.applianceType} ${job.applianceBrand}'.trim(),
+    };
+  }
+
   static Future<({
     String phone,
     String name,
@@ -895,7 +1013,49 @@ class AssistantTools {
       );
     }
 
-    // 2. Проверка верхней карточки в навигаторе (`card:chat:...`, `card:client:...`, `card:job:...`).
+    // 2. Живая открытая на экране карточка заявки JobDetailsScreen.
+    final activeJob = JobDetailsScreen.activeTarget;
+    if (activeJob != null) {
+      Job? matchedJob;
+      if (activeJob.jobId.isNotEmpty) {
+        for (final j in jobs) {
+          if (j.id == activeJob.jobId) {
+            matchedJob = j;
+            break;
+          }
+        }
+        matchedJob ??= await JobService.getById(activeJob.jobId);
+      }
+      var phone = activeJob.phone.trim();
+      if (phone.isEmpty && matchedJob != null) {
+        phone = matchedJob.contactPhone.trim();
+      }
+      var name = activeJob.name.trim();
+      if (name.isEmpty && matchedJob != null) {
+        name = matchedJob.contactName.trim();
+      }
+      var cid = activeJob.clientId.trim();
+      if (cid.isEmpty && matchedJob != null) {
+        cid = matchedJob.clientId.trim();
+      }
+      if ((phone.isEmpty || name.isEmpty) && cid.isNotEmpty) {
+        final c = await ClientService.getById(cid);
+        if (c != null) {
+          if (phone.isEmpty) phone = c.phone.trim();
+          if (name.isEmpty) name = c.fullName.trim();
+        }
+      }
+      if (phone.isNotEmpty) {
+        return (
+          phone: phone,
+          name: name,
+          clientId: cid,
+          job: matchedJob,
+        );
+      }
+    }
+
+    // 3. Проверка верхней карточки в навигаторе (`card:chat:...`, `card:client:...`, `card:job:...`).
     final key = AppNav.topCardKey;
     if (key != null && key.isNotEmpty) {
       if (key.startsWith('card:chat:')) {
@@ -929,13 +1089,24 @@ class AssistantTools {
         }
       }
       final openJob = await _resolveOpenScreenJob(jobs);
-      if (openJob != null && openJob.contactPhone.trim().isNotEmpty) {
-        return (
-          phone: openJob.contactPhone.trim(),
-          name: openJob.contactName,
-          clientId: openJob.clientId,
-          job: openJob,
-        );
+      if (openJob != null) {
+        var phone = openJob.contactPhone.trim();
+        var name = openJob.contactName.trim();
+        if ((phone.isEmpty || name.isEmpty) && openJob.clientId.trim().isNotEmpty) {
+          final c = await ClientService.getById(openJob.clientId.trim());
+          if (c != null) {
+            if (phone.isEmpty) phone = c.phone.trim();
+            if (name.isEmpty) name = c.fullName.trim();
+          }
+        }
+        if (phone.isNotEmpty) {
+          return (
+            phone: phone,
+            name: name,
+            clientId: openJob.clientId,
+            job: openJob,
+          );
+        }
       }
     }
     return null;
@@ -953,6 +1124,7 @@ class AssistantTools {
         (rawQuery.isEmpty || _isCurrentScreenKeyword(lowerQuery));
 
     final allJobs = await JobService.loadAllOnce();
+    final openTarget = await _resolveOpenScreenSmsRecipient(allJobs);
 
     Job? job;
     var phone = '';
@@ -960,7 +1132,6 @@ class AssistantTools {
     var clientId = '';
 
     if (wantsOpenScreen) {
-      final openTarget = await _resolveOpenScreenSmsRecipient(allJobs);
       if (openTarget == null) {
         return {
           'ok': false,
@@ -982,14 +1153,37 @@ class AssistantTools {
       recipientName = job?.contactName ?? '';
       clientId = job?.clientId ?? '';
     } else if (rawQuery.isNotEmpty) {
-      job = await resolveJob(
-        rawQuery,
-        includeClosed: true,
-        fallbackToNextWhenEmpty: false,
-      );
-      phone = job?.contactPhone.trim() ?? '';
-      recipientName = job?.contactName ?? '';
-      clientId = job?.clientId ?? '';
+      final activeJob = JobDetailsScreen.activeTarget;
+      final openHaystack = openTarget == null
+          ? ''
+          : [
+              openTarget.name,
+              openTarget.phone,
+              openTarget.job?.clientName ?? '',
+              openTarget.job?.contactName ?? '',
+              openTarget.job?.jobSiteName ?? '',
+              openTarget.job?.workAddress ?? '',
+              openTarget.job?.clientAddress ?? '',
+              activeJob?.name ?? '',
+              activeJob?.clientName ?? '',
+              activeJob?.contactName ?? '',
+              activeJob?.jobSiteName ?? '',
+            ].join(' ');
+      if (openTarget != null && _matchScore(openHaystack, rawQuery) > 0) {
+        phone = openTarget.phone;
+        recipientName = openTarget.name;
+        clientId = openTarget.clientId;
+        job = openTarget.job;
+      } else {
+        job = await resolveJob(
+          rawQuery,
+          includeClosed: true,
+          fallbackToNextWhenEmpty: false,
+        );
+        phone = job?.contactPhone.trim() ?? '';
+        recipientName = job?.contactName ?? '';
+        clientId = job?.clientId ?? '';
+      }
     } else if (explicitPhone.isNotEmpty) {
       job = await resolveJob(
         explicitPhone,
