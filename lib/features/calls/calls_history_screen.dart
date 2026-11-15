@@ -453,16 +453,27 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
       phone: phone,
     );
 
+    // Развёрнутый номер выделяется вместе со своими звонками: карточка
+    // получает рамку цвета метки «N звонков», и эта рамка охватывает и
+    // строку контакта, и раскрытый список под ней (просьба FIX, 14.11.2026).
     final card = Card(
       margin: const EdgeInsets.only(bottom: 8),
       color: selected
           ? AppColors.selectedCard
+          : expanded
+          ? AppColors.tint(const Color(0xFF1565C0))
           : isNew
           ? AppColors.accent.withValues(alpha: 0.18)
           : AppColors.card,
       elevation: 0.6,
       shadowColor: Colors.transparent,
-      shape: isNew
+      clipBehavior: expanded ? Clip.antiAlias : Clip.none,
+      shape: expanded
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: const BorderSide(color: Color(0xFF1565C0), width: 1.4),
+            )
+          : isNew
           ? RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
               side: BorderSide(color: AppColors.accent, width: 1.4),
@@ -750,8 +761,10 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     );
   }
 
-  /// Раскрытый номер — отдельная секция, а не продолжение строки: своя
-  /// рамка и чередование серый / бежевый, чтобы список читался как список.
+  /// Раскрытый номер — продолжение строки контакта внутри общей рамки
+  /// карточки: рамку по бокам даёт сама карточка, сверху список звонков
+  /// отделяет тонкая полоска, а чередование серый / бежевый сохранено,
+  /// чтобы список читался как список.
   Widget _expandedCalls(
     _CallGroup group,
     String? name,
@@ -759,12 +772,10 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     bool selecting,
   ) {
     return Container(
-      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFD6CBB8)),
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: Color(0x331565C0))),
       ),
-      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           for (var i = 0; i < group.calls.length; i++) ...[
