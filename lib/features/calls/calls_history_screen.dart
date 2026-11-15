@@ -18,6 +18,17 @@ import '../care_plan/care_plan_widgets.dart';
 import 'call_review_page.dart';
 import 'dial_pad_screen.dart';
 
+/// Номер арендатора → данные звонков с объекта: имя и техника арендатора,
+/// а также владелец, которого показываем в шапке списка.
+typedef _SiteInfo = ({
+  String name,
+  String appliance,
+  String ownerName,
+  String ownerPhone,
+  String ownerClientId,
+  String sitePhone,
+});
+
 /// История входящих и исходящих звонков Twilio.
 class CallsHistoryScreen extends StatefulWidget {
   final bool embedded;
@@ -84,10 +95,20 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     _setSelected(next);
   }
 
+  /// Раскрыт только один номер: тап по другому закрывает предыдущий
+  /// (просьба FIX, 14.11.2026).
   void _toggleExpanded(String key) {
     setState(() {
-      if (!_expanded.add(key)) _expanded.remove(key);
+      final wasOpen = _expanded.contains(key);
+      _expanded.clear();
+      if (!wasOpen) _expanded.add(key);
     });
+  }
+
+  /// Закрыть все раскрытые номера (перед открытием карточки одного звонка).
+  void _collapseAll() {
+    if (_expanded.isEmpty) return;
+    setState(_expanded.clear);
   }
 
   void _selectAllVisible() => _setSelected({..._visibleIds});
@@ -158,6 +179,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
           stream: _jobsStream,
           builder: (context, jobsSnap) {
             final jobs = jobsSnap.data ?? const <Job>[];
+            final tenantSites = _tenantSites(jobs, clients);
             return StreamBuilder<List<CallRecord>>(
               stream: _callsStream,
               builder: (context, snapshot) {
@@ -219,6 +241,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                                   selected,
                                   newSince,
                                   applianceType: applianceType,
+                                  tenantSites: tenantSites,
                                 );
                               },
                             );
@@ -342,6 +365,10 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
 
     for (final client in clients) {
       add(client.phone, client.fullName);
+      // Дополнительные номера того же клиента — то же имя.
+      for (final extra in client.extraPhones) {
+        add(extra, client.fullName);
+      }
       for (final location in client.locations) {
         for (final contact in location.contacts) {
           add(
@@ -352,6 +379,52 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
       }
     }
     return names;
+  }
+
+  /// Номер арендатора → данные объекта и владельца по заявкам: jobSitePhone
+  /// отличается от телефона владельца — значит, с номера звонил арендатор.
+  /// В шапке по этому номеру показывается сам клиент (владелец), а имя
+  /// арендатора с техникой — в строках его звонков (просьба FIX, 14.11.2026).
+  Map<String, _SiteInfo> _tenantSites(List<Job> jobs, List<Client> clients) {
+    final byId = <String, Client>{
+      for (final client in clients) client.id: client,
+    };
+    final result = <String, _SiteInfo>{};
+    for (final job in jobs) {
+      if (job.isDeleted || job.isMergedDuplicate) continue;
+      final site = ClientService.normalizePhone(job.jobSitePhone ?? '');
+      if (site.length < 10) continue;
+      final owner = ClientService.normalizePhone(job.clientPhone);
+      if (owner.length >= 10 && owner == site) continue;
+      if (result.containsKey(site)) continue;
+
+      final client = byId[job.clientId];
+      final ownerName = Client.stripClientWord(
+        client != null && !Client.isPlaceholderName(client.fullName)
+            ? client.fullName
+            : job.clientName,
+      );
+      final ownerPhone =
+          (client != null && client.phone.trim().isNotEmpty)
+          ? client.phone
+          : job.clientPhone;
+      final rawSiteName = Client.stripClientWord(job.jobSiteName);
+      final siteName =
+          rawSiteName.isNotEmpty && !Client.isPlaceholderName(rawSiteName)
+          ? rawSiteName
+          : 'Арендатор'.tr;
+      result[site] = (
+        name: siteName,
+        appliance: job.appliancePictureType,
+        ownerName: ownerName,
+        ownerPhone: ownerPhone,
+        ownerClientId: job.clientId,
+        sitePhone: (job.jobSitePhone ?? '').trim().isEmpty
+            ? site
+            : job.jobSitePhone!,
+      );
+    }
+    return result;
   }
 
   /// Новым считается входящий, которого не было, когда мастер последний раз
@@ -396,12 +469,18 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     return [for (final key in order) byKey[key]!];
   }
 
-  String? _extractCallName(CallRecord call) {
-    final extracted = <String, dynamic>{
+  /// Разбор разговора: итоговые данные из extractedData и живой разбор
+  /// aiReception.extracted, как это делает карточка звонка.
+  Map<String, dynamic> _callExtracted(CallRecord call) {
+    return {
       ...?call.extractedData,
       if (call.aiReception?['extracted'] is Map)
         ...Map<String, dynamic>.from(call.aiReception!['extracted'] as Map),
     };
+  }
+
+  String? _extractCallName(CallRecord call) {
+    final extracted = _callExtracted(call);
     for (final key in const [
       'client_name',
       'clientName',
@@ -426,6 +505,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     Set<String> selectedIds,
     DateTime newSince, {
     String? applianceType,
+    required Map<String, _SiteInfo> tenantSites,
   }) {
     final call = group.latest;
     final selecting = selectedIds.isNotEmpty;
@@ -445,11 +525,24 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     final canRetryAi = call.aiStatus == 'error' && (hasRecording || connected);
     final isRetrying = _retryingCallIds.contains(call.id);
     final phone = isIncoming ? call.fromNumber : call.toNumber;
+    // Если с номера звонил арендатор, в шапке — сам клиент (владелец):
+    // его имя и телефон. Имя арендатора остаётся в строках его звонков.
+    final site = tenantSites[ClientService.normalizePhone(phone)];
+    final ownerName = site == null
+        ? null
+        : (site.ownerName.isNotEmpty &&
+              !Client.isPlaceholderName(site.ownerName)
+            ? site.ownerName
+            : null);
     final name = widget.contactName ??
+        ownerName ??
         names[ClientService.normalizePhone(phone)] ??
         _extractCallName(call);
+    final displayPhone = site != null && site.ownerPhone.trim().isNotEmpty
+        ? site.ownerPhone
+        : phone;
     final isRegular = ClientService.isRegularClient(
-      clientId: call.clientId,
+      clientId: site?.ownerClientId ?? call.clientId,
       phone: phone,
     );
 
@@ -467,7 +560,9 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
           : AppColors.card,
       elevation: 0.6,
       shadowColor: Colors.transparent,
-      clipBehavior: expanded ? Clip.antiAlias : Clip.none,
+      // Обрезка нужна и во время сворачивания: строки списка достают до
+      // края карточки, а её углы скруглены.
+      clipBehavior: multi ? Clip.antiAlias : Clip.none,
       shape: expanded
           ? RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
@@ -494,9 +589,9 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
               selected: selected,
               onSelect: () => _toggleGroupSelected(group),
               onOpenClient: () => _openClientCard(
-                phone: phone,
+                phone: displayPhone,
                 name: name,
-                clientId: call.clientId,
+                clientId: site?.ownerClientId ?? call.clientId,
               ),
             ),
             Expanded(
@@ -508,11 +603,13 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
             _toggleGroupSelected(group);
             return;
           }
-          // Один звонок открывается сразу: разворачивать нечего.
+          // Один звонок открывается сразу: разворачивать нечего, но
+          // раскрытые до этого номера закрываются.
           if (multi) {
             _toggleExpanded(group.key);
             return;
           }
+          _collapseAll();
           CallReviewPage.open(
             context,
             callId: call.id,
@@ -587,10 +684,10 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                         ],
                       ],
                     ),
-                    if (name != null && phone.trim().isNotEmpty) ...[
+                    if (name != null && displayPhone.trim().isNotEmpty) ...[
                       const SizedBox(height: 2),
                       Text(
-                        phone,
+                        displayPhone,
                         style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
                       ),
                     ],
@@ -684,8 +781,18 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
           ],
         ),
           ),
-          if (multi && expanded)
-            _expandedCalls(group, name, selectedIds, selecting),
+          if (multi)
+            _ExpandedPanel(
+              expanded: expanded,
+              builder: (context, entrance) => _expandedCalls(
+                group,
+                name,
+                selectedIds,
+                selecting,
+                entrance,
+                tenantSites,
+              ),
+            ),
         ],
       ),
     );
@@ -763,32 +870,47 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
 
   /// Раскрытый номер — продолжение строки контакта внутри общей рамки
   /// карточки: рамку по бокам даёт сама карточка, сверху список звонков
-  /// отделяет тонкая полоска, а чередование серый / бежевый сохранено,
-  /// чтобы список читался как список.
+  /// отделяет тонкая полоска, строки в голубых тонах продолжают подсветку
+  /// строки контакта, а чередование оттенков сохранено, чтобы список
+  /// читался как список.
   Widget _expandedCalls(
     _CallGroup group,
     String? name,
     Set<String> selectedIds,
     bool selecting,
+    Animation<double> entrance,
+    Map<String, _SiteInfo> tenantSites,
   ) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
       decoration: const BoxDecoration(
         border: Border(top: BorderSide(color: Color(0x331565C0))),
       ),
       child: Column(
         children: [
-          for (var i = 0; i < group.calls.length; i++) ...[
-            if (i > 0)
-              const Divider(height: 1, thickness: 1, color: Color(0xFFE4D9C8)),
-            _groupCallRow(
-              group.calls[i],
-              name,
-              selectedIds,
-              selecting,
-              stripe: i.isOdd,
+          for (var i = 0; i < group.calls.length; i++)
+            _StaggeredRow(
+              entrance: entrance,
+              index: i,
+              total: group.calls.length,
+              child: Column(
+                children: [
+                  if (i > 0)
+                    const Divider(
+                      height: 1,
+                      thickness: 1,
+                      color: Color(0xFFD9E4F0),
+                    ),
+                  _groupCallRow(
+                    group.calls[i],
+                    name,
+                    selectedIds,
+                    selecting,
+                    stripe: i.isOdd,
+                    tenantSites: tenantSites,
+                  ),
+                ],
+              ),
             ),
-          ],
         ],
       ),
     );
@@ -796,17 +918,20 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
 
   /// Один звонок внутри раскрытого номера: когда, сколько длился и чем
   /// кончился. Открывает ту же карточку звонка, что и строка списка.
+  /// Если звонил арендатор — после длительности иконка техники и его имя.
   Widget _groupCallRow(
     CallRecord call,
     String? name,
     Set<String> selectedIds,
     bool selecting, {
     bool stripe = false,
+    Map<String, _SiteInfo> tenantSites = const {},
   }) {
     final (Color statusColor, String statusText) = _statusInfo(call);
     final duration = call.durationSeconds != null
         ? '${call.durationSeconds! ~/ 60}:${(call.durationSeconds! % 60).toString().padLeft(2, '0')}'
         : '-';
+    final site = _tenantSiteForCall(call, tenantSites);
     return InkWell(
       onLongPress: () => _toggleSelected(call.id),
       onTap: () {
@@ -824,7 +949,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
       child: Container(
         color: selectedIds.contains(call.id)
             ? const Color(0xFFE8EEF4)
-            : (stripe ? const Color(0xFFF3E6D0) : const Color(0xFFF4F1EC)),
+            : (stripe ? const Color(0xFFEAF2FB) : const Color(0xFFF5F9FE)),
         padding: const EdgeInsets.fromLTRB(16, 9, 12, 9),
         child: Row(
           children: [
@@ -837,13 +962,23 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: Text(
-                call.startTime != null
-                    ? '${Formatters.formatDateTime(call.startTime)} • $duration'
-                    : duration,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 13),
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      call.startTime != null
+                          ? '${Formatters.formatDateTime(call.startTime)} • $duration'
+                          : duration,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  if (site != null) ...[
+                    const SizedBox(width: 8),
+                    _tenantChip(site.name, site.appliance, site.phone),
+                  ],
+                ],
               ),
             ),
             Text(
@@ -856,6 +991,85 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Арендатор звонил с этого номера — его имя, телефон и техника с объекта.
+  ({String name, String appliance, String phone})? _tenantSiteForCall(
+    CallRecord call,
+    Map<String, _SiteInfo> tenantSites,
+  ) {
+    if (!call.isIncoming) return null;
+    final digits = ClientService.normalizePhone(call.fromNumber);
+    if (digits.length >= 10) {
+      final fromJobs = tenantSites[digits];
+      if (fromJobs != null) {
+        return (
+          name: fromJobs.name,
+          appliance: fromJobs.appliance,
+          phone: fromJobs.sitePhone,
+        );
+      }
+    }
+    // Заявки по номеру ещё нет — берём данные из разбора разговора ИИ.
+    final extracted = _callExtracted(call);
+    final sitePhone = ClientService.normalizePhone(
+      (extracted['contact_on_site_phone'] ?? '').toString(),
+    );
+    final siteName = Client.stripClientWord(
+      extracted['contact_on_site_name']?.toString(),
+    );
+    final isSiteCall = (extracted['has_job_site'] == true) &&
+        (sitePhone.length < 10 || sitePhone == digits);
+    if (!isSiteCall ||
+        siteName.isEmpty ||
+        Client.isPlaceholderName(siteName)) {
+      return null;
+    }
+    final appliance = (extracted['appliance_type'] ?? '').toString().trim();
+    return (
+      name: siteName,
+      appliance: appliance.isEmpty ? 'Техника' : appliance,
+      phone: call.fromNumber,
+    );
+  }
+
+  /// Плашка «техника + имя арендатора и его номер» в строке звонка.
+  Widget _tenantChip(String name, String appliance, String phone) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1565C0).withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AppliancePicture(type: appliance, size: 16),
+          const SizedBox(width: 5),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 110),
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1565C0),
+              ),
+            ),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            Formatters.formatPhone(phone),
+            style: const TextStyle(
+              fontSize: 10,
+              color: Color(0xFF4A7AAE),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -956,4 +1170,141 @@ class _CallGroup {
   CallRecord get latest => calls.first;
 
   List<String> get ids => [for (final call in calls) call.id];
+}
+
+/// Мягкое раскрытие списка звонков номера: панель плавно растёт вниз, а
+/// строки появляются одна за другой. В свёрнутом виде панель остаётся в
+/// дереве с нулевой высотой, чтобы и закрытие анимировалось так же мягко.
+class _ExpandedPanel extends StatefulWidget {
+  final bool expanded;
+  final Widget Function(BuildContext context, Animation<double> entrance)
+      builder;
+
+  const _ExpandedPanel({
+    required this.expanded,
+    required this.builder,
+  });
+
+  @override
+  State<_ExpandedPanel> createState() => _ExpandedPanelState();
+}
+
+class _ExpandedPanelState extends State<_ExpandedPanel>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 420),
+  );
+  late final CurvedAnimation _entrance = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeInOutCubic,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.expanded) _controller.value = 1;
+  }
+
+  @override
+  void didUpdateWidget(covariant _ExpandedPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.expanded == oldWidget.expanded) return;
+    if (widget.expanded) {
+      _controller.forward(from: 0);
+    } else {
+      _controller.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _entrance.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _entrance,
+      child: widget.builder(context, _entrance),
+      builder: (context, child) => ClipRect(
+        child: Align(
+          alignment: Alignment.topCenter,
+          heightFactor: _entrance.value,
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+/// Строка раскрытого списка появляется со своей задержкой: каждая следующая
+/// чуть позже предыдущей — звонки «выплывают» один за другим.
+class _StaggeredRow extends StatefulWidget {
+  final Animation<double> entrance;
+  final int index;
+  final int total;
+  final Widget child;
+
+  const _StaggeredRow({
+    required this.entrance,
+    required this.index,
+    required this.total,
+    required this.child,
+  });
+
+  @override
+  State<_StaggeredRow> createState() => _StaggeredRowState();
+}
+
+class _StaggeredRowState extends State<_StaggeredRow> {
+  late CurvedAnimation _curve;
+  late Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _setUp();
+  }
+
+  @override
+  void didUpdateWidget(covariant _StaggeredRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.entrance != widget.entrance ||
+        oldWidget.index != widget.index ||
+        oldWidget.total != widget.total) {
+      _curve.dispose();
+      _setUp();
+    }
+  }
+
+  void _setUp() {
+    final steps = widget.total < 2 ? 2 : widget.total;
+    final start = (widget.index / steps) * 0.55;
+    final end = ((widget.index + 1) / steps) * 0.55 + 0.45;
+    _curve = CurvedAnimation(
+      parent: widget.entrance,
+      curve: Interval(start, end, curve: Curves.easeOut),
+    );
+    _slide = Tween<Offset>(
+      begin: const Offset(0, -0.3),
+      end: Offset.zero,
+    ).animate(_curve);
+  }
+
+  @override
+  void dispose() {
+    _curve.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _curve,
+      child: SlideTransition(position: _slide, child: widget.child),
+    );
+  }
 }
