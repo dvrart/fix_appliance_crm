@@ -49,6 +49,7 @@ class CarePlanService {
 
   static StreamSubscription<QuerySnapshot>? _plansSub;
   static StreamSubscription<QuerySnapshot>? _appliancesSub;
+  static String? _boundScopeKey;
   static bool _started = false;
   static String _syncedLabels = '';
 
@@ -65,15 +66,21 @@ class CarePlanService {
     if (_started) return;
     _started = true;
     AuthService.user.addListener(_bindUser);
+    AuthService.roleRevision.addListener(_bindUser);
     _bindUser();
   }
 
   static void _bindUser() {
-    if (AuthService.user.value == null) {
+    final u = AuthService.user.value;
+    if (u == null) {
+      _boundScopeKey = null;
       _cancel();
       return;
     }
-    if (_plansSub != null) return;
+    final nextKey = '${u.uid}|$kCompanyId';
+    if (_plansSub != null && _boundScopeKey == nextKey) return;
+    _cancel();
+    _boundScopeKey = nextKey;
     _plansSub = plansRef.snapshots().listen(
       _onPlans,
       onError: (Object error) => debugPrint('CarePlanService plans: $error'),

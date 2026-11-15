@@ -26,6 +26,7 @@ class AuthService {
 
   static final ValueNotifier<User?> user =
       ValueNotifier<User?>(_safeCurrentUser());
+  static final ValueNotifier<int> roleRevision = ValueNotifier<int>(0);
 
   static String _cachedIdToken = '';
   static DateTime _cachedAt = DateTime.fromMillisecondsSinceEpoch(0);

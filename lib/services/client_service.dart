@@ -9,6 +9,7 @@ import '../core/constants.dart';
 import '../core/utils/bilingual_search.dart';
 import '../models/client.dart';
 import '../models/location.dart';
+import 'auth_service.dart';
 import 'care_plan_service.dart';
 import 'firestore_service.dart';
 import 'client_job_sync.dart';
@@ -16,7 +17,7 @@ import 'network_status_service.dart';
 
 /// Сервис для работы с клиентами
 class ClientService {
-  static final _ref = FirestoreService.clientsRef;
+  static CollectionReference get _ref => FirestoreService.clientsRef;
 
   /// Счётчик изменений меток постоянных клиентов — для мгновенного обновления
   /// звёздочки в списках заявок, звонков и сообщений без лишних подписок.
@@ -186,38 +187,76 @@ class ClientService {
   }
 
   static StreamSubscription<QuerySnapshot>? _allSub;
+  static String? _allScopeKey;
   static List<Client>? _allLatest;
   static final Set<MultiStreamController<List<Client>>> _allListeners = {};
+  static bool _watchingAuth = false;
+
+  static String get _currentScopeKey =>
+      '$kCompanyId:${AuthService.user.value?.uid ?? ''}';
+
+  static void _ensureAuthWatch() {
+    if (_watchingAuth) return;
+    _watchingAuth = true;
+    AuthService.user.addListener(_onAuthChanged);
+    AuthService.roleRevision.addListener(_onAuthChanged);
+  }
+
+  static void _onAuthChanged() {
+    final nextKey = _currentScopeKey;
+    if (_allScopeKey == nextKey) return;
+    _allSub?.cancel();
+    _allSub = null;
+    _allLatest = null;
+    _allScopeKey = nextKey;
+    invalidateCache();
+    if (_allListeners.isNotEmpty) {
+      _openAllSub();
+    }
+  }
+
+  static void _openAllSub() {
+    _allScopeKey = _currentScopeKey;
+    _allSub = _ref.snapshots().listen(
+      (snapshot) {
+        final list = snapshot.docs
+            .map(
+              (doc) =>
+                  Client.fromMap(doc.data() as Map<String, dynamic>, doc.id),
+            )
+            .where((client) => !client.isDeleted)
+            .toList();
+        syncRegularFromClients(list);
+        _allLatest = list;
+        for (final listener in _allListeners.toList()) {
+          listener.add(list);
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        for (final listener in _allListeners.toList()) {
+          listener.addError(error, stack);
+        }
+      },
+    );
+  }
 
   /// Стрим всех клиентов
   static Stream<List<Client>> streamAll() {
+    _ensureAuthWatch();
     return Stream<List<Client>>.multi((controller) {
+      if (_allScopeKey != null && _allScopeKey != _currentScopeKey) {
+        _allSub?.cancel();
+        _allSub = null;
+        _allLatest = null;
+      }
       final cached = _allLatest;
       if (cached != null) {
         controller.add(cached);
       }
       _allListeners.add(controller);
-      _allSub ??= _ref.snapshots().listen(
-        (snapshot) {
-          final list = snapshot.docs
-              .map(
-                (doc) =>
-                    Client.fromMap(doc.data() as Map<String, dynamic>, doc.id),
-              )
-              .where((client) => !client.isDeleted)
-              .toList();
-          syncRegularFromClients(list);
-          _allLatest = list;
-          for (final listener in _allListeners.toList()) {
-            listener.add(list);
-          }
-        },
-        onError: (Object error, StackTrace stack) {
-          for (final listener in _allListeners.toList()) {
-            listener.addError(error, stack);
-          }
-        },
-      );
+      if (_allSub == null) {
+        _openAllSub();
+      }
       controller.onCancel = () async {
         _allListeners.remove(controller);
         if (_allListeners.isEmpty) {

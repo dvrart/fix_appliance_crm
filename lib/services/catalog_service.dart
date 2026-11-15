@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../core/constants.dart';
 import 'firestore_service.dart';
 import 'network_status_service.dart';
 
@@ -44,8 +45,13 @@ class CatalogService {
   /// Один раз заполняет документ значениями по умолчанию, если он ещё пуст,
   /// чтобы дальнейшие добавления пользователя просто дополняли этот список.
   static Future<void>? _seedFuture;
+  static String? _seededCompanyId;
 
   static Future<void> _ensureSeeded() {
+    if (_seededCompanyId != kCompanyId) {
+      _seededCompanyId = kCompanyId;
+      _seedFuture = null;
+    }
     _seedFuture ??= _seed();
     return _seedFuture!;
   }

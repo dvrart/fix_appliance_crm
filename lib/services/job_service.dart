@@ -22,7 +22,7 @@ import '../shared/widgets/call_transcript_chat.dart';
 
 /// Сервис для работы с заявками
 class JobService {
-  static final _ref = FirestoreService.jobsRef;
+  static CollectionReference get _ref => FirestoreService.jobsRef;
 
   static Query get _scopedRef => TechnicianService.isTechnician
       ? _ref.where('assignedTo', isEqualTo: TechnicianService.currentUid)
@@ -34,13 +34,14 @@ class JobService {
   static final Set<MultiStreamController<List<Job>>> _allListeners = {};
 
   static String get _currentScopeKey => TechnicianService.isTechnician
-      ? 'tech:${TechnicianService.currentUid}'
-      : 'owner';
+      ? 'tech:$kCompanyId:${TechnicianService.currentUid}'
+      : 'owner:$kCompanyId:${AuthService.user.value?.uid ?? ''}';
 
   static void _ensureAuthWatch() {
     if (_watchingAuth) return;
     _watchingAuth = true;
     AuthService.user.addListener(_onAuthChanged);
+    AuthService.roleRevision.addListener(_onAuthChanged);
   }
 
   static bool _watchingAuth = false;

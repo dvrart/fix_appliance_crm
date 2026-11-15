@@ -230,6 +230,7 @@ class StatusService {
   ];
 
   static Future<void>? _seedFuture;
+  static String? _seededCompanyId;
 
   static bool isBuiltin(String status) => builtins.contains(status);
 
@@ -286,6 +287,10 @@ class StatusService {
   }
 
   static Future<void> _ensureSeeded() {
+    if (_seededCompanyId != kCompanyId) {
+      _seededCompanyId = kCompanyId;
+      _seedFuture = null;
+    }
     _seedFuture ??= _seed();
     return _seedFuture!;
   }

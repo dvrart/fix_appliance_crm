@@ -2333,10 +2333,23 @@ async function takePendingCellCall(callSid, docId = 'pending_cell_call', targetC
   }
 }
 
-async function takePendingTesterCellCall(callSid) {
+async function takePendingTesterCellCall(callSid, fromPhone = '') {
   try {
-    const testersSnap = await db.collection('testers').where('active', '==', true).get();
-    for (const doc of testersSnap.docs) {
+    const testersSnap = await db.collection('testers').get();
+    const activeDocs = testersSnap.docs.filter((d) => (d.data() || {}).active !== false);
+    const normalizedFrom = callRoute.normalizePhone(fromPhone);
+    // Сначала проверяем тестировщиков, у которых привязан именно этот сотовый номер (From).
+    const matchedByPhone = [];
+    const others = [];
+    for (const doc of activeDocs) {
+      const data = doc.data() || {};
+      if (normalizedFrom && data.phone && callRoute.sameNumber(data.phone, normalizedFrom)) {
+        matchedByPhone.push(doc);
+      } else {
+        others.push(doc);
+      }
+    }
+    for (const doc of [...matchedByPhone, ...others]) {
       const data = doc.data() || {};
       const isSubTech = data.role === 'technician' && Boolean(data.parentCompanyId);
       const testerCompanyId = isSubTech
@@ -2345,6 +2358,19 @@ async function takePendingTesterCellCall(callSid) {
       const docId = isSubTech ? `pending_cell_call_${doc.id}` : 'pending_cell_call';
       const pending = await takePendingCellCall(callSid, docId, testerCompanyId);
       if (pending) {
+        // Если номер SIM тестировщика ещё не был сохранён в его профиле — привязываем автоматически.
+        if (normalizedFrom && !callRoute.sameNumber(data.phone || '', normalizedFrom)) {
+          await doc.ref.set({ phone: normalizedFrom }, { merge: true }).catch(() => {});
+          if (!isSubTech) {
+            await db
+              .collection('companies')
+              .doc(testerCompanyId)
+              .collection('settings')
+              .doc('config')
+              .set({ masterCellNumber: normalizedFrom }, { merge: true })
+              .catch(() => {});
+          }
+        }
         return {
           ...pending,
           testerUid: doc.id,
@@ -2367,36 +2393,50 @@ async function takePendingTesterCellCall(callSid) {
 async function handleCellBridge(req, res, routing) {
   if (isTesterTwilioNumber(req.body.To)) {
     const callSid = req.body.CallSid;
-    const testerPending = await takePendingTesterCellCall(callSid);
-    if (testerPending) {
-      console.log(
-        `cellBridge tester=${testerPending.testerUid} ${callSid}: cell -> ${testerPending.phone}${testerPending.jobId ? ` job=${testerPending.jobId}` : ''}`
-      );
-      await logCall(
-        callSid,
-        {
-          fromNumber: TESTER_TWILIO_PHONE_NUMBER,
-          toNumber: testerPending.phone,
-          direction: 'outbound',
-          via: 'cell',
-          status: 'in-progress',
-          twilioTime: req.body.Timestamp || req.body.StartTime,
-          ...(testerPending.jobId ? { jobId: testerPending.jobId } : {}),
-          testerId: testerPending.testerUid,
-        },
-        testerPending.testerCompanyId
-      );
-      sendTwiml(
-        res,
-        twimlDialPstn(
-          req,
-          testerPending.phone,
-          TESTER_TWILIO_PHONE_NUMBER,
-          testerPending.testerCompanyId
-        )
-      );
+    const testerPending = await takePendingTesterCellCall(callSid, req.body.From);
+    if (!testerPending) {
+      const attempt = Number(req.query && req.query.cellWait) || 0;
+      if (attempt < CELL_BRIDGE_WAITS) {
+        sendTwiml(
+          res,
+          callRoute.twimlWaitForPending(
+            callRoute.withQuery(functionUrl(req, 'incomingCall'), { cellWait: attempt + 1 })
+          )
+        );
+        return true;
+      }
+      console.warn(`cellBridge tester ${callSid}: cell=${req.body.From} called ${req.body.To}, no pending destination`);
+      sendTwiml(res, callRoute.twimlCellBridgeLost());
       return true;
     }
+    console.log(
+      `cellBridge tester=${testerPending.testerUid} ${callSid}: cell(${req.body.From}) -> ${testerPending.phone}${testerPending.jobId ? ` job=${testerPending.jobId}` : ''}`
+    );
+    await logCall(
+      callSid,
+      {
+        fromNumber: TESTER_TWILIO_PHONE_NUMBER,
+        toNumber: testerPending.phone,
+        direction: 'outbound',
+        via: 'cell',
+        status: 'in-progress',
+        twilioTime: req.body.Timestamp || req.body.StartTime,
+        ...(testerPending.jobId ? { jobId: testerPending.jobId } : {}),
+        ...(testerPending.isSubTech ? { technicianId: testerPending.testerUid } : {}),
+        testerId: testerPending.testerUid,
+      },
+      testerPending.testerCompanyId
+    );
+    sendTwiml(
+      res,
+      twimlDialPstn(
+        req,
+        testerPending.phone,
+        TESTER_TWILIO_PHONE_NUMBER,
+        testerPending.testerCompanyId
+      )
+    );
+    return true;
   }
 
   const isOwnerCell = Boolean(routing.cell) && callRoute.sameNumber(req.body.From, routing.cell);
@@ -4238,19 +4278,52 @@ exports.callRecordingAudio = onRequestV2(
     }
     try {
       const callId = await resolveLoggedCallId(requested);
-      const snap = await callsRef.doc(callId).get();
-      const data = snap.exists ? snap.data() || {} : {};
-      if (!user.isOwner) {
-        const linkedJobId = String(data.jobId || data.createdJobId || '').trim();
-        if (!linkedJobId) {
+      let data = {};
+      if (user.isTester && user.testerCompanyId) {
+        const testerCompanyRef = db.collection('companies').doc(user.testerCompanyId);
+        let testerSnap = await testerCompanyRef.collection('calls').doc(callId).get();
+        if (!testerSnap.exists && callId !== requested) {
+          testerSnap = await testerCompanyRef.collection('calls').doc(requested).get();
+        }
+        if (!testerSnap.exists) {
           res.status(403).send('Forbidden');
           return;
         }
-        const jobSnap = await jobsRef.doc(linkedJobId).get();
-        const jobData = jobSnap.exists ? jobSnap.data() || {} : {};
-        if (String(jobData.assignedTo || '').trim() !== user.uid) {
-          res.status(403).send('Forbidden');
-          return;
+        data = testerSnap.data() || {};
+        if (user.isTesterSubTech) {
+          const linkedJobId = String(data.jobId || data.createdJobId || '').trim();
+          if (!linkedJobId) {
+            res.status(403).send('Forbidden');
+            return;
+          }
+          const jobSnap = await testerCompanyRef.collection('jobs').doc(linkedJobId).get();
+          const jobData = jobSnap.exists ? jobSnap.data() || {} : {};
+          if (String(jobData.assignedTo || '').trim() !== user.uid) {
+            res.status(403).send('Forbidden');
+            return;
+          }
+        }
+        if (!data.storageUrl && !data.twilioRecordingUrl) {
+          const mainSnap = await callsRef.doc(callId).get();
+          if (mainSnap.exists) {
+            data = { ...(mainSnap.data() || {}), ...data };
+          }
+        }
+      } else {
+        const snap = await callsRef.doc(callId).get();
+        data = snap.exists ? snap.data() || {} : {};
+        if (!user.isOwner) {
+          const linkedJobId = String(data.jobId || data.createdJobId || '').trim();
+          if (!linkedJobId) {
+            res.status(403).send('Forbidden');
+            return;
+          }
+          const jobSnap = await jobsRef.doc(linkedJobId).get();
+          const jobData = jobSnap.exists ? jobSnap.data() || {} : {};
+          if (String(jobData.assignedTo || '').trim() !== user.uid) {
+            res.status(403).send('Forbidden');
+            return;
+          }
         }
       }
       if (String(req.query.lang || '').toLowerCase() === 'ru') {

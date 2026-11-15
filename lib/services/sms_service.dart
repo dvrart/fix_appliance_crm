@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/app_commands.dart';
 import '../core/api_keys.dart';
+import '../core/constants.dart';
 import '../core/l10n/app_locale.dart';
 import '../core/sms_text.dart';
 import '../models/client.dart';
@@ -919,51 +920,88 @@ class SmsService {
   }
 
   static StreamSubscription<QuerySnapshot>? _allSub;
+  static String? _allScopeKey;
   static List<SmsMessage>? _allLatest;
   static final Set<MultiStreamController<List<SmsMessage>>> _allListeners = {};
+  static bool _watchingAuth = false;
+
+  static String get _currentScopeKey =>
+      '$kCompanyId:${AuthService.user.value?.uid ?? ''}';
+
+  static void _ensureAuthWatch() {
+    if (_watchingAuth) return;
+    _watchingAuth = true;
+    AuthService.user.addListener(_onAuthChanged);
+    AuthService.roleRevision.addListener(_onAuthChanged);
+  }
+
+  static void _onAuthChanged() {
+    final nextKey = _currentScopeKey;
+    if (_allScopeKey == nextKey) return;
+    _allSub?.cancel();
+    _allSub = null;
+    _allLatest = null;
+    _allScopeKey = nextKey;
+    if (_allListeners.isNotEmpty) {
+      _openAllSub();
+    }
+  }
+
+  static void _openAllSub() {
+    _allScopeKey = _currentScopeKey;
+    _allSub = _ref.snapshots().listen(
+      (snapshot) {
+        final messages = <SmsMessage>[];
+        for (final doc in snapshot.docs) {
+          try {
+            final data = doc.data();
+            if (data is! Map) continue;
+            final message = SmsMessage.fromMap(
+              Map<String, dynamic>.from(data),
+              doc.id,
+            );
+            if (message.visibleInCrm && !message.isDeleted) {
+              messages.add(message);
+            }
+          } catch (error) {
+            debugPrint('SMS ${doc.id}: $error');
+          }
+        }
+        messages.sort(
+          (a, b) => (b.createdAt ?? DateTime(0)).compareTo(
+            a.createdAt ?? DateTime(0),
+          ),
+        );
+        _allLatest = messages;
+        for (final listener in _allListeners.toList()) {
+          listener.add(messages);
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        for (final listener in _allListeners.toList()) {
+          listener.addError(error, stack);
+        }
+      },
+    );
+  }
 
   /// Стрим всех сообщений (для группировки в переписки).
   static Stream<List<SmsMessage>> streamAll() {
+    _ensureAuthWatch();
     return Stream<List<SmsMessage>>.multi((controller) {
+      if (_allScopeKey != null && _allScopeKey != _currentScopeKey) {
+        _allSub?.cancel();
+        _allSub = null;
+        _allLatest = null;
+      }
       final cached = _allLatest;
       if (cached != null) {
         controller.add(cached);
       }
       _allListeners.add(controller);
-      _allSub ??= _ref.snapshots().listen(
-        (snapshot) {
-          final messages = <SmsMessage>[];
-          for (final doc in snapshot.docs) {
-            try {
-              final data = doc.data();
-              if (data is! Map) continue;
-              final message = SmsMessage.fromMap(
-                Map<String, dynamic>.from(data),
-                doc.id,
-              );
-              if (message.visibleInCrm && !message.isDeleted) {
-                messages.add(message);
-              }
-            } catch (error) {
-              debugPrint('SMS ${doc.id}: $error');
-            }
-          }
-          messages.sort(
-            (a, b) => (b.createdAt ?? DateTime(0)).compareTo(
-              a.createdAt ?? DateTime(0),
-            ),
-          );
-          _allLatest = messages;
-          for (final listener in _allListeners.toList()) {
-            listener.add(messages);
-          }
-        },
-        onError: (Object error, StackTrace stack) {
-          for (final listener in _allListeners.toList()) {
-            listener.addError(error, stack);
-          }
-        },
-      );
+      if (_allSub == null) {
+        _openAllSub();
+      }
       controller.onCancel = () async {
         _allListeners.remove(controller);
         if (_allListeners.isEmpty) {

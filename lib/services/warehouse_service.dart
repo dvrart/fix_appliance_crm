@@ -8,7 +8,7 @@ import '../models/warehouse_item.dart';
 
 /// Сервис для работы со складом
 class WarehouseService {
-  static final _ref = FirestoreService.warehouseRef;
+  static CollectionReference get _ref => FirestoreService.warehouseRef;
 
   static CollectionReference get ref => _ref;
 

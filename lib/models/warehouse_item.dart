@@ -279,6 +279,13 @@ class WarehouseItem {
   }
 
   factory WarehouseItem.fromMap(Map<String, dynamic> map, String docId) {
+    DateTime? parseWarehouseDate(dynamic value) {
+      if (value is Timestamp) return value.toDate();
+      if (value is DateTime) return value;
+      if (value is String) return DateTime.tryParse(value);
+      return null;
+    }
+
     return WarehouseItem(
       id: docId,
       name: map['name'] ?? '',
@@ -298,15 +305,9 @@ class WarehouseItem {
       other: map['other'],
       isUsed: map['isUsed'] == true,
       interchange: parseInterchange(map['interchange']),
-      createdAt: map['createdAt'] is Timestamp
-          ? (map['createdAt'] as Timestamp).toDate()
-          : null,
-      updatedAt: map['updatedAt'] is Timestamp
-          ? (map['updatedAt'] as Timestamp).toDate()
-          : null,
-      deletedAt: map['deletedAt'] is Timestamp
-          ? (map['deletedAt'] as Timestamp).toDate()
-          : null,
+      createdAt: parseWarehouseDate(map['createdAt']),
+      updatedAt: parseWarehouseDate(map['updatedAt']),
+      deletedAt: parseWarehouseDate(map['deletedAt']),
     );
   }
 

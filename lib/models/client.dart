@@ -198,6 +198,13 @@ class Client {
       }
     }
 
+    DateTime? parseClientDate(dynamic value) {
+      if (value is Timestamp) return value.toDate();
+      if (value is DateTime) return value;
+      if (value is String) return DateTime.tryParse(value);
+      return null;
+    }
+
     return Client(
       id: docId,
       fullName: fullName,
@@ -210,15 +217,9 @@ class Client {
       isRegular: map['isRegular'] == true,
       createdByAi: map['createdByAi'] == true,
       locations: locationsList,
-      createdAt: map['createdAt'] is Timestamp
-          ? (map['createdAt'] as Timestamp).toDate()
-          : null,
-      lastActiveAt: map['lastActiveAt'] is Timestamp
-          ? (map['lastActiveAt'] as Timestamp).toDate()
-          : null,
-      deletedAt: map['deletedAt'] is Timestamp
-          ? (map['deletedAt'] as Timestamp).toDate()
-          : null,
+      createdAt: parseClientDate(map['createdAt']),
+      lastActiveAt: parseClientDate(map['lastActiveAt']),
+      deletedAt: parseClientDate(map['deletedAt']),
     );
   }
 

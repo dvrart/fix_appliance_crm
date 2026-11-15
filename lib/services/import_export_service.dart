@@ -11,14 +11,19 @@ import '../core/constants.dart';
 import '../models/client.dart';
 import '../models/job.dart';
 import '../models/location.dart';
+import '../models/technician.dart';
 import 'client_service.dart';
 import 'firestore_service.dart';
 import 'job_service.dart';
+import 'network_status_service.dart';
 
 class ImportResult {
   final int clientsCreated;
   final int clientsUpdated;
   final int jobsCreated;
+  final int callsImported;
+  final int messagesImported;
+  final int otherDocsImported;
   final int skipped;
   final String? error;
 
@@ -26,13 +31,23 @@ class ImportResult {
     this.clientsCreated = 0,
     this.clientsUpdated = 0,
     this.jobsCreated = 0,
+    this.callsImported = 0,
+    this.messagesImported = 0,
+    this.otherDocsImported = 0,
     this.skipped = 0,
     this.error,
   });
 
   String get summary {
     if (error != null && error!.isNotEmpty) return error!;
-    return 'Клиенты: +$clientsCreated / обновлено $clientsUpdated. Заявки: +$jobsCreated.';
+    final parts = <String>[
+      'Клиенты: +$clientsCreated / обновлено $clientsUpdated',
+      'Заявки: +$jobsCreated',
+      if (callsImported > 0) 'Звонки: +$callsImported',
+      if (messagesImported > 0) 'Сообщения: +$messagesImported',
+      if (otherDocsImported > 0) 'Прочее: +$otherDocsImported',
+    ];
+    return '${parts.join('. ')}.';
   }
 }
 
@@ -110,23 +125,193 @@ class ImportExportService {
     await _shareCsv('fix_jobs.csv', rows);
   }
 
-  /// Полный слепок клиентов и заявок — и для ручного экспорта, и для автокопии.
+  static const List<String> backupCollections = [
+    'clients',
+    'jobs',
+    'calls',
+    'messages',
+    'expenses',
+    'warehouse',
+    'calendar_events',
+    'care_plans',
+    'appliances',
+    'passport_notes',
+    'scheduled_messages',
+    'secretary_lessons',
+    'shipment_events',
+    'short_links',
+    'settings',
+    'statuses',
+    'catalogs',
+    'service_guide',
+    'technicians',
+    'technician_settlements',
+  ];
+
+  static const List<String> backupJobSubcollections = [
+    'messages',
+    'changes',
+  ];
+
+  static const Set<String> _rootTimestampFields = {
+    'createdAt',
+    'updatedAt',
+    'deletedAt',
+    'lastActiveAt',
+    'scheduledAt',
+    'scheduledDate',
+    'completedAt',
+    'reviewSmsSentAt',
+    'promisedPartAt',
+    'startAt',
+    'endAt',
+    'startTime',
+    'endTime',
+    'aiStartedAt',
+    'peerAnsweredAt',
+    'moveToCellAskedAt',
+    'deliveredAt',
+    'signedAt',
+    'lastMaintenanceAt',
+    'nextMaintenanceDue',
+    'cancelledAt',
+    'lastServiceAt',
+    'stickerPrintedAt',
+    'reviewedAt',
+    'sendAt',
+    'sentAt',
+    'expiresAt',
+    'timestamp',
+    'at',
+    'date',
+  };
+
+  static bool _isSensitiveOrEphemeralSettingDoc(String docId) {
+    final id = docId.trim().toLowerCase();
+    return id == 'gmail' ||
+        id == 'stripe' ||
+        id == 'voice_infra' ||
+        id.startsWith('pending_cell_call') ||
+        id.startsWith('pending_outbound_call');
+  }
+
+  /// Полный слепок всех данных компании — и для ручного экспорта, и для автокопии.
   static Future<String> buildBackupJson() async {
-    final clientsSnap = await FirestoreService.clientsRef.get();
-    final jobsSnap = await FirestoreService.jobsRef.get();
+    final root = FirestoreService.companyRef;
+    final collections = <String, List<Map<String, dynamic>>>{};
+    final counts = <String, int>{};
+    final failed = <String>[];
+
+    await Future.wait(
+      backupCollections.map((name) async {
+        try {
+          final snap = await root.collection(name).get();
+          final docs = <Map<String, dynamic>>[];
+          for (final doc in snap.docs) {
+            if (name == 'settings' &&
+                _isSensitiveOrEphemeralSettingDoc(doc.id)) {
+              continue;
+            }
+            final raw = doc.data();
+            final safe = _jsonSafe(raw);
+            if (safe is Map) {
+              docs.add({'id': doc.id, ...Map<String, dynamic>.from(safe)});
+            }
+          }
+          collections[name] = docs;
+          counts[name] = docs.length;
+        } catch (e) {
+          debugPrint('buildBackupJson ($name): $e');
+          collections[name] = const [];
+          counts[name] = 0;
+          failed.add(name);
+        }
+      }),
+    );
+
+    final jobIds = <String>[
+      for (final job in (collections['jobs'] ?? const <Map<String, dynamic>>[]))
+        if ((job['id'] ?? '').toString().trim().isNotEmpty)
+          (job['id'] ?? '').toString().trim(),
+    ];
+
+    final jobSubcollections = <String, List<Map<String, dynamic>>>{};
+    for (final subName in backupJobSubcollections) {
+      final key = 'jobs/*/$subName';
+      try {
+        final snap = await FirebaseFirestore.instance
+            .collectionGroup(subName)
+            .get();
+        final docs = <Map<String, dynamic>>[];
+        for (final doc in snap.docs) {
+          final jobRef = doc.reference.parent.parent;
+          if (jobRef == null ||
+              jobRef.parent.id != 'jobs' ||
+              jobRef.parent.parent?.id != kCompanyId) {
+            continue;
+          }
+          final safe = _jsonSafe(doc.data());
+          if (safe is Map) {
+            docs.add({
+              'jobId': jobRef.id,
+              'id': doc.id,
+              ...Map<String, dynamic>.from(safe),
+            });
+          }
+        }
+        jobSubcollections[subName] = docs;
+        counts[key] = docs.length;
+      } catch (_) {
+        // Fallback для тестовых баз, где collectionGroup закрыт правилами.
+        try {
+          final docs = <Map<String, dynamic>>[];
+          const chunk = 25;
+          for (var i = 0; i < jobIds.length; i += chunk) {
+            final end =
+                (i + chunk > jobIds.length) ? jobIds.length : i + chunk;
+            final slice = jobIds.sublist(i, end);
+            await Future.wait(
+              slice.map((jid) async {
+                final subSnap = await root
+                    .collection('jobs')
+                    .doc(jid)
+                    .collection(subName)
+                    .get();
+                for (final doc in subSnap.docs) {
+                  final safe = _jsonSafe(doc.data());
+                  if (safe is Map) {
+                    docs.add({
+                      'jobId': jid,
+                      'id': doc.id,
+                      ...Map<String, dynamic>.from(safe),
+                    });
+                  }
+                }
+              }),
+            );
+          }
+          jobSubcollections[subName] = docs;
+          counts[key] = docs.length;
+        } catch (e) {
+          debugPrint('buildBackupJson ($key): $e');
+          jobSubcollections[subName] = const [];
+          counts[key] = 0;
+          failed.add(key);
+        }
+      }
+    }
+
     final payload = {
-      'version': 1,
+      'version': 2,
+      'companyId': kCompanyId,
       'exportedAt': DateTime.now().toIso8601String(),
-      'clients': [
-        for (final doc in clientsSnap.docs)
-          {'id': doc.id, ..._jsonSafe(doc.data()) as Map<String, dynamic>},
-      ],
-      'jobs': [
-        for (final doc in jobsSnap.docs)
-          {'id': doc.id, ..._jsonSafe(doc.data()) as Map<String, dynamic>},
-      ],
+      'collections': collections,
+      'jobSubcollections': jobSubcollections,
+      'counts': counts,
+      if (failed.isNotEmpty) 'failedCollections': failed,
+      'partial': failed.isNotEmpty,
     };
-    return const JsonEncoder.withIndent('  ').convert(payload);
+    return jsonEncode(payload);
   }
 
   static Future<void> exportBackupJson() async {
@@ -247,26 +432,169 @@ class ImportExportService {
   static Future<ImportResult> importFromFile({String? sourceLabel}) async {
     final file = await FilePicker.pickFile(
       type: FileType.custom,
-      allowedExtensions: const ['csv', 'json', 'txt'],
+      allowedExtensions: const ['csv', 'json', 'gz', 'txt'],
     );
     if (file == null) {
       return const ImportResult(error: '');
     }
-    final bytes = await file.readAsBytes();
+    var bytes = await file.readAsBytes();
     if (bytes.isEmpty) {
       return const ImportResult(error: 'Не удалось прочитать файл');
+    }
+    if (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b) {
+      try {
+        bytes = Uint8List.fromList(gzip.decode(bytes));
+      } catch (e) {
+        return ImportResult(error: 'Не удалось распаковать архив: $e');
+      }
     }
     var text = utf8.decode(bytes, allowMalformed: true);
     if (text.startsWith('\uFEFF')) text = text.substring(1);
     final name = (file.name).toLowerCase();
     try {
-      if (name.endsWith('.json') || text.trim().startsWith('{')) {
+      if (name.endsWith('.json') ||
+          name.endsWith('.json.gz') ||
+          name.endsWith('.gz') ||
+          text.trimLeft().startsWith('{')) {
         return await _importJson(text);
       }
       return await _importCsv(text, sourceLabel: sourceLabel);
     } catch (e) {
       return ImportResult(error: 'Ошибка импорта: $e');
     }
+  }
+
+  static Timestamp? _tryParseIsoTimestamp(dynamic value) {
+    if (value is Timestamp) return value;
+    if (value is DateTime) return Timestamp.fromDate(value);
+    if (value is String) {
+      final s = value.trim();
+      if (RegExp(r'^\d{4}-\d{2}-\d{2}[T ]').hasMatch(s)) {
+        final dt = DateTime.tryParse(s);
+        if (dt != null) return Timestamp.fromDate(dt);
+      }
+    }
+    return null;
+  }
+
+  static Map<String, dynamic> _restoreFirestoreMap(
+    Map<String, dynamic> raw, {
+    bool isRoot = false,
+  }) {
+    final out = <String, dynamic>{};
+    for (final entry in raw.entries) {
+      final key = entry.key;
+      final val = entry.value;
+      if (isRoot && _rootTimestampFields.contains(key)) {
+        final ts = _tryParseIsoTimestamp(val);
+        out[key] = ts ?? _restoreFirestoreValue(val);
+      } else {
+        out[key] = _restoreFirestoreValue(val);
+      }
+    }
+    return out;
+  }
+
+  static dynamic _restoreFirestoreValue(dynamic value) {
+    if (value == null || value is num || value is bool || value is String) {
+      return value;
+    }
+    if (value is Timestamp || value is FieldValue || value is GeoPoint) {
+      return value;
+    }
+    if (value is Iterable) {
+      return [for (final item in value) _restoreFirestoreValue(item)];
+    }
+    if (value is Map) {
+      return {
+        for (final entry in value.entries)
+          entry.key.toString(): _restoreFirestoreValue(entry.value),
+      };
+    }
+    return value;
+  }
+
+  static Map<String, dynamic> _restoreClientDoc(Map<String, dynamic> raw) {
+    final map = Map<String, dynamic>.from(raw)..remove('id');
+    final restored = _restoreFirestoreMap(map, isRoot: true);
+    final fullName = (restored['fullName'] ?? restored['name'] ?? '')
+        .toString()
+        .trim();
+    if (fullName.isNotEmpty) {
+      restored['fullName'] = fullName;
+      restored['name'] ??= fullName;
+    }
+    final hasLocations = restored['locations'] is List &&
+        (restored['locations'] as List).isNotEmpty;
+    if (!hasLocations) {
+      final street = (restored['address'] ?? restored['street'] ?? '')
+          .toString()
+          .trim();
+      final city = (restored['city'] ?? '').toString().trim();
+      final postal = (restored['postal'] ?? restored['postalCode'] ?? '')
+          .toString()
+          .trim();
+      if (street.isNotEmpty || city.isNotEmpty || postal.isNotEmpty) {
+        restored['locations'] = [
+          {
+            'id': 'primary',
+            'street': street,
+            'city': city,
+            'postalCode': postal,
+          },
+        ];
+      }
+    } else {
+      final locs = <dynamic>[];
+      for (final item in restored['locations'] as List) {
+        if (item is Map) {
+          final locMap = Map<String, dynamic>.from(item);
+          final ts = _tryParseIsoTimestamp(locMap['createdAt']);
+          if (ts != null) locMap['createdAt'] = ts;
+          locs.add(locMap);
+        } else {
+          locs.add(item);
+        }
+      }
+      restored['locations'] = locs;
+    }
+    restored['createdAt'] ??= FieldValue.serverTimestamp();
+    restored['lastActiveAt'] ??= restored['createdAt'];
+    return restored;
+  }
+
+  static Map<String, dynamic> _restoreJobDoc(Map<String, dynamic> raw) {
+    final map = Map<String, dynamic>.from(raw)..remove('id');
+    final restored = _restoreFirestoreMap(map, isRoot: true);
+    if (restored['visits'] is List) {
+      final visits = <dynamic>[];
+      for (final item in restored['visits'] as List) {
+        if (item is Map) {
+          final vMap = Map<String, dynamic>.from(item);
+          for (final key in const [
+            'startAt',
+            'smsBookingSentAt',
+            'smsBookingPendingAt',
+            'smsReminderSentAt',
+            'ownerSoonAt',
+          ]) {
+            final ts = _tryParseIsoTimestamp(vMap[key]);
+            if (ts != null) vMap[key] = ts;
+          }
+          visits.add(vMap);
+        } else {
+          visits.add(item);
+        }
+      }
+      restored['visits'] = visits;
+    }
+    final assigned = (restored['assignedTo'] ?? '').toString().trim();
+    if (assigned == 'Ew8vDgXvuMMwt9gYQUOi7rujNxO2' &&
+        kOwnerUid != 'Ew8vDgXvuMMwt9gYQUOi7rujNxO2') {
+      restored['assignedTo'] = null;
+    }
+    restored['createdAt'] ??= FieldValue.serverTimestamp();
+    return restored;
   }
 
   static Future<ImportResult> _importJson(String text) async {
@@ -277,41 +605,244 @@ class ImportExportService {
     var clientsCreated = 0;
     var clientsUpdated = 0;
     var jobsCreated = 0;
+    var callsImported = 0;
+    var messagesImported = 0;
+    var otherDocsImported = 0;
     var skipped = 0;
-    // Support both old format (jobs at root) and cloud backup format (collections.jobs)
-    final collections = decoded['collections'];
-    final rawClients = (collections is Map ? collections['clients'] : decoded['clients']) ?? decoded['clients'];
-    final rawJobs = (collections is Map ? collections['jobs'] : decoded['jobs']) ?? decoded['jobs'];
+
+    final collectionsMap = decoded['collections'] is Map
+        ? Map<String, dynamic>.from(decoded['collections'] as Map)
+        : const <String, dynamic>{};
+    final rawClients = collectionsMap['clients'] ?? decoded['clients'];
+    final rawJobs = collectionsMap['jobs'] ?? decoded['jobs'];
     final isPartial = decoded['partial'] == true;
     final failedCollections = (decoded['failedCollections'] as List?)
-        ?.map((e) => e.toString())
-        .toList() ?? [];
-    if (rawClients is List) {
+            ?.map((e) => e.toString())
+            .toList() ??
+        [];
+
+    final root = FirestoreService.companyRef;
+    WriteBatch batch = FirebaseFirestore.instance.batch();
+    var opsInBatch = 0;
+    final pendingCommits = <Future<void>>[];
+
+    Future<void> queueSet(
+      DocumentReference ref,
+      Map<String, dynamic> data,
+    ) async {
+      batch.set(ref, data, SetOptions(merge: true));
+      opsInBatch += 1;
+      if (opsInBatch >= 350) {
+        final current = batch;
+        batch = FirebaseFirestore.instance.batch();
+        opsInBatch = 0;
+        pendingCommits.add(
+          settleWrite(current.commit(), wait: const Duration(seconds: 25)),
+        );
+        if (pendingCommits.length >= 4) {
+          await Future.wait(pendingCommits);
+          pendingCommits.clear();
+        }
+      }
+    }
+
+    Future<void> queueDelete(DocumentReference ref) async {
+      batch.delete(ref);
+      opsInBatch += 1;
+      if (opsInBatch >= 350) {
+        final current = batch;
+        batch = FirebaseFirestore.instance.batch();
+        opsInBatch = 0;
+        pendingCommits.add(
+          settleWrite(current.commit(), wait: const Duration(seconds: 25)),
+        );
+        if (pendingCommits.length >= 4) {
+          await Future.wait(pendingCommits);
+          pendingCommits.clear();
+        }
+      }
+    }
+
+    if (rawClients is List && rawClients.isNotEmpty) {
+      final existingIds = <String>{};
+      final existingByKey = <String, List<String>>{};
+      try {
+        final snap = await FirestoreService.clientsRef.get();
+        for (final doc in snap.docs) {
+          existingIds.add(doc.id);
+          final d = doc.data();
+          if (d is Map) {
+            final name = (d['fullName'] ?? d['name'] ?? '')
+                .toString()
+                .trim()
+                .toLowerCase();
+            final phone = ClientService.normalizePhone(
+              (d['phone'] ?? '').toString(),
+            );
+            if (name.isNotEmpty || phone.isNotEmpty) {
+              existingByKey.putIfAbsent('$name|$phone', () => []).add(doc.id);
+            }
+          }
+        }
+      } catch (_) {}
+
+      final incomingIds = <String>{
+        for (final raw in rawClients)
+          if (raw is Map && (raw['id'] ?? '').toString().trim().isNotEmpty)
+            (raw['id'] ?? '').toString().trim(),
+      };
+      final deletedDupIds = <String>{};
+      final importedClientMaps = <Map<String, dynamic>>[];
+
       for (final raw in rawClients) {
         if (raw is! Map) {
           skipped += 1;
           continue;
         }
         final map = Map<String, dynamic>.from(raw);
-        final result = await _upsertClient(map);
-        if (result == _Upsert.created) clientsCreated += 1;
-        if (result == _Upsert.updated) clientsUpdated += 1;
+        final docId = (map['id'] ?? '').toString().trim();
+        if (docId.isNotEmpty) {
+          final restored = _restoreClientDoc(map);
+          final name = (restored['fullName'] ?? restored['name'] ?? '')
+              .toString()
+              .trim()
+              .toLowerCase();
+          final phone = ClientService.normalizePhone(
+            (restored['phone'] ?? '').toString(),
+          );
+          final dups = existingByKey['$name|$phone'] ?? const <String>[];
+          var replacedDup = false;
+          for (final dupId in dups) {
+            if (dupId != docId &&
+                !incomingIds.contains(dupId) &&
+                deletedDupIds.add(dupId)) {
+              await queueDelete(FirestoreService.clientsRef.doc(dupId));
+              replacedDup = true;
+            }
+          }
+          await queueSet(FirestoreService.clientsRef.doc(docId), restored);
+          importedClientMaps.add({'id': docId, ...restored});
+          if (existingIds.contains(docId) || replacedDup) {
+            clientsUpdated += 1;
+          } else {
+            clientsCreated += 1;
+          }
+        } else {
+          final result = await _upsertClient(map);
+          if (result == _Upsert.created) clientsCreated += 1;
+          if (result == _Upsert.updated) clientsUpdated += 1;
+        }
+      }
+      if (importedClientMaps.isNotEmpty) {
+        ClientService.syncRegularFromMaps(importedClientMaps);
       }
     }
-    if (rawJobs is List) {
+
+    if (rawJobs is List && rawJobs.isNotEmpty) {
       for (final raw in rawJobs) {
         if (raw is! Map) {
           skipped += 1;
           continue;
         }
-        await _createJob(Map<String, dynamic>.from(raw));
-        jobsCreated += 1;
+        final map = Map<String, dynamic>.from(raw);
+        final docId = (map['id'] ?? '').toString().trim();
+        final hasStructured = docId.isNotEmpty ||
+            map['appliances'] is List ||
+            map['visits'] is List ||
+            map['documents'] is List ||
+            map['attachments'] is List;
+        if (hasStructured) {
+          final targetId = docId.isNotEmpty
+              ? docId
+              : FirestoreService.jobsRef.doc().id;
+          final restored = _restoreJobDoc(map);
+          await queueSet(FirestoreService.jobsRef.doc(targetId), restored);
+          jobsCreated += 1;
+        } else {
+          await _createJob(map);
+          jobsCreated += 1;
+        }
       }
     }
+
+    for (final colName in backupCollections) {
+      if (colName == 'clients' || colName == 'jobs') continue;
+      final rawList = collectionsMap[colName] ?? decoded[colName];
+      if (rawList is! List || rawList.isEmpty) continue;
+      final colRef = root.collection(colName);
+      for (final raw in rawList) {
+        if (raw is! Map) {
+          skipped += 1;
+          continue;
+        }
+        final map = Map<String, dynamic>.from(raw);
+        final rawId = (map.remove('id') ?? '').toString().trim();
+        final docId = rawId.isNotEmpty ? rawId : colRef.doc().id;
+        if (colName == 'settings' && _isSensitiveOrEphemeralSettingDoc(docId)) {
+          continue;
+        }
+        final restored = _restoreFirestoreMap(map, isRoot: true);
+        if (colName == 'scheduled_messages' &&
+            kCompanyId.startsWith('tester_')) {
+          final st = (restored['status'] ?? '').toString().trim().toLowerCase();
+          if (st == 'pending' || st == 'sending') {
+            restored['status'] = 'cancelled';
+          }
+        }
+        await queueSet(colRef.doc(docId), restored);
+        if (colName == 'calls') {
+          callsImported += 1;
+        } else if (colName == 'messages') {
+          messagesImported += 1;
+        } else {
+          otherDocsImported += 1;
+        }
+      }
+    }
+
+    final rawSubcollections = decoded['jobSubcollections'];
+    if (rawSubcollections is Map) {
+      for (final entry in rawSubcollections.entries) {
+        final subName = entry.key.toString().trim();
+        final list = entry.value;
+        if (subName.isEmpty || list is! List) continue;
+        for (final raw in list) {
+          if (raw is! Map) continue;
+          final map = Map<String, dynamic>.from(raw);
+          final jobId = (map.remove('jobId') ?? '').toString().trim();
+          final rawId = (map.remove('id') ?? '').toString().trim();
+          if (jobId.isEmpty) continue;
+          final subColRef =
+              root.collection('jobs').doc(jobId).collection(subName);
+          final docId = rawId.isNotEmpty ? rawId : subColRef.doc().id;
+          final restored = _restoreFirestoreMap(map, isRoot: true);
+          await queueSet(subColRef.doc(docId), restored);
+          if (subName == 'messages') {
+            messagesImported += 1;
+          } else {
+            otherDocsImported += 1;
+          }
+        }
+      }
+    }
+
+    if (opsInBatch > 0) {
+      pendingCommits.add(
+        settleWrite(batch.commit(), wait: const Duration(seconds: 25)),
+      );
+    }
+    if (pendingCommits.isNotEmpty) {
+      await Future.wait(pendingCommits);
+    }
+    ClientService.invalidateCache();
+
     return ImportResult(
       clientsCreated: clientsCreated,
       clientsUpdated: clientsUpdated,
       jobsCreated: jobsCreated,
+      callsImported: callsImported,
+      messagesImported: messagesImported,
+      otherDocsImported: otherDocsImported,
       skipped: skipped,
       error: isPartial
           ? 'Внимание: копия была неполной (${failedCollections.join(', ')}). Клиенты: +$clientsCreated. Заявки: +$jobsCreated.'

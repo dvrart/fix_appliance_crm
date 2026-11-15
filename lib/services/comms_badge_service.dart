@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/constants.dart';
 import '../core/utils/formatters.dart';
 import '../models/client.dart';
 import 'auth_service.dart';
@@ -62,6 +63,7 @@ class CommsBadgeService {
       ValueNotifier<DateTime>(DateTime.now());
 
   static bool _started = false;
+  static String? _boundScopeKey;
   static int _generation = 0;
   static Timer? _retry;
   static final List<StreamSubscription<dynamic>> _subscriptions = [];
@@ -80,8 +82,12 @@ class CommsBadgeService {
   static DateTime _callsSeenAt = DateTime.now();
 
   static Future<void> start() async {
-    if (_started || !AuthService.signedIn) return;
+    if (!AuthService.signedIn) return;
+    final scopeKey = '$kCompanyId:${AuthService.user.value?.uid ?? ''}';
+    if (_started && _boundScopeKey == scopeKey) return;
+    if (_started) stop();
     _started = true;
+    _boundScopeKey = scopeKey;
     _retry?.cancel();
     final generation = ++_generation;
     try {
@@ -275,6 +281,7 @@ class CommsBadgeService {
   static void stop() {
     _generation++;
     _started = false;
+    _boundScopeKey = null;
     _retry?.cancel();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
