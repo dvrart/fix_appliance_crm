@@ -1,10 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../core/tester_build.dart';
+import '../services/auth_service.dart';
 import 'document_settings.dart';
 
-/// UID основного аккаунта владельца (совпадает с firestore.rules и auth_guard.js).
-const String kOwnerUid = 'Ew8vDgXvuMMwt9gYQUOi7rujNxO2';
+/// UID основного аккаунта владельца (в тестовой сборке — владелец текущей тестовой базы).
+String get kOwnerUid => kTesterAppBuild
+    ? AuthService.currentOwnerUid
+    : 'Ew8vDgXvuMMwt9gYQUOi7rujNxO2';
 
 /// Сборка для мастеров (`--dart-define=TECH_APP=true`): отключает авто-вход
 /// под вшитыми реквизитами владельца и всегда открывает экран входа мастера.

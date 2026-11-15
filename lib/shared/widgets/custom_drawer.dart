@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_commands.dart';
 import '../../core/constants.dart';
+import '../../core/tester_build.dart';
 import '../../core/ui_scale.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../models/models.dart';
@@ -24,6 +25,7 @@ import '../../features/technicians/technician_settlements_screen.dart';
 import '../../services/auth_service.dart';
 import '../app_nav.dart';
 import '../unsaved_navigation_gate.dart';
+import 'app_onboarding_guide.dart';
 
 class CustomDrawer extends StatefulWidget {
   /// Закрывает панель и завершается, когда анимация закрытия доиграла.
@@ -321,6 +323,23 @@ class _CustomDrawerState extends State<CustomDrawer> {
                         color: AppColors.inkMuted,
                         onTap: () => _openSettings(context),
                       ),
+                      if (kTesterAppBuild)
+                        _buildTile(
+                          context,
+                          title: context.tr('Гайд по CRM', 'App Guide'),
+                          icon: Icons.menu_book_rounded,
+                          color: const Color(0xFF00897B),
+                          onTap: () async {
+                            final nav =
+                                AppNav.activeTabNavigator ??
+                                rootNavigatorKey.currentState;
+                            await _dismiss(context);
+                            final host = nav?.context;
+                            if (host != null && host.mounted) {
+                              await AppOnboardingGuide.open(host);
+                            }
+                          },
+                        ),
                     ];
 
                     return Column(

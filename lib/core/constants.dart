@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
+import '../services/auth_service.dart';
 import 'api_keys.dart';
 import 'l10n/app_locale.dart';
+import 'tester_build.dart';
 import 'ui_scale.dart';
 
 /// ID текущей компании. Все данные живут в `companies/{kCompanyId}/...`.
-/// Позже, когда появятся другие компании по подписке, этот id будет
-/// браться из аккаунта, а не из константы — пути в Firestore не меняются.
-const String kCompanyId = 'fix_appliance_ca';
+/// В рабочей сборке всегда `fix_appliance_ca`, в тестовой — `tester_<uid>`.
+String get kCompanyId =>
+    kTesterAppBuild ? AuthService.currentCompanyId : 'fix_appliance_ca';
 
 /// Новый визит по умолчанию — 2 часа (как у секретаря в календаре).
 const int kDefaultVisitMinutes = 120;

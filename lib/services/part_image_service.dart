@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/api_keys.dart';
+import '../core/constants.dart';
+import '../core/tester_build.dart';
 import '../models/warehouse_item.dart';
 import 'ai_service.dart';
 import 'auth_service.dart';
@@ -454,7 +456,14 @@ class PartImageService {
       final safe = WarehouseItem.normalizePart(part);
       final name =
           'web_${DateTime.now().millisecondsSinceEpoch}_${safe.isEmpty ? 'part' : safe}.jpg';
-      final ref = FirebaseStorage.instance.ref().child('warehouse').child(name);
+      final ref = kTesterAppBuild
+          ? FirebaseStorage.instance
+                .ref()
+                .child('companies')
+                .child(kCompanyId)
+                .child('warehouse')
+                .child(name)
+          : FirebaseStorage.instance.ref().child('warehouse').child(name);
       await ref
           .putData(shot.bytes, SettableMetadata(contentType: 'image/jpeg'))
           .timeout(const Duration(seconds: 25));

@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/app_commands.dart';
 import '../core/api_keys.dart';
+import '../core/tester_build.dart';
 import 'call_routing.dart';
 import 'firestore_service.dart';
 import 'auth_service.dart';
@@ -260,7 +261,7 @@ class TwilioService {
   /// Номер мастерской: телефон набирает его через SIM, сервер соединяет с
   /// клиентом. Приходит вместе с токеном Twilio и хранится на телефоне —
   /// звонок через SIM нужен как раз тогда, когда интернета почти нет.
-  static String? _shopNumber;
+  static String? _shopNumber = kTesterAppBuild ? '+15489000688' : null;
   static const _shopNumberPrefsKey = 'twilio_shop_number';
 
   /// Что показать на экране звонка: предупреждения Twilio о связи, «клиент
@@ -400,9 +401,11 @@ class TwilioService {
     });
   }
 
-  static String get currentClientIdentity => TechnicianService.isTechnician
-      ? 'tech_${TechnicianService.currentUid}'
-      : kTwilioMasterIdentity;
+  static String get currentClientIdentity => kTesterAppBuild
+      ? 'tester_${AuthService.currentUserUid.isNotEmpty ? AuthService.currentUserUid : AuthService.currentOwnerUid}'
+      : (TechnicianService.isTechnician
+            ? 'tech_${TechnicianService.currentUid}'
+            : kTwilioMasterIdentity);
 
   static String get _pendingCellDocId => TechnicianService.isTechnician
       ? 'pending_cell_call_${TechnicianService.currentUid}'
@@ -415,10 +418,11 @@ class TwilioService {
   static Future<String?> _fetchAccessToken() async {
     try {
       final identity = Uri.encodeQueryComponent(currentClientIdentity);
+      final suffix = kTesterAppBuild ? '&tester=1' : '';
       final response = await http
           .get(
             Uri.parse(
-              '$kFirebaseFunctionsUrl/twilioAccessToken?identity=$identity',
+              '$kFirebaseFunctionsUrl/twilioAccessToken?identity=$identity$suffix',
             ),
             headers: await AuthService.headers(),
           )
@@ -770,6 +774,7 @@ class TwilioService {
         FirestoreService.settingsRef.doc(_pendingCellDocId).set({
           'phone': _formatNumber(phoneNumber),
           'jobId': jobId ?? '',
+          if (routing.cellNumber.isNotEmpty) 'callerCell': routing.cellNumber,
           'at': FieldValue.serverTimestamp(),
         }),
       );
@@ -902,6 +907,8 @@ class TwilioService {
     lastPlaceError = null;
     handoverNote = null;
     _resetCallSignals();
+    _outboundPhone = phoneNumber;
+    _outboundJobId = jobId;
     final route = await _currentRouting();
     if (route.outboundViaCell) {
       return placeViaCell(phoneNumber, jobId: jobId);
@@ -919,6 +926,9 @@ class TwilioService {
     if (!tokenFresh) {
       final tokenOk = await _refreshVoiceToken();
       if (!tokenOk) {
+        if (kTesterAppBuild && route.outboundAutoFallback) {
+          return _fallbackOutboundToCell();
+        }
         _setCallStatus('failed');
         return false;
       }
@@ -931,6 +941,9 @@ class TwilioService {
         if (enabled == false) {
           lastPlaceError = 'Аккаунт звонков выключен в настройках телефона.';
           debugPrint('TwilioService: PhoneAccount выключен');
+          if (kTesterAppBuild && route.outboundAutoFallback) {
+            return _fallbackOutboundToCell();
+          }
         }
       } catch (e) {
         debugPrint('TwilioService: isPhoneAccountEnabled: $e');
@@ -942,8 +955,6 @@ class TwilioService {
       await _writePendingOutbound(phoneNumber, pendingJobId!);
     }
 
-    _outboundPhone = phoneNumber;
-    _outboundJobId = jobId;
     placingOutgoing = true;
     _setCallStatus('calling');
     try {

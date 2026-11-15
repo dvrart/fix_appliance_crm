@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../core/tester_build.dart';
 import '../../core/motion.dart';
 import '../../core/utils/number_input.dart';
 import '../../core/utils/thumb_image.dart';
@@ -744,10 +745,17 @@ class _WarehouseScreenState extends State<WarehouseScreen> {
               try {
                 final fileName =
                     'part_${DateTime.now().millisecondsSinceEpoch}.jpg';
-                final ref = FirebaseStorage.instance
-                    .ref()
-                    .child('warehouse')
-                    .child(fileName);
+                final ref = kTesterAppBuild
+                    ? FirebaseStorage.instance
+                          .ref()
+                          .child('companies')
+                          .child(kCompanyId)
+                          .child('warehouse')
+                          .child(fileName)
+                    : FirebaseStorage.instance
+                          .ref()
+                          .child('warehouse')
+                          .child(fileName);
                 // Без сети Storage молча повторяет попытки минутами,
                 // и кружок крутится вечно. Ждём недолго.
                 await ref.putFile(file).timeout(const Duration(seconds: 25));

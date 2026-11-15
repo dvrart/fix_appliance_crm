@@ -2887,3 +2887,9 @@ require('firebase-admin')` в проекте больше нет ни одног
   Проверка, что сборка действительно мастерская: в `lib/arm64-v8a/libapp.so` внутри APK **нет**
   строк `kOwnerEmail` / `kOwnerPassword` (в сборке владельца они там есть). Внутри APK лежат
   ключи Maps/Gemini — ссылку нигде не публиковать, давать только мастерам.
+
+## Копия для тестировщиков и автосинхронизация (14.11.2026)
+
+- **Папка копии:** `C:\Projects\fix_appliance_testers` (пакет `com.example.fix_appliance_crm`, подпись на экране `FIX CRM TEST`, ставится рядом с рабочим `ca.fixappliance.crm`).
+- **Единый код:** все отличия тестовой сборки управляются флагом `kTesterAppBuild` в `lib/core/tester_build.dart` (`false` в основном проекте, `true` в `fix_appliance_testers`). В тестовой сборке у каждого вошедшего мастера своя база `companies/tester_<uid>`, звонки и SMS идут через второй номер Twilio `+15489000688`, доступны саморегистрация, пошаговый гайд и подключение собственных мастеров.
+- **Автоматический перенос всех правок:** скрипт `node tools/sync_testers.js` (вызывается автоматически хуком `.git/hooks/post-commit` при каждом коммите в `fix_appliance_crm`) мгновенно синхронизирует все изменения `lib/`, `assets/`, `test/`, `third_party/`, `pubspec.yaml`, `firestore.rules` и `storage.rules` в `C:\Projects\fix_appliance_testers`, сохраняя в тестовой копии `kTesterAppBuild = true`, пустые `kOwnerEmail`/`kOwnerPassword` и пакет `com.example.fix_appliance_crm`. При любых правках в основном проекте запускайте `node tools/sync_testers.js`, чтобы обе папки всегда были идентичны.

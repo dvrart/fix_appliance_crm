@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
+import '../../../core/tester_build.dart';
 import '../../../core/ui_scale.dart';
 import '../../../models/technician.dart';
 import '../../../services/technician_service.dart';
@@ -191,6 +193,35 @@ class _TechniciansSettingsPageState extends State<TechniciansSettingsPage> {
     }
   }
 
+  void _copyInvite(BuildContext context, TechnicianProfile tech) {
+    final apkUrl = kTesterAppBuild
+        ? 'https://doc.fix-appliance.ca/download/fix-crm-guide.apk'
+        : 'https://doc.fix-appliance.ca/download/fix-master.apk';
+    final text = context.tr(
+      'Доступ мастера (${tech.displayName}):\n'
+          '• Логин (Email): ${tech.email}\n'
+          '• Пароль: тот, который вам задал руководитель\n'
+          '• Скачать на Android: $apkUrl\n'
+          '• Открыть на iPhone (Safari → Поделиться → На экран «Домой»): https://doc.fix-appliance.ca/tech/',
+      'Technician access (${tech.displayName}):\n'
+          '• Login (Email): ${tech.email}\n'
+          '• Password: set by your manager\n'
+          '• Android APK: $apkUrl\n'
+          '• iPhone Web App (Safari → Share → Add to Home Screen): https://doc.fix-appliance.ca/tech/',
+    );
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          context.tr(
+            'Приглашение со ссылками и логином скопировано',
+            'Invite with links and login copied',
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildRow(BuildContext context, TechnicianProfile tech) {
     final busy = _toggling.contains(tech.uid);
     return ListTile(
@@ -219,10 +250,23 @@ class _TechniciansSettingsPageState extends State<TechniciansSettingsPage> {
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
       ),
-      trailing: Switch(
-        value: tech.active,
-        activeTrackColor: const Color(0xFF22C55E),
-        onChanged: busy ? null : (next) => _toggleActive(tech, next),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: context.tr(
+              'Скопировать приглашение для мастера',
+              'Copy technician invite',
+            ),
+            icon: const Icon(Icons.share_outlined),
+            onPressed: () => _copyInvite(context, tech),
+          ),
+          Switch(
+            value: tech.active,
+            activeTrackColor: const Color(0xFF22C55E),
+            onChanged: busy ? null : (next) => _toggleActive(tech, next),
+          ),
+        ],
       ),
     );
   }

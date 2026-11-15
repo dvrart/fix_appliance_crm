@@ -53,7 +53,11 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
       valueListenable: AppLockService.locked,
       builder: (context, locked, child) {
         return ListenableBuilder(
-          listenable: Listenable.merge([AuthService.user, AuthService.autoSigningIn]),
+          listenable: Listenable.merge([
+            AuthService.user,
+            AuthService.autoSigningIn,
+            AuthService.roleRevision,
+          ]),
           builder: (context, _) {
             final signedIn = AuthService.user.value != null;
             final autoSigningIn = AuthService.autoSigningIn.value;
@@ -72,7 +76,12 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
             }
             return Stack(
               children: [
-                child!,
+                KeyedSubtree(
+                  key: ValueKey(
+                    '${AuthService.user.value?.uid ?? ''}|$kCompanyId|${AuthService.currentOwnerUid}',
+                  ),
+                  child: child!,
+                ),
                 if (locked)
                   const Positioned.fill(
                     child: PinLockScreen(),

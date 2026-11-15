@@ -29,19 +29,21 @@ class NetworkStatusService {
     if (_started) return;
     _started = true;
     AuthService.user.addListener(_bindUser);
+    AuthService.roleRevision.addListener(_bindUser);
     _bindUser();
   }
 
   static void _bindUser() {
     if (!_started) return;
     final userId = AuthService.user.value?.uid;
-    if (_userId == userId && _probe != null) return;
+    final bindKey = userId == null ? null : '$userId|$kCompanyId|$kOwnerUid';
+    if (_userId == bindKey && _probe != null) return;
     _probe?.cancel();
     _jobs?.cancel();
     _probe = null;
     _jobs = null;
     _retry?.cancel();
-    _userId = userId;
+    _userId = bindKey;
     if (userId == null) {
       offline.value = true;
       pendingWrites.value = 0;
@@ -99,6 +101,7 @@ class NetworkStatusService {
 
   static void dispose() {
     AuthService.user.removeListener(_bindUser);
+    AuthService.roleRevision.removeListener(_bindUser);
     _retry?.cancel();
     _userId = null;
     _probe?.cancel();

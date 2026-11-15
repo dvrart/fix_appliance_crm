@@ -5,8 +5,10 @@ import 'package:flutter/services.dart';
 import '../../core/app_commands.dart';
 import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
+import '../../core/tester_build.dart';
 import '../../core/ui_scale.dart';
 import '../../shared/app_nav.dart';
+import '../../shared/widgets/app_onboarding_guide.dart';
 import '../../shared/widgets/custom_drawer.dart';
 import '../../shared/unsaved_navigation_gate.dart';
 import '../../shared/widgets/confirm_action_sheet.dart';
@@ -105,7 +107,11 @@ class _MainScreenState extends State<MainScreen>
     AppCommands.selectTab.addListener(_onSelectTabCommand);
     AppCommands.commsTab.addListener(_onCommsTabChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(NotificationService.promptIfDisabled(context));
+      if (!mounted) return;
+      unawaited(NotificationService.promptIfDisabled(context));
+      if (kTesterAppBuild) {
+        unawaited(AppOnboardingGuide.promptIfFirstTime(context));
+      }
     });
   }
 
@@ -441,6 +447,22 @@ class _MainScreenState extends State<MainScreen>
                           ),
                         ),
                       const Positioned(left: 12, child: OfflineChip()),
+                      if (kTesterAppBuild)
+                        Positioned(
+                          right: 6,
+                          child: IconButton(
+                            tooltip: context.tr(
+                              'Гайд по приложению',
+                              'App Guide',
+                            ),
+                            icon: const Icon(
+                              Icons.help_outline_rounded,
+                              color: Colors.white,
+                              size: 24,
+                            ),
+                            onPressed: () => AppOnboardingGuide.open(context),
+                          ),
+                        ),
                     ],
                   ),
                 ),

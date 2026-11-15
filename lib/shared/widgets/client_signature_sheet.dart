@@ -6,6 +6,7 @@ import 'package:signature/signature.dart';
 
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
+import '../../core/tester_build.dart';
 import 'confirm_action_sheet.dart';
 
 class ClientSignatureSheet {
@@ -167,7 +168,9 @@ class ClientSignatureSheet {
   }) async {
     final stamp = DateTime.now().millisecondsSinceEpoch;
     final ref = FirebaseStorage.instance.ref().child(
-      'jobs/$jobId/attachments/sig_$stamp.png',
+      kTesterAppBuild
+          ? 'companies/$kCompanyId/jobs/$jobId/attachments/sig_$stamp.png'
+          : 'jobs/$jobId/attachments/sig_$stamp.png',
     );
     await ref.putData(
       bytes,

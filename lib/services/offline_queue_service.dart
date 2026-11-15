@@ -6,6 +6,8 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/constants.dart';
+import '../core/tester_build.dart';
 import 'error_log_service.dart';
 import 'firestore_service.dart';
 
@@ -210,7 +212,11 @@ class OfflineQueueService {
     }
     final storageRef = FirebaseStorage.instance
         .ref()
-        .child('jobs/$jobId/attachments/$fileName');
+        .child(
+          kTesterAppBuild
+              ? 'companies/$kCompanyId/jobs/$jobId/attachments/$fileName'
+              : 'jobs/$jobId/attachments/$fileName',
+        );
     await storageRef.putFile(file);
     final url = await storageRef.getDownloadURL();
     // Транзакция, а не arrayUnion: у заявки уже лежит запись этого снимка с

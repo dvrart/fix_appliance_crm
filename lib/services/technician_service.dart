@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/api_keys.dart';
+import '../core/tester_build.dart';
 import '../models/technician.dart';
 import 'auth_service.dart';
 import 'firestore_service.dart';
@@ -68,6 +69,7 @@ class TechnicianService {
     if (!_listeningAuth) {
       _listeningAuth = true;
       AuthService.user.addListener(_rebind);
+      AuthService.roleRevision.addListener(_rebind);
     }
     _rebind();
   }
@@ -75,9 +77,11 @@ class TechnicianService {
   static void _rebind() {
     final u = AuthService.user.value;
     final uid = u?.uid;
-    if (uid == _boundUid && (_allSub != null || _selfSub != null)) return;
+    final bindKey =
+        uid == null ? null : '$uid|${AuthService.currentCompanyId}|$kOwnerUid';
+    if (bindKey == _boundUid && (_allSub != null || _selfSub != null)) return;
     _cancelStreams();
-    _boundUid = uid;
+    _boundUid = bindKey;
     if (uid == null || uid.isEmpty) {
       list.value = const [];
       _byId = const {};
@@ -163,6 +167,7 @@ class TechnicianService {
   static void stop() {
     if (_listeningAuth) {
       AuthService.user.removeListener(_rebind);
+      AuthService.roleRevision.removeListener(_rebind);
       _listeningAuth = false;
     }
     _boundUid = null;
@@ -277,11 +282,15 @@ class TechnicianService {
   static Future<Map<String, dynamic>> _callManage(
     Map<String, dynamic> payload,
   ) async {
+    final body = <String, dynamic>{
+      ...payload,
+      if (kTesterAppBuild) 'companyId': AuthService.currentCompanyId,
+    };
     final response = await http
         .post(
           Uri.parse('$kFirebaseFunctionsUrl/manageTechnician'),
           headers: await AuthService.headers(),
-          body: json.encode(payload),
+          body: json.encode(body),
         )
         .timeout(const Duration(seconds: 30));
 

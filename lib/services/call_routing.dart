@@ -1,3 +1,5 @@
+import '../core/tester_build.dart';
+
 /// Как звонить: через приложение (интернет, Twilio Voice), через обычную
 /// сотовую связь (SIM) или «приложение, а при сбое звука — SIM».
 ///
@@ -44,7 +46,8 @@ class CallRouting {
     return CallRouting(
       route: _parse(config[routeKey]) ?? CallRoute.app,
       cellNumber: normalizePhone((config[cellKey] ?? '').toString()),
-      outgoingRoute: _parse(config[outgoingKey]),
+      outgoingRoute:
+          _parse(config[outgoingKey]) ?? (kTesterAppBuild ? CallRoute.auto : null),
     );
   }
 
@@ -54,8 +57,9 @@ class CallRouting {
   CallRoute get effective => hasCell ? route : CallRoute.app;
 
   /// Исходящие.
-  CallRoute get effectiveOutgoing =>
-      hasCell ? (outgoingRoute ?? route) : CallRoute.app;
+  CallRoute get effectiveOutgoing => kTesterAppBuild
+      ? (outgoingRoute ?? route)
+      : (hasCell ? (outgoingRoute ?? route) : CallRoute.app);
 
   bool get outboundViaCell => effectiveOutgoing == CallRoute.cell;
 

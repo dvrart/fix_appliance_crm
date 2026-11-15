@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import '../../../core/constants.dart';
+import '../../../core/tester_build.dart';
 import '../../../models/client.dart';
 import '../../../models/job.dart';
 import '../../../models/technician.dart';
@@ -461,7 +462,9 @@ class JobDetailsController extends ChangeNotifier {
   Future<String?> uploadPartReceipt(File file) async {
     final fileName = 'part_receipt_${DateTime.now().microsecondsSinceEpoch}.jpg';
     final storageRef = FirebaseStorage.instance.ref().child(
-      'jobs/$jobId/attachments/$fileName',
+      kTesterAppBuild
+          ? 'companies/$kCompanyId/jobs/$jobId/attachments/$fileName'
+          : 'jobs/$jobId/attachments/$fileName',
     );
     await storageRef.putFile(file).timeout(const Duration(seconds: 30));
     final url = await storageRef.getDownloadURL().timeout(
@@ -1471,7 +1474,9 @@ class JobDetailsController extends ChangeNotifier {
         usedNames.add(fileName);
         try {
           final storageRef = FirebaseStorage.instance.ref().child(
-            'jobs/$jobId/attachments/$fileName',
+            kTesterAppBuild
+                ? 'companies/$kCompanyId/jobs/$jobId/attachments/$fileName'
+                : 'jobs/$jobId/attachments/$fileName',
           );
           // На слабой связи загрузка может тянуться минутами и держать
           // «Сохранить». Ждём недолго, дальше фото уходит в очередь.

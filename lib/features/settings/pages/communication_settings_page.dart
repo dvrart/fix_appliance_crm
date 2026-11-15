@@ -4,6 +4,7 @@ import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../core/utils/app_time_picker.dart';
 import '../../../services/call_routing.dart';
+import '../../../services/auth_service.dart';
 import '../../../services/morning_briefing_service.dart';
 import '../../../services/notification_service.dart';
 import '../../../services/settings_service.dart';
@@ -233,6 +234,7 @@ class _CommunicationSettingsPageState extends State<CommunicationSettingsPage>
     setState(() => _routing = _routing.copyWith(cellNumber: number));
     TwilioService.routing = _routing;
     await SettingsService.updateConfig(CallRouting.cellKey, number);
+    await AuthService.saveTesterCellPhone(number);
     return number.isNotEmpty;
   }
 
