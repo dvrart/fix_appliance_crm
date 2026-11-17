@@ -766,6 +766,8 @@ const Map<String, String> kEnglishUi = {
   'Ошибка загрузки списка работ': 'Could not load jobs',
   'Список': 'List',
   'Маршрут': 'Route',
+  'По времени': 'By time',
+  'По расстоянию': 'By distance',
   'Оптимизировать заново': 'Re-optimize',
   'Расставить время по маршруту': 'Schedule times along the route',
   'Время заявок расставлено по маршруту': 'Job times were set along the route',

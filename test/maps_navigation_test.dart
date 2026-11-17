@@ -1,4 +1,6 @@
 import 'package:fix_appliance_crm/core/geo/service_area.dart';
+import 'package:fix_appliance_crm/features/jobs/route_map_view.dart';
+import 'package:fix_appliance_crm/models/job.dart';
 import 'package:fix_appliance_crm/services/maps_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -258,6 +260,45 @@ void main() {
       );
       expect(provinceOnly.location, isNull);
       expect(provinceOnly.isHouse, isFalse);
+    });
+  });
+
+  group('сортировка маршрута дня', () {
+    final day = DateTime(2026, 11, 16);
+    Job makeJob(String id, DateTime startAt) => Job(
+      id: id,
+      clientId: 'c-$id',
+      clientName: 'Client $id',
+      clientPhone: '+14165550100',
+      clientAddress: '10 Main St, Brantford',
+      createdAt: DateTime(2026, 11, 1),
+      visits: [JobVisit(id: 'v-$id', startAt: startAt, durationMinutes: 60)],
+    );
+
+    test('по умолчанию сортирует по времени визита, без времени — в конец', () {
+      final jobs = [
+        makeJob('afternoon', DateTime(2026, 11, 16, 14, 30)),
+        makeJob('no_time', DateTime(2026, 11, 16, 0, 0)),
+        makeJob('morning', DateTime(2026, 11, 16, 9, 0)),
+        makeJob('noon', DateTime(2026, 11, 16, 12, 0)),
+      ];
+      final sorted = RouteMapView.sortJobsByVisitTime(jobs, day);
+      expect(sorted.map((j) => j.id).toList(), [
+        'morning',
+        'noon',
+        'afternoon',
+        'no_time',
+      ]);
+    });
+
+    test('ручной порядок переставляет карточки по сохранённому списку', () {
+      final jobs = [
+        makeJob('a', DateTime(2026, 11, 16, 9, 0)),
+        makeJob('b', DateTime(2026, 11, 16, 11, 0)),
+        makeJob('c', DateTime(2026, 11, 16, 14, 0)),
+      ];
+      final manual = RouteMapView.applyManualOrder(jobs, ['c', 'a', 'b']);
+      expect(manual.map((j) => j.id).toList(), ['c', 'a', 'b']);
     });
   });
 }

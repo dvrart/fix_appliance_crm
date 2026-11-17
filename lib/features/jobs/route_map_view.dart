@@ -14,6 +14,9 @@ import '../../core/l10n/app_locale.dart';
 import '../../shared/app_nav.dart';
 import '../../shared/widgets/job_agenda_card.dart';
 
+/// Режим сортировки остановок на экране маршрута.
+enum RouteSortMode { time, distance, manual }
+
 /// Карта оптимального маршрута на сегодня + список остановок
 /// с возможностью вручную поменять порядок (drag & drop).
 class RouteMapChrome {
@@ -42,11 +45,50 @@ class RouteMapView extends StatefulWidget {
     this.onChromeChanged,
   });
 
+  /// Сортировка заявок по времени визита на выбранный день.
+  /// Визиты с назначенным временем идут первыми по возрастанию времени,
+  /// визиты без времени — после них.
+  static List<Job> sortJobsByVisitTime(List<Job> jobs, DateTime day) {
+    final originalPos = <String, int>{
+      for (var i = 0; i < jobs.length; i++) jobs[i].id: i,
+    };
+    return [...jobs]..sort((a, b) {
+      final va = a.visitOn(day);
+      final vb = b.visitOn(day);
+      final aTimed = va?.hasTime ?? false;
+      final bTimed = vb?.hasTime ?? false;
+      if (aTimed != bTimed) return aTimed ? -1 : 1;
+      final ta = va?.startAt ?? DateTime(0);
+      final tb = vb?.startAt ?? DateTime(0);
+      final cmp = ta.compareTo(tb);
+      if (cmp != 0) return cmp;
+      return (originalPos[a.id] ?? 0).compareTo(originalPos[b.id] ?? 0);
+    });
+  }
+
+  /// Применение сохранённого ручного порядка остановок.
+  static List<Job> applyManualOrder(List<Job> jobs, List<String> savedIds) {
+    if (savedIds.isEmpty) return [...jobs];
+    final rank = <String, int>{
+      for (var i = 0; i < savedIds.length; i++) savedIds[i]: i,
+    };
+    if (!jobs.any((j) => rank.containsKey(j.id))) return [...jobs];
+    final originalPos = <String, int>{
+      for (var i = 0; i < jobs.length; i++) jobs[i].id: i,
+    };
+    return [...jobs]..sort((a, b) {
+      final ra = rank[a.id] ?? (100000 + (originalPos[a.id] ?? 0));
+      final rb = rank[b.id] ?? (100000 + (originalPos[b.id] ?? 0));
+      return ra.compareTo(rb);
+    });
+  }
+
   @override
   State<RouteMapView> createState() => _RouteMapViewState();
 }
 
 class _RouteMapViewState extends State<RouteMapView> {
+  RouteSortMode _sortMode = RouteSortMode.time;
   List<Job> _orderedJobs = [];
   int _skippedCount = 0;
   OptimizedRoute? _route;
@@ -106,7 +148,8 @@ class _RouteMapViewState extends State<RouteMapView> {
 
   String _jobsAddressSig(List<Job> jobs) {
     final entries = [
-      for (final j in jobs) '${j.id}:${j.workAddress.trim()}',
+      for (final j in jobs)
+        '${j.id}:${j.workAddress.trim()}:${_sortMode == RouteSortMode.time ? (j.visitOn(widget.day)?.startAt.millisecondsSinceEpoch ?? 0) : ''}',
     ]..sort();
     return entries.join('|');
   }
@@ -120,9 +163,31 @@ class _RouteMapViewState extends State<RouteMapView> {
   }
 
   Future<void> _reoptimizeRoute() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_manualOrderKey(widget.day));
-    await _loadRoute(forceOptimize: true);
+    await _loadRoute(keepMap: true);
+  }
+
+  Future<void> _selectSortMode(RouteSortMode mode) async {
+    if (_sortMode == mode && !_loading && !_recomputing) return;
+    HapticFeedback.selectionClick();
+    setState(() {
+      _sortMode = mode;
+      if (mode == RouteSortMode.time && _orderedJobs.isNotEmpty) {
+        _orderedJobs = RouteMapView.sortJobsByVisitTime(
+          _orderedJobs,
+          widget.day,
+        );
+      }
+    });
+    if (mode == RouteSortMode.manual) {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      final savedIds = prefs.getStringList(_manualOrderKey(widget.day));
+      if (savedIds == null || savedIds.isEmpty) {
+        await _saveManualOrder();
+        return;
+      }
+    }
+    await _loadRoute(keepMap: true);
   }
 
   @override
@@ -130,7 +195,7 @@ class _RouteMapViewState extends State<RouteMapView> {
     super.didUpdateWidget(oldWidget);
     if (!JobVisit.isSameDay(oldWidget.day, widget.day) ||
         _jobsAddressSig(oldWidget.jobs) != _jobsAddressSig(widget.jobs)) {
-      _loadRoute();
+      _loadRoute(keepMap: JobVisit.isSameDay(oldWidget.day, widget.day));
       return;
     }
     final paintChanged = _paintSig(oldWidget.jobs) != _paintSig(widget.jobs);
@@ -140,10 +205,15 @@ class _RouteMapViewState extends State<RouteMapView> {
     }
   }
 
-  Future<void> _loadRoute({bool forceOptimize = false}) async {
+  Future<void> _loadRoute({bool keepMap = false}) async {
     if (!mounted) return;
+    final showOverlay = keepMap && !_loading && _orderedJobs.isNotEmpty;
     setState(() {
-      _loading = true;
+      if (showOverlay) {
+        _recomputing = true;
+      } else {
+        _loading = true;
+      }
       _error = null;
     });
 
@@ -152,28 +222,31 @@ class _RouteMapViewState extends State<RouteMapView> {
         .toList();
     _skippedCount = widget.jobs.length - jobsWithAddress.length;
 
-    var hasManualOrder = false;
-    if (!forceOptimize && jobsWithAddress.length > 1) {
+    if (_sortMode == RouteSortMode.time) {
+      jobsWithAddress = RouteMapView.sortJobsByVisitTime(
+        jobsWithAddress,
+        widget.day,
+      );
+    } else if (_sortMode == RouteSortMode.manual && jobsWithAddress.length > 1) {
       final prefs = await SharedPreferences.getInstance();
       if (!mounted) return;
       final savedIds = prefs.getStringList(_manualOrderKey(widget.day));
       if (savedIds != null && savedIds.isNotEmpty) {
-        final rank = <String, int>{
-          for (var i = 0; i < savedIds.length; i++) savedIds[i]: i,
-        };
-        if (jobsWithAddress.any((j) => rank.containsKey(j.id))) {
-          hasManualOrder = true;
-          final originalPos = <String, int>{
-            for (var i = 0; i < jobsWithAddress.length; i++)
-              jobsWithAddress[i].id: i,
-          };
-          jobsWithAddress = [...jobsWithAddress]..sort((a, b) {
-              final ra = rank[a.id] ?? (100000 + (originalPos[a.id] ?? 0));
-              final rb = rank[b.id] ?? (100000 + (originalPos[b.id] ?? 0));
-              return ra.compareTo(rb);
-            });
-        }
+        jobsWithAddress = RouteMapView.applyManualOrder(
+          jobsWithAddress,
+          savedIds,
+        );
+      } else if (_orderedJobs.isNotEmpty) {
+        jobsWithAddress = RouteMapView.applyManualOrder(
+          jobsWithAddress,
+          [for (final job in _orderedJobs) job.id],
+        );
       }
+    } else {
+      jobsWithAddress = RouteMapView.sortJobsByVisitTime(
+        jobsWithAddress,
+        widget.day,
+      );
     }
 
     _orderedJobs = jobsWithAddress;
@@ -181,7 +254,12 @@ class _RouteMapViewState extends State<RouteMapView> {
     if (_orderedJobs.isEmpty) {
       _route = null;
       _notifyChrome();
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _recomputing = false;
+        });
+      }
       return;
     }
 
@@ -239,6 +317,7 @@ class _RouteMapViewState extends State<RouteMapView> {
       _notifyChrome();
       setState(() {
         _loading = false;
+        _recomputing = false;
         _error =
             unresolvedWarning ??
             '${'Не удалось построить маршрут.'.tr}\n${'Проверьте адреса заявок.'.tr}';
@@ -246,6 +325,8 @@ class _RouteMapViewState extends State<RouteMapView> {
       return;
     }
 
+    final optimizeByDistance =
+        _sortMode == RouteSortMode.distance && routableJobs.length > 1;
     final route = await MapsService.getOptimizedRoute(
       origin: _origin!,
       addresses: routableJobs.map((j) => j.workAddress).toList(),
@@ -253,7 +334,7 @@ class _RouteMapViewState extends State<RouteMapView> {
         for (var i = 0; i < routableJobs.length; i++)
           '${i + 1}. ${routableJobs[i].clientName} (${routableJobs[i].workAddress.trim()})',
       ],
-      optimize: !hasManualOrder,
+      optimize: optimizeByDistance,
     );
     if (!mounted) return;
 
@@ -262,6 +343,7 @@ class _RouteMapViewState extends State<RouteMapView> {
       _notifyChrome();
       setState(() {
         _loading = false;
+        _recomputing = false;
         _error =
             '${'Не удалось построить маршрут.'.tr}\n'
             '${MapsService.lastRouteError ?? 'Проверьте адреса заявок.'.tr}';
@@ -270,7 +352,7 @@ class _RouteMapViewState extends State<RouteMapView> {
     }
 
     _route = route;
-    final orderedRoutable = !hasManualOrder
+    final orderedRoutable = optimizeByDistance
         ? route.order.map((i) => routableJobs[i]).toList()
         : routableJobs;
     _orderedJobs = [...orderedRoutable, ...unresolvedJobs];
@@ -278,7 +360,10 @@ class _RouteMapViewState extends State<RouteMapView> {
     await _buildMarkersAndPolylines();
     if (!mounted) return;
     _notifyChrome();
-    setState(() => _loading = false);
+    setState(() {
+      _loading = false;
+      _recomputing = false;
+    });
   }
 
   /// Google Maps берёт не больше девяти промежуточных точек — об остальных
@@ -354,6 +439,7 @@ class _RouteMapViewState extends State<RouteMapView> {
     if (to < 0 || to >= _orderedJobs.length || from == to) return;
     HapticFeedback.selectionClick();
     setState(() {
+      _sortMode = RouteSortMode.manual;
       final job = _orderedJobs.removeAt(from);
       _orderedJobs.insert(to, job);
     });
@@ -576,7 +662,7 @@ class _RouteMapViewState extends State<RouteMapView> {
                 IconButton(
                   icon: const Icon(Icons.refresh, size: 18),
                   tooltip: 'Попробовать снова'.tr,
-                  onPressed: _loadRoute,
+                  onPressed: () => _loadRoute(keepMap: true),
                 ),
               ],
             ),
@@ -667,22 +753,102 @@ class _RouteMapViewState extends State<RouteMapView> {
             ],
           ),
         ),
+        _buildSortBar(),
         Expanded(child: _buildStopsList()),
       ],
+    );
+  }
+
+  Widget _buildSortBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 2),
+      child: Container(
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          children: [
+            _buildSortOption(
+              mode: RouteSortMode.time,
+              icon: Icons.schedule,
+              label: 'По времени'.tr,
+            ),
+            const SizedBox(width: 4),
+            _buildSortOption(
+              mode: RouteSortMode.distance,
+              icon: Icons.route,
+              label: 'По расстоянию'.tr,
+            ),
+            const SizedBox(width: 4),
+            _buildSortOption(
+              mode: RouteSortMode.manual,
+              icon: Icons.drag_indicator_rounded,
+              label: 'Вручную'.tr,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSortOption({
+    required RouteSortMode mode,
+    required IconData icon,
+    required String label,
+  }) {
+    final selected = _sortMode == mode;
+    final fg = selected ? Colors.white : AppColors.ink;
+    return Expanded(
+      child: Material(
+        color: selected ? AppColors.primary : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => _selectSortMode(mode),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 7),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 15, color: fg),
+                  const SizedBox(width: 4),
+                  Text(
+                    label,
+                    maxLines: 1,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                      color: fg,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
   Widget _buildStopsList() {
     return ReorderableListView.builder(
       buildDefaultDragHandles: false,
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-      header: Padding(
-        padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
-        child: Text(
-          'Зажмите карточку, чтобы поменять порядок остановок'.tr,
-          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-        ),
-      ),
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 24),
+      header: _sortMode == RouteSortMode.manual
+          ? Padding(
+              padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
+              child: Text(
+                'Зажмите карточку, чтобы поменять порядок остановок'.tr,
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+            )
+          : null,
       itemCount: _orderedJobs.length,
       proxyDecorator: (child, _, animation) {
         return AnimatedBuilder(
@@ -725,10 +891,11 @@ class _RouteMapViewState extends State<RouteMapView> {
       key: ValueKey(job.id),
       index: index,
       child: Padding(
-        padding: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.only(bottom: 6),
         child: JobAgendaCard(
           job: job,
           visit: visit,
+          forceCompact: true,
           routeIndex: index + 1,
           reorderIndex: index,
           routeIndexColor: _statusColorFor(job),
