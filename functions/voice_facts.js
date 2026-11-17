@@ -1103,10 +1103,87 @@ function mayHangUp({ lastUser, lastAsst, history, extracted }) {
 }
 
 function looksOutOfScopeItem(text) {
-  return /\b(laptop|notebook|macbook|chromebook|computer|desktop|pc\b|iphone|android phone|tablet|ipad)\b/i.test(
-    String(text || '')
+  const t = String(text || '');
+  if (/\bgas\s+(?:cook\s*top|stove\s*top)\b|газов(?:ая|ую|ой)\s+варочн/i.test(t)) return true;
+  if (inferApplianceFromText(t)) return false;
+  return /\b(laptop|notebook|macbook|chromebook|computer|desktop|pc\b|iphone|android phone|cell\s*phone|smart\s*phone|tablet|ipad|television|\btv\b|smart\s*tv|flat\s*screen|lawn\s*mower|snow\s*blower|chainsaw)\b/i.test(
+    t
   )
-    || /ноутбук|компьютер|ноут\b|макбук/i.test(String(text || ''));
+    || /ноутбук|компьютер|ноут\b|макбук|телевизор|газонокосил/i.test(t);
+}
+
+function looksLikeSpamOrRobocall(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  const ivr =
+    /\b(press\s+(?:one|two|three|four|five|six|seven|eight|nine|zero|1|2|3|4|5|6|7|8|9|0)|dial\s+(?:1|2|9|0)|to\s+speak\s+(?:to|with)\s+a\s+(?:representative|agent|specialist|operator)|to\s+be\s+removed\s+from\s+(?:our|this|the)\s+(?:list|calling\s+list)|opt\s+out|automated\s+(?:message|call|system)|recorded\s+(?:message|line)|this\s+is\s+an?\s+(?:automated|important|final|urgent)\s+(?:message|call|notice))\b/i.test(
+      t
+    );
+  if (ivr) return true;
+  if (inferApplianceFromText(t)) return false;
+  return /\b(google\s+(?:listing|business|maps|search|profile|ranking|voice\s+verification)|search\s+engine|\bseo\b|digital\s+marketing|web(?:site)?\s+design|merchant\s+(?:services|account|processing)|credit\s+card\s+processing|lower\s+your\s+(?:interest|rate|bill)|business\s+(?:loan|funding|line\s+of\s+credit)|financial\s+relief|debt\s+(?:relief|consolidation)|duct\s+cleaning|air\s+duct|car\s+warranty|auto\s+warranty|vehicle\s+(?:warranty|service\s+contract)|extended\s+warranty\s+for\s+your\s+(?:car|vehicle)|canada\s+revenue|arrest\s+warrant|social\s+insurance\s+number|legal\s+enforcement|promotional\s+offer)\b/i.test(
+    t
+  );
+}
+
+function looksLikeWrongNumber(text) {
+  const t = String(text || '').trim();
+  if (!t || inferApplianceFromText(t)) return false;
+  return /\b(wrong\s+number|dial(?:ed|led)\s+the\s+wrong|called\s+the\s+wrong|must\s+have\s+the\s+wrong|sorry[,]?\s+wrong\s+number|is\s+this\s+(?:the\s+)?(?:pharmacy|doctor|clinic|hospital|dentist|pizza|restaurant|hotel|motel|taxi|cab|uber|bank|post\s+office|police|city\s+hall|library|school|hair\s+salon|barber|vet|veterinary|auto\s+body|car\s+dealership|towing))\b/i.test(
+    t
+  )
+    || /ошиб(?:ся|лась|лись)\s+номером|не\s+туда\s+попал|это\s+(?:аптека|больница|поликлиника|такси|пиццерия|банк|школа)/i.test(
+      t
+    );
+}
+
+const CALL_SUBSTANCE_RE =
+  /\b(appliance|machine|unit|fridge|refrigerator|freezer|washer|washing|dryer|dishwasher|stove|oven|range|cooktop|burner|element|microwave|ice\s*maker|dispenser|garburator|disposal|repair|fix|broken|broke|not\s+working|doesn'?t\s+work|won'?t|isn'?t|leak|leaking|water|noise|noisy|loud|grind|grinding|squeak|rattle|rattling|hum|humming|buzz|buzzing|spin|spinning|drain|draining|heat|heating|hot|cool|cooling|cold|warm|freeze|freezing|frost|defrost|ice|door|seal|gasket|latch|handle|lock|igniter|spark|flame|motor|pump|belt|drum|tub|rack|spray\s*arm|filter|thermostat|compressor|freon|refrigerant|sealed\s+system|board|control\s+panel|display|button|error|code|flash|flashing|blink|blinking|beep|beeping|power|turn\s+on|start|starting|shut\s+off|trip|tripping|breaker|fuse|smell|burning|smoke|model|serial|sticker|tag|brand|whirlpool|samsung|lg\b|ge\b|bosch|maytag|frigidaire|kitchenaid|kenmore|electrolux|miele|amana|hotpoint|haier|bloomberg|blomberg|danby|sub-?zero|wolf|viking|thermador|fisher|paykel|speed\s+queen|inglis|moffat|panasonic|sharp|technician|tech\b|master|service\s+call|diagnostic|fee|cost|price|how\s+much|quote|estimate|warranty|appointment|booking|book\b|schedule|reschedule|cancel|visit|come\s+out|street|road|avenue|drive|lane|boulevard|court|crescent|highway|town|city|postal|ontario|brantford|paris|simcoe|tillsonburg|woodstock|ingersoll|delhi|waterford|dover|norwich|burford|cayuga|hagersville|dunnville|ancaster|caledonia|ayr|kitchener|waterloo|cambridge|artem)\b/i;
+
+const CALL_SUBSTANCE_RU_RE =
+  /ремонт|почин|сломал|не\s+работает|течет|течёт|шумит|гудит|греет|холодит|морозит|сливает|крутит|отжимает|включается|ошибк|код|мастер|техник|визит|заявк|запис|отмен|перенес|сколько\s+стоит|цена|диагностик|гарант|холодильник|морозил|стирал|сушил|посудомой|плит|духовк|микроволн|варочн|фреон|компрессор|адрес|улиц|lavadora|secadora|refrigerador|nevera|estufa|horno|lavavajillas|reparaci/i;
+
+function hasCallSubstance(extracted, history, extraText) {
+  const e = extracted && typeof extracted === 'object' ? extracted : {};
+  if (
+    e.appliance_type ||
+    e.brand ||
+    e.model ||
+    e.problem_description ||
+    e.address ||
+    e.city ||
+    e.postal_code ||
+    e.scheduled_date ||
+    e.scheduled_time ||
+    e.preferred_time ||
+    e.wants_callback === true ||
+    e.appointment_only === true ||
+    (e.appointment_intent && e.appointment_intent !== 'none')
+  ) {
+    return true;
+  }
+  const userLines = [];
+  for (const item of Array.isArray(history) ? history : []) {
+    if (item && item.role === 'user' && item.text) userLines.push(String(item.text));
+  }
+  if (extraText) userLines.push(String(extraText));
+  const combined = userLines.join('\n').trim();
+  if (!combined) return false;
+  if (
+    (looksLikeSpamOrRobocall(combined) || looksLikeWrongNumber(combined)) &&
+    !inferApplianceFromText(combined)
+  ) {
+    return false;
+  }
+  return (
+    Boolean(inferApplianceFromText(combined)) ||
+    looksLikeStreetUtterance(combined) ||
+    detectLiveCallback(combined) ||
+    callerAskedToHold(combined) ||
+    hasNewRepairRequest(history) ||
+    CALL_SUBSTANCE_RE.test(combined) ||
+    CALL_SUBSTANCE_RU_RE.test(combined)
+  );
 }
 
 function clientAddressFrom(client) {
@@ -1486,6 +1563,9 @@ module.exports = {
   askedAnythingElse,
   declinedMoreHelp,
   looksOutOfScopeItem,
+  looksLikeSpamOrRobocall,
+  looksLikeWrongNumber,
+  hasCallSubstance,
   missingVisitDetails,
   askedForVisitTime,
   askedForAddress,

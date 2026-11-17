@@ -55,7 +55,15 @@ module.exports = function createSecretaryLearn({
       callData.transcriptionEn || callData.transcription || callData.transcriptionRu || ''
     ).trim();
     const userTurns = history.filter((item) => item && item.role === 'user').length;
-    if (userTurns < 1 && transcription.length < 40) {
+    const hangupReason = String((callData.aiReception && callData.aiReception.hangup) || '');
+    const hasClientLine = /(^|\n)\s*(Client|Клиент|Caller|User)\s*:\s*(?!\(silence\))\S/im.test(
+      transcription
+    );
+    if (
+      (userTurns < 1 && (history.length > 0 || !hasClientLine || transcription.length < 40)) ||
+      (['spam', 'wrong_number', 'idle'].includes(hangupReason) &&
+        !(callData.aiReception && callData.aiReception.createJob))
+    ) {
       await callsRef.doc(callSid).set({ learningStatus: 'skipped' }, { merge: true });
       return;
     }

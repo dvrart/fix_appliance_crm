@@ -1433,3 +1433,68 @@ test('GPT-Live-1: waits for session.started, streams audio/pcmu, delegates via s
   await call.flush();
   assert.equal(call.session.voiceSeconds, 19.5);
 });
+
+test('spam, wrong-number and forgotten-phone calls stop quickly without burning extraction tokens', async (t) => {
+  const { SILENCE_HANGUP_MS, IDLE_CALL_MAX_MS, IDLE_CALL_MAX_TURNS, MAX_CALL_DURATION_MS } =
+    voiceRelay._internals.timing;
+  assert.equal(SILENCE_HANGUP_MS, 4000);
+  assert.equal(IDLE_CALL_MAX_MS, 60000);
+  assert.equal(IDLE_CALL_MAX_TURNS, 4);
+  assert.equal(MAX_CALL_DURATION_MS, 4 * 60 * 1000);
+
+  // 1. Спам/робот: сразу короткое прощание и отбой через 4 с без вызовов LLM-экстрактора.
+  let extractCalls = 0;
+  const spamCall = liveCall(t);
+  voiceRelay.init({
+    geminiApiKey: 'test-gemini-key',
+    openGeminiSocket: () => spamCall.current(),
+    callsRef: {
+      doc: () => ({
+        get: async () => ({ exists: false }),
+        set: async (data) => { spamCall.writes.push(structuredClone(data)); },
+      }),
+    },
+    mergeExtracted: (prev) => ({ ...(prev || {}) }),
+    normalizePhone: (p) => String(p || '').replace(/\D/g, '').slice(-10),
+    hasEnoughForJob: () => false,
+    appendTranscript: (c, l) => [c, l].filter(Boolean).join('\n'),
+    generateVoiceContent: async () => {
+      extractCalls += 1;
+      return { response: { text: () => '{}' } };
+    },
+    extractJsonObject: (raw) => JSON.parse(raw),
+  });
+  spamCall.ready();
+  spamCall.modelSays('FixApplianceCA, this is Sarah — how can I help?');
+  spamCall.callerSays('This is an automated call about your Google Business listing, press 1 now.');
+  assert.equal(spamCall.session.hangupReason, 'spam');
+  assert.equal(spamCall.session.unproductiveStop, true);
+  spamCall.modelSays('We only take appliance repair calls — have a good day.');
+  spamCall.tick(SILENCE_HANGUP_MS);
+  await spamCall.flush();
+  assert.equal(spamCall.twilio.closed, true);
+  assert.equal(extractCalls, 0);
+  assert.equal(spamCall.writes.at(-1).aiReception.hangup, 'spam');
+});
+
+test('forgotten-phone calls with background chatter stop after 4 empty turns without burning tokens', async (t) => {
+  const { SILENCE_HANGUP_MS } = voiceRelay._internals.timing;
+  const idleCall = liveCall(t);
+  idleCall.ready();
+  idleCall.modelSays('FixApplianceCA, this is Sarah — how can I help?');
+  idleCall.callerSays('Hello?');
+  idleCall.modelSays('Yes, I am here — how can I help?');
+  idleCall.callerSays('Pass me the salt please.');
+  idleCall.modelSays('Sorry, did you need an appliance repair?');
+  idleCall.callerSays('Yeah the game was great last night.');
+  idleCall.modelSays('Are you calling for an appliance repair?');
+  idleCall.callerSays('I do not know what time they open.');
+  assert.equal(idleCall.session.hangupReason, 'idle');
+  assert.equal(idleCall.session.unproductiveStop, true);
+  // Даже если на фоне продолжается шум, отбой не отменяется.
+  voiceRelay._internals.sendCallerAudio(idleCall.session, LOUD_FRAME);
+  idleCall.tick(SILENCE_HANGUP_MS);
+  await idleCall.flush();
+  assert.equal(idleCall.twilio.closed, true);
+  assert.equal(idleCall.writes.at(-1).aiReception.hangup, 'idle');
+});

@@ -1601,6 +1601,8 @@ Goodbye timing: never say "Have a good day" or close the conversation while the 
 
 Absurd data: if a confirmed time on file looks impossible — midnight, 3 AM, or any hour outside working hours — treat it as a data error. Confirm only the date with the caller; do not read out the impossible time.
 
+Non-client / spam / wrong number: if the caller is a recording, robocall, telemarketer, selling something, dialled the wrong number, or only asks about something unrelated to household appliances with no appliance to repair, politely decline in one short sentence and say "Have a good day" right away.
+
 Language: if the caller switches to Russian or another language and you cannot help in that language, calmly say in English: "I'll have the tech call you back right away" and take their number.`;
 
 // Проверено запросами с нашим ключом (Sep 3 2026): живая только lite-latest.
@@ -3355,7 +3357,12 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
   }
   const merged = { ...(callData || {}), ...updates };
   const rawTranscript = String(merged.transcription || '').trim();
+  const hasCallerSpeech =
+    ((merged.aiReception && merged.aiReception.history) || []).some(
+      (item) => item && item.role === 'user' && String(item.text || '').trim()
+    ) || /(^|\n)\s*(Client|Клиент|Caller|User)\s*:\s*(?!\(silence\))\S/im.test(rawTranscript);
   if (
+    hasCallerSpeech &&
     rawTranscript &&
     hasLatin(rawTranscript) &&
     !isRussianTranscript(merged.transcriptionRu || '')
@@ -3855,24 +3862,74 @@ exports.aiVoiceTurn = functions.https.onRequest(voiceAiRuntime, async (req, res)
         },
         { merge: true }
       );
-      if (nextEmpty >= 4 || turns >= AI_VOICE_MAX_TURNS) {
-        sendTwiml(
+      if (nextEmpty >= 2 || turns >= AI_VOICE_MAX_TURNS) {
+        await finishAiReception(
+          req,
           res,
-          twimlGatherSpeech(req, {
-            say: "I'm still here when you're ready.",
-            language: 'en',
-          })
+          callSid,
+          {
+            ...data,
+            aiReception: { ...receptionNow, emptyTurns: nextEmpty, hangup: 'silence' },
+          },
+          "I'm having trouble hearing you — please call back or text this number. Have a good day.",
+          'en',
+          reception.extracted || {},
+          Boolean(reception.createJob)
         );
         return;
       }
       sendTwiml(
         res,
         twimlGatherSpeech(req, {
-          say: nextEmpty >= 2 ? "I'm here — go ahead." : '',
+          say: 'Hello — are you still there?',
           language: 'en',
         })
       );
       return;
+    }
+
+    if (!voiceFacts.hasCallSubstance(reception.extracted, reception.history, speech)) {
+      const stopReason = voiceFacts.looksLikeSpamOrRobocall(speech)
+        ? 'spam'
+        : voiceFacts.looksLikeWrongNumber(speech)
+          ? 'wrong_number'
+          : turns >= 4
+            ? 'idle'
+            : '';
+      if (stopReason) {
+        const stopSay =
+          stopReason === 'spam'
+            ? 'We only take appliance repair calls — have a good day.'
+            : stopReason === 'wrong_number'
+              ? 'No problem, you have FixApplianceCA — have a good day.'
+              : 'It sounds like you do not need an appliance repair right now — please call back or text if you need us. Have a good day.';
+        const stopHistory = [
+          ...(Array.isArray(reception.history) ? reception.history : []),
+          { role: 'user', text: speech },
+          { role: 'assistant', text: stopSay },
+        ];
+        await finishAiReception(
+          req,
+          res,
+          callSid,
+          {
+            ...data,
+            transcription: appendTranscript(data.transcription, `Client: ${speech}`),
+            aiReception: {
+              ...receptionNow,
+              history: stopHistory,
+              turns,
+              done: true,
+              hangup: stopReason,
+            },
+          },
+          stopSay,
+          'en',
+          reception.extracted || {},
+          false
+        );
+        return;
+      }
     }
 
     const parsed = (await nextAiVoiceTurn(callSid, { ...data, aiReception: receptionNow }, speech)) || {};

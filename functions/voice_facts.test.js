@@ -167,3 +167,42 @@ test('onSiteContactFrom: ничего нет ни у звонящего, ни у
   const contact = voiceFacts.onSiteContactFrom({}, '', '');
   assert.deepEqual(contact, { name: '', phone: '', explicit: false });
 });
+
+test('распознавание спама, роботов, ошибочного номера и пустого разговора без сути', () => {
+  assert.equal(
+    voiceFacts.looksLikeSpamOrRobocall(
+      'Hello, this is an automated call about your Google Business listing. Press 1 to speak with an agent.'
+    ),
+    true
+  );
+  assert.equal(
+    voiceFacts.looksLikeSpamOrRobocall('We offer duct cleaning and furnace cleaning in your area.'),
+    true
+  );
+  assert.equal(voiceFacts.looksLikeSpamOrRobocall('My Samsung fridge is not cooling.'), false);
+
+  assert.equal(voiceFacts.looksLikeWrongNumber('Oh sorry, I have the wrong number.'), true);
+  assert.equal(voiceFacts.looksLikeWrongNumber('Is this the pizza restaurant?'), true);
+  assert.equal(voiceFacts.looksLikeWrongNumber('Извините, ошибся номером.'), true);
+  assert.equal(voiceFacts.looksLikeWrongNumber('My washer is leaking water.'), false);
+
+  assert.equal(
+    voiceFacts.hasCallSubstance(
+      {},
+      [
+        { role: 'user', text: 'Hello?' },
+        { role: 'user', text: 'Yeah, pass me the remote.' },
+        { role: 'user', text: 'The weather looks nice today.' },
+      ]
+    ),
+    false
+  );
+  assert.equal(
+    voiceFacts.hasCallSubstance({}, [{ role: 'user', text: 'My dryer is making a loud noise.' }]),
+    true
+  );
+  assert.equal(
+    voiceFacts.hasCallSubstance({ appliance_type: 'Холодильник' }, []),
+    true
+  );
+});

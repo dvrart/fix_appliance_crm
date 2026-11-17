@@ -91,12 +91,14 @@ const LIVE_ENGINE_BY_PROVIDER = {
 };
 const LIVE_ENGINES = new Set(Object.values(LIVE_ENGINE_BY_PROVIDER));
 
-// Жёсткий потолок длительности звонка (по умолчанию 10 минут) и таймаут
+// Жёсткий потолок длительности звонка (по умолчанию 4 минуты) и таймаут
 // ожидания session.closed для посекундной тарификации gpt-live-1 ($0.05/мин).
 const MAX_CALL_DURATION_MS = (() => {
   const raw = Number(process.env.VOICE_MAX_CALL_DURATION_MS);
-  return Number.isFinite(raw) && raw >= 60000 && raw <= 3600000 ? Math.round(raw) : 10 * 60 * 1000;
+  return Number.isFinite(raw) && raw >= 60000 && raw <= 3600000 ? Math.round(raw) : 4 * 60 * 1000;
 })();
+const IDLE_CALL_MAX_MS = 60000;
+const IDLE_CALL_MAX_TURNS = 4;
 const GPT_LIVE_CLOSE_TIMEOUT_MS = 2000;
 const GPT_LIVE_TURN_END_MS = 600;
 
@@ -282,10 +284,10 @@ const STALL_MS = (() => {
 // тишина SILENCE_GIVEUP_MS → «I can't hear you — please call back or text this
 // number»; после этого SILENCE_HANGUP_MS тишины → кладём трубку. Любое слово
 // звонящего возвращает лестницу в начало. «Hold on, let me check» — ждём дольше.
-const SILENCE_CHECK_MS = 10000;
+const SILENCE_CHECK_MS = 7000;
 const SILENCE_HOLD_MS = 60000;
-const SILENCE_GIVEUP_MS = 9000;
-const SILENCE_HANGUP_MS = 30000;
+const SILENCE_GIVEUP_MS = 6000;
+const SILENCE_HANGUP_MS = 4000;
 
 // «Глухой» Live (01.10.2026, три звонка подряд): звонящий говорил, а Gemini не
 // слышал ни слова и раз в 10–30 с рвал сокет с 1011. Громкость входящего звука
@@ -533,6 +535,9 @@ LINE TROUBLE:
 - If they keep saying hello, say you're breaking up, or cannot hear you: answer in a few words ("Yes, I'm here — can you hear me?"). At most twice in the whole call; never repeat your whole question each time.
 - If you still cannot hear each other: say once that you're having trouble hearing them and they can call back or text this number. Then wait quietly.
 - If you were cut off mid-sentence, do not restart the same sentence word for word — give the point again in a few words.
+
+NON-CLIENT / SPAM / WRONG NUMBER:
+- If the caller is a recording, robocall, telemarketer, selling something, dialled the wrong number, or only asks about something unrelated to household appliances with no appliance to repair, politely decline in one short sentence and say "Have a good day" right away.
 
 You cannot hang up. After "Have a good day," wait. They hang up.`;
 }
@@ -1044,8 +1049,26 @@ function persistSessionSoon(session, extra) {
   }, 2500);
 }
 
+function sessionHasSubstance(session) {
+  if (!session) return false;
+  if (
+    session.createJob === true ||
+    session.appointmentOnly === true ||
+    Boolean(session.pendingCancellation)
+  ) {
+    return true;
+  }
+  return voiceFacts.hasCallSubstance(
+    session.extracted,
+    session.history,
+    session.userPartial
+  );
+}
+
 function scheduleBackgroundExtract(session) {
-  if (session.closed || session.extractTimer) return;
+  if (session.closed || session.extractTimer || session.unproductiveStop) return;
+  if (!Number(session.turns || 0) || session.turns === session.lastExtractedTurns) return;
+  if (!sessionHasSubstance(session)) return;
   session.extractTimer = setTimeout(() => {
     session.extractTimer = null;
     runBackgroundExtract(session).catch((error) => {
@@ -1055,12 +1078,13 @@ function scheduleBackgroundExtract(session) {
 }
 
 async function runBackgroundExtract(session) {
-  if (session.closed || session.extracting) return;
+  if (session.closed || session.extracting || session.unproductiveStop) return;
+  const lastUser = lastHistoryText(session, 'user');
+  const lastAsst = lastHistoryText(session, 'assistant');
+  if (!lastUser || !sessionHasSubstance(session)) return;
   session.extracting = true;
+  session.lastExtractedTurns = Number(session.turns || 0);
   try {
-    const lastUser = lastHistoryText(session, 'user');
-    const lastAsst = lastHistoryText(session, 'assistant');
-    if (!lastUser && !lastAsst) return;
     const facts = await extractFacts(session, lastUser, lastAsst);
     if (session.closed) return;
     session.extracted = facts.extracted;
@@ -1072,6 +1096,58 @@ async function runBackgroundExtract(session) {
   } finally {
     session.extracting = false;
   }
+}
+
+function clearIdleCallTimer(session) {
+  if (session && session.idleCallTimer) {
+    clearTimeout(session.idleCallTimer);
+    session.idleCallTimer = null;
+  }
+}
+
+function armIdleCallTimer(session) {
+  clearIdleCallTimer(session);
+  if (!session || session.closed || session.unproductiveStop) return;
+  session.idleCallTimer = setTimeout(() => {
+    session.idleCallTimer = null;
+    if (session.closed || session.liveFailed || session.unproductiveStop) return;
+    if (sessionHasSubstance(session)) return;
+    if (voiceFacts.callerAskedToHold(lastHistoryText(session, 'user'))) {
+      armIdleCallTimer(session);
+      return;
+    }
+    if (!Number(session.turns || 0) && !String(session.userPartial || '').trim() && !session.lastVoicedAt) {
+      return;
+    }
+    stopUnproductiveCall(session, 'idle');
+  }, IDLE_CALL_MAX_MS);
+}
+
+function stopUnproductiveCall(session, reason) {
+  if (!session || session.closed || session.unproductiveStop) return;
+  session.unproductiveStop = true;
+  session.hangupReason = reason;
+  session.createJob = false;
+  session.silenceStage = 2;
+  clearReplyWatchdog(session);
+  clearIdleCallTimer(session);
+  if (session.extractTimer) {
+    clearTimeout(session.extractTimer);
+    session.extractTimer = null;
+  }
+  console.log(
+    `voiceLive unproductive stop ${session.callSid} reason=${reason} turns=${Number(session.turns || 0)}`
+  );
+  if (liveSocketOpen(session)) {
+    const text =
+      reason === 'spam'
+        ? 'This is an automated or telemarketing call, not a customer. Say only: "We only take appliance repair calls — have a good day."'
+        : reason === 'wrong_number'
+          ? 'The caller dialled the wrong number. Say only: "No problem, you have FixApplianceCA — have a good day."'
+          : 'There has been no appliance repair or appointment question on this call. Say only: "It sounds like the line is noisy or you do not need an appliance repair right now — please call back or text if you need us. Have a good day."';
+    sendPrompt(session, [{ role: 'user', parts: [{ text }] }]);
+  }
+  armSilence(session);
 }
 
 function clearMaxCallDuration(session) {
@@ -1117,6 +1193,7 @@ function clearSessionTimers(session) {
   clearSilence(session);
   clearAuthGrace(session);
   clearMaxCallDuration(session);
+  clearIdleCallTimer(session);
   clearGptLiveTurnEnd(session);
   if (session.extractTimer) {
     clearTimeout(session.extractTimer);
@@ -1307,9 +1384,12 @@ function clearSilence(session) {
 /// Звонящий что-то сказал (Gemini его расслышал) — лестница сначала.
 function noteCallerHeard(session) {
   session.lastCallerAt = Date.now();
-  session.silenceStage = 0;
   session.voicedMs = 0;
+  session.silenceDeferCount = 0;
+  if (session.unproductiveStop) return;
+  session.silenceStage = 0;
   clearSilence(session);
+  if (!session.speaking && session.ready) armSilence(session);
 }
 
 /// Её реплика закончилась — с этого момента ждём звонящего.
@@ -1333,11 +1413,19 @@ function armSilence(session) {
 function onSilence(session) {
   session.silenceTimer = null;
   if (session.closed || session.liveFailed) return;
+  const stage = Number(session.silenceStage || 0);
   // Неудобный момент: переподключение, работает инструмент, она говорит или
   // звонящий прямо сейчас слышно говорит (расшифровка придёт в конце фразы).
   const speaking = session.speaking || Boolean(session.assistantPartial);
-  const callerTalking = Boolean(session.lastVoicedAt) && Date.now() - session.lastVoicedAt < VOICE_QUIET_MS;
+  const callerTalking =
+    !session.unproductiveStop &&
+    Boolean(session.lastVoicedAt) &&
+    Date.now() - session.lastVoicedAt < VOICE_QUIET_MS &&
+    (stage < 2 || Number(session.silenceDeferCount || 0) < 2);
   if (!session.ready || session.toolPending || speaking || callerTalking) {
+    if (stage >= 2 && callerTalking) {
+      session.silenceDeferCount = Number(session.silenceDeferCount || 0) + 1;
+    }
     session.silenceTimer = setTimeout(() => onSilence(session), 2000);
     return;
   }
@@ -1346,7 +1434,7 @@ function onSilence(session) {
   // это уже Gemini), второй (или запасных нет) — в Gather: там звонящего
   // слушает сам Twilio. Громкость считается у нас, поэтому детектор одинаков
   // для обоих провайдеров.
-  if (Number(session.voicedMs || 0) >= DEAF_VOICED_MS) {
+  if (!session.unproductiveStop && Number(session.voicedMs || 0) >= DEAF_VOICED_MS) {
     console.warn(
       `voiceLive deaf ${session.callSid} voiced=${Math.round(session.voicedMs)}ms ` +
         `${session.provider || 'gemini'}:${session.liveModel || '-'}`
@@ -1362,7 +1450,6 @@ function onSilence(session) {
     session.silenceTimer = setTimeout(() => onSilence(session), SILENCE_CHECK_MS);
     return;
   }
-  const stage = Number(session.silenceStage || 0);
   if (stage >= 2) {
     hangUpForSilence(session).catch((error) => console.warn('voiceLive silence hangup:', error.message));
     return;
@@ -1470,8 +1557,8 @@ function requestOpenaiResponse(session, { force = false } = {}) {
 async function hangUpForSilence(session) {
   if (session.closed) return;
   const quiet = Math.round((Date.now() - Number(session.lastCallerAt || session.startedAt || Date.now())) / 1000);
-  console.log(`voiceLive silence hangup ${session.callSid} quiet=${quiet}s`);
-  session.hangupReason = 'silence';
+  console.log(`voiceLive silence hangup ${session.callSid} quiet=${quiet}s reason=${session.hangupReason || 'silence'}`);
+  session.hangupReason = session.hangupReason || 'silence';
   try {
     await onLiveStop(session);
   } finally {
@@ -1688,6 +1775,17 @@ function setPartial(session, field, text, finished) {
   }
   session.language = 'en';
   session[field] = joinVoiceText(session[field], value);
+  if (
+    field === 'userPartial' &&
+    !finished &&
+    !sessionHasSubstance(session) &&
+    (voiceFacts.looksLikeSpamOrRobocall(session.userPartial) ||
+      voiceFacts.looksLikeWrongNumber(session.userPartial) ||
+      Number(session.turns || 0) + 1 >= IDLE_CALL_MAX_TURNS)
+  ) {
+    flushPartial(session, field);
+    return;
+  }
   if (finished) flushPartial(session, field);
 }
 
@@ -1725,6 +1823,45 @@ function flushPartial(session, field) {
   );
   if (role === 'user') {
     session.turns = Number(session.turns || 0) + 1;
+    const prevAsst = history
+      .filter((item) => item && item.role === 'assistant')
+      .map((item) => String(item.text || ''))
+      .pop() || '';
+    if (sessionHasSubstance(session)) {
+      clearIdleCallTimer(session);
+      if (session.unproductiveStop && session.hangupReason !== 'spam') {
+        session.unproductiveStop = false;
+        session.hangupReason = '';
+        session.silenceStage = 0;
+      }
+    }
+    if (
+      voiceFacts.saidFarewell(prevAsst) &&
+      (voiceFacts.callerAskedToStop(text) ||
+        voiceFacts.declinedMoreHelp(text) ||
+        /^(thanks|thank you|thank you so much|appreciate it|ok|okay|alright|sounds good|great|perfect|спасибо|хорошо|ладно)[.!,\s]*$/i.test(
+          text
+        ))
+    ) {
+      clearReplyWatchdog(session);
+      session.silenceStage = 2;
+      armSilence(session);
+      return;
+    }
+    if (!sessionHasSubstance(session)) {
+      if (voiceFacts.looksLikeSpamOrRobocall(text)) {
+        stopUnproductiveCall(session, 'spam');
+        return;
+      }
+      if (voiceFacts.looksLikeWrongNumber(text)) {
+        stopUnproductiveCall(session, 'wrong_number');
+        return;
+      }
+      if (session.turns >= IDLE_CALL_MAX_TURNS) {
+        stopUnproductiveCall(session, 'idle');
+        return;
+      }
+    }
     armReplyWatchdog(session);
     if (voiceFacts.isCheckInUtterance(text) || session.wantHangup) {
       cancelHangup(session);
@@ -2061,6 +2198,7 @@ function onLiveBargeIn(session) {
   sendTwilioClear(session);
   session.speaking = false;
   session.promptedTurn = false;
+  if (session.unproductiveStop || Number(session.silenceStage || 0) >= 2) return;
   noteCallerHeard(session);
 }
 
@@ -2248,6 +2386,14 @@ function appendGptLiveTranscript(session, field, delta, startMs, endMs) {
   }
   session.language = 'en';
   session[field] = appendGptLiveDeltaText(session[field], chunk);
+  if (
+    field === 'userPartial' &&
+    !sessionHasSubstance(session) &&
+    (voiceFacts.looksLikeSpamOrRobocall(session.userPartial) ||
+      voiceFacts.looksLikeWrongNumber(session.userPartial))
+  ) {
+    flushPartial(session, field);
+  }
 }
 
 function extractPlaceForAreaCheck(session, lastUser) {
@@ -2843,6 +2989,7 @@ function resumeLive(session, reason, { switchModel = false } = {}) {
 /// календаря всё ещё лучше, чем звонок без голоса.
 function startLiveSession(session) {
   armMaxCallDuration(session);
+  armIdleCallTimer(session);
   session.liveChain = buildLiveChain(session);
   // Одна строка на звонок, по которой видно, почему говорит именно этот
   // провайдер: ключи (только наличие, не значения), что выбрано в настройках и
@@ -3008,7 +3155,11 @@ async function onLiveStop(session) {
   try {
     const lastUser = lastHistoryText(session, 'user');
     const lastAsst = lastHistoryText(session, 'assistant');
-    if (lastUser || lastAsst) {
+    const shouldExtract =
+      Boolean(lastUser) &&
+      !session.unproductiveStop &&
+      (sessionHasSubstance(session) || !voiceFacts.isCheckInUtterance(lastUser));
+    if (shouldExtract) {
       const facts = await extractFacts(session, lastUser, lastAsst);
       session.extracted = facts.extracted;
       session.createJob = voiceFacts.isServiceDeclined(session.extracted)
@@ -3312,8 +3463,8 @@ module.exports = {
     timing: {
       SILENCE_MS, PREFIX_MS, STALL_MS, SILENCE_CHECK_MS, SILENCE_HOLD_MS, SILENCE_GIVEUP_MS,
       SILENCE_HANGUP_MS, DEAF_VOICED_MS, LIVE_FAILURE_LIMIT, TWILIO_FRAME_BYTES,
-      CLICK_MAX_MS, CLICK_QUIET_MS, MAX_CALL_DURATION_MS, GPT_LIVE_CLOSE_TIMEOUT_MS,
-      GPT_LIVE_TURN_END_MS,
+      CLICK_MAX_MS, CLICK_QUIET_MS, MAX_CALL_DURATION_MS, IDLE_CALL_MAX_MS, IDLE_CALL_MAX_TURNS,
+      GPT_LIVE_CLOSE_TIMEOUT_MS, GPT_LIVE_TURN_END_MS,
     },
   },
 };
