@@ -10,6 +10,7 @@ import '../core/tester_build.dart';
 import '../models/technician.dart';
 import 'service_guide_service.dart';
 import 'settings_service.dart';
+import 'tester_demo_seed_service.dart';
 
 /// Firebase Auth: автоматический вход владельца и ID-токен для защищённых
 /// HTTP-функций и правил Firestore/Storage.
@@ -261,6 +262,9 @@ class AuthService {
       unawaited(SettingsService.ensureAiVoiceSettings());
       unawaited(SettingsService.ensureServiceAreaLabel());
       unawaited(SettingsService.ensureEnglishClientCopy());
+      unawaited(
+        TesterDemoSeedService.ensureSeeded(companyId: currentCompanyId),
+      );
     } catch (e) {
       debugPrint('AuthService._initTesterCompany: $e');
     }

@@ -34,3 +34,4 @@ export 'change_log_service.dart';
 export 'care_plan_service.dart';
 export 'job_reminder_service.dart';
 export 'technician_service.dart';
+export 'tester_demo_seed_service.dart';
