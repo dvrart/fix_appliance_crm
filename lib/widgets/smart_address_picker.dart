@@ -402,7 +402,10 @@ void showSmartAddressPicker({
                           final detailsUri = Uri.https(
                             'places.googleapis.com',
                             '/v1/places/$placeId',
-                            {'languageCode': 'ru'},
+                            {
+                              'languageCode': 'ru',
+                              'sessionToken': sessionToken,
+                            },
                           );
                           try {
                             final response = await getWithTimeout(
@@ -411,7 +414,7 @@ void showSmartAddressPicker({
                                 'X-Goog-Api-Key': kGoogleMapsApiKey,
                                 // Только адрес и координаты — остальное не нужно.
                                 'X-Goog-FieldMask':
-                                    'places.location,places.addressComponents',
+                                    'location,addressComponents',
                               },
                             );
                             if (disposed || !sheetContext.mounted ||
