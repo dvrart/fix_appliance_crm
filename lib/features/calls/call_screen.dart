@@ -119,6 +119,7 @@ class _CallScreenState extends State<CallScreen> {
   StreamSubscription? _statusSubscription;
   String _callerName = '';
   String _callerPhone = '';
+  String _spokenName = '';
   List<Job> _callerJobs = const [];
   List<Client> _callerClients = const [];
   List<Job> _allCallerJobs = const [];
@@ -165,6 +166,15 @@ class _CallScreenState extends State<CallScreen> {
     }
     if (!mounted) return;
     setState(() => _callerPhone = phone);
+    // Карточки клиента может не быть, но имя он называл в прошлом разговоре —
+    // показываем его, а не номер (просьба FIX, 17.11.2026).
+    unawaited(
+      TwilioService.spokenNameForPhone(phone).then((spoken) {
+        if (!mounted || spoken.isEmpty) return;
+        _spokenName = spoken;
+        _updateCaller();
+      }),
+    );
     _callerClientsSub = ClientService.streamAll().listen((clients) {
       _callerClients = clients;
       _updateCaller();
@@ -179,7 +189,7 @@ class _CallScreenState extends State<CallScreen> {
     if (!mounted) return;
     final result = CallerJobs.resolve(_callerPhone, _callerClients, _allCallerJobs);
     setState(() {
-      _callerName = result.name;
+      _callerName = result.name.isNotEmpty ? result.name : _spokenName;
       _callerJobs = result.jobs;
     });
   }

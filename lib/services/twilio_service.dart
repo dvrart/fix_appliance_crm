@@ -12,6 +12,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/app_commands.dart';
 import '../core/api_keys.dart';
 import '../core/tester_build.dart';
+import '../models/client.dart';
 import 'call_routing.dart';
 import 'firestore_service.dart';
 import 'auth_service.dart';
@@ -114,6 +115,29 @@ class CallRecord {
   }
 
   bool get liveFailed => aiReception?['liveFailed'] == true;
+
+  /// Имя, которое звонивший назвал сам: итоговый разбор разговора плюс
+  /// живой разбор секретаря. Пусто, если имени в разговоре не было.
+  String get spokenName {
+    final extracted = <String, dynamic>{
+      ...?extractedData,
+      if (aiReception?['extracted'] is Map)
+        ...Map<String, dynamic>.from(aiReception!['extracted'] as Map),
+    };
+    for (final key in const [
+      'client_name',
+      'clientName',
+      'name',
+      'caller_name',
+      'contactName',
+    ]) {
+      final cleaned = Client.stripClientWord(extracted[key]?.toString());
+      if (cleaned.isNotEmpty && !Client.isPlaceholderName(cleaned)) {
+        return cleaned;
+      }
+    }
+    return '';
+  }
 
   Map<String, dynamic> toAttachment() {
     return {
@@ -1554,6 +1578,27 @@ class TwilioService {
       }
     }
     return want.isEmpty ? '' : want.first;
+  }
+
+  /// Имя, которое звонивший называл в разговорах с этого номера. Карточки
+  /// клиента может ещё не быть, а имя из разбора в CRM уже лежит — без этого
+  /// экран звонка показывал голый номер (просьба FIX, 17.11.2026).
+  static Future<String> spokenNameForPhone(String phone) async {
+    final number = CallRouting.normalizePhone(phone);
+    if (number.isEmpty) return '';
+    try {
+      final snapshot = await _callsRef
+          .where('fromNumber', isEqualTo: number)
+          .limit(30)
+          .get();
+      for (final call in _mapCallDocs(snapshot.docs)) {
+        final name = call.spokenName;
+        if (name.isNotEmpty) return name;
+      }
+    } catch (error) {
+      debugPrint('TwilioService: spokenNameForPhone: $error');
+    }
+    return '';
   }
 
   static Future<List<CallRecord>> recentCalls({int limit = 20}) async {

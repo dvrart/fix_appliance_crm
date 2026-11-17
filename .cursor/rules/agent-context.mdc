@@ -950,6 +950,22 @@ Do **not** set `android:showWhenLocked` / `turnScreenOn` on `MainActivity` in th
   — раскрывает список (`_expanded`, ключ `phone:<10 цифр>`; номер без цифр
   получает свою строку `call:<id>`). Длинное нажатие на строку выделяет **все**
   звонки номера (`_toggleGroupSelected`), внутри раскрытого списка — по одному.
+- **Имя звонившего вместо номера, везде (17.11.2026, просьба FIX).** Клиентка
+  назвалась в разговоре («it's Heather Morgan calling»), имя лежало в
+  `extractedData.client_name`, но через минуту с того же номера пришёл
+  односекундный недозвон — пустой, без разбора. Подпись бралась **с последнего**
+  звонка, и всюду показывался номер. Теперь: в списке звонков имя ищется по
+  всем звонкам номера, от свежих к старым (`_extractGroupName`); у подписи «кто
+  звонил» под иконками «Связь» есть справочник услышанных имён по номеру
+  (`_spokenNames` в `comms_badge_service.dart`); на экране входящего звонка,
+  если карточки клиента нет, имя подтягивает `TwilioService.spokenNameForPhone`
+  (запрос звонков по `fromNumber`, разбор — геттер `CallRecord.spokenName`); на
+  сервере уведомления о пропущенном (`dialAction`) и итоговые
+  (`notifyCallOutcome`) зовут `callerNameForPhone` — карточка клиента, потом имя
+  из прошлых разговоров с этого номера, и только затем номер; имя уходит и в
+  `clientName` пуша, по нему шторка подбирает картинку. Тест:
+  `call_flow.test.js` — «a missed call is signed with the name the caller gave
+  on an earlier call».
 - **Значок направления — `_directionIcon`**: `phone_callback` (стрелка **в**
   трубку) входящий, `phone_forwarded` (стрелка **от** трубки) исходящий,
   `phone_missed` не дозвонились. Голые `call_received` / `call_made` и

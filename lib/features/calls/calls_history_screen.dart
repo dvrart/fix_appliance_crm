@@ -497,6 +497,18 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     return null;
   }
 
+  /// Имя для всей строки номера. Берётся с любого звонка этого номера, от
+  /// свежих к старым: короткий недозвон ИИ не разбирает, и из-за пустого
+  /// последнего звонка строка теряла уже названное имя (просьба FIX,
+  /// 17.11.2026).
+  String? _extractGroupName(_CallGroup group) {
+    for (final call in group.calls) {
+      final found = _extractCallName(call);
+      if (found != null) return found;
+    }
+    return null;
+  }
+
   /// Строка номера: верх — последний звонок, под ним по нажатию раскрываются
   /// остальные звонки этого же номера.
   Widget _buildGroupCard(
@@ -537,7 +549,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     final name = widget.contactName ??
         ownerName ??
         names[ClientService.normalizePhone(phone)] ??
-        _extractCallName(call);
+        _extractGroupName(group);
     final displayPhone = site != null && site.ownerPhone.trim().isNotEmpty
         ? site.ownerPhone
         : phone;

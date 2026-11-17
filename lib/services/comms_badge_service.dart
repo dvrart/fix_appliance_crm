@@ -73,6 +73,11 @@ class CommsBadgeService {
   static Map<String, String> _phoneNames = const {};
   static Map<String, String> _emailNames = const {};
 
+  /// Имена, которые звонившие называли сами, по номеру. Короткий недозвон
+  /// разбора не несёт, и подпись «кто звонил» показывала номер, хотя минутой
+  /// раньше человек назвался (просьба FIX, 17.11.2026).
+  static final Map<String, String> _spokenNames = {};
+
   /// Когда список звонков смотрели в последний раз.
   ///
   /// Поле `reviewed` для этого не годится: у звонков, на которые мастер
@@ -105,6 +110,7 @@ class CommsBadgeService {
         TwilioService.streamNewIncomingCalls().listen((calls) {
           if (generation != _generation) return;
           _calls = calls;
+          _rememberSpokenNames(calls);
           _recountCalls();
         }, onError: _onError),
         SmsService.streamUnreadInbound().listen((messages) {
@@ -199,6 +205,21 @@ class CommsBadgeService {
     return '';
   }
 
+  /// Запоминает, кто как назвался, по номеру: имя из свежего звонка
+  /// заменяет старое.
+  static void _rememberSpokenNames(List<CallRecord> calls) {
+    final sorted = [...calls]..sort(
+      (a, b) =>
+          (a.startTime ?? DateTime(0)).compareTo(b.startTime ?? DateTime(0)),
+    );
+    for (final call in sorted) {
+      final key = ClientService.normalizePhone(call.fromNumber);
+      if (key.length < 7) continue;
+      final name = call.spokenName;
+      if (name.isNotEmpty) _spokenNames[key] = name;
+    }
+  }
+
   static String _callLabel(CallRecord call) {
     final phone = call.fromNumber;
     final known = _phoneNames[ClientService.normalizePhone(phone)];
@@ -210,6 +231,8 @@ class CommsBadgeService {
     };
     final guessed = _extractedName(extracted);
     if (guessed.isNotEmpty) return guessed;
+    final spoken = _spokenNames[ClientService.normalizePhone(phone)];
+    if (spoken != null) return spoken;
     return phone.trim().isEmpty ? '' : Formatters.formatPhone(phone);
   }
 
@@ -292,6 +315,7 @@ class CommsBadgeService {
     _failed = const [];
     _phoneNames = const {};
     _emailNames = const {};
+    _spokenNames.clear();
     newCalls.value = 0;
     unreadMessages.value = 0;
     failedSms.value = 0;

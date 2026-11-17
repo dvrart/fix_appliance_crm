@@ -356,6 +356,28 @@ test('a declined or deleted call never becomes a job', async () => {
   assert.equal(downloads.length, 1);
 });
 
+// Короткий недозвон разбирать нечего, и в шторку уходил голый номер. Имя
+// берётся из прошлого разговора с этого же номера (просьба FIX, 17.11.2026).
+test('a missed call is signed with the name the caller gave on an earlier call', async () => {
+  apply(`${COMPANY}/settings/config`, { aiAnswerEnabled: false });
+  const earlier = `CA${'c'.repeat(32)}`;
+  apply(`${COMPANY}/calls/${earlier}`, {
+    callSid: earlier, fromNumber: CALLER, direction: 'inbound', status: 'completed',
+    startTime: new Date(Date.now() - 5 * 60 * 1000),
+    extractedData: { ...washer().extracted, client_name: 'Heather Morgan' },
+  }, false);
+
+  const sid = `CA${'d'.repeat(32)}`;
+  await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });
+  await webhook(api.dialAction, { CallSid: sid, DialCallStatus: 'no-answer' });
+
+  const missed = notifications.find((item) => item.title === 'Пропущенный звонок');
+  assert.ok(missed, 'уведомление о пропущенном звонке не пришло');
+  assert.match(missed.body, /^Heather Morgan\n/);
+  assert.equal(missed.data.clientName, 'Heather Morgan');
+  assert.equal(missed.data.from, CALLER);
+});
+
 test('a shorter Russian translation is kept over a longer English live transcript with Russian speaker labels', async () => {
   const sid = `CA${'b'.repeat(32)}`;
   await webhook(api.incomingCall, { CallSid: sid, From: CALLER, To: '+14165550100' });

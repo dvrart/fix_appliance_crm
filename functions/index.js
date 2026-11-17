@@ -3228,6 +3228,48 @@ function looksLikeSpamCall(extracted, callData) {
 }
 
 /**
+ * Как подписать звонящего, если в самом звонке имени нет: сперва карточка
+ * клиента, потом имя, которое он называл в прошлых разговорах с этого номера.
+ * Короткий недозвон разбирать нечего, и в уведомление уходил голый номер,
+ * хотя минутой раньше человек назвался (просьба FIX, 17.11.2026).
+ */
+async function callerNameForPhone(phone, skipCallSid = '') {
+  const from = String(phone || '').trim();
+  if (!from) return '';
+  try {
+    const client = await findClientByPhone(from);
+    const fromCard = voiceFacts.usableClientName(
+      client ? client.fullName || client.name || '' : ''
+    );
+    if (fromCard) return fromCard;
+    const millis = (value) =>
+      value && typeof value.toMillis === 'function'
+        ? value.toMillis()
+        : value instanceof Date
+          ? value.getTime()
+          : 0;
+    const snapshot = await callsRef.where('fromNumber', '==', from).limit(30).get();
+    const rows = snapshot.docs
+      .filter((doc) => doc.id !== skipCallSid)
+      .map((doc) => doc.data() || {})
+      .filter((row) => !row.deletedAt)
+      .sort((a, b) => millis(b.startTime) - millis(a.startTime));
+    for (const row of rows) {
+      const reception = row.aiReception || {};
+      const spoken = voiceFacts.usableClientName(
+        (row.extractedData && row.extractedData.client_name) ||
+          (reception.extracted && reception.extracted.client_name) ||
+          ''
+      );
+      if (spoken) return spoken;
+    }
+  } catch (error) {
+    console.warn('callerNameForPhone:', error.message);
+  }
+  return '';
+}
+
+/**
  * Одно уведомление на звонок, по итогу: заявка или пропущенный.
  * Поля appliance / clientName / spam нужны шторке, чтобы подобрать картинки.
  */
@@ -3241,7 +3283,9 @@ async function notifyCallOutcome({ callSid, callData, extracted, kind, jobId, re
         : new Date()
     );
     const phone = (callData && callData.fromNumber) || '';
-    const name = voiceFacts.usableClientName(data.client_name || '');
+    const name =
+      voiceFacts.usableClientName(data.client_name || '') ||
+      (await callerNameForPhone(phone, callSid));
     const appliance = String(data.appliance_type || '').trim();
     const spam = kind === 'missed' && looksLikeSpamCall(data, callData);
 
@@ -3808,13 +3852,18 @@ exports.dialAction = functions.https.onRequest(voiceDialRuntime, async (req, res
           const missedTitle = techId
             ? `Пропущенный звонок у мастера ${techName}`.trim()
             : 'Пропущенный звонок';
+          // Кто звонил, а не только откуда: имя из карточки или из прошлых
+          // разговоров с этого номера (просьба FIX, 17.11.2026).
+          const callerName = await callerNameForPhone(data.fromNumber, callSid);
+          const callerLine = callerName || data.fromNumber || '';
           await notifyMaster(
             missedTitle,
-            `${data.fromNumber || ''}\n${calledAt}`,
+            `${callerLine}\n${calledAt}`,
             {
               type: 'call',
               callSid,
               from: data.fromNumber || '',
+              clientName: callerName,
               calledAt,
               ...(linkedJobId ? { jobId: linkedJobId } : {}),
             }
@@ -3823,11 +3872,12 @@ exports.dialAction = functions.https.onRequest(voiceDialRuntime, async (req, res
             await notifyApi.notifyUser(
               techId,
               'Пропущенный звонок клиента',
-              `${data.fromNumber || ''}\n${calledAt}`,
+              `${callerLine}\n${calledAt}`,
               {
                 type: linkedJobId ? 'job' : 'call',
                 callSid,
                 from: data.fromNumber || '',
+                clientName: callerName,
                 calledAt,
                 ...(linkedJobId ? { jobId: linkedJobId } : {}),
               }
