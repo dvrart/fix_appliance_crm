@@ -372,9 +372,41 @@ class MapsService {
     final route = _component(components, const ['route']) ?? '';
     final premise =
         _component(components, const ['premise', 'subpremise']) ?? '';
+    final locality = _component(components, const [
+          'locality',
+          'postal_town',
+          'sublocality',
+          'neighborhood',
+          'administrative_area_level_3',
+        ]) ??
+        '';
+    final postalCode = _component(components, const [
+          'postal_code',
+          'postal_code_prefix',
+        ]) ??
+        '';
     final resultTypes = (first['types'] is List)
         ? (first['types'] as List).map((e) => e.toString()).toSet()
         : const <String>{};
+    // Если геокодер отбросил улицу и вернул просто центр провинции («Ontario»)
+    // или всей страны («Canada»), такие координаты нельзя считать адресом:
+    // они ведут в тайгу на севере без дорог и ломают маршрут дня.
+    final hasLocalTarget =
+        streetNumber.isNotEmpty ||
+        route.isNotEmpty ||
+        premise.isNotEmpty ||
+        locality.isNotEmpty ||
+        postalCode.isNotEmpty ||
+        resultTypes.contains('street_address') ||
+        resultTypes.contains('route') ||
+        resultTypes.contains('premise') ||
+        resultTypes.contains('subpremise') ||
+        resultTypes.contains('postal_code') ||
+        resultTypes.contains('locality') ||
+        resultTypes.contains('sublocality');
+    if (!hasLocalTarget) {
+      return MapPlace(address: queryAddress);
+    }
     final locationType =
         (first['geometry']?['location_type'] ?? '').toString().trim();
     final partialMatch = first['partial_match'] == true;
@@ -501,11 +533,12 @@ class MapsService {
       final results = data['results'] as List?;
       if (results == null || results.isEmpty) return null;
       final first = results.first as Map<String, dynamic>;
-      return parseGeocodeResult(
+      final place = parseGeocodeResult(
         first,
         queryAddress: (params['address'] ?? '').toString(),
         area: area,
       );
+      return place.location == null ? null : place;
     } catch (_) {
       return null;
     }
@@ -674,6 +707,7 @@ class MapsService {
   static Future<OptimizedRoute?> getOptimizedRoute({
     required LatLng origin,
     required List<String> addresses,
+    List<String>? stopLabels,
     bool optimize = true,
   }) async {
     lastRouteError = null;
@@ -690,17 +724,19 @@ class MapsService {
     try {
       // Адреса сначала разбираем сами, с привязкой к зоне: Routes API берёт
       // только координаты, и «Main St» без города сам не найдёт.
-      final area = await serviceAreaBias();
       final points = <LatLng>[];
-      for (final address in addresses) {
+      for (var i = 0; i < addresses.length; i++) {
+        final address = addresses[i];
         final place = await resolvePlace(address);
         final point = place?.location;
         if (point == null) {
-          final text =
-              place?.address ?? navigationQuery(address, region: area.region);
-          lastRouteError =
-              '${'Не удалось определить адрес'.tr}: '
-              '${text.isEmpty ? address.trim() : text}';
+          final label =
+              (stopLabels != null &&
+                  i < stopLabels.length &&
+                  stopLabels[i].trim().isNotEmpty)
+              ? stopLabels[i].trim()
+              : '№${i + 1} (${address.trim()})';
+          lastRouteError = '${'Не найден адрес (укажите город)'.tr}: $label';
           return null;
         }
         points.add(point);

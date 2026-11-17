@@ -210,6 +210,10 @@ class _RouteMapViewState extends State<RouteMapView> {
     final route = await MapsService.getOptimizedRoute(
       origin: _origin!,
       addresses: _orderedJobs.map((j) => j.workAddress).toList(),
+      stopLabels: [
+        for (var i = 0; i < _orderedJobs.length; i++)
+          '${i + 1}. ${_orderedJobs[i].clientName} (${_orderedJobs[i].workAddress.trim()})',
+      ],
       optimize: !hasManualOrder,
     );
     if (!mounted) return;
@@ -323,6 +327,10 @@ class _RouteMapViewState extends State<RouteMapView> {
     final route = await MapsService.getOptimizedRoute(
       origin: _origin!,
       addresses: _orderedJobs.map((j) => j.workAddress).toList(),
+      stopLabels: [
+        for (var i = 0; i < _orderedJobs.length; i++)
+          '${i + 1}. ${_orderedJobs[i].clientName} (${_orderedJobs[i].workAddress.trim()})',
+      ],
       optimize: false,
     );
 

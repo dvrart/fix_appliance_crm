@@ -231,5 +231,33 @@ void main() {
       expect(streetOnly.isHouse, isFalse);
       expect(streetOnly.insideServiceArea, isTrue);
     });
+
+    test('центр провинции или страны без улицы и города отбрасывается', () {
+      final provinceOnly = MapsService.parseGeocodeResult(
+        {
+          'formatted_address': 'Ontario, Canada',
+          'place_id': 'ChIJ_ontario',
+          'types': ['administrative_area_level_1', 'political'],
+          'address_components': [
+            {
+              'long_name': 'Ontario',
+              'types': ['administrative_area_level_1', 'political'],
+            },
+            {
+              'long_name': 'Canada',
+              'types': ['country', 'political'],
+            },
+          ],
+          'geometry': {
+            'location': {'lat': 51.253775, 'lng': -85.323214},
+            'location_type': 'APPROXIMATE',
+          },
+        },
+        queryAddress: '16 House, Ontario, Canada',
+        area: area,
+      );
+      expect(provinceOnly.location, isNull);
+      expect(provinceOnly.isHouse, isFalse);
+    });
   });
 }
