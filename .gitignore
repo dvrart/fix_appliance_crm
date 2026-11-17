@@ -59,7 +59,7 @@ lib/core/api_keys.dart
 android/build/
 .gradle_iso/
 .vscode/
-fix_appliance_crm/
+/fix_appliance_crm/
 /NUL
 screen*.png
 functions/tmp_*.js

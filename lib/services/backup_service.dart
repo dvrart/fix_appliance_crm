@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,8 +12,10 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../core/api_keys.dart';
 import '../core/constants.dart';
+import '../core/tester_build.dart';
 import 'import_export_service.dart';
 import 'auth_service.dart';
+import 'technician_service.dart';
 
 class BackupFile {
   final File file;
@@ -34,12 +37,16 @@ class CloudBackup {
   final String url;
   final int bytes;
   final int totalDocs;
+  final bool telegramSent;
+  final bool emailSent;
 
   const CloudBackup({
     required this.createdAt,
     required this.url,
     required this.bytes,
     required this.totalDocs,
+    this.telegramSent = false,
+    this.emailSent = false,
   });
 
   static CloudBackup? fromMap(String id, Map<String, dynamic> data) {
@@ -50,11 +57,14 @@ class CloudBackup {
         ? raw.toDate()
         : DateTime.tryParse('$raw') ?? DateTime.tryParse(id);
     if (created == null) return null;
+    final delivered = data['delivered'];
     return CloudBackup(
       createdAt: created,
       url: url,
       bytes: (data['bytes'] as num?)?.toInt() ?? 0,
       totalDocs: (data['totalDocs'] as num?)?.toInt() ?? 0,
+      telegramSent: delivered is Map && delivered['telegram'] == true,
+      emailSent: delivered is Map && delivered['email'] == true,
     );
   }
 }
@@ -118,6 +128,9 @@ class BackupService {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kLastAt, now.toIso8601String());
       await _prune();
+      if (!kTesterAppBuild && TechnicianService.isOwner) {
+        unawaited(createCloudNow());
+      }
       return BackupFile(
         file: file,
         createdAt: now,

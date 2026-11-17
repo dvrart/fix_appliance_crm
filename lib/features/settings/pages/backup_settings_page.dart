@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../services/backup_service.dart';
+import '../../../services/import_export_service.dart';
 import '../widgets/settings_ui.dart';
 
 class BackupSettingsPage extends StatefulWidget {
@@ -115,10 +116,38 @@ class _BackupSettingsPageState extends State<BackupSettingsPage> {
                   'Облако не ответило. Проверьте интернет.',
                   'The cloud did not answer. Check the connection.',
                 )
-              : context.tr('Копия уехала в облако', 'Copy is in the cloud'),
+              : created.telegramSent
+                  ? context.tr(
+                      'Копия сохранена в облаке и отправлена в Telegram',
+                      'Saved to the cloud and sent to Telegram',
+                    )
+                  : context.tr('Копия уехала в облако', 'Copy is in the cloud'),
         ),
       ),
     );
+  }
+
+  Future<void> _restoreFromFile() async {
+    if (_working || _cloudWorking) return;
+    setState(() => _working = true);
+    try {
+      final result = await ImportExportService.importFromFile();
+      if (!mounted) return;
+      if (result.error != null && result.error!.isEmpty) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.summary),
+          backgroundColor: result.error == null ? Colors.green : Colors.red,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$error'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
   }
 
   String _size(int bytes) {
@@ -301,8 +330,13 @@ class _BackupSettingsPageState extends State<BackupSettingsPage> {
                       'Ещё не делалась — нажмите ниже',
                       'Not made yet — tap below',
                     )
-                  : '${_when(last.createdAt)} · ${_size(last.bytes)} · '
+                  : [
+                      _when(last.createdAt),
+                      _size(last.bytes),
                       '${last.totalDocs} ${context.tr('записей', 'records')}',
+                      if (last.telegramSent) 'Telegram ✓',
+                      if (last.emailSent) context.tr('Почта ✓', 'Email ✓'),
+                    ].join(' · '),
               icon: Icons.cloud_done_outlined,
               iconColor: last == null ? Colors.grey : Colors.green,
               trailing: last == null
@@ -317,7 +351,6 @@ class _BackupSettingsPageState extends State<BackupSettingsPage> {
                   : '${context.tr('Всего копий', 'Copies stored')}: ${items.length}',
               icon: Icons.cloud_upload_outlined,
               iconColor: AppColors.primary,
-              showDivider: false,
               trailing: _cloudWorking
                   ? const SizedBox(
                       width: 22,
@@ -326,6 +359,18 @@ class _BackupSettingsPageState extends State<BackupSettingsPage> {
                     )
                   : const Icon(Icons.chevron_right, color: Colors.grey),
               onTap: _cloudWorking ? null : _createCloudNow,
+            ),
+            SettingsRow(
+              title: context.tr('Восстановить из копии', 'Restore from backup'),
+              subtitle: context.tr(
+                'Выберите файл копии (.json.gz или .json) из Telegram или памяти',
+                'Pick a backup file (.json.gz or .json) from Telegram or storage',
+              ),
+              icon: Icons.restore_outlined,
+              iconColor: Colors.teal,
+              showDivider: false,
+              trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+              onTap: (_working || _cloudWorking) ? null : _restoreFromFile,
             ),
           ],
         );

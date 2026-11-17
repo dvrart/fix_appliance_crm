@@ -236,6 +236,7 @@ class _FinanceTabState extends State<FinanceTab> {
   }
 
   Future<bool> _commitBuilder() async {
+    if (_busy) return false;
     if (ctrl.builderItems.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -244,32 +245,36 @@ class _FinanceTabState extends State<FinanceTab> {
       }
       return false;
     }
-    final number = await SettingsService.takeNextDocumentNumber(ctrl.builderDocType);
-    final recipient = _recipientForBillTo(ctrl.builderBillTo);
-    final doc = {
-      'type': ctrl.builderDocType,
-      'number': number,
-      'billTo': recipient.billTo,
-      'billToName': recipient.name,
-      'billToPhone': recipient.phone,
-      'billToEmail': recipient.email,
-      'billToAddress': recipient.address,
-      // Скидка на работу пересчитывается по текущей работе в счёте. На
-      // технике со стикером работа по плану покрывается целиком.
-      'items': _coveredIfPlan(
-        LabourDiscount.refresh(
-          List<Map<String, dynamic>>.from(ctrl.builderItems),
+    setState(() => _busy = true);
+    try {
+      final number = await SettingsService.takeNextDocumentNumber(ctrl.builderDocType);
+      final recipient = _recipientForBillTo(ctrl.builderBillTo);
+      final doc = {
+        'type': ctrl.builderDocType,
+        'number': number,
+        'billTo': recipient.billTo,
+        'billToName': recipient.name,
+        'billToPhone': recipient.phone,
+        'billToEmail': recipient.email,
+        'billToAddress': recipient.address,
+        // Скидка на работу пересчитывается по текущей работе в счёте. На
+        // технике со стикером работа по плану покрывается целиком.
+        'items': _coveredIfPlan(
+          LabourDiscount.refresh(
+            List<Map<String, dynamic>>.from(ctrl.builderItems),
+          ),
         ),
-      ),
-      'taxRate': _techTaxLockedToZero() ? 0.0 : ctrl.builderTaxRate,
-      'taxScope': _techTaxLockedToZero() ? 'none' : ctrl.builderTaxScope,
-      'payments': <Map<String, dynamic>>[],
-      'createdAt': DateTime.now().toIso8601String(),
-    };
-    await ctrl.addDocument(doc);
-    ctrl.setViewingDocumentIndex(ctrl.documents.length - 1);
-    ctrl.setFinanceMode('view_document');
-    return true;
+        'taxRate': _techTaxLockedToZero() ? 0.0 : ctrl.builderTaxRate,
+        'taxScope': _techTaxLockedToZero() ? 'none' : ctrl.builderTaxScope,
+        'payments': <Map<String, dynamic>>[],
+        'createdAt': DateTime.now().toIso8601String(),
+      };
+      await ctrl.addDocument(doc);
+      ctrl.openFinanceMainList(switchTab: false);
+      return true;
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   void _createDocument(String type, {String? billTo}) {
@@ -2874,6 +2879,7 @@ class _FinanceTabState extends State<FinanceTab> {
 
   Widget _buildDocumentViewer() {
     if (ctrl.viewingDocumentIndex == null ||
+        ctrl.viewingDocumentIndex! < 0 ||
         ctrl.viewingDocumentIndex! >= ctrl.documents.length) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;

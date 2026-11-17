@@ -25,6 +25,7 @@ const COLLECTIONS = [
   'passport_notes',
   'scheduled_messages',
   'secretary_lessons',
+  'secretary_coach',
   'shipment_events',
   'short_links',
   'technicians',
@@ -136,6 +137,14 @@ async function buildBackupPayload(db, companyId) {
     }
   }
   payload.counts = counts;
+  try {
+    const testersSnap = await db.collection('testers').get();
+    payload.collections.testers = testersSnap.docs.map((doc) => ({
+      id: doc.id,
+      ...jsonSafe(doc.data()),
+    }));
+    counts.testers = testersSnap.size;
+  } catch (_) {}
   payload.failedCollections = failed;
   payload.partial = failed.length > 0;
   return payload;
@@ -159,17 +168,24 @@ async function prune(bucket, prefix) {
 /// Копия вне Firebase: сжатый файл уходит каждому получателю из senders
 /// (почта мастерской, Telegram). Каналы независимы — упала почта, Telegram
 /// файл всё равно получит. Возвращает { канал: true/false }.
-async function deliverBackup({ body, date, totalDocs, partial, senders }) {
+async function deliverBackup({ body, date, totalDocs, partial, apkUrl, recoveryUrl, senders }) {
   const fileName = `fix-backup-${date}${partial ? '-partial' : ''}.json.gz`;
   const content = zlib.gzipSync(body);
   const caption =
     `FIX CRM — резервная копия ${date}${partial ? ' (частичная)' : ''}: ` +
     `${totalDocs} документов, ${(content.length / 1048576).toFixed(1)} МБ`;
+  const extraLines = [
+    apkUrl ? `APK (телефон): ${apkUrl}` : '',
+    recoveryUrl ? `Исходники и ключи (ПК): ${recoveryUrl}` : '',
+  ].filter(Boolean);
+  const telegramCaption = extraLines.length
+    ? `${caption}\n${extraLines.join('\n')}`
+    : caption;
   const delivered = {};
   for (const [name, send] of Object.entries(senders || {})) {
     if (typeof send !== 'function') continue;
     try {
-      delivered[name] = (await send({ fileName, content, caption })) !== false;
+      delivered[name] = (await send({ fileName, content, caption, telegramCaption })) !== false;
     } catch (error) {
       console.warn(`backup ${name}: ${error.message}`);
       delivered[name] = false;
@@ -179,10 +195,18 @@ async function deliverBackup({ body, date, totalDocs, partial, senders }) {
 }
 
 /// Файл в Telegram от бота мастерской.
-async function sendTelegramDocument({ token, chatId, fileName, content, caption, fetchImpl = fetch }) {
+async function sendTelegramDocument({
+  token,
+  chatId,
+  fileName,
+  content,
+  caption,
+  telegramCaption,
+  fetchImpl = fetch,
+}) {
   const form = new FormData();
   form.append('chat_id', String(chatId));
-  form.append('caption', caption);
+  form.append('caption', telegramCaption || caption);
   form.append('document', new Blob([content], { type: 'application/gzip' }), fileName);
   const res = await fetchImpl(`https://api.telegram.org/bot${token}/sendDocument`, {
     method: 'POST',
@@ -194,6 +218,22 @@ async function sendTelegramDocument({ token, chatId, fileName, content, caption,
     throw new Error(`telegram ${res.status} ${data.description || ''}`.trim());
   }
   return true;
+}
+
+async function resolveStorageAssetUrl(bucket, path) {
+  try {
+    const [meta] = await bucket.file(path).getMetadata();
+    const token =
+      meta &&
+      meta.metadata &&
+      String(meta.metadata.firebaseStorageDownloadTokens || '')
+        .split(',')[0]
+        .trim();
+    if (!token) return '';
+    return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+  } catch (_) {
+    return '';
+  }
 }
 
 /// Делает копию и возвращает { url, path, bytes, counts } либо null.
@@ -224,11 +264,21 @@ async function runCloudBackup({ db, companyId, senders }) {
       if (!isPartial) await prune(bucket, prefix);
 
       const total = Object.values(payload.counts).reduce((sum, n) => sum + n, 0);
+      const apkUrl = await resolveStorageAssetUrl(
+        bucket,
+        `${prefix}fix-owner-release.apk`
+      );
+      const recoveryUrl = await resolveStorageAssetUrl(
+        bucket,
+        `${prefix}fix-program-recovery.tar.gz`
+      );
       const delivered = await deliverBackup({
         body,
         date: today,
         totalDocs: total,
         partial: isPartial,
+        apkUrl,
+        recoveryUrl,
         senders,
       });
       const record = {

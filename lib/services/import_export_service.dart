@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -8,14 +9,17 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../core/constants.dart';
+import '../core/tester_build.dart';
 import '../models/client.dart';
 import '../models/job.dart';
 import '../models/location.dart';
 import '../models/technician.dart';
+import 'backup_service.dart';
 import 'client_service.dart';
 import 'firestore_service.dart';
 import 'job_service.dart';
 import 'network_status_service.dart';
+import 'technician_service.dart';
 
 class ImportResult {
   final int clientsCreated;
@@ -138,6 +142,7 @@ class ImportExportService {
     'passport_notes',
     'scheduled_messages',
     'secretary_lessons',
+    'secretary_coach',
     'shipment_events',
     'short_links',
     'settings',
@@ -163,14 +168,21 @@ class ImportExportService {
     'completedAt',
     'reviewSmsSentAt',
     'promisedPartAt',
+    'suggestCompleteAt',
+    'possibleDuplicateAt',
+    'suggestCancelAt',
     'startAt',
     'endAt',
     'startTime',
     'endTime',
     'aiStartedAt',
     'peerAnsweredAt',
+    'cellAcceptedAt',
     'moveToCellAskedAt',
     'deliveredAt',
+    'decidedAt',
+    'failedAt',
+    'autoBodyRuAt',
     'signedAt',
     'lastMaintenanceAt',
     'nextMaintenanceDue',
@@ -181,6 +193,9 @@ class ImportExportService {
     'sendAt',
     'sentAt',
     'expiresAt',
+    'backupSavedAt',
+    'notifiedAt',
+    'consumedAt',
     'timestamp',
     'at',
     'date',
@@ -188,11 +203,14 @@ class ImportExportService {
 
   static bool _isSensitiveOrEphemeralSettingDoc(String docId) {
     final id = docId.trim().toLowerCase();
-    return id == 'gmail' ||
-        id == 'stripe' ||
-        id == 'voice_infra' ||
-        id.startsWith('pending_cell_call') ||
-        id.startsWith('pending_outbound_call');
+    if (id.startsWith('pending_cell_call') ||
+        id.startsWith('pending_outbound_call')) {
+      return true;
+    }
+    if (kCompanyId.startsWith('tester_')) {
+      return id == 'gmail' || id == 'stripe' || id == 'voice_infra';
+    }
+    return false;
   }
 
   /// Полный слепок всех данных компании — и для ручного экспорта, и для автокопии.
@@ -315,6 +333,9 @@ class ImportExportService {
   }
 
   static Future<void> exportBackupJson() async {
+    if (!kTesterAppBuild && TechnicianService.isOwner) {
+      unawaited(BackupService.createCloudNow());
+    }
     await _saveOrShare('fix_backup.json', await buildBackupJson());
   }
 
@@ -581,6 +602,29 @@ class ImportExportService {
             final ts = _tryParseIsoTimestamp(vMap[key]);
             if (ts != null) vMap[key] = ts;
           }
+          if (vMap['smsBooking'] is Map) {
+            final sb = Map<String, dynamic>.from(vMap['smsBooking'] as Map);
+            for (final key in const [
+              'decidedAt',
+              'startedAt',
+              'approvedAt',
+              'updatedAt',
+              'requestedAt',
+              'sentAt',
+            ]) {
+              final ts = _tryParseIsoTimestamp(sb[key]);
+              if (ts != null) sb[key] = ts;
+            }
+            vMap['smsBooking'] = sb;
+          }
+          if (vMap['smsReminders'] is Map) {
+            final sr = Map<String, dynamic>.from(vMap['smsReminders'] as Map);
+            for (final entry in sr.entries.toList()) {
+              final ts = _tryParseIsoTimestamp(entry.value);
+              if (ts != null) sr[entry.key] = ts;
+            }
+            vMap['smsReminders'] = sr;
+          }
           visits.add(vMap);
         } else {
           visits.add(item);
@@ -795,6 +839,22 @@ class ImportExportService {
         } else if (colName == 'messages') {
           messagesImported += 1;
         } else {
+          otherDocsImported += 1;
+        }
+      }
+    }
+
+    if (!kCompanyId.startsWith('tester_')) {
+      final rawTesters = collectionsMap['testers'] ?? decoded['testers'];
+      if (rawTesters is List && rawTesters.isNotEmpty) {
+        final testersRef = FirebaseFirestore.instance.collection('testers');
+        for (final raw in rawTesters) {
+          if (raw is! Map) continue;
+          final map = Map<String, dynamic>.from(raw);
+          final docId = (map.remove('id') ?? '').toString().trim();
+          if (docId.isEmpty) continue;
+          final restored = _restoreFirestoreMap(map, isRoot: true);
+          await queueSet(testersRef.doc(docId), restored);
           otherDocsImported += 1;
         }
       }

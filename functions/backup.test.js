@@ -58,8 +58,11 @@ test('копия берёт Care Plan, технику клиентов и про
     'passport_notes',
     'scheduled_messages',
     'secretary_lessons',
+    'secretary_coach',
     'shipment_events',
     'short_links',
+    'technicians',
+    'technician_settlements',
   ]) {
     assert.ok(COLLECTIONS.includes(name), name);
   }

@@ -589,11 +589,16 @@ class JobService {
   /// Обновить документы (invoices, estimates)
   static Future<void> updateDocuments(
     String id,
-    List<Map<String, dynamic>> documents,
-  ) async {
+    List<Map<String, dynamic>> documents, {
+    Map<String, dynamic>? extra,
+  }) async {
+    final snapshot = [
+      for (final doc in documents) Map<String, dynamic>.from(doc),
+    ];
     await update(id, {
-      'documents': documents,
-      'paymentStatus': _paymentStatus(documents),
+      'documents': snapshot,
+      'paymentStatus': _paymentStatus(snapshot),
+      ...?extra,
     });
   }
 

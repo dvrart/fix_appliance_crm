@@ -309,7 +309,7 @@ class JobDetailsController extends ChangeNotifier {
         if (data.containsKey(key)) jobData[key] = data[key];
       }
 
-      if (data['documents'] != null) {
+      if (data['documents'] != null && _savingDocuments == 0) {
         final nextDocs = List<Map<String, dynamic>>.from(
           (data['documents'] as List).map(
             (e) => Map<String, dynamic>.from(e as Map),
@@ -1712,8 +1712,20 @@ class JobDetailsController extends ChangeNotifier {
     await _calculateTravelTime();
   }
 
-  Future<void> saveDocuments() async {
-    await JobService.updateDocuments(jobId, documents);
+  int _savingDocuments = 0;
+
+  Future<void> saveDocuments({Map<String, dynamic>? extra}) async {
+    final snapshot = [
+      for (final doc in documents) Map<String, dynamic>.from(doc),
+    ];
+    jobData['documents'] = snapshot;
+    _lastRemote['documents'] = snapshot;
+    _savingDocuments += 1;
+    try {
+      await JobService.updateDocuments(jobId, snapshot, extra: extra);
+    } finally {
+      _savingDocuments -= 1;
+    }
   }
 
   void setFinanceMode(String mode) {
@@ -1931,12 +1943,13 @@ class JobDetailsController extends ChangeNotifier {
       await WarehouseService.applyDocumentStock(doc, reverse: false);
     }
     documents.add(doc);
+    Map<String, dynamic>? extra;
     if (!_shouldShowSuggestCancel()) {
       pendingSuggestCancel = false;
       jobData['suggestCancel'] = false;
-      unawaited(JobService.update(jobId, {'suggestCancel': false}));
+      extra = const {'suggestCancel': false};
     }
-    await saveDocuments();
+    await saveDocuments(extra: extra);
     notifyListeners();
   }
 
@@ -1944,12 +1957,13 @@ class JobDetailsController extends ChangeNotifier {
     if (index >= 0 && index < documents.length) {
       final wasDeposit = Job.documentDepositTaken(documents[index]);
       documents[index] = doc;
+      Map<String, dynamic>? extra;
       if (!_shouldShowSuggestCancel() && pendingSuggestCancel) {
         pendingSuggestCancel = false;
         jobData['suggestCancel'] = false;
-        unawaited(JobService.update(jobId, {'suggestCancel': false}));
+        extra = const {'suggestCancel': false};
       }
-      await saveDocuments();
+      await saveDocuments(extra: extra);
       notifyListeners();
       if (!wasDeposit && Job.documentDepositTaken(doc)) {
         await markDepositTaken();
@@ -1972,12 +1986,13 @@ class JobDetailsController extends ChangeNotifier {
         viewingDocumentIndex = null;
         financeMode = 'main';
       }
+      Map<String, dynamic>? extra;
       if (!_shouldShowSuggestCancel()) {
         pendingSuggestCancel = false;
         jobData['suggestCancel'] = false;
-        unawaited(JobService.update(jobId, {'suggestCancel': false}));
+        extra = const {'suggestCancel': false};
       }
-      await saveDocuments();
+      await saveDocuments(extra: extra);
       notifyListeners();
     }
   }
