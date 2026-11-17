@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
 import '../services/network_status_service.dart';
 import '../core/api_keys.dart';
 import '../core/constants.dart';
@@ -115,41 +116,68 @@ void showSmartAddressPicker({
   var widenedSearch = false;
   // Выбранный адрес оказался вне зоны.
   var outsideArea = false;
+  // Один токен на всё окно: Google считает все подсказки одной сессией
+  // (так дешевле, чем платить за каждый нажатый символ отдельно).
+  final sessionToken = _uuidV4();
   final configFuture = SettingsService.loadConfig();
 
-  /// Одна выдача Google: [circle] — круг поиска, [strict] режет всё снаружи.
+  /// Одна выдача Google: [bounds] — прямоугольник, [strict] режет всё снаружи.
   Future<List<Map<String, dynamic>>> fetchOnce(
     String query, {
-    AreaSearchCircle? circle,
+    LatLngBounds? bounds,
     bool strict = false,
   }) async {
-    final url = StringBuffer(
-      'https://maps.googleapis.com/maps/api/place/autocomplete/json'
-      '?input=${Uri.encodeComponent(query)}'
-      '&key=$kGoogleMapsApiKey'
-      '&language=${AppLocale.instance.isEn ? 'en' : 'ru'}'
-      '&components=country:ca',
-    );
-    if (circle != null) {
-      url.write(
-        '&location=${circle.center.latitude},${circle.center.longitude}'
-        '&radius=${circle.radiusMeters.round()}',
-      );
-      if (strict) url.write('&strictbounds=true');
-    }
+    final body = <String, dynamic>{
+      'input': query,
+      // Только адреса: дома, улицы, здания и индексы — без магазинов и парков.
+      'includedPrimaryTypes': const [
+        'street_address',
+        'route',
+        'premise',
+        'subpremise',
+        'postal_code',
+      ],
+      'includedRegionCodes': const ['ca'],
+      'languageCode': AppLocale.instance.isEn ? 'en' : 'ru',
+      'sessionToken': sessionToken,
+      if (bounds != null && strict)
+        'locationRestriction': _rectangle(bounds),
+      if (bounds != null && !strict)
+        'locationBias': _rectangle(bounds),
+    };
     try {
-      final response = await getWithTimeout(Uri.parse(url.toString()));
+      final response = await http
+          .post(
+            Uri.https('places.googleapis.com', '/v1/places:autocomplete'),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': kGoogleMapsApiKey,
+              // Только то, что рисуем в списке: подпись и идентификатор места.
+              'X-Goog-FieldMask': 'suggestions.placePrediction.placeId,'
+                  'suggestions.placePrediction.text.text',
+            },
+            body: json.encode(body),
+          )
+          .timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) return const [];
       final data = json.decode(response.body);
-      if (data['status'] != 'OK') return const [];
-      return List<Map<String, dynamic>>.from(data['predictions']);
+      final suggestions = data['suggestions'] as List? ?? const [];
+      return [
+        for (final item in suggestions)
+          if (item is Map && item['placePrediction'] is Map)
+            {
+              'place_id': (item['placePrediction']['placeId'] ?? '').toString(),
+              'description':
+                  (item['placePrediction']['text']?['text'] ?? '').toString(),
+            },
+      ];
     } catch (e) {
       debugPrint('${'Ошибка Autocomplete'.tr}: $e');
       return const [];
     }
   }
 
-  /// Подсказки. [restrict] — только зона: круги с карты, которые её накрывают.
+  /// Подсказки. [restrict] — только зона: прямоугольник, который её накрывает.
   Future<List<Map<String, dynamic>>> fetchPredictions(
     String query, {
     required bool restrict,
@@ -162,34 +190,11 @@ void showSmartAddressPicker({
       }
       return fetchOnce(input);
     }
-    if (!restrict) {
-      return fetchOnce(
-        query,
-        circle: AreaSearchCircle(
-          area.center,
-          math.min(area.radiusMeters, ServiceArea.maxStrictRadiusMeters),
-        ),
-      );
-    }
-    final circles = area.searchCircles;
-    final batches = await Future.wait([
-      for (final circle in circles)
-        fetchOnce(query, circle: circle, strict: true),
-    ]);
-    // Чередуем выдачи кругов, чтобы лучшее совпадение каждого было сверху.
-    final merged = <Map<String, dynamic>>[];
-    final seen = <String>{};
-    final depth = batches.fold<int>(0, (max, list) => math.max(max, list.length));
-    for (var i = 0; i < depth; i++) {
-      for (final batch in batches) {
-        if (i >= batch.length) continue;
-        final item = batch[i];
-        final id = (item['place_id'] ?? '').toString();
-        if (id.isNotEmpty && !seen.add(id)) continue;
-        merged.add(item);
-      }
-    }
-    return merged;
+    return fetchOnce(
+      query,
+      bounds: area.boundingBox,
+      strict: restrict,
+    );
   }
 
   bool isDirty() {
@@ -394,59 +399,79 @@ void showSmartAddressPicker({
                           searchDebounce?.cancel();
                           setSheetState(() => isFetching = true);
 
-                          final detailsUrl =
-                              'https://maps.googleapis.com/maps/api/place/details/json?place_id=$placeId&key=$kGoogleMapsApiKey&language=ru';
+                          final detailsUri = Uri.https(
+                            'places.googleapis.com',
+                            '/v1/places/$placeId',
+                            {'languageCode': 'ru'},
+                          );
                           try {
-                            final response = await getWithTimeout(Uri.parse(detailsUrl));
+                            final response = await getWithTimeout(
+                              detailsUri,
+                              headers: {
+                                'X-Goog-Api-Key': kGoogleMapsApiKey,
+                                // Только адрес и координаты — остальное не нужно.
+                                'X-Goog-FieldMask':
+                                    'places.location,places.addressComponents',
+                              },
+                            );
                             if (disposed || !sheetContext.mounted ||
                                 request != lookupGeneration) {
                               return;
                             }
                             if (response.statusCode == 200) {
-                              final data = json.decode(response.body);
-                              if (data['status'] == 'OK') {
-                                final result = data['result'];
-                                final components =
-                                    result['address_components'] as List;
+                              final data =
+                                  json.decode(response.body)
+                                      as Map<String, dynamic>;
+                              final components =
+                                  data['addressComponents'] as List? ??
+                                  const [];
 
-                                String sNum = '';
-                                String rName = '';
-                                String cName = '';
-                                String zCode = '';
-                                String unit = unitCtrl.text;
+                              String sNum = '';
+                              String rName = '';
+                              String cName = '';
+                              String zCode = '';
+                              String unit = unitCtrl.text;
 
-                                for (var c in components) {
-                                  final types = c['types'] as List;
-                                  if (types.contains('street_number')) {
-                                    sNum = c['long_name'];
-                                  }
-                                  if (types.contains('route')) {
-                                    rName = c['long_name'];
-                                  }
-                                  if (types.contains('locality') ||
-                                      types.contains('administrative_area_level_3')) {
-                                    cName = c['long_name'];
-                                  }
-                                  if (types.contains('postal_code')) {
-                                    zCode = c['long_name'];
-                                  }
-                                  if (types.contains('subpremise')) {
-                                    unit = c['long_name'];
-                                  }
+                              for (final raw in components) {
+                                final c = raw as Map<String, dynamic>;
+                                final types = c['types'] as List? ?? const [];
+                                final name =
+                                    (c['longText'] ?? '').toString();
+                                if (types.contains('street_number')) {
+                                  sNum = name;
                                 }
+                                if (types.contains('route')) {
+                                  rName = name;
+                                }
+                                if (types.contains('locality') ||
+                                    types.contains(
+                                      'administrative_area_level_3',
+                                    )) {
+                                  cName = name;
+                                }
+                                if (types.contains('postal_code')) {
+                                  zCode = name;
+                                }
+                                if (types.contains('subpremise')) {
+                                  unit = name;
+                                }
+                              }
 
-                                final lat = result['geometry']['location']['lat'];
-                                final lng = result['geometry']['location']['lng'];
+                              final location =
+                                  data['location'] as Map<String, dynamic>? ??
+                                  const {};
+                              final lat = location['latitude'] as num?;
+                              final lng = location['longitude'] as num?;
+                              if (lat != null && lng != null) {
                                 final inside = area.contains(
-                                  LatLng(
-                                    (lat as num).toDouble(),
-                                    (lng as num).toDouble(),
-                                  ),
+                                  LatLng(lat.toDouble(), lng.toDouble()),
                                 );
 
                                 setSheetState(() {
                                   streetCtrl.text = '$sNum $rName'.trim();
-                                  if (unit.trim().isNotEmpty) unitCtrl.text = unit.trim();
+                                  if (unit.trim().isNotEmpty) {
+                                    unitCtrl.text = unit.trim();
+                                  }
                                   cityCtrl.text = cName;
                                   postalCtrl.text = zCode;
                                   searchCtrl.text = streetCtrl.text;
@@ -610,4 +635,29 @@ void showSmartAddressPicker({
       );
     },
   );
+}
+
+/// Прямоугольник для Places API (New): юго-запад и северо-восток зоны.
+Map<String, dynamic> _rectangle(LatLngBounds bounds) => {
+      'rectangle': {
+        'low': {
+          'latitude': bounds.southwest.latitude,
+          'longitude': bounds.southwest.longitude,
+        },
+        'high': {
+          'latitude': bounds.northeast.latitude,
+          'longitude': bounds.northeast.longitude,
+        },
+      },
+    };
+
+/// Случайный идентификатор сессии подсказок (uuid v4, без внешних пакетов).
+String _uuidV4() {
+  final rnd = math.Random.secure();
+  final bytes = List<int>.generate(16, (_) => rnd.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+      '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
 }

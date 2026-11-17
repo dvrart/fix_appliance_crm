@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../core/constants.dart';
@@ -47,7 +48,7 @@ class MapPlace {
   }
 }
 
-/// Результат построения маршрута через Google Directions API
+/// Результат построения маршрута через Google Routes API
 class OptimizedRoute {
   /// Индексы точек (из исходного списка адресов) в оптимальном порядке
   final List<int> order;
@@ -141,7 +142,7 @@ class MapsService {
     }
   }
 
-  /// Рассчитать время в пути до адреса
+  /// Рассчитать время в пути до адреса с учётом текущих пробок (Routes API).
   static Future<String?> getTravelTime(String destinationAddress) async {
     if (destinationAddress.isEmpty || kGoogleApiKey.isEmpty) {
       return null;
@@ -151,43 +152,24 @@ class MapsService {
       final position = await getCurrentPosition();
       if (position == null) return null;
 
-      final origin = '${position.latitude},${position.longitude}';
-
       // Адрес разбираем тем же геокодером, что и кнопка «Проложить маршрут»:
       // иначе на карточке висит время до одного места, а навигатор везёт в
       // другое. Почтовый индекс не выбрасываем — он и есть самая точная часть.
       final place = await resolvePlace(destinationAddress);
-      if (place == null) return null;
-      final point = place.location;
-      final destination = point != null
-          ? '${point.latitude},${point.longitude}'
-          : place.address;
+      final point = place?.location;
+      if (point == null) return null;
 
-      final uri = Uri.https(
-        'maps.googleapis.com',
-        '/maps/api/distancematrix/json',
-        {
-          'origins': origin,
-          'destinations': destination,
-          'region': 'ca',
-          'language': AppLocale.instance.isEn ? 'en' : 'ru',
-          'key': kGoogleApiKey,
-        },
+      final data = await _computeRoutes(
+        origin: LatLng(position.latitude, position.longitude),
+        destination: point,
+        fieldMask: 'routes.duration',
       );
-
-      final response = await getWithTimeout(uri);
-      if (response.statusCode != 200) return null;
-
-      final data = json.decode(response.body);
-      if (data['status'] != 'OK') return null;
-
-      final elements = data['rows']?[0]?['elements'];
-      if (elements == null || elements.isEmpty) return null;
-
-      final element = elements[0];
-      if (element['status'] != 'OK') return null;
-
-      return element['duration']?['text'];
+      final routes = data['routes'] as List?;
+      if (routes == null || routes.isEmpty) return null;
+      final route = routes.first as Map<String, dynamic>;
+      final duration = (route['duration'] ?? '').toString();
+      if (duration.isEmpty) return null;
+      return _formatDuration(_durationSeconds(duration));
     } catch (e) {
       return null;
     }
@@ -598,71 +580,65 @@ class MapsService {
     }
   }
 
-  /// Google Places Autocomplete
-  static Future<List<Map<String, dynamic>>> searchPlaces(String query) async {
-    if (query.length < 3 || kGoogleApiKey.isEmpty) return [];
+  /// Точка в формате Routes API.
+  static Map<String, dynamic> _routesLatLng(LatLng point) => {
+    'location': {
+      'latLng': {'latitude': point.latitude, 'longitude': point.longitude},
+    },
+  };
 
-    try {
-      final url =
-          'https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${Uri.encodeComponent(query)}&key=$kGoogleApiKey&language=ru&components=country:ca';
-
-      final response = await getWithTimeout(Uri.parse(url));
-      if (response.statusCode != 200) return [];
-
-      final data = json.decode(response.body);
-      if (data['status'] != 'OK') return [];
-
-      return List<Map<String, dynamic>>.from(data['predictions']);
-    } catch (e) {
-      return [];
+  /// Один запрос к Google Routes API (время и маршруты с пробками).
+  ///
+  /// Возвращает разобранный JSON-ответ. При ошибке HTTP бросает исключение
+  /// с сообщением от Google — его показывает [getOptimizedRoute] в UI.
+  static Future<Map<String, dynamic>> _computeRoutes({
+    required LatLng origin,
+    required LatLng destination,
+    List<LatLng> intermediates = const [],
+    bool optimizeWaypointOrder = false,
+    required String fieldMask,
+  }) async {
+    final body = <String, dynamic>{
+      'origin': _routesLatLng(origin),
+      'destination': _routesLatLng(destination),
+      if (intermediates.isNotEmpty)
+        'intermediates': [
+          for (final point in intermediates) _routesLatLng(point),
+        ],
+      'travelMode': 'DRIVE',
+      'routingPreference': 'TRAFFIC_AWARE',
+      'regionCode': 'CA',
+      'languageCode': AppLocale.instance.isEn ? 'en' : 'ru',
+      if (optimizeWaypointOrder) 'optimizeWaypointOrder': true,
+    };
+    final response = await http
+        .post(
+          Uri.https('routes.googleapis.com', '/directions/v2:computeRoutes'),
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': kGoogleApiKey,
+            'X-Goog-FieldMask': fieldMask,
+          },
+          body: json.encode(body),
+        )
+        .timeout(const Duration(seconds: 12));
+    final data = json.decode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      final message = data['error']?['message'];
+      throw Exception(
+        message != null
+            ? '${response.statusCode}: $message'
+            : 'HTTP ${response.statusCode}',
+      );
     }
+    return data;
   }
 
-  /// Получить детали места по placeId
-  static Future<Map<String, String>?> getPlaceDetails(String placeId) async {
-    if (kGoogleApiKey.isEmpty) return null;
-
-    try {
-      final url =
-          'https://maps.googleapis.com/maps/api/place/details/json?place_id=$placeId&key=$kGoogleApiKey&language=ru&fields=address_components,formatted_address';
-
-      final response = await getWithTimeout(Uri.parse(url));
-      if (response.statusCode != 200) return null;
-
-      final data = json.decode(response.body);
-      if (data['status'] != 'OK') return null;
-
-      final components = data['result']['address_components'] as List;
-      String street = '';
-      String city = '';
-      String postal = '';
-      String streetNumber = '';
-
-      for (final comp in components) {
-        final types = List<String>.from(comp['types']);
-        if (types.contains('street_number')) {
-          streetNumber = comp['long_name'];
-        } else if (types.contains('route')) {
-          street = comp['long_name'];
-        } else if (types.contains('locality')) {
-          city = comp['long_name'];
-        } else if (types.contains('postal_code')) {
-          postal = comp['long_name'];
-        }
-      }
-
-      if (streetNumber.isNotEmpty) {
-        street = '$streetNumber $street';
-      }
-
-      return {
-        'street': street.trim(),
-        'city': city,
-        'postal': postal,
-      };
-    } catch (e) {
-      return null;
-    }
+  /// Строка длительности «473s» → секунды.
+  static int _durationSeconds(String text) {
+    var value = text.trim();
+    if (value.endsWith('s')) value = value.substring(0, value.length - 1);
+    return (double.tryParse(value) ?? 0).round();
   }
 
   /// Получить статическую карту (URL изображения)
@@ -687,7 +663,7 @@ class MapsService {
         '&markers=color:red%7C$lat,$lng&key=$kGoogleApiKey';
   }
 
-  /// Построить маршрут по нескольким адресам через Google Directions API.
+  /// Построить маршрут по нескольким адресам через Google Routes API.
   ///
   /// Если [optimize] = true (по умолчанию), Google сам подбирает лучший
   /// порядок посещения точек (аналог решения задачи коммивояжёра).
@@ -712,95 +688,82 @@ class MapsService {
     }
 
     try {
-      final originStr = '${origin.latitude},${origin.longitude}';
-      // Адреса сначала разбираем сами, с привязкой к зоне: Directions ищет
-      // текст по всему миру и на «Main St» без города уводит маршрут в другую
-      // провинцию. Что разобрали — отдаём координатами.
+      // Адреса сначала разбираем сами, с привязкой к зоне: Routes API берёт
+      // только координаты, и «Main St» без города сам не найдёт.
       final area = await serviceAreaBias();
-      final waypoints = <String>[];
+      final points = <LatLng>[];
       for (final address in addresses) {
         final place = await resolvePlace(address);
         final point = place?.location;
-        final text = place?.address ?? navigationQuery(address, region: area.region);
-        waypoints.add(
-          point != null
-              ? '${point.latitude},${point.longitude}'
-              : (text.isEmpty ? address.trim() : text),
-        );
+        if (point == null) {
+          final text =
+              place?.address ?? navigationQuery(address, region: area.region);
+          lastRouteError =
+              '${'Не удалось определить адрес'.tr}: '
+              '${text.isEmpty ? address.trim() : text}';
+          return null;
+        }
+        points.add(point);
       }
-      final waypointsParam = waypoints.join('|');
-      final optimizePrefix = optimize ? 'optimize:true|' : '';
 
-      final uri = Uri.https(
-        'maps.googleapis.com',
-        '/maps/api/directions/json',
-        {
-          'origin': originStr,
-          'destination': originStr,
-          'waypoints': '$optimizePrefix$waypointsParam',
-          'region': 'ca',
-          'language': AppLocale.instance.isEn ? 'en' : 'ru',
-          'key': kGoogleApiKey,
-        },
+      final data = await _computeRoutes(
+        origin: origin,
+        destination: origin,
+        intermediates: points,
+        optimizeWaypointOrder: optimize,
+        fieldMask: 'routes.duration,routes.distanceMeters,'
+            'routes.polyline.encodedPolyline,'
+            'routes.legs.duration,routes.legs.distanceMeters,'
+            'routes.optimizedIntermediateWaypointIndex',
       );
 
-      final response = await getWithTimeout(uri);
-      if (response.statusCode != 200) {
-        lastRouteError = 'HTTP ${response.statusCode}';
-        return null;
-      }
-
-      final data = json.decode(response.body);
-      if (data['status'] != 'OK') {
-        final errorMessage = data['error_message'];
-        lastRouteError = errorMessage != null
-            ? '${data['status']}: $errorMessage'
-            : '${data['status']}';
-        return null;
-      }
-
-      final routes = data['routes'] as List;
-      if (routes.isEmpty) {
+      final routes = data['routes'] as List?;
+      if (routes == null || routes.isEmpty) {
         lastRouteError = 'Google не вернул ни одного маршрута'.tr;
         return null;
       }
-      final route = routes[0];
-      final legs = route['legs'] as List;
+      final route = routes.first as Map<String, dynamic>;
 
       final waypointOrder = optimize
           ? List<int>.from(
-              route['waypoint_order'] ?? List.generate(addresses.length, (i) => i))
+              route['optimizedIntermediateWaypointIndex'] ??
+                  List.generate(addresses.length, (i) => i),
+            )
           : List.generate(addresses.length, (i) => i);
 
+      final legs = (route['legs'] as List?) ?? const [];
       final stopLocations = <LatLng>[];
       final legDistances = <String>[];
       final legDurations = <String>[];
-      int totalSeconds = 0;
-      double totalMeters = 0;
+      var totalSeconds = 0;
+      var totalMeters = 0.0;
 
       for (var i = 0; i < addresses.length && i < legs.length; i++) {
-        final leg = legs[i];
-        final endLoc = leg['end_location'];
-        stopLocations.add(LatLng(
-          (endLoc['lat'] as num).toDouble(),
-          (endLoc['lng'] as num).toDouble(),
-        ));
-        legDistances.add(leg['distance']?['text'] ?? '');
-        legDurations.add(leg['duration']?['text'] ?? '');
-        totalSeconds += (leg['duration']?['value'] ?? 0) as int;
-        totalMeters += ((leg['distance']?['value'] ?? 0) as num).toDouble();
+        final leg = legs[i] as Map<String, dynamic>;
+        stopLocations.add(
+          points[i < waypointOrder.length ? waypointOrder[i] : i],
+        );
+        final meters = ((leg['distanceMeters'] ?? 0) as num).toDouble();
+        final seconds = _durationSeconds((leg['duration'] ?? '').toString());
+        legDistances.add('${(meters / 1000).toStringAsFixed(1)} ${'км'.tr}');
+        legDurations.add(_formatDuration(seconds));
+        totalSeconds += seconds;
+        totalMeters += meters;
       }
 
       // Последний "leg" — возврат от последней точки к началу маршрута
       if (legs.length > addresses.length) {
-        final lastLeg = legs[addresses.length];
-        totalSeconds += (lastLeg['duration']?['value'] ?? 0) as int;
-        totalMeters += ((lastLeg['distance']?['value'] ?? 0) as num).toDouble();
+        final lastLeg = legs[addresses.length] as Map<String, dynamic>;
+        totalSeconds += _durationSeconds(
+          (lastLeg['duration'] ?? '').toString(),
+        );
+        totalMeters += ((lastLeg['distanceMeters'] ?? 0) as num).toDouble();
       }
 
-      final overviewPolyline = route['overview_polyline']?['points'];
-      final polylinePoints =
-          overviewPolyline != null ? _decodePolyline(overviewPolyline) : <LatLng>[];
+      final encoded = route['polyline']?['encodedPolyline'];
+      final polylinePoints = encoded is String
+          ? _decodePolyline(encoded)
+          : <LatLng>[];
 
       return OptimizedRoute(
         order: waypointOrder,
@@ -808,11 +771,12 @@ class MapsService {
         polylinePoints: polylinePoints,
         legDistances: legDistances,
         legDurations: legDurations,
-        totalDistanceText: '${(totalMeters / 1000).toStringAsFixed(1)} ${'км'.tr}',
+        totalDistanceText:
+            '${(totalMeters / 1000).toStringAsFixed(1)} ${'км'.tr}',
         totalDurationText: _formatDuration(totalSeconds),
       );
     } catch (e) {
-      lastRouteError = e.toString();
+      lastRouteError = e.toString().replaceFirst('Exception: ', '');
       return null;
     }
   }
