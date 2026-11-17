@@ -86,6 +86,9 @@ class LocationResult {
 
 /// Сервис для работы с картами и геолокацией
 class MapsService {
+  static Position? _cachedPosition;
+  static DateTime? _cachedPositionAt;
+
   /// Получить текущую позицию
   static Future<Position?> getCurrentPosition() async {
     final result = await getCurrentPositionResult();
@@ -93,6 +96,13 @@ class MapsService {
   }
 
   static Future<LocationResult> getCurrentPositionResult() async {
+    final cached = _cachedPosition;
+    final cachedAt = _cachedPositionAt;
+    if (cached != null &&
+        cachedAt != null &&
+        DateTime.now().difference(cachedAt) < const Duration(minutes: 2)) {
+      return LocationResult(position: cached);
+    }
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
@@ -116,17 +126,34 @@ class MapsService {
         );
       }
 
+      Position? last;
+      try {
+        last = await Geolocator.getLastKnownPosition();
+      } catch (_) {}
+      if (last != null &&
+          DateTime.now().difference(last.timestamp) <
+              const Duration(minutes: 10)) {
+        _cachedPosition = last;
+        _cachedPositionAt = DateTime.now();
+        return LocationResult(position: last);
+      }
+
       try {
         final position = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
+          locationSettings: LocationSettings(
             accuracy: LocationAccuracy.medium,
-            timeLimit: Duration(seconds: 12),
+            timeLimit: Duration(seconds: last != null ? 3 : 5),
           ),
         );
+        _cachedPosition = position;
+        _cachedPositionAt = DateTime.now();
         return LocationResult(position: position);
       } on TimeoutException {
-        final last = await Geolocator.getLastKnownPosition();
-        if (last != null) return LocationResult(position: last);
+        if (last != null) {
+          _cachedPosition = last;
+          _cachedPositionAt = DateTime.now();
+          return LocationResult(position: last);
+        }
         return LocationResult(
           error: 'Не удалось получить координаты. Повторите на открытом месте.'.tr,
         );
@@ -134,7 +161,11 @@ class MapsService {
     } catch (_) {
       try {
         final last = await Geolocator.getLastKnownPosition();
-        if (last != null) return LocationResult(position: last);
+        if (last != null) {
+          _cachedPosition = last;
+          _cachedPositionAt = DateTime.now();
+          return LocationResult(position: last);
+        }
       } catch (_) {}
       return LocationResult(
         error: 'Не удалось получить координаты. Проверьте GPS.'.tr,
@@ -722,12 +753,13 @@ class MapsService {
     }
 
     try {
-      // Адреса сначала разбираем сами, с привязкой к зоне: Routes API берёт
-      // только координаты, и «Main St» без города сам не найдёт.
+      // Адреса сначала разбираем сами и параллельно, с привязкой к зоне:
+      // Routes API берёт только координаты, и «Main St» без города сам не найдёт.
+      final places = await Future.wait(addresses.map(resolvePlace));
       final points = <LatLng>[];
       for (var i = 0; i < addresses.length; i++) {
         final address = addresses[i];
-        final place = await resolvePlace(address);
+        final place = places[i];
         final point = place?.location;
         if (point == null) {
           final label =

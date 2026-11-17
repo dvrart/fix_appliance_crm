@@ -185,34 +185,73 @@ class _RouteMapViewState extends State<RouteMapView> {
       return;
     }
 
-    final position = await MapsService.getCurrentPosition();
+    final positionFuture = MapsService.getCurrentPosition();
+    final placesFuture = Future.wait(
+      _orderedJobs.map((j) => MapsService.resolvePlace(j.workAddress)),
+    );
+    final position = await positionFuture;
+    final places = await placesFuture;
     if (!mounted) return;
-    if (position == null) {
-      final firstAddress = _orderedJobs.first.workAddress;
-      final fallback = await MapsService.geocodeAddress(firstAddress);
-      if (!mounted) return;
-      if (fallback == null) {
-        _route = null;
-        _notifyChrome();
-        setState(() {
-          _loading = false;
-          _error =
-              '${'Не удалось определить ваше местоположение.'.tr}\n'
-              '${'Разрешите доступ к геолокации в настройках телефона.'.tr}';
-        });
-        return;
+
+    final routableJobs = <Job>[];
+    final unresolvedJobs = <Job>[];
+    final unresolvedLabels = <String>[];
+    LatLng? firstResolvedPoint;
+    for (var i = 0; i < _orderedJobs.length; i++) {
+      final job = _orderedJobs[i];
+      final point = places[i]?.location;
+      if (point != null) {
+        firstResolvedPoint ??= point;
+        routableJobs.add(job);
+      } else {
+        unresolvedJobs.add(job);
+        unresolvedLabels.add(
+          '${i + 1}. ${job.clientName} (${job.workAddress.trim()})',
+        );
       }
-      _origin = fallback;
-    } else {
+    }
+
+    if (position != null) {
       _origin = LatLng(position.latitude, position.longitude);
+    } else if (firstResolvedPoint != null) {
+      _origin = firstResolvedPoint;
+    } else {
+      _origin = const LatLng(43.1394, -80.2644);
+    }
+
+    final unresolvedWarning = unresolvedLabels.isEmpty
+        ? null
+        : '${'Не найден адрес (укажите город)'.tr}: ${unresolvedLabels.join(', ')}';
+
+    if (routableJobs.isEmpty) {
+      _route = null;
+      _markers = {
+        Marker(
+          markerId: const MarkerId('origin'),
+          position: _origin!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueViolet,
+          ),
+          infoWindow: InfoWindow(title: 'Вы здесь'.tr),
+        ),
+      };
+      _polylines = const {};
+      _notifyChrome();
+      setState(() {
+        _loading = false;
+        _error =
+            unresolvedWarning ??
+            '${'Не удалось построить маршрут.'.tr}\n${'Проверьте адреса заявок.'.tr}';
+      });
+      return;
     }
 
     final route = await MapsService.getOptimizedRoute(
       origin: _origin!,
-      addresses: _orderedJobs.map((j) => j.workAddress).toList(),
+      addresses: routableJobs.map((j) => j.workAddress).toList(),
       stopLabels: [
-        for (var i = 0; i < _orderedJobs.length; i++)
-          '${i + 1}. ${_orderedJobs[i].clientName} (${_orderedJobs[i].workAddress.trim()})',
+        for (var i = 0; i < routableJobs.length; i++)
+          '${i + 1}. ${routableJobs[i].clientName} (${routableJobs[i].workAddress.trim()})',
       ],
       optimize: !hasManualOrder,
     );
@@ -231,9 +270,11 @@ class _RouteMapViewState extends State<RouteMapView> {
     }
 
     _route = route;
-    if (!hasManualOrder) {
-      _orderedJobs = route.order.map((i) => _orderedJobs[i]).toList();
-    }
+    final orderedRoutable = !hasManualOrder
+        ? route.order.map((i) => routableJobs[i]).toList()
+        : routableJobs;
+    _orderedJobs = [...orderedRoutable, ...unresolvedJobs];
+    _error = unresolvedWarning;
     await _buildMarkersAndPolylines();
     if (!mounted) return;
     _notifyChrome();
@@ -324,15 +365,21 @@ class _RouteMapViewState extends State<RouteMapView> {
     if (_origin == null || _orderedJobs.isEmpty) return;
     setState(() => _recomputing = true);
 
-    final route = await MapsService.getOptimizedRoute(
-      origin: _origin!,
-      addresses: _orderedJobs.map((j) => j.workAddress).toList(),
-      stopLabels: [
-        for (var i = 0; i < _orderedJobs.length; i++)
-          '${i + 1}. ${_orderedJobs[i].clientName} (${_orderedJobs[i].workAddress.trim()})',
-      ],
-      optimize: false,
+    final places = await Future.wait(
+      _orderedJobs.map((j) => MapsService.resolvePlace(j.workAddress)),
     );
+    if (!mounted) return;
+    final routableJobs = <Job>[
+      for (var i = 0; i < _orderedJobs.length; i++)
+        if (places[i]?.location != null) _orderedJobs[i],
+    ];
+    final route = routableJobs.isEmpty
+        ? null
+        : await MapsService.getOptimizedRoute(
+            origin: _origin!,
+            addresses: routableJobs.map((j) => j.workAddress).toList(),
+            optimize: false,
+          );
 
     if (!mounted) return;
     if (route != null) {
@@ -509,16 +556,16 @@ class _RouteMapViewState extends State<RouteMapView> {
       );
     }
 
-    if (_error != null) {
-      return Column(
-        children: [
+    return Column(
+      children: [
+        if (_error != null)
           Container(
             width: double.infinity,
             color: Colors.orange.withValues(alpha: 0.12),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             child: Row(
               children: [
-                const Icon(Icons.location_off, size: 20, color: Colors.orange),
+                const Icon(Icons.location_off, size: 18, color: Colors.orange),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -527,20 +574,13 @@ class _RouteMapViewState extends State<RouteMapView> {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.refresh, size: 20),
+                  icon: const Icon(Icons.refresh, size: 18),
                   tooltip: 'Попробовать снова'.tr,
                   onPressed: _loadRoute,
                 ),
               ],
             ),
           ),
-          Expanded(child: _buildStopsList()),
-        ],
-      );
-    }
-
-    return Column(
-      children: [
         if (_skippedCount > 0)
           Container(
             width: double.infinity,
@@ -557,7 +597,7 @@ class _RouteMapViewState extends State<RouteMapView> {
             children: [
               GoogleMap(
                 initialCameraPosition: CameraPosition(
-                  target: _origin ?? const LatLng(43.6532, -79.3832),
+                  target: _origin ?? const LatLng(43.1394, -80.2644),
                   zoom: 12,
                 ),
                 markers: _markers,
