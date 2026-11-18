@@ -1567,13 +1567,13 @@ const DEFAULT_VOICE_INSTRUCTIONS = `You are ${voiceFacts.SECRETARY_NAME}, who an
 
 Talk like a person, not a form. First replies are ordinary: if they say the dryer is broken, "Oh no — what's it doing?" Then listen. One short thought. Wait. Contractions. A little warmth. If they joke, a small laugh is fine. If they ask something on the side, answer like a person — and if they keep the small talk going, go along with them for a line or two before the repair finds its way back in. Never an IVR line. Never "got it", "I understand", "please provide", "certainly".
 
-Never pushy. At most one repair question per reply, and only when it fits the moment. If the caller is thinking out loud, deciding, or chatting about something else, let them finish and match their tone — do not pull every reply back to the checklist. Bring the repair back once, lightly ("so — want us to send someone out?"), then follow their lead. If they say they need to think, to check with a spouse, or will call back later: accept it warmly on the spot, stop collecting facts, and offer that the tech can ring them. A caller who feels nagged hangs up; a caller who feels heard books.
+Never pushy. At most one repair question per reply, and only when it fits the moment. If the caller is thinking out loud, deciding, or chatting about something else, let them finish and match their tone — do not pull every reply back to the checklist. Bring the repair back once, lightly ("so — want us to send someone out?"), then follow their lead. If they only asked about the price or say they need to think, to check with a spouse, or will call back later: accept it warmly on the spot, stop collecting facts, and gently offer once: "If you'd like, our technician can give you a quick free call for a couple of minutes to tell you what usually causes that — want me to have him ring you?" A caller who feels nagged hangs up; a caller who feels heard books.
 
 We repair, install, clean, and do preventive maintenance on both home and commercial appliances, including all built-in and high-end brands (Miele, Sub-Zero, Wolf, Viking, and everything else): washers, dryers (including dryer vent cleaning), dishwashers, gas ovens, electric ovens, electric cooktops, fridges, freezers, microwaves, and smaller tasks on those appliances like reversing a fridge door, replacing a door gasket/seal, or changing filters. We do NOT repair gas cooktops, range hoods, garburators, wine coolers, air conditioners, furnaces, water heaters, small countertop/handheld appliances (coffee makers, vacuums, blenders, toasters, countertop ice makers), TVs, laptops, phones, or cars, and we do NOT do gas hookups or run new gas lines, plumbing, or electrical outlets — say so kindly and stay on the line. We work only on-site at the customer's place and do not take shop drop-offs. Fridge and freezer work includes Freon / refrigerant (sealed-system) repair: a Freon question is a normal fridge or freezer order — say yes and take it.
 
 You answer 24/7 and take the order any hour. Visit days and hours are in Shop hours below — that block is the truth. You do NOT book visits and you cannot see the calendar: ask what day and time would suit the caller, note it, and say the technician will contact them to set the exact time. Never confirm, promise, or suggest a specific slot, and never say a time is free or taken. Closed / holiday: still take the order and ask which working day would suit them instead. Same-day or urgent visits are welcome, and they do not cost extra during regular working hours.
 
-Pick up facts as they talk. Do not run a checklist. Do not re-ask. Typical things you need: first name, what broke and the brand, when would suit them, where to go. If the caller is a known client or has an open job on file, greet them by name, but wait for them to explain why they are calling before referencing any open job or old address — they may be calling about something new. If they already have a home on file, ask once if the repair is at that address. Another house → that street, who will be there, that phone. If the caller will be there themselves, that name is already on the order — do not ask for it again. Ask who is home only if it is not their house. Addresses stay in English as spoken — repeat the house number and street once when they give it, and always confirm the city too.
+Pick up facts as they talk. Do not run a checklist. Do not re-ask. Typical things you need: first name, what broke and the brand, when would suit them, where to go. For dishwashers, ovens, and fridges, when it fits naturally in the conversation (one question at a time, never as a checklist), you can briefly ask whether the unit is built into cabinetry and whether it is still getting power. If the caller is a known client or has an open job on file, greet them by name, but wait for them to explain why they are calling before referencing any open job or old address — they may be calling about something new. If they already have a home on file, ask once if the repair is at that address. Another house → that street, who will be there, that phone. If the caller will be there themselves, that name is already on the order — do not ask for it again. Ask who is home only if it is not their house. Addresses stay in English as spoken — repeat the house number and street once when they give it, and always confirm the city too.
 
 ${voiceFacts.VOICE_CLARIFY_RULES}
 
@@ -3291,6 +3291,17 @@ async function notifyCallOutcome({ callSid, callData, extracted, kind, jobId, re
       (await callerNameForPhone(phone, callSid));
     const appliance = String(data.appliance_type || '').trim();
     const spam = kind === 'missed' && looksLikeSpamCall(data, callData);
+    const urgent =
+      !spam &&
+      Boolean(
+        data.urgent ||
+          (callData && callData.urgent) ||
+          voiceFacts.isUrgentCall(
+            data,
+            callData && callData.aiReception && callData.aiReception.history,
+            callData && callData.transcription
+          )
+      );
 
     const assignedTechId = String((callData && callData.assignedTechnicianId) || '').trim();
     const assignedTechName = String((callData && callData.assignedTechnicianName) || '').trim();
@@ -3304,7 +3315,7 @@ async function notifyCallOutcome({ callSid, callData, extracted, kind, jobId, re
           ? 'Входящий звонок'
           : kind === 'job' ? 'Заявка с телефона' : 'Пропущенный звонок');
     const line = kind === 'call_offer' || kind === 'job'
-      ? [name || phone, appliance].filter(Boolean).join(' · ')
+      ? [urgent ? 'Срочно' : '', name || phone, appliance].filter(Boolean).join(' · ')
       : [name || phone, spam ? 'похоже на рекламу' : reason || ''].filter(Boolean).join(' · ');
 
     const pushPayload = {
@@ -3317,6 +3328,7 @@ async function notifyCallOutcome({ callSid, callData, extracted, kind, jobId, re
       clientName: name,
       appliance,
       spam: spam ? '1' : '',
+      urgent: urgent ? '1' : '',
       ...(linkedJobId ? { jobId: linkedJobId } : {}),
     };
     await notifyMaster(title, `${line}\n${calledAt}`, pushPayload);
@@ -3390,6 +3402,9 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
         (callData.aiReception || {}).history,
         callData.transcription
       );
+      if (extracted.urgent === true) {
+        updates.urgent = true;
+      }
       updates.extractedData = extracted;
       updates.aiStatus = 'done';
       if (callAgeHours(callData) <= 4) {
@@ -3399,6 +3414,27 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
           extracted,
           kind: 'call_offer',
         });
+        if (
+          !callData.autoSmsSent &&
+          callData.direction !== 'outbound' &&
+          callData.fromNumber &&
+          typeof visitSms.sendTwilioSms === 'function'
+        ) {
+          const smsBody = smsText.fillName(
+            'Hi, {name}! Thanks for calling FixApplianceCA. Our technician will contact you shortly to confirm the time. Feel free to reply here with a photo of the model sticker.',
+            extracted.client_name || ''
+          );
+          const sentSms = await visitSms
+            .sendTwilioSms({
+              to: callData.fromNumber,
+              body: smsBody,
+              clientId: callData.clientId || null,
+              kind: 'call_intake_followup',
+              auto: true,
+            })
+            .catch(() => false);
+          if (sentSms) updates.autoSmsSent = 'intake';
+        }
       }
     } catch (error) {
       console.error('finishAiReception enrich:', error);
@@ -3410,6 +3446,38 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
     // номером, реклама. Раньше в этом случае не приходило ничего, и звонок
     // терялся совсем. Теперь это пропущенный.
     await notifyCallOutcome({ callSid, callData, extracted, kind: 'missed' });
+    const hangupReason = String((callData.aiReception && callData.aiReception.hangup) || '');
+    const userTurns = ((callData.aiReception && callData.aiReception.history) || []).filter(
+      (item) => item && item.role === 'user' && String(item.text || '').trim()
+    ).length;
+    if (
+      callAgeHours(callData) <= 4 &&
+      !callData.autoSmsSent &&
+      callData.direction !== 'outbound' &&
+      callData.fromNumber &&
+      !looksLikeSpamCall(extracted, callData) &&
+      !['spam', 'wrong_number', 'idle'].includes(hangupReason) &&
+      userTurns <= 1 &&
+      typeof visitSms.sendTwilioSms === 'function'
+    ) {
+      const callerName =
+        voiceFacts.usableClientName((extracted && extracted.client_name) || '') ||
+        (await callerNameForPhone(callData.fromNumber, callSid));
+      const smsBody = smsText.fillName(
+        "Hi, {name}! We saw your call to FixApplianceCA. If you need help with an appliance, feel free to text us here what's going on or we can call you back.",
+        callerName
+      );
+      const sentSms = await visitSms
+        .sendTwilioSms({
+          to: callData.fromNumber,
+          body: smsBody,
+          clientId: callData.clientId || null,
+          kind: 'call_dropped_followup',
+          auto: true,
+        })
+        .catch(() => false);
+      if (sentSms) updates.autoSmsSent = 'dropped';
+    }
   }
 
   await callsRef.doc(callSid).set(updates, { merge: true });
@@ -5357,6 +5425,7 @@ ${extractSource}`;
       clientId: matchedClient ? matchedClient.id : null,
       serviceDeclined: declined,
       declineReason: String(extracted.decline_reason || '').trim() || null,
+      ...(extracted.urgent === true ? { urgent: true } : {}),
     };
     if (jobId) {
       callUpdates.createdJobId = jobId;

@@ -1143,6 +1143,16 @@ const CALL_SUBSTANCE_RE =
 const CALL_SUBSTANCE_RU_RE =
   /ремонт|почин|сломал|не\s+работает|течет|течёт|шумит|гудит|греет|холодит|морозит|сливает|крутит|отжимает|включается|ошибк|код|мастер|техник|визит|заявк|запис|отмен|перенес|сколько\s+стоит|цена|диагностик|гарант|холодильник|морозил|стирал|сушил|посудомой|плит|духовк|микроволн|варочн|фреон|компрессор|адрес|улиц|lavadora|secadora|refrigerador|nevera|estufa|horno|lavavajillas|reparaci/i;
 
+const URGENT_CALL_RE =
+  /\b(urgent(?:ly)?|emergency|as\s+soon\s+as\s+possible|\basap\b|right\s+away\s+today|flood(?:ing|ed)?|water\s+(?:all\s+over|on\s+the\s+floor|everywhere|pouring|gushing)|leak(?:ing)?\s+(?:all\s+over|onto\s+the\s+floor|everywhere|badly|water\s+on\s+the\s+floor)|burn(?:ing)?\s+smell|smell(?:s)?\s+(?:like\s+)?(?:burning|smoke|gas)|smok(?:e|ing)|spark(?:s|ing)|trip(?:ping|s)?\s+(?:the\s+)?breaker|food\s+(?:is\s+)?(?:spoiling|melting|going\s+bad|thawing)|full\s+of\s+food)\b|срочн|экстренн|залива|потоп|вода\s+на\s+пол|теч[её]т\s+на\s+пол|пахнет\s+(?:гарью|дымом|газом)|дымит|искрит|выбивает\s+(?:пробки|автомат)|продукты\s+(?:портятся|тают|размораживаются)/i;
+
+function isUrgentCall(extracted, history, extraText) {
+  const e = extracted && typeof extracted === 'object' ? extracted : {};
+  if (e.urgent === true || e.urgent === 'true') return true;
+  const text = conversationText(e, history, extraText);
+  return URGENT_CALL_RE.test(text);
+}
+
 function hasCallSubstance(extracted, history, extraText) {
   const e = extracted && typeof extracted === 'object' ? extracted : {};
   if (
@@ -1282,6 +1292,9 @@ function enrichExtracted(extracted, history, extraText) {
   if (out.wants_callback !== true && detectLiveCallback(text)) {
     out.wants_callback = true;
   }
+  if (out.urgent !== true && isUrgentCall(out, history, extraText)) {
+    out.urgent = true;
+  }
   if (out.has_job_site !== true && detectJobSite(text)) {
     out.has_job_site = true;
   }
@@ -1390,6 +1403,10 @@ function mergeExtracted(prev, next, history) {
       }
       if (key === 'service_declined') {
         if (value === true || value === 'true') out.service_declined = true;
+        continue;
+      }
+      if (key === 'urgent') {
+        if (value === true || value === 'true') out.urgent = true;
         continue;
       }
       out[key] = value;
@@ -1566,6 +1583,7 @@ module.exports = {
   looksLikeSpamOrRobocall,
   looksLikeWrongNumber,
   hasCallSubstance,
+  isUrgentCall,
   missingVisitDetails,
   askedForVisitTime,
   askedForAddress,

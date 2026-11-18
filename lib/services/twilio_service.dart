@@ -56,6 +56,7 @@ class CallRecord {
   final bool serviceDeclined;
   final String declineReason;
   final bool jobCreateBlocked;
+  final bool urgent;
   final DateTime? deletedAt;
 
   CallRecord({
@@ -85,11 +86,17 @@ class CallRecord {
     this.serviceDeclined = false,
     this.declineReason = '',
     this.jobCreateBlocked = false,
+    this.urgent = false,
     this.deletedAt,
   });
 
   bool get isDeleted => deletedAt != null;
   bool get aiBlocked => jobCreateBlocked || isDeleted;
+  bool get isUrgent =>
+      urgent ||
+      extractedData?['urgent'] == true ||
+      (aiReception?['extracted'] is Map &&
+          (aiReception!['extracted'] as Map)['urgent'] == true);
 
   static const trashKeepDays = 30;
 
@@ -220,6 +227,13 @@ class CallRecord {
           (map['aiReception'] is Map &&
               map['aiReception']['serviceDeclined'] == true),
       jobCreateBlocked: map['jobCreateBlocked'] == true,
+      urgent:
+          map['urgent'] == true ||
+          (map['extractedData'] is Map &&
+              map['extractedData']['urgent'] == true) ||
+          (map['aiReception'] is Map &&
+              map['aiReception']['extracted'] is Map &&
+              (map['aiReception']['extracted'] as Map)['urgent'] == true),
       deletedAt: parseStamp(map['deletedAt']),
       declineReason: () {
         final top = (map['declineReason'] ?? '').toString().trim();

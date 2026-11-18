@@ -89,11 +89,25 @@ function messagesRef() {
   return companyRef().collection('messages');
 }
 
+const INIT_TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const INIT_TWILIO_API_KEY_SID = process.env.TWILIO_API_KEY_SID;
+const INIT_TWILIO_API_KEY_SECRET = process.env.TWILIO_API_KEY_SECRET;
+const INIT_TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const INIT_TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
+
+function twilioPhoneNumber() {
+  return String(process.env.TWILIO_PHONE_NUMBER || INIT_TWILIO_PHONE_NUMBER || '').trim();
+}
+
 function twilioClient() {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authUser = process.env.TWILIO_API_KEY_SID || accountSid;
-  const authSecret = process.env.TWILIO_API_KEY_SECRET || process.env.TWILIO_AUTH_TOKEN;
-  if (!accountSid || !authUser || !authSecret || !process.env.TWILIO_PHONE_NUMBER) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID || INIT_TWILIO_ACCOUNT_SID;
+  const authUser = process.env.TWILIO_API_KEY_SID || INIT_TWILIO_API_KEY_SID || accountSid;
+  const authSecret =
+    process.env.TWILIO_API_KEY_SECRET ||
+    INIT_TWILIO_API_KEY_SECRET ||
+    process.env.TWILIO_AUTH_TOKEN ||
+    INIT_TWILIO_AUTH_TOKEN;
+  if (!accountSid || !authUser || !authSecret || !twilioPhoneNumber()) {
     return null;
   }
   return twilio(authUser, authSecret, { accountSid });
@@ -614,7 +628,7 @@ async function sendTwilioSms({ to, body, clientId, jobId, kind, fallbackBody, au
     );
     return false;
   }
-  const from = String(process.env.TWILIO_PHONE_NUMBER || '').trim();
+  const from = twilioPhoneNumber();
   if (from && normalizePhone(from) === normalizePhone(e164)) {
     console.warn(
       `sendTwilioSms skip kind=${kind || ''} job=${jobId || ''}: to equals Twilio from`
@@ -2676,3 +2690,4 @@ exports.tryHandleConfirmReply = tryHandleConfirmReply;
 exports.sendApprovedBookingSms = sendApprovedBookingSms;
 exports.recordBookingDelivery = recordBookingDelivery;
 exports.clearClientDialogs = clearClientDialogs;
+exports.sendTwilioSms = sendTwilioSms;

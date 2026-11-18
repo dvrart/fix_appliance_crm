@@ -528,3 +528,46 @@ test('the client answering an app call is marked for the app, without a push', a
   assert.equal(pings.length, 0);
 });
 
+test('auto follow-up SMS is sent after intake and on a dropped real call, and urgent calls are tagged', async () => {
+  const intakeSid = `CA${'c'.repeat(32)}`;
+  geminiScript = {
+    ...washer(),
+    extracted: {
+      ...washer().extracted,
+      problem_description: 'Вода течёт на пол',
+    },
+  };
+  await webhook(api.incomingCall, { CallSid: intakeSid, From: CALLER, To: '+14165550100' });
+  await webhook(api.dialAction, { CallSid: intakeSid, DialCallStatus: 'no-answer' });
+  apply(`${COMPANY}/calls/${intakeSid}`, {
+    aiReception: {
+      ...call(intakeSid).aiReception,
+      done: true,
+      extracted: geminiScript.extracted,
+      history: [
+        { role: 'assistant', text: 'Hi, FixApplianceCA, how can I help?' },
+        { role: 'user', text: 'My washer is leaking water onto the floor! I am Amelia at 12 King Street in Brantford.' },
+      ],
+    },
+  });
+  await webhook(api.aiRelayComplete, { CallSid: intakeSid, CallStatus: 'completed' });
+  assert.equal(call(intakeSid).urgent, true);
+  assert.equal(call(intakeSid).autoSmsSent, 'intake');
+  assert.equal(notifications.at(-1).data.urgent, '1');
+  assert.match(notifications.at(-1).body, /^Срочно · Amelia · Стиральная машина/);
+
+  const droppedSid = `CA${'d'.repeat(32)}`;
+  await webhook(api.incomingCall, { CallSid: droppedSid, From: '+14165550199', To: '+14165550100' });
+  await webhook(api.dialAction, { CallSid: droppedSid, DialCallStatus: 'no-answer' });
+  apply(`${COMPANY}/calls/${droppedSid}`, {
+    aiReception: {
+      ...call(droppedSid).aiReception,
+      done: true,
+      extracted: {},
+      history: [{ role: 'assistant', text: 'Hi, FixApplianceCA, how can I help?' }],
+    },
+  });
+  await webhook(api.aiRelayComplete, { CallSid: droppedSid, CallStatus: 'completed' });
+  assert.equal(call(droppedSid).autoSmsSent, 'dropped');
+});
+
