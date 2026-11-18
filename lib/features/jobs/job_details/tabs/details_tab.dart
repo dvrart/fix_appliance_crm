@@ -63,7 +63,6 @@ class _DetailsTabState extends State<DetailsTab> {
   bool _verifyingAddress = false;
   MapPlace? _verifiedPlace;
   int _addressCheckGen = 0;
-  GoogleMapController? _inlineMapController;
 
   String get _bookingPhone {
     final site = ctrl.effectiveJobSitePhone.trim();
@@ -91,7 +90,6 @@ class _DetailsTabState extends State<DetailsTab> {
     ctrl.removeListener(_onControllerChange);
     _changesSub?.cancel();
     _scrollController.dispose();
-    _inlineMapController?.dispose();
     super.dispose();
   }
 
@@ -124,15 +122,6 @@ class _DetailsTabState extends State<DetailsTab> {
       _verifyingAddress = false;
       _verifiedPlace = place;
     });
-    final loc = place?.location;
-    if (loc != null) {
-      _inlineMapController?.moveCamera(
-        CameraUpdate.newLatLngZoom(
-          LatLng(loc.latitude + 0.00075, loc.longitude),
-          16,
-        ),
-      );
-    }
   }
 
   /// Заявка, с которой эту стоит соединить (или уже соединили).
@@ -3688,7 +3677,6 @@ class _DetailsTabState extends State<DetailsTab> {
     final mapPlaceholderBg = AppColors.isDark
         ? const Color(0xFF1F2733)
         : Colors.grey.shade200;
-    final inFlutterTest = Platform.environment.containsKey('FLUTTER_TEST');
 
     return Container(
       width: double.infinity,
@@ -3702,72 +3690,28 @@ class _DetailsTabState extends State<DetailsTab> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          if (hasPoint && !inFlutterTest)
-            GoogleMap(
-              initialCameraPosition: CameraPosition(
-                target: LatLng(
-                  place!.location!.latitude + 0.00075,
-                  place.location!.longitude,
-                ),
-                zoom: 16,
-              ),
-              markers: {
-                Marker(
-                  markerId: const MarkerId('job_site_inline'),
-                  position: place.location!,
-                ),
-              },
-              myLocationEnabled: false,
-              myLocationButtonEnabled: false,
-              zoomControlsEnabled: false,
-              mapToolbarEnabled: false,
-              compassEnabled: false,
-              scrollGesturesEnabled: true,
-              zoomGesturesEnabled: true,
-              rotateGesturesEnabled: true,
-              tiltGesturesEnabled: true,
-              gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{
-                Factory<OneSequenceGestureRecognizer>(
-                  EagerGestureRecognizer.new,
-                ),
-              },
-              onMapCreated: (controller) {
-                _inlineMapController = controller;
-              },
-              onTap: (_) => _onMapTap(),
-            )
-          else
-            Material(
-              color: mapPlaceholderBg,
-              child: InkWell(
-                onTap: _onMapTap,
-                child: hasPoint
-                    ? Image.network(
-                        MapsService.getStaticMapUrlForPoint(
-                          place!.location!,
-                          width: 600,
-                          height: 420,
-                          zoom: 16,
-                          center: LatLng(
-                            place.location!.latitude + 0.00075,
-                            place.location!.longitude,
-                          ),
+          Material(
+            color: mapPlaceholderBg,
+            child: InkWell(
+              onTap: _onMapTap,
+              child: hasPoint
+                  ? Image.network(
+                      MapsService.getStaticMapUrlForPoint(
+                        place!.location!,
+                        width: 600,
+                        height: 420,
+                        zoom: 16,
+                        center: LatLng(
+                          place.location!.latitude + 0.00075,
+                          place.location!.longitude,
                         ),
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        height: double.infinity,
-                        cacheWidth: 900,
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          color: mapPlaceholderBg,
-                          alignment: const Alignment(0, 0.32),
-                          child: Icon(
-                            Icons.map_outlined,
-                            size: 38,
-                            color: Colors.grey.shade500,
-                          ),
-                        ),
-                      )
-                    : Align(
+                      ),
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      height: double.infinity,
+                      cacheWidth: 900,
+                      errorBuilder: (context, error, stackTrace) => Container(
+                        color: mapPlaceholderBg,
                         alignment: const Alignment(0, 0.32),
                         child: Icon(
                           Icons.map_outlined,
@@ -3775,8 +3719,17 @@ class _DetailsTabState extends State<DetailsTab> {
                           color: Colors.grey.shade500,
                         ),
                       ),
-              ),
+                    )
+                  : Align(
+                      alignment: const Alignment(0, 0.32),
+                      child: Icon(
+                        Icons.map_outlined,
+                        size: 38,
+                        color: Colors.grey.shade500,
+                      ),
+                    ),
             ),
+          ),
           Positioned(
             top: 6,
             left: 6,
