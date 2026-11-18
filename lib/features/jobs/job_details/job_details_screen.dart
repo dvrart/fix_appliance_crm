@@ -455,6 +455,8 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
     return ValueListenableBuilder<int>(
       valueListenable: ClientService.regularRevision,
       builder: (context, _, _) {
+        final phone = _controller.contactPhone.trim();
+        final copyTarget = phone.isNotEmpty ? phone : name;
         final isRegular =
             _controller.jobData['clientIsRegular'] == true ||
             ClientService.isRegularClient(
@@ -468,8 +470,8 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
               : 'Карточка клиента'.tr,
           child: InkWell(
             onTap: TechnicianService.isTechnician ? null : _openClientCard,
-            onLongPress: name.isNotEmpty
-                ? () => AppFeedback.copy(context, name)
+            onLongPress: copyTarget.isNotEmpty
+                ? () => AppFeedback.copy(context, copyTarget)
                 : null,
             borderRadius: BorderRadius.circular(10),
             child: Padding(
@@ -563,6 +565,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen>
             _handleBack();
           },
           child: Scaffold(
+            resizeToAvoidBottomInset: builder,
             appBar: AppBar(
               // «Удалить» слева (только у владельца), напоминание и карточка клиента справа.
               leading: TechnicianService.isTechnician

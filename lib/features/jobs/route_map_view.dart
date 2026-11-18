@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/gestures.dart'
+    show EagerGestureRecognizer, OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -690,7 +693,16 @@ class _RouteMapViewState extends State<RouteMapView> {
                 polylines: _polylines,
                 myLocationEnabled: true,
                 myLocationButtonEnabled: true,
-                zoomControlsEnabled: false,
+                zoomControlsEnabled: true,
+                scrollGesturesEnabled: true,
+                zoomGesturesEnabled: true,
+                rotateGesturesEnabled: true,
+                tiltGesturesEnabled: true,
+                gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{
+                  Factory<OneSequenceGestureRecognizer>(
+                    EagerGestureRecognizer.new,
+                  ),
+                },
                 onMapCreated: (controller) {
                   _mapController = controller;
                   _fitBounds();
@@ -704,22 +716,23 @@ class _RouteMapViewState extends State<RouteMapView> {
                   ),
                 ),
               Positioned(
-                right: 10,
-                top: 10,
-                child: Column(
+                left: 10,
+                bottom: 10,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     _mapAction(
                       icon: Icons.map_outlined,
                       tooltip: 'Открыть в Google Maps'.tr,
                       onTap: _openInMaps,
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(width: 8),
                     _mapAction(
                       icon: Icons.schedule,
                       tooltip: 'Расставить время по маршруту'.tr,
                       onTap: _applyTimesFromRoute,
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(width: 8),
                     _mapAction(
                       icon: Icons.refresh,
                       tooltip: 'Оптимизировать заново'.tr,

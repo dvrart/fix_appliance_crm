@@ -163,6 +163,8 @@ class JobReminderService {
   static const _prefsKey = 'job_reminders_v1';
   static final ValueNotifier<int> revision = ValueNotifier<int>(0);
   static final Map<String, JobReminderEntry> _entries = {};
+  static final Map<String, Job> _knownJobsById = {};
+  static StreamSubscription<List<Job>>? _jobsSub;
   static Timer? _timer;
   static bool _started = false;
 
@@ -170,11 +172,56 @@ class JobReminderService {
     if (_started) return;
     _started = true;
     await _loadFromPrefs();
+    _jobsSub?.cancel();
+    _jobsSub = JobService.streamAll().listen(_onJobsUpdated, onError: (_) {});
     await _tick();
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 15), (_) {
       unawaited(_tick());
     });
+  }
+
+  static void _onJobsUpdated(List<Job> jobs) {
+    _knownJobsById
+      ..clear()
+      ..addEntries(jobs.map((j) => MapEntry(j.id, j)));
+    for (final job in jobs) {
+      if (job.isDeleted || JobStatuses.isClosed(job.status)) {
+        final hasLocal = _entries.containsKey(job.id);
+        final hasRemote =
+            job.reminderAt != null || job.promisedPartAt != null;
+        if (hasLocal || hasRemote) {
+          unawaited(
+            onJobClosed(job.id, updateFirestore: hasRemote),
+          );
+        }
+      }
+    }
+  }
+
+  /// Когда карточка закрыта (работа сделана / отменена) или удалена —
+  /// снимаем напоминание и убираем уведомление из шторки телефона.
+  static Future<void> onJobClosed(
+    String jobId, {
+    bool updateFirestore = true,
+  }) async {
+    if (jobId.trim().isEmpty) return;
+    final removed = _entries.remove(jobId);
+    if (removed != null) {
+      _deleteFiles(removed.files);
+      await _saveToPrefs();
+    }
+    revision.value++;
+    if (updateFirestore) {
+      unawaited(
+        JobService.update(jobId, {
+          'reminderAt': null,
+          'promisedPartAt': FieldValue.delete(),
+        }),
+      );
+    }
+    await LocalNotificationService.cancelJobReminder(jobId);
+    await LocalNotificationService.cancelPromisedPartReminder(jobId);
   }
 
   static Future<void> _loadFromPrefs() async {
@@ -208,6 +255,18 @@ class JobReminderService {
   }
 
   static DateTime? reminderFor(String jobId, [Map<String, dynamic>? jobData]) {
+    if (jobData != null) {
+      final status = (jobData['status'] ?? '').toString();
+      if (JobStatuses.isClosed(status) || jobData['deletedAt'] != null) {
+        return null;
+      }
+    } else {
+      final known = _knownJobsById[jobId];
+      if (known != null &&
+          (known.isDeleted || JobStatuses.isClosed(known.status))) {
+        return null;
+      }
+    }
     final local = _entries[jobId];
     if (local != null) return local.remindAt;
     if (jobData != null) {
@@ -227,18 +286,83 @@ class JobReminderService {
 
   static JobReminderEntry? entryFor(String jobId) => _entries[jobId];
 
+  static bool _isJobClosedOrDeleted(String jobId, Map<String, Job> jobsById) {
+    final job = jobsById[jobId] ?? _knownJobsById[jobId];
+    if (job == null) return false;
+    return job.isDeleted || JobStatuses.isClosed(job.status);
+  }
+
+  /// Все активные напоминания по открытым карточкам (и будущие, и сработавшие).
+  static List<JobReminderEntry> allReminders([
+    List<Job> jobs = const [],
+    String? prioritizeJobId,
+  ]) {
+    final sourceJobs = jobs.isNotEmpty ? jobs : _knownJobsById.values.toList();
+    final jobsById = {for (final j in sourceJobs) j.id: j};
+    final byId = <String, JobReminderEntry>{};
+    for (final entry in _entries.values) {
+      if (_isJobClosedOrDeleted(entry.jobId, jobsById)) continue;
+      final job = jobsById[entry.jobId] ?? _knownJobsById[entry.jobId];
+      byId[entry.jobId] = job == null
+          ? entry
+          : entry.copyWith(
+              clientName: entry.clientName.trim().isNotEmpty
+                  ? entry.clientName
+                  : job.contactName,
+              applianceType: entry.applianceType.trim().isNotEmpty
+                  ? entry.applianceType
+                  : job.applianceType,
+              city: entry.city.trim().isNotEmpty
+                  ? entry.city
+                  : (job.city ?? ''),
+              description: entry.description.trim().isNotEmpty
+                  ? entry.description
+                  : job.description,
+            );
+    }
+    for (final job in sourceJobs) {
+      if (job.isDeleted || JobStatuses.isClosed(job.status)) continue;
+      if (byId.containsKey(job.id)) continue;
+      final dt = (job.reminderAt ?? job.promisedPartAt)?.toLocal();
+      if (dt == null) continue;
+      byId[job.id] = JobReminderEntry(
+        jobId: job.id,
+        clientId: job.clientId,
+        clientName: job.contactName,
+        applianceType: job.applianceType,
+        city: job.city ?? '',
+        description: job.description,
+        remindAt: dt,
+        fired: !dt.isAfter(DateTime.now()),
+      );
+    }
+    final list = byId.values.toList()
+      ..sort((a, b) {
+        if (prioritizeJobId != null) {
+          final aCurrent = a.jobId == prioritizeJobId;
+          final bCurrent = b.jobId == prioritizeJobId;
+          if (aCurrent != bCurrent) return aCurrent ? -1 : 1;
+        }
+        return a.remindAt.compareTo(b.remindAt);
+      });
+    return list;
+  }
+
   /// Все сработавшие напоминания (время которых уже наступило), кроме тех,
   /// что мастер уже открыл.
   static List<JobReminderEntry> dueReminders([List<Job> jobs = const []]) {
     final now = DateTime.now();
+    final sourceJobs = jobs.isNotEmpty ? jobs : _knownJobsById.values.toList();
+    final jobsById = {for (final j in sourceJobs) j.id: j};
     final byId = <String, JobReminderEntry>{};
     for (final entry in _entries.values) {
+      if (_isJobClosedOrDeleted(entry.jobId, jobsById)) continue;
       if (!entry.remindAt.isAfter(now) && !entry.seen) {
         byId[entry.jobId] = entry;
       }
     }
-    for (final job in jobs) {
-      if (job.isDeleted) continue;
+    for (final job in sourceJobs) {
+      if (job.isDeleted || JobStatuses.isClosed(job.status)) continue;
       // Своя запись на телефоне главнее копии в заявке.
       if (_entries.containsKey(job.id)) continue;
       final dt = job.reminderAt?.toLocal();
@@ -266,6 +390,10 @@ class JobReminderService {
     final now = DateTime.now();
     var changed = false;
     for (final entry in _entries.values.toList()) {
+      if (_isJobClosedOrDeleted(entry.jobId, _knownJobsById)) {
+        await onJobClosed(entry.jobId);
+        continue;
+      }
       if (!entry.fired && !entry.remindAt.isAfter(now)) {
         final updated = entry.copyWith(fired: true);
         _entries[entry.jobId] = updated;
@@ -396,6 +524,7 @@ class JobReminderService {
       }),
     );
     await LocalNotificationService.cancelJobReminder(jobId);
+    await LocalNotificationService.cancelPromisedPartReminder(jobId);
   }
 
   /// Мастер открыл сработавшее напоминание. Если в нём есть текст или файлы,
@@ -611,6 +740,8 @@ class JobReminderService {
     var saved = false;
     var picking = false;
 
+    final hostContext = context;
+    final jobsStream = JobService.streamAll();
     final result = await showModalBottomSheet<DateTime>(
       context: context,
       useRootNavigator: true,
@@ -921,6 +1052,15 @@ class JobReminderService {
                               }
                             },
                     ),
+                    if (!keyboardOpen)
+                      _buildPickerRemindersListSection(
+                        context: context,
+                        hostContext: hostContext,
+                        sheetContext: sheetContext,
+                        currentJobId: jobId,
+                        jobsStream: jobsStream,
+                        onClearCurrent: () => onChanged?.call(null),
+                      ),
                   ],
                 ),
               ),
@@ -932,6 +1072,223 @@ class JobReminderService {
     );
     if (!saved) _deleteFiles(added);
     return result;
+  }
+
+  static Widget _buildPickerRemindersListSection({
+    required BuildContext context,
+    required BuildContext hostContext,
+    required BuildContext sheetContext,
+    required String currentJobId,
+    required Stream<List<Job>> jobsStream,
+    required VoidCallback onClearCurrent,
+  }) {
+    return StreamBuilder<List<Job>>(
+      stream: jobsStream,
+      initialData: _knownJobsById.values.toList(),
+      builder: (context, snapshot) {
+        final liveJobs = snapshot.data ?? _knownJobsById.values.toList();
+        return ValueListenableBuilder<int>(
+          valueListenable: revision,
+          builder: (context, _, _) {
+            final reminders = allReminders(
+              liveJobs,
+              currentJobId,
+            );
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: 12),
+                const Divider(height: 1),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.list_alt_rounded,
+                      size: 19,
+                      color: Color(0xFF7B1FA2),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        reminders.isEmpty
+                            ? context.tr(
+                                'Список напоминаний',
+                                'Reminders list',
+                              )
+                            : '${context.tr('Список напоминаний', 'Reminders list')} (${reminders.length})',
+                        style: TextStyle(
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.ink,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (reminders.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Text(
+                      context.tr(
+                        'Нет активных напоминаний',
+                        'No active reminders',
+                      ),
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.inkMuted,
+                      ),
+                    ),
+                  )
+                else
+                  for (final item in reminders)
+                    _buildPickerReminderRow(
+                      context: context,
+                      hostContext: hostContext,
+                      sheetContext: sheetContext,
+                      item: item,
+                      isCurrentJob: item.jobId == currentJobId,
+                      onClearCurrent: onClearCurrent,
+                    ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  static Widget _buildPickerReminderRow({
+    required BuildContext context,
+    required BuildContext hostContext,
+    required BuildContext sheetContext,
+    required JobReminderEntry item,
+    required bool isCurrentJob,
+    required VoidCallback onClearCurrent,
+  }) {
+    final now = DateTime.now();
+    final isDueNow = !item.remindAt.isAfter(now);
+    final timeLabel = DateFormat(
+      'd MMM, HH:mm',
+      AppLocale.instance.dateLocale,
+    ).format(item.remindAt);
+    final accent = isDueNow ? const Color(0xFFC62828) : const Color(0xFF7B1FA2);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: isCurrentJob
+            ? accent.withValues(alpha: 0.08)
+            : AppColors.cardMuted,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: isCurrentJob
+              ? null
+              : () async {
+                  HapticFeedback.selectionClick();
+                  await markOpened(item.jobId);
+                  if (sheetContext.mounted &&
+                      Navigator.of(sheetContext).canPop()) {
+                    Navigator.pop(sheetContext);
+                  }
+                  await Future<void>.delayed(
+                    const Duration(milliseconds: 220),
+                  );
+                  final job = await JobService.getById(item.jobId);
+                  if (job == null || !hostContext.mounted) return;
+                  await AppNav.openCard(
+                    hostContext,
+                    key: AppNav.jobKey(job.id),
+                    builder: (_) => JobDetailsScreen(
+                      jobId: job.id,
+                      clientId: job.clientId,
+                      jobData: job.toMap(),
+                    ),
+                  );
+                },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: accent.withValues(alpha: isCurrentJob ? 0.55 : 0.32),
+              ),
+            ),
+            child: Row(
+              children: [
+                AppliancePicture(
+                  type: item.applianceType.isEmpty
+                      ? 'Техника'
+                      : item.applianceType,
+                  size: 34,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              item.clientName.isEmpty
+                                  ? 'Клиент'.tr
+                                  : item.clientName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13.5,
+                                color: AppColors.ink,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            timeLabel,
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w800,
+                              color: accent,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _notificationBody(item),
+                        maxLines: item.note.trim().isNotEmpty ? 2 : 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: item.note.trim().isNotEmpty
+                              ? AppColors.ink
+                              : AppColors.inkMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(
+                    minWidth: 32,
+                    minHeight: 32,
+                  ),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.close, size: 18, color: Colors.grey),
+                  tooltip: 'Убрать'.tr,
+                  onPressed: () async {
+                    await clearReminder(item.jobId);
+                    if (isCurrentJob) onClearCurrent();
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// Заявки, в которых визит ждёт одобрения/отправки SMS мастером.

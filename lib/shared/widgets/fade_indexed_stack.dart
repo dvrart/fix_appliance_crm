@@ -61,7 +61,16 @@ class _FadeIndexedStackState extends State<FadeIndexedStack> {
                   duration: widget.duration,
                   curve: Curves.easeOutCubic,
                   onEnd: () => _onFadeEnd(i),
-                  child: widget.children[i],
+                  child: i == _index
+                      ? widget.children[i]
+                      : MediaQuery.removeViewInsets(
+                          context: context,
+                          removeLeft: true,
+                          removeTop: true,
+                          removeRight: true,
+                          removeBottom: true,
+                          child: widget.children[i],
+                        ),
                 ),
               ),
             ),

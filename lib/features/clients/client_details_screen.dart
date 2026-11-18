@@ -318,8 +318,23 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         }
         final isRegular = _optimisticRegular ??
             ClientService.isRegularMap(data, widget.clientId);
+        final parsedClient = Client.fromMap(data, widget.clientId);
         final name = _extractClientName(data);
-        final phone = (data['phone'] ?? '').toString();
+        var phone = (data['phone'] ?? '').toString().trim();
+        if (phone.isEmpty && parsedClient.allPhones.isNotEmpty) {
+          phone = parsedClient.allPhones.first;
+        }
+        if (phone.isEmpty) {
+          for (final loc in parsedClient.locations) {
+            for (final ct in loc.contacts) {
+              if (ct.phone.trim().isNotEmpty) {
+                phone = ct.phone.trim();
+                break;
+              }
+            }
+            if (phone.isNotEmpty) break;
+          }
+        }
         final extraPhones = [
           if (data['extraPhones'] is List)
             for (final item in data['extraPhones'] as List)
@@ -327,7 +342,10 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                   (item ?? '').toString().trim() != phone.trim())
                 (item ?? '').toString().trim(),
         ];
-        final address = data['address'] ?? '';
+        final rawAddress = (data['address'] ?? '').toString().trim();
+        final address = rawAddress.isNotEmpty
+            ? rawAddress
+            : parsedClient.address.trim();
         final company = data['companyName'] ?? data['company'] ?? '';
         final email = (data['email'] ?? '').toString();
         final notes = (data['notes'] ?? data['description'] ?? '').toString();
@@ -429,13 +447,20 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Flexible(
-                              child: Text(
-                                name,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  fontSize: 24,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onLongPress: () => AppFeedback.copy(
+                                  context,
+                                  phone.isNotEmpty ? phone : name,
+                                ),
+                                child: Text(
+                                  name,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
                                 ),
                               ),
                             ),
@@ -731,6 +756,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         icon: Icons.person_outline,
         title: 'Контакт'.tr,
         value: value,
+        copyValue: phone.isNotEmpty ? phone : name,
       ),
     ];
   }
@@ -739,11 +765,14 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
     required IconData icon,
     required String title,
     required String value,
+    String? copyValue,
     VoidCallback? onTap,
   }) {
+    final target = (copyValue ?? value).trim();
+    final canCopy = target.isNotEmpty && value != 'Не указан'.tr;
     return InkWell(
-      onTap: onTap,
-      onLongPress: () => AppFeedback.copy(context, value),
+      onTap: onTap ?? (canCopy ? () => AppFeedback.copy(context, target) : null),
+      onLongPress: canCopy ? () => AppFeedback.copy(context, target) : null,
       borderRadius: BorderRadius.circular(12),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),

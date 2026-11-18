@@ -285,7 +285,11 @@ class JobDetailsController extends ChangeNotifier {
       }
 
       if (data.containsKey('clientPhone')) {
-        jobData['clientPhone'] = data['clientPhone'];
+        final remotePhone = (data['clientPhone'] ?? '').toString().trim();
+        if (remotePhone.isNotEmpty ||
+            (jobData['clientPhone'] ?? '').toString().trim().isEmpty) {
+          jobData['clientPhone'] = data['clientPhone'];
+        }
       }
       if ((data.containsKey('clientName') || data.containsKey('name')) &&
           !_draft.containsKey('clientName')) {
@@ -799,10 +803,18 @@ class JobDetailsController extends ChangeNotifier {
 
   /// Контактный телефон
   String get contactPhone {
-    final site = effectiveJobSitePhone;
-    return hasJobSite
-        ? (site.isEmpty ? (jobData['clientPhone'] ?? '').toString() : site)
-        : (jobData['clientPhone'] ?? '').toString();
+    final site = effectiveJobSitePhone.trim();
+    final owner = (jobData['clientPhone'] ?? '').toString().trim();
+    if (hasJobSite && site.isNotEmpty) return site;
+    if (owner.isNotEmpty) return owner;
+    if (site.isNotEmpty) return site;
+    for (final p in extraPhones) {
+      if (p.trim().isNotEmpty) return p.trim();
+    }
+    for (final p in clientExtraPhones) {
+      if (p.trim().isNotEmpty) return p.trim();
+    }
+    return '';
   }
 
   List<String> _parseExtraPhones(dynamic raw) {
@@ -988,12 +1000,31 @@ class JobDetailsController extends ChangeNotifier {
       final data = snap.data() as Map<String, dynamic>?;
       if (data == null) return;
       final prevContactsCount = chatContacts.length;
-      final phone = (data['phone'] ?? '').toString().trim();
+      var phone = (data['phone'] ?? '').toString().trim();
+      if (phone.isEmpty) {
+        final parsedClient = Client.fromMap(data, clientId);
+        if (parsedClient.allPhones.isNotEmpty) {
+          phone = parsedClient.allPhones.first;
+        } else {
+          for (final loc in parsedClient.locations) {
+            for (final ct in loc.contacts) {
+              if (ct.phone.trim().isNotEmpty) {
+                phone = ct.phone.trim();
+                break;
+              }
+            }
+            if (phone.isNotEmpty) break;
+          }
+        }
+      }
       // Имя — тем же путём, что и в карточке клиента: настоящее имя ищется по
       // всем полям карточки, а телефон на его место не подставляется.
       final extracted = Client.extractName(data, fallback: '');
       final name = Client.isPlaceholderName(extracted) ? '' : extracted;
-      final address = (data['address'] ?? '').toString().trim();
+      var address = (data['address'] ?? '').toString().trim();
+      if (address.isEmpty) {
+        address = Client.fromMap(data, clientId).address.trim();
+      }
       final email = (data['email'] ?? '').toString().trim();
       final isRegular = data['isRegular'] == true;
       final nextClientExtras = _parseExtraPhones(data['extraPhones']);
@@ -1016,7 +1047,8 @@ class JobDetailsController extends ChangeNotifier {
           changed = true;
         }
       }
-      if (!_draft.containsKey('clientPhone') &&
+      if (phone.isNotEmpty &&
+          !_draft.containsKey('clientPhone') &&
           jobData['clientPhone'] != phone) {
         jobData['clientPhone'] = phone;
         changed = true;
@@ -1148,6 +1180,13 @@ class JobDetailsController extends ChangeNotifier {
       _visitsDirty = true;
       needsReview = false;
     }
+    final closing =
+        JobStatuses.isCompletedStatus(status) ||
+        JobStatuses.isCancelledStatus(status);
+    if (closing) {
+      jobData.remove('reminderAt');
+      jobData.remove('promisedPartAt');
+    }
     _queue({
       'status': status,
       if (JobStatuses.isCompletedStatus(status)) ...{
@@ -1155,11 +1194,14 @@ class JobDetailsController extends ChangeNotifier {
         'needsReview': false,
       },
       if (JobStatuses.isCancelledStatus(status)) 'needsReview': false,
+      if (closing) ...{
+        'reminderAt': null,
+        'promisedPartAt': FieldValue.delete(),
+      },
       ...?extra,
     });
-    if (JobStatuses.isCompletedStatus(status) ||
-        JobStatuses.isCancelledStatus(status)) {
-      unawaited(LocalNotificationService.cancelPromisedPartReminder(jobId));
+    if (closing) {
+      unawaited(JobReminderService.onJobClosed(jobId, updateFirestore: false));
     }
     if (persistNow) await commitChanges();
   }

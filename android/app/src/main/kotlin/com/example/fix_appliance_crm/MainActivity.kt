@@ -289,6 +289,22 @@ class MainActivity : FlutterFragmentActivity() {
                         val args = call.arguments as? Map<*, *>
                         result.success(placeCellularCall(args?.get("number")?.toString().orEmpty()))
                     }
+                    "copyToClipboard" -> {
+                        val text = (call.arguments as? Map<*, *>)?.get("text")?.toString()
+                            ?: call.arguments?.toString().orEmpty()
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                        if (cm != null && text.isNotEmpty()) {
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("CRM", text))
+                            result.success(true)
+                        } else {
+                            result.success(false)
+                        }
+                    }
+                    "getClipboardText" -> {
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                        val item = cm?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
+                        result.success(item?.coerceToText(this)?.toString().orEmpty())
+                    }
                     "saveImageToGallery" -> {
                         val args = call.arguments as? Map<*, *>
                         val bytes = args?.get("bytes") as? ByteArray

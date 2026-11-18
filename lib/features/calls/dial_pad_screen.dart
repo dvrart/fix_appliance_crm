@@ -55,10 +55,15 @@ class _DialPadScreenState extends State<DialPadScreen> {
     return '+$d';
   }
 
+  static final RegExp _phoneExtractRe = RegExp(
+    r'(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}|\+\d{8,15}',
+  );
+
   Future<void> _paste() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final raw = data?.text ?? '';
-    final cleaned = raw.replaceAll(RegExp(r'[^\d+]'), '');
+    final raw = await AppFeedback.readClipboard();
+    final match = _phoneExtractRe.firstMatch(raw);
+    final extracted = match?.group(0) ?? raw;
+    final cleaned = extracted.replaceAll(RegExp(r'[^\d+]'), '');
     if (cleaned.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

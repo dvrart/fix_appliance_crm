@@ -105,7 +105,7 @@ class _ScheduleDateTimeSheetState extends State<_ScheduleDateTimeSheet> {
           left: 16,
           right: 16,
           top: 16,
-          bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+          bottom: 16 + MediaQuery.viewInsetsOf(context).bottom,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -871,7 +871,9 @@ class _ConversationScreenState extends State<ConversationScreen>
       final message = byId[id];
       if (message == null) continue;
       final subject = message.subject.trim();
-      final body = message.body.trim();
+      final body = message.body.trim().isNotEmpty
+          ? message.body.trim()
+          : message.bodyRu.trim();
       if (subject.isNotEmpty && body.isNotEmpty) {
         parts.add('$subject\n$body');
       } else if (subject.isNotEmpty) {
@@ -1371,11 +1373,15 @@ class _ConversationScreenState extends State<ConversationScreen>
     _markRead();
   }
 
+  String _lastDraftText = '';
+
   void _onDraftChanged() {
-    if (mounted) setState(() {});
+    final currentText = _textController.text;
+    if (currentText == _lastDraftText) return;
+    _lastDraftText = currentText;
     // Pre-warm translation cache so Send is instant when the user finishes typing
     _translateDebounce?.cancel();
-    final text = _textController.text.trim();
+    final text = currentText.trim();
     if (text.length >= 3) {
       _translateDebounce = Timer(
         const Duration(milliseconds: 500),
@@ -2657,6 +2663,7 @@ class _ConversationScreenState extends State<ConversationScreen>
         if (!didPop && _selecting) _clearSelection();
       },
       child: Scaffold(
+        resizeToAvoidBottomInset: false,
         backgroundColor: AppColors.surface,
         appBar: _selecting
             ? AppBar(
@@ -2697,36 +2704,48 @@ class _ConversationScreenState extends State<ConversationScreen>
                           titleText.toLowerCase() != _email.toLowerCase())
                         _email,
                     ];
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Flexible(
-                              child: Text(
-                                titleText,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 18,
+                    final copyTarget = _hasPhone
+                        ? _phone.trim()
+                        : (_hasEmail ? _email.trim() : titleText.trim());
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: !widget.websiteInbox && copyTarget.isNotEmpty
+                          ? () => AppFeedback.copy(context, copyTarget)
+                          : null,
+                      onLongPress: !widget.websiteInbox && copyTarget.isNotEmpty
+                          ? () => AppFeedback.copy(context, copyTarget)
+                          : null,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  titleText,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 18,
+                                  ),
                                 ),
                               ),
-                            ),
-                            if (isRegular)
-                              const RegularClientStar(size: 18, onDark: true),
-                          ],
-                        ),
-                        if (!widget.websiteInbox && subParts.isNotEmpty)
-                          Text(
-                            subParts.join(' · '),
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.normal,
-                            ),
+                              if (isRegular)
+                                const RegularClientStar(size: 18, onDark: true),
+                            ],
                           ),
-                      ],
+                          if (!widget.websiteInbox && subParts.isNotEmpty)
+                            Text(
+                              subParts.join(' · '),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.normal,
+                              ),
+                            ),
+                        ],
+                      ),
                     );
                   },
                 ),
@@ -2819,7 +2838,15 @@ class _ConversationScreenState extends State<ConversationScreen>
     // Долгое нажатие выделяет сообщение, двойное касание по тексту — слова
     // внутри него. Порог долгого нажатия укорочен, иначе жест забирает себе
     // выделение текста (см. QuickLongPress).
-    return QuickLongPress(
+    final senderAddress = message.isEmail
+        ? (isOutbound
+              ? (message.toEmail.isNotEmpty ? message.toEmail : message.to)
+              : (message.fromEmail.isNotEmpty
+                    ? message.fromEmail
+                    : message.from))
+        : (isOutbound ? '' : message.from);
+    return RepaintBoundary(
+      child: QuickLongPress(
       onLongPress: () => _toggleSelected(message.id),
       onTap: _selecting ? () => _toggleSelected(message.id) : null,
       child: Align(
@@ -2840,7 +2867,7 @@ class _ConversationScreenState extends State<ConversationScreen>
             child: Container(
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.75),
         decoration: BoxDecoration(
           color: selected
               ? AppColors.selectedCard
@@ -2864,51 +2891,57 @@ class _ConversationScreenState extends State<ConversationScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(
-                  waiting
-                      ? Icons.schedule_send_rounded
-                      : refused
-                          ? Icons.block_rounded
-                          : (message.isEmail ? Icons.email : Icons.sms),
-                  size: 14,
-                  color: onDark
-                      ? Colors.white70
-                      : waiting
-                          ? Colors.orange.shade800
-                          : refused
-                              ? Colors.grey.shade600
-                              : (message.isEmail
-                                  ? const Color(0xFFEA4335)
-                                  : Colors.indigo),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: !_selecting && senderAddress.trim().isNotEmpty
+                  ? () => AppFeedback.copy(context, senderAddress.trim())
+                  : null,
+              child: Row(
+                children: [
+                  Icon(
                     waiting
-                        ? 'Ждёт вашего разрешения'.tr
+                        ? Icons.schedule_send_rounded
                         : refused
-                            ? 'Не отправлено'.tr
-                            : message.isEmail
-                        ? (isOutbound
-                            ? '${'Кому'.tr}: ${message.toEmail.isNotEmpty ? message.toEmail : message.to}'
-                            : '${'От'.tr}: ${message.fromEmail.isNotEmpty ? message.fromEmail : message.from}')
-                        : (isOutbound ? 'SMS'.tr : '${'От'.tr}: ${message.from}'),
-                    style: TextStyle(
-                      color: onDark
-                          ? Colors.white70
-                          : waiting
-                              ? (AppColors.isDark
-                                  ? const Color(0xFFFFCA28)
-                                  : Colors.orange.shade900)
-                              : AppColors.inkMuted,
-                      fontSize: 11,
-                      fontWeight: waiting ? FontWeight.w800 : FontWeight.w600,
+                            ? Icons.block_rounded
+                            : (message.isEmail ? Icons.email : Icons.sms),
+                    size: 14,
+                    color: onDark
+                        ? Colors.white70
+                        : waiting
+                            ? Colors.orange.shade800
+                            : refused
+                                ? Colors.grey.shade600
+                                : (message.isEmail
+                                    ? const Color(0xFFEA4335)
+                                    : Colors.indigo),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      waiting
+                          ? 'Ждёт вашего разрешения'.tr
+                          : refused
+                              ? 'Не отправлено'.tr
+                              : message.isEmail
+                          ? (isOutbound
+                              ? '${'Кому'.tr}: ${message.toEmail.isNotEmpty ? message.toEmail : message.to}'
+                              : '${'От'.tr}: ${message.fromEmail.isNotEmpty ? message.fromEmail : message.from}')
+                          : (isOutbound ? 'SMS'.tr : '${'От'.tr}: ${message.from}'),
+                      style: TextStyle(
+                        color: onDark
+                            ? Colors.white70
+                            : waiting
+                                ? (AppColors.isDark
+                                    ? const Color(0xFFFFCA28)
+                                    : Colors.orange.shade900)
+                                : AppColors.inkMuted,
+                        fontSize: 11,
+                        fontWeight: waiting ? FontWeight.w800 : FontWeight.w600,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
             if (message.isEmail && message.subject.trim().isNotEmpty) ...[
               const SizedBox(height: 4),
@@ -3060,6 +3093,7 @@ class _ConversationScreenState extends State<ConversationScreen>
         ],
       ),
     ),
+      ),
     );
   }
 
@@ -3304,7 +3338,11 @@ class _ConversationScreenState extends State<ConversationScreen>
           channel: _channel,
           sending: _isSending,
           initialShowEmoji: initialShowEmoji,
-          onChanged: (value) => _textController.text = value,
+          onChanged: (value) {
+            if (_textController.text != value) {
+              _textController.text = value;
+            }
+          },
           onSend: () async {
             Navigator.pop(sheetContext);
             await _send();
@@ -3316,7 +3354,6 @@ class _ConversationScreenState extends State<ConversationScreen>
         );
       },
     );
-    if (mounted) setState(() {});
   }
 
   Widget _buildRecipientBar() {
@@ -3344,12 +3381,18 @@ class _ConversationScreenState extends State<ConversationScreen>
           peer.address.split(',').first.trim(),
       ].where((s) => s.isNotEmpty).join(' · ');
       final contact = customSubtitle ?? defaultSub;
+      final copyValue = peer.hasPhone
+          ? peer.phone.trim()
+          : (peer.hasEmail ? peer.email.trim() : '');
       return Material(
         color: selected ? AppColors.primary : AppColors.card,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: onTapOverride ?? () => _selectPeer(peer),
+          onLongPress: copyValue.isNotEmpty
+              ? () => AppFeedback.copy(context, copyValue)
+              : null,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
             decoration: BoxDecoration(
@@ -3645,17 +3688,20 @@ class _ConversationScreenState extends State<ConversationScreen>
       if (_hasPhone)
         Padding(
           padding: const EdgeInsets.only(right: 6),
-          child: IconButton.filled(
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-            padding: EdgeInsets.zero,
-            icon: const Icon(Icons.call, size: 18),
-            tooltip: 'Позвонить'.tr,
-            style: IconButton.styleFrom(
-              backgroundColor: const Color(0xFF22C55E),
-              foregroundColor: Colors.white,
+          child: GestureDetector(
+            onLongPress: () => AppFeedback.copy(context, _phone),
+            child: IconButton.filled(
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.call, size: 18),
+              tooltip: 'Позвонить'.tr,
+              style: IconButton.styleFrom(
+                backgroundColor: const Color(0xFF22C55E),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: _call,
             ),
-            onPressed: _call,
           ),
         ),
     ];
@@ -3762,7 +3808,7 @@ class _ConversationScreenState extends State<ConversationScreen>
         left: 8,
         right: 8,
         top: 6,
-        bottom: 6 + (widget.embedded ? 0 : MediaQuery.of(context).padding.bottom),
+        bottom: 6 + (widget.embedded ? 0 : MediaQuery.paddingOf(context).bottom),
       ),
       decoration: BoxDecoration(
         color: AppColors.card,
@@ -3849,18 +3895,24 @@ class _ConversationScreenState extends State<ConversationScreen>
                       child: Row(
                         children: [
                           Expanded(
-                            child: Text(
-                              _textController.text.trim().isEmpty
-                                  ? 'Пишите по-русски — клиенту уйдёт на английском'.tr
-                                  : _textController.text.trim(),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: _textController.text.trim().isEmpty
-                                    ? AppColors.inkMuted
-                                    : AppColors.ink,
-                              ),
+                            child: ValueListenableBuilder<TextEditingValue>(
+                              valueListenable: _textController,
+                              builder: (context, value, _) {
+                                final draft = value.text.trim();
+                                return Text(
+                                  draft.isEmpty
+                                      ? 'Пишите по-русски — клиенту уйдёт на английском'.tr
+                                      : draft,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: draft.isEmpty
+                                        ? AppColors.inkMuted
+                                        : AppColors.ink,
+                                  ),
+                                );
+                              },
                             ),
                           ),
                           IconButton(
@@ -3992,13 +4044,20 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
   String _emojiLevel = 'normal';
   bool _showPolishMenu = false;
   late bool _showEmojiPicker;
+  String _lastNotifiedText = '';
 
   @override
   void initState() {
     super.initState();
     _showEmojiPicker = widget.initialShowEmoji;
+    _lastNotifiedText = widget.initialText;
     _controller = TextEditingController(text: widget.initialText);
-    _controller.addListener(() => widget.onChanged(_controller.text));
+    _controller.addListener(() {
+      final next = _controller.text;
+      if (next == _lastNotifiedText) return;
+      _lastNotifiedText = next;
+      widget.onChanged(next);
+    });
   }
 
   void _insertEmoji(String emoji) {
@@ -4101,7 +4160,7 @@ class _ComposeMessageSheetState extends State<ComposeMessageSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final inset = MediaQuery.of(context).viewInsets.bottom;
+    final inset = MediaQuery.viewInsetsOf(context).bottom;
     return Padding(
       padding: EdgeInsets.fromLTRB(12, 8, 12, 10 + inset),
       child: Column(

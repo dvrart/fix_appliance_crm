@@ -123,6 +123,10 @@ class JobAgendaCard extends StatelessWidget {
     required bool isRegular,
   }) {
     final address = job.workAddress.trim();
+    final phone = job.contactPhone.trim();
+    final copyTarget = address.isNotEmpty
+        ? address
+        : (phone.isNotEmpty ? phone : (name != '—' ? name : ''));
     final nameSize = 15.5 * ui.cardNameScale;
     final when = visit?.startAt ?? job.scheduledAt;
     final hasTime = visit != null
@@ -136,13 +140,9 @@ class JobAgendaCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         onTap: onTap,
-        onLongPress: routeIndex != null
+        onLongPress: routeIndex != null || copyTarget.isEmpty
             ? null
-            : (address.isNotEmpty
-                  ? () => AppFeedback.copy(context, address)
-                  : (name != '—'
-                        ? () => AppFeedback.copy(context, name)
-                        : null)),
+            : () => AppFeedback.copy(context, copyTarget),
         borderRadius: BorderRadius.circular(10),
         child: IntrinsicHeight(
           child: Stack(
@@ -432,6 +432,10 @@ class JobAgendaCard extends StatelessWidget {
       ui.paperColor,
     );
     final address = job.workAddress.trim();
+    final phone = job.contactPhone.trim();
+    final copyTarget = address.isNotEmpty
+        ? address
+        : (phone.isNotEmpty ? phone : (name != '—' ? name : ''));
     final trailingText = (footer != null && footer!.trim().isNotEmpty)
         ? footer!.trim()
         : address;
@@ -444,13 +448,9 @@ class JobAgendaCard extends StatelessWidget {
       ),
       child: InkWell(
         onTap: onTap,
-        onLongPress: routeIndex != null
+        onLongPress: routeIndex != null || copyTarget.isEmpty
             ? null
-            : (address.isNotEmpty
-                  ? () => AppFeedback.copy(context, address)
-                  : (name != '—'
-                        ? () => AppFeedback.copy(context, name)
-                        : null)),
+            : () => AppFeedback.copy(context, copyTarget),
         borderRadius: BorderRadius.circular(10),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
@@ -615,6 +615,10 @@ class JobAgendaCard extends StatelessWidget {
         : (when != null && (when.hour != 0 || when.minute != 0));
     final timeLabel = showTime && hasTime ? Formatters.formatTime(when) : '';
     final address = job.workAddress.trim();
+    final phone = job.contactPhone.trim();
+    final copyTarget = address.isNotEmpty
+        ? address
+        : (phone.isNotEmpty ? phone : (name != '—' ? name : ''));
     final isJobCancelled = JobStatuses.isCancelledStatus(job.status);
     final mutedStatus = Color.alphaBlend(
       statusColor.withValues(alpha: 0.88),
@@ -630,9 +634,9 @@ class JobAgendaCard extends StatelessWidget {
       ),
       child: InkWell(
         onTap: onTap,
-        onLongPress: address.isNotEmpty
-            ? () => AppFeedback.copy(context, address)
-            : (name != '—' ? () => AppFeedback.copy(context, name) : null),
+        onLongPress: copyTarget.isEmpty
+            ? null
+            : () => AppFeedback.copy(context, copyTarget),
         borderRadius: BorderRadius.circular(10),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),

@@ -5,9 +5,10 @@ double keyboardAvoidingMaxHeight(
   BuildContext context, {
   double fraction = 1,
 }) {
-  final media = MediaQuery.of(context);
   final available =
-      media.size.height - media.viewInsets.bottom - media.padding.top;
+      MediaQuery.sizeOf(context).height -
+      MediaQuery.viewInsetsOf(context).bottom -
+      MediaQuery.paddingOf(context).top;
   if (available <= 160) return available.clamp(0, 160);
   return (available * fraction).clamp(160.0, available);
 }

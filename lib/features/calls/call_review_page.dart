@@ -688,6 +688,9 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: phone.isEmpty ? null : _callBack,
+                onLongPress: phone.isEmpty
+                    ? null
+                    : () => AppFeedback.copy(context, phone),
                 icon: const Icon(Icons.call),
                 label: Text(context.tr('Перезвонить', 'Call back')),
                 style: OutlinedButton.styleFrom(
@@ -745,29 +748,53 @@ class CallReviewHeaderCard extends StatelessWidget {
         ClientService.isRegularClient(clientId: call.clientId, phone: phone);
     return _SectionCard(
       title: name.isNotEmpty ? name : phone,
-      titleTrailing: showStar ? const RegularClientStar(size: 18) : null,
+      onTitleTap: name.isEmpty && phone.isNotEmpty
+          ? () => AppFeedback.copy(context, phone)
+          : null,
+      onTitleLongPress: (phone.isNotEmpty ? phone : name).isNotEmpty
+          ? () => AppFeedback.copy(context, phone.isNotEmpty ? phone : name)
+          : null,
+      titleTrailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (name.isEmpty && phone.isNotEmpty)
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              padding: EdgeInsets.zero,
+              tooltip: context.tr('Копировать', 'Copy'),
+              onPressed: () => AppFeedback.copy(context, phone),
+              icon: Icon(Icons.copy, size: 16, color: AppColors.inkMuted),
+            ),
+          if (showStar) const RegularClientStar(size: 18),
+        ],
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (name.isNotEmpty && phone.isNotEmpty)
-            InkWell(
-              onTap: () => AppFeedback.copy(context, phone),
-              borderRadius: BorderRadius.circular(4),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      phone,
-                      style: TextStyle(
-                        color: AppColors.ink,
-                        fontWeight: FontWeight.w500,
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => AppFeedback.copy(context, phone),
+                onLongPress: () => AppFeedback.copy(context, phone),
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        phone,
+                        style: TextStyle(
+                          color: AppColors.ink,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                    Icon(Icons.copy, size: 14, color: AppColors.inkMuted),
-                  ],
+                      const SizedBox(width: 6),
+                      Icon(Icons.copy, size: 14, color: AppColors.inkMuted),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -787,6 +814,7 @@ class CallReviewHeaderCard extends StatelessWidget {
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: onCall,
+                    onLongPress: () => AppFeedback.copy(context, phone),
                     icon: const Icon(Icons.phone, size: 18),
                     label: Text(context.tr('Позвонить', 'Call')),
                     style: OutlinedButton.styleFrom(
@@ -962,11 +990,15 @@ class _ProblemCard extends StatelessWidget {
 class _SectionCard extends StatelessWidget {
   final String title;
   final Widget? titleTrailing;
+  final VoidCallback? onTitleTap;
+  final VoidCallback? onTitleLongPress;
   final Widget child;
 
   const _SectionCard({
     required this.title,
     this.titleTrailing,
+    this.onTitleTap,
+    this.onTitleLongPress,
     required this.child,
   });
 
@@ -985,11 +1017,16 @@ class _SectionCard extends StatelessWidget {
           Row(
             children: [
               Flexible(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 16,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: onTitleTap,
+                  onLongPress: onTitleLongPress,
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 16,
+                    ),
                   ),
                 ),
               ),

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'app_commands.dart';
 import 'l10n/app_locale.dart';
 import 'ui_scale.dart';
 
@@ -11,15 +12,45 @@ class AppFeedback {
   /// Сколько живёт любое всплывающее уведомление в приложении: снизу
   /// (SnackBar), сверху («Скопировано») и баннер нового SMS / письма.
   static const noticeDuration = Duration(seconds: 1);
+  static const MethodChannel _deviceChannel = MethodChannel(
+    'fix_appliance/device',
+  );
 
   static OverlayEntry? _entry;
   static Timer? _hide;
 
   static Future<void> copy(BuildContext context, String value) async {
-    await Clipboard.setData(ClipboardData(text: value));
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: trimmed));
+    try {
+      await _deviceChannel.invokeMethod<bool>('copyToClipboard', {
+        'text': trimmed,
+      });
+    } catch (_) {}
     haptic();
-    if (!context.mounted) return;
-    toast(context, 'Скопировано'.tr);
+    final toastContext = context.mounted
+        ? context
+        : rootNavigatorKey.currentContext;
+    if (toastContext == null || !toastContext.mounted) return;
+    toast(toastContext, 'Скопировано'.tr);
+  }
+
+  static Future<String> readClipboard() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = (data?.text ?? '').trim();
+      if (text.isNotEmpty) return text;
+    } catch (_) {}
+    try {
+      final nativeText = await _deviceChannel.invokeMethod<String>(
+        'getClipboardText',
+      );
+      if (nativeText != null && nativeText.trim().isNotEmpty) {
+        return nativeText.trim();
+      }
+    } catch (_) {}
+    return '';
   }
 
   static DateTime _lastHapticAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -70,7 +101,11 @@ class AppFeedback {
   static void toast(BuildContext context, String message) {
     _hide?.cancel();
     _entry?.remove();
-    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    final overlay =
+        (context.mounted
+            ? Overlay.maybeOf(context, rootOverlay: true)
+            : null) ??
+        rootNavigatorKey.currentState?.overlay;
     if (overlay == null) return;
     late final OverlayEntry entry;
     entry = OverlayEntry(

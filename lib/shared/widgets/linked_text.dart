@@ -275,7 +275,14 @@ Future<LinkAction?> showLinkActionsSheet(
             label,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
-          onTap: () => Navigator.pop(sheetContext, action),
+          onTap: () async {
+            if (action == LinkAction.copy) {
+              await AppFeedback.copy(sheetContext, link.text);
+              if (sheetContext.mounted) Navigator.pop(sheetContext);
+              return;
+            }
+            Navigator.pop(sheetContext, action);
+          },
         );
       }
 

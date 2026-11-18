@@ -162,7 +162,7 @@ class _CalendarEventSheetState extends State<_CalendarEventSheet> {
   @override
   Widget build(BuildContext context) {
     final preview = _localPhoto ?? _photoUrl;
-    final bottom = MediaQuery.of(context).viewInsets.bottom;
+    final bottom = MediaQuery.viewInsetsOf(context).bottom;
     return Padding(
       padding: EdgeInsets.fromLTRB(20, 12, 20, 16 + bottom),
       child: SingleChildScrollView(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_commands.dart';
+import '../../core/app_feedback.dart';
 import '../../core/constants.dart';
 import '../../core/l10n/app_locale.dart';
 import '../../core/utils/formatters.dart';
@@ -64,6 +65,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
   late final Stream<List<CallRecord>> _callsStream;
   late final bool Function() _dismissSelection;
   List<String> _visibleIds = const [];
+  List<CallRecord> _allCalls = const [];
 
   @override
   void dispose() {
@@ -119,6 +121,24 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     await TwilioService.deleteMany(ids);
   }
 
+  Future<void> _copySelected() async {
+    final ids = _selected.value;
+    if (ids.isEmpty) return;
+    final phones = <String>[];
+    final seen = <String>{};
+    for (final call in _allCalls) {
+      if (!ids.contains(call.id)) continue;
+      final p = (call.isIncoming ? call.fromNumber : call.toNumber).trim();
+      final norm = ClientService.normalizePhone(p);
+      final key = norm.isNotEmpty ? norm : p;
+      if (key.isEmpty || !seen.add(key)) continue;
+      phones.add(p);
+    }
+    if (phones.isEmpty) return;
+    await AppFeedback.copy(context, phones.join('\n'));
+    _clearSelection();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -144,6 +164,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
     super.build(context);
     final body = _buildAllCalls();
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       backgroundColor: widget.embedded ? Colors.transparent : null,
       appBar: widget.embedded
           ? null
@@ -210,6 +231,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                   );
                 }
 
+                _allCalls = calls;
                 _visibleIds = [for (final call in calls) call.id];
                 final groups = _groupByNumber(calls);
                 return Stack(
@@ -262,6 +284,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                             count: selected.length,
                             onCancel: _clearSelection,
                             onSelectAll: _selectAllVisible,
+                            onCopy: _copySelected,
                             onDelete: _deleteSelected,
                           ),
                         );
@@ -722,9 +745,33 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                     ),
                     if (name != null && displayPhone.trim().isNotEmpty) ...[
                       const SizedBox(height: 2),
-                      Text(
-                        displayPhone,
-                        style: TextStyle(color: AppColors.inkMuted, fontSize: 13),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: selecting
+                            ? null
+                            : () => AppFeedback.copy(context, displayPhone),
+                        onLongPress: () =>
+                            AppFeedback.copy(context, displayPhone),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                displayPhone,
+                                style: TextStyle(
+                                  color: AppColors.inkMuted,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(
+                              Icons.copy_rounded,
+                              size: 12,
+                              color: AppColors.inkMuted,
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                     const SizedBox(height: 2),
@@ -1134,39 +1181,45 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
 
   /// Плашка «техника + имя арендатора и его номер» в строке звонка.
   Widget _tenantChip(String name, String appliance, String phone) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1565C0).withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(9),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AppliancePicture(type: appliance, size: 16),
-          const SizedBox(width: 5),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 110),
-            child: Text(
-              name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF1565C0),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: phone.trim().isNotEmpty
+          ? () => AppFeedback.copy(context, phone)
+          : null,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1565C0).withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppliancePicture(type: appliance, size: 16),
+            const SizedBox(width: 5),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 110),
+              child: Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1565C0),
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: 5),
-          Text(
-            Formatters.formatPhone(phone),
-            style: const TextStyle(
-              fontSize: 10,
-              color: Color(0xFF4A7AAE),
+            const SizedBox(width: 5),
+            Text(
+              Formatters.formatPhone(phone),
+              style: const TextStyle(
+                fontSize: 10,
+                color: Color(0xFF4A7AAE),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

@@ -1,3 +1,6 @@
+import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/gestures.dart'
+    show EagerGestureRecognizer, OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
@@ -287,7 +290,18 @@ class _ClientsMapScreenState extends State<ClientsMapScreen> {
                             markers: _markers,
                             myLocationEnabled: true,
                             myLocationButtonEnabled: true,
-                            zoomControlsEnabled: false,
+                            zoomControlsEnabled: true,
+                            scrollGesturesEnabled: true,
+                            zoomGesturesEnabled: true,
+                            rotateGesturesEnabled: true,
+                            tiltGesturesEnabled: true,
+                            gestureRecognizers: const <
+                              Factory<OneSequenceGestureRecognizer>
+                            >{
+                              Factory<OneSequenceGestureRecognizer>(
+                                EagerGestureRecognizer.new,
+                              ),
+                            },
                             onMapCreated: (controller) {
                               _map = controller;
                               _fitBounds();

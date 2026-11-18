@@ -146,7 +146,9 @@ class _MessagesScreenState extends State<MessagesScreen>
       final message = byId[id];
       if (message == null) continue;
       final subject = message.subject.trim();
-      final body = message.body.trim();
+      final body = message.body.trim().isNotEmpty
+          ? message.body.trim()
+          : message.bodyRu.trim();
       if (subject.isNotEmpty && body.isNotEmpty) {
         parts.add('$subject\n$body');
       } else if (subject.isNotEmpty) {
@@ -286,6 +288,7 @@ class _MessagesScreenState extends State<MessagesScreen>
 
     if (widget.embedded) {
       return Scaffold(
+        resizeToAvoidBottomInset: false,
         backgroundColor: Colors.transparent,
         body: body,
       );
@@ -301,6 +304,7 @@ class _MessagesScreenState extends State<MessagesScreen>
     );
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         title: Text('Сообщения'.tr, style: const TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: AppColors.primary,

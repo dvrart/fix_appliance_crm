@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/app_feedback.dart';
 import '../../../core/constants.dart';
 import '../../../core/l10n/app_locale.dart';
 import '../../../services/ai_service.dart';
@@ -209,9 +210,26 @@ class _SecretaryCallReviewPageState extends State<SecretaryCallReviewPage> {
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
           if (widget.fromNumber.isNotEmpty)
-            Text(
-              widget.fromNumber,
-              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => AppFeedback.copy(context, widget.fromNumber),
+              onLongPress: () => AppFeedback.copy(context, widget.fromNumber),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      widget.fromNumber,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Icon(Icons.copy_rounded, size: 15, color: AppColors.inkMuted),
+                ],
+              ),
             ),
           const SizedBox(height: 8),
           Text(

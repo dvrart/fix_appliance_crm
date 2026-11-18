@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/gestures.dart'
+    show EagerGestureRecognizer, OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
@@ -60,6 +63,7 @@ class _DetailsTabState extends State<DetailsTab> {
   bool _verifyingAddress = false;
   MapPlace? _verifiedPlace;
   int _addressCheckGen = 0;
+  GoogleMapController? _inlineMapController;
 
   String get _bookingPhone {
     final site = ctrl.effectiveJobSitePhone.trim();
@@ -87,6 +91,7 @@ class _DetailsTabState extends State<DetailsTab> {
     ctrl.removeListener(_onControllerChange);
     _changesSub?.cancel();
     _scrollController.dispose();
+    _inlineMapController?.dispose();
     super.dispose();
   }
 
@@ -119,6 +124,15 @@ class _DetailsTabState extends State<DetailsTab> {
       _verifyingAddress = false;
       _verifiedPlace = place;
     });
+    final loc = place?.location;
+    if (loc != null) {
+      _inlineMapController?.moveCamera(
+        CameraUpdate.newLatLngZoom(
+          LatLng(loc.latitude + 0.00075, loc.longitude),
+          16,
+        ),
+      );
+    }
   }
 
   /// Заявка, с которой эту стоит соединить (или уже соединили).
@@ -233,7 +247,7 @@ class _DetailsTabState extends State<DetailsTab> {
               snapshot.data ?? JobStatuses.all,
               current: ctrl.currentStatus,
             );
-            final maxHeight = MediaQuery.of(context).size.height * 0.7;
+            final maxHeight = MediaQuery.sizeOf(context).height * 0.7;
             return SafeArea(
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxHeight: maxHeight),
@@ -1644,11 +1658,14 @@ class _DetailsTabState extends State<DetailsTab> {
     return ValueListenableBuilder<int>(
       valueListenable: JobReminderService.revision,
       builder: (context, _, _) {
-        final remindAt = JobReminderService.reminderFor(
-          ctrl.jobId,
-          ctrl.jobData,
-        );
-        final at = ctrl.promisedPartAt ?? remindAt;
+        final closed = JobStatuses.isClosed(ctrl.currentStatus);
+        final remindAt = closed
+            ? null
+            : JobReminderService.reminderFor(
+                ctrl.jobId,
+                ctrl.jobData,
+              );
+        final at = closed ? null : (ctrl.promisedPartAt ?? remindAt);
         final overdue = Job.isPromisedOverdue(at);
         final color = overdue
             ? const Color(0xFFC62828)
@@ -3021,7 +3038,7 @@ class _DetailsTabState extends State<DetailsTab> {
         return SafeArea(
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(sheetContext).size.height * 0.7,
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.7,
             ),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
@@ -3491,11 +3508,12 @@ class _DetailsTabState extends State<DetailsTab> {
     final cityBadgeText = !hasAddress
         ? 'Адрес не указан'.tr
         : (city.isNotEmpty ? city : (street.isEmpty ? address : ''));
-    final copyText = [
-      ctrl.contactName.trim(),
-      if (phone.isNotEmpty) phone,
-      if (address.isNotEmpty) address,
-    ].where((s) => s.isNotEmpty).join(', ');
+    final cleanContactName = Client.isPlaceholderName(ctrl.contactName)
+        ? ''
+        : ctrl.contactName.trim();
+    final copyText = phone.isNotEmpty
+        ? phone
+        : (address.isNotEmpty ? address : cleanContactName);
 
     final warnState = !hasAddress || (!_verifyingAddress && !houseFound);
     final borderColor = outsideArea
@@ -3529,96 +3547,135 @@ class _DetailsTabState extends State<DetailsTab> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Text(
-                ctrl.contactName.toUpperCase(),
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 20,
-                  height: 1.08,
-                  fontWeight: FontWeight.w900,
-                  color: AppColors.isDark
-                      ? const Color(0xFF90CAF9)
-                      : const Color(0xFF0D3B7A),
-                  letterSpacing: 0.3,
-                ),
-              ),
-              if (phone.isNotEmpty) ...[
-                const SizedBox(height: 2),
-                Text(
-                  Formatters.formatPhone(phone),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onLongPress: cleanContactName.isNotEmpty
+                    ? () => AppFeedback.copy(context, cleanContactName)
+                    : (phone.isNotEmpty
+                          ? () => AppFeedback.copy(context, phone)
+                          : null),
+                child: Text(
+                  ctrl.contactName.toUpperCase(),
                   textAlign: TextAlign.center,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 14.5,
-                    height: 1.12,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.ink,
+                    fontSize: 20,
+                    height: 1.08,
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.isDark
+                        ? const Color(0xFF90CAF9)
+                        : const Color(0xFF0D3B7A),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ),
+              if (phone.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => AppFeedback.copy(context, phone),
+                  onLongPress: () => AppFeedback.copy(context, phone),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          Formatters.formatPhone(phone),
+                          textAlign: TextAlign.center,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14.5,
+                            height: 1.12,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Icon(
+                        Icons.copy_rounded,
+                        size: 13,
+                        color: AppColors.inkMuted,
+                      ),
+                    ],
                   ),
                 ),
               ],
               if (street.isNotEmpty) ...[
                 const SizedBox(height: 2),
-                Text(
-                  street,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 14,
-                    height: 1.15,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.ink,
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onLongPress: address.isNotEmpty
+                      ? () => AppFeedback.copy(context, address)
+                      : null,
+                  child: Text(
+                    street,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 14,
+                      height: 1.15,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.ink,
+                    ),
                   ),
                 ),
               ],
               if (cityBadgeText.isNotEmpty) ...[
                 const SizedBox(height: 4),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 3.5,
-                  ),
-                  decoration: BoxDecoration(
-                    color: cityBg,
-                    borderRadius: BorderRadius.circular(8),
-                    boxShadow: [
-                      BoxShadow(
-                        color: cityBg.withValues(alpha: 0.30),
-                        blurRadius: 4,
-                        offset: const Offset(0, 1),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        hasAddress
-                            ? Icons.location_on_rounded
-                            : Icons.edit_location_alt_outlined,
-                        size: 15,
-                        color: onCityBg,
-                      ),
-                      const SizedBox(width: 4),
-                      Flexible(
-                        child: Text(
-                          hasAddress ? cityBadgeText.toUpperCase() : cityBadgeText,
-                          textAlign: TextAlign.center,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 15.5,
-                            height: 1.12,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 0.4,
-                            color: onCityBg,
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onLongPress: address.isNotEmpty
+                      ? () => AppFeedback.copy(context, address)
+                      : null,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 3.5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: cityBg,
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: cityBg.withValues(alpha: 0.30),
+                          blurRadius: 4,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          hasAddress
+                              ? Icons.location_on_rounded
+                              : Icons.edit_location_alt_outlined,
+                          size: 15,
+                          color: onCityBg,
+                        ),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            hasAddress ? cityBadgeText.toUpperCase() : cityBadgeText,
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 15.5,
+                              height: 1.12,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.4,
+                              color: onCityBg,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ],
@@ -3631,6 +3688,7 @@ class _DetailsTabState extends State<DetailsTab> {
     final mapPlaceholderBg = AppColors.isDark
         ? const Color(0xFF1F2733)
         : Colors.grey.shade200;
+    final inFlutterTest = Platform.environment.containsKey('FLUTTER_TEST');
 
     return Container(
       width: double.infinity,
@@ -3644,28 +3702,72 @@ class _DetailsTabState extends State<DetailsTab> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          Material(
-            color: mapPlaceholderBg,
-            child: InkWell(
-              onTap: _onMapTap,
-              child: hasPoint
-                  ? Image.network(
-                      MapsService.getStaticMapUrlForPoint(
-                        place!.location!,
-                        width: 600,
-                        height: 420,
-                        zoom: 16,
-                        center: LatLng(
-                          place.location!.latitude + 0.00075,
-                          place.location!.longitude,
+          if (hasPoint && !inFlutterTest)
+            GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: LatLng(
+                  place!.location!.latitude + 0.00075,
+                  place.location!.longitude,
+                ),
+                zoom: 16,
+              ),
+              markers: {
+                Marker(
+                  markerId: const MarkerId('job_site_inline'),
+                  position: place.location!,
+                ),
+              },
+              myLocationEnabled: false,
+              myLocationButtonEnabled: false,
+              zoomControlsEnabled: false,
+              mapToolbarEnabled: false,
+              compassEnabled: false,
+              scrollGesturesEnabled: true,
+              zoomGesturesEnabled: true,
+              rotateGesturesEnabled: true,
+              tiltGesturesEnabled: true,
+              gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{
+                Factory<OneSequenceGestureRecognizer>(
+                  EagerGestureRecognizer.new,
+                ),
+              },
+              onMapCreated: (controller) {
+                _inlineMapController = controller;
+              },
+              onTap: (_) => _onMapTap(),
+            )
+          else
+            Material(
+              color: mapPlaceholderBg,
+              child: InkWell(
+                onTap: _onMapTap,
+                child: hasPoint
+                    ? Image.network(
+                        MapsService.getStaticMapUrlForPoint(
+                          place!.location!,
+                          width: 600,
+                          height: 420,
+                          zoom: 16,
+                          center: LatLng(
+                            place.location!.latitude + 0.00075,
+                            place.location!.longitude,
+                          ),
                         ),
-                      ),
-                      fit: BoxFit.cover,
-                      width: double.infinity,
-                      height: double.infinity,
-                      cacheWidth: 900,
-                      errorBuilder: (context, error, stackTrace) => Container(
-                        color: mapPlaceholderBg,
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        height: double.infinity,
+                        cacheWidth: 900,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          color: mapPlaceholderBg,
+                          alignment: const Alignment(0, 0.32),
+                          child: Icon(
+                            Icons.map_outlined,
+                            size: 38,
+                            color: Colors.grey.shade500,
+                          ),
+                        ),
+                      )
+                    : Align(
                         alignment: const Alignment(0, 0.32),
                         child: Icon(
                           Icons.map_outlined,
@@ -3673,17 +3775,8 @@ class _DetailsTabState extends State<DetailsTab> {
                           color: Colors.grey.shade500,
                         ),
                       ),
-                    )
-                  : Align(
-                      alignment: const Alignment(0, 0.32),
-                      child: Icon(
-                        Icons.map_outlined,
-                        size: 38,
-                        color: Colors.grey.shade500,
-                      ),
-                    ),
+              ),
             ),
-          ),
           Positioned(
             top: 6,
             left: 6,
@@ -4572,6 +4665,16 @@ class _HouseMapSheetState extends State<_HouseMapSheet> {
                     myLocationEnabled: true,
                     myLocationButtonEnabled: true,
                     zoomControlsEnabled: true,
+                    scrollGesturesEnabled: true,
+                    zoomGesturesEnabled: true,
+                    rotateGesturesEnabled: true,
+                    tiltGesturesEnabled: true,
+                    gestureRecognizers:
+                        const <Factory<OneSequenceGestureRecognizer>>{
+                          Factory<OneSequenceGestureRecognizer>(
+                            EagerGestureRecognizer.new,
+                          ),
+                        },
                     markers: {
                       Marker(
                         markerId: const MarkerId('job_site_house'),

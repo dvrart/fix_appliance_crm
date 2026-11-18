@@ -1,3 +1,6 @@
+import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/gestures.dart'
+    show EagerGestureRecognizer, OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
@@ -374,6 +377,17 @@ class _ServiceAreaSettingsPageState extends State<ServiceAreaSettingsPage> {
                   markers: _markers,
                   myLocationButtonEnabled: true,
                   myLocationEnabled: true,
+                  zoomControlsEnabled: true,
+                  scrollGesturesEnabled: true,
+                  zoomGesturesEnabled: true,
+                  rotateGesturesEnabled: true,
+                  tiltGesturesEnabled: true,
+                  gestureRecognizers:
+                      const <Factory<OneSequenceGestureRecognizer>>{
+                        Factory<OneSequenceGestureRecognizer>(
+                          EagerGestureRecognizer.new,
+                        ),
+                      },
                   onMapCreated: (controller) => _map = controller,
                   onTap: _addPoint,
                 ),

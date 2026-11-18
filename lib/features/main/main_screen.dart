@@ -473,25 +473,36 @@ class _MainScreenState extends State<MainScreen>
               child: Stack(
                 clipBehavior: Clip.none,
                 children: [
-                  MediaQuery(
-                    data: MediaQuery.of(context).copyWith(
-                      padding: MediaQuery.paddingOf(
-                        context,
-                      ).copyWith(top: 0, bottom: 0),
-                      viewPadding: MediaQuery.viewPaddingOf(
-                        context,
-                      ).copyWith(top: 0, bottom: 0),
-                      viewInsets: MediaQuery.viewInsetsOf(context).copyWith(
-                        bottom:
-                            (MediaQuery.viewInsetsOf(context).bottom -
-                                    (_dockHeight + MediaQuery.paddingOf(context).bottom))
-                                .clamp(0.0, double.infinity),
-                      ),
-                    ),
-                    child: FadeIndexedStack(
-                      index: _currentIndex,
-                      children: [_buildTab(0), _buildTab(1), _buildTab(2)],
-                    ),
+                  Builder(
+                    builder: (context) {
+                      final isTopRoute =
+                          ModalRoute.of(context)?.isCurrent ?? true;
+                      final padding = MediaQuery.paddingOf(context);
+                      final viewPadding = MediaQuery.viewPaddingOf(context);
+                      final viewInsets = isTopRoute
+                          ? MediaQuery.viewInsetsOf(context)
+                          : EdgeInsets.zero;
+                      return MediaQuery(
+                        data: MediaQuery.of(context).copyWith(
+                          padding: padding.copyWith(top: 0, bottom: 0),
+                          viewPadding: viewPadding.copyWith(top: 0, bottom: 0),
+                          viewInsets: viewInsets.copyWith(
+                            bottom:
+                                (viewInsets.bottom -
+                                        (_dockHeight + padding.bottom))
+                                    .clamp(0.0, double.infinity),
+                          ),
+                        ),
+                        child: FadeIndexedStack(
+                          index: _currentIndex,
+                          children: [
+                            _buildTab(0),
+                            _buildTab(1),
+                            _buildTab(2),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                   if (TechnicianService.isOwner &&
                       _onRoot &&

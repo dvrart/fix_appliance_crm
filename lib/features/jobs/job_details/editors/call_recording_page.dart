@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/api_keys.dart';
+import '../../../../core/app_feedback.dart';
 import '../../../../core/constants.dart';
 import '../../../../core/l10n/app_locale.dart';
 import '../../../../core/utils/formatters.dart';
@@ -481,15 +482,40 @@ class _CallRecordingSheetState extends State<_CallRecordingSheet> {
                         ),
                         if (directionText.isNotEmpty || phone.isNotEmpty) ...[
                           const SizedBox(height: 5),
-                          Text(
-                            [
-                              if (directionText.isNotEmpty) directionText,
-                              if (phone.isNotEmpty) phone,
-                            ].join(' · '),
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: roleColor,
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: phone.isNotEmpty
+                                ? () => AppFeedback.copy(context, phone)
+                                : null,
+                            onLongPress: phone.isNotEmpty
+                                ? () => AppFeedback.copy(context, phone)
+                                : null,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    [
+                                      if (directionText.isNotEmpty)
+                                        directionText,
+                                      if (phone.isNotEmpty) phone,
+                                    ].join(' · '),
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: roleColor,
+                                    ),
+                                  ),
+                                ),
+                                if (phone.isNotEmpty) ...[
+                                  const SizedBox(width: 6),
+                                  Icon(
+                                    Icons.copy_rounded,
+                                    size: 13,
+                                    color: roleColor,
+                                  ),
+                                ],
+                              ],
                             ),
                           ),
                         ],

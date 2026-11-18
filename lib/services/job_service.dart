@@ -13,6 +13,7 @@ import '../models/job.dart';
 import 'auth_service.dart';
 import 'care_plan_service.dart';
 import 'client_service.dart';
+import 'job_reminder_service.dart';
 import 'network_status_service.dart';
 import 'notification_service.dart';
 import 'offline_queue_service.dart';
@@ -520,6 +521,14 @@ class JobService {
     if (JobStatuses.isCancelledStatus(status) || data['deletedAt'] != null) {
       unawaited(_blockSourceCall(id));
     }
+    if (JobStatuses.isClosed(status) || data['deletedAt'] != null) {
+      unawaited(
+        JobReminderService.onJobClosed(
+          id,
+          updateFirestore: !data.containsKey('reminderAt'),
+        ),
+      );
+    }
   }
 
   /// Обновить статус
@@ -528,9 +537,14 @@ class JobService {
     String status, {
     Map<String, dynamic>? extra,
   }) async {
+    final closing = JobStatuses.isClosed(status);
     final updates = <String, dynamic>{
       'status': status,
       'updatedAt': FieldValue.serverTimestamp(),
+      if (closing) ...{
+        'reminderAt': null,
+        'promisedPartAt': FieldValue.delete(),
+      },
       ...?extra,
     };
 
@@ -559,6 +573,9 @@ class JobService {
     }
 
     await settleWrite(_ref.doc(id).update(updates));
+    if (closing) {
+      unawaited(JobReminderService.onJobClosed(id, updateFirestore: false));
+    }
   }
 
   /// Обновить приоритет
@@ -713,9 +730,12 @@ class JobService {
   static Future<void> delete(String id) async {
     AppCommands.reactAngry();
     await _blockSourceCall(id);
+    unawaited(JobReminderService.onJobClosed(id, updateFirestore: false));
     await settleWrite(
       _ref.doc(id).update({
         'deletedAt': FieldValue.serverTimestamp(),
+        'reminderAt': null,
+        'promisedPartAt': FieldValue.delete(),
         'updatedAt': FieldValue.serverTimestamp(),
       }),
     );
@@ -741,6 +761,7 @@ class JobService {
 
   static Future<void> deleteForever(String id) async {
     await _blockSourceCall(id);
+    unawaited(JobReminderService.onJobClosed(id, updateFirestore: false));
     final messagesSnapshot = await FirestoreService.jobMessagesRef(id).get();
     for (final doc in messagesSnapshot.docs) {
       await doc.reference.delete();
