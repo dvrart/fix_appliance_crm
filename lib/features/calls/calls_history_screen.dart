@@ -784,6 +784,46 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen>
                     ),
                   ),
                 ),
+                if (call.canTakeOverFromAi)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: FilledButton.icon(
+                      onPressed: () async {
+                        final ok = await TwilioService.takeOverAiCall(
+                          call.callSid,
+                        );
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(this.context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              ok
+                                  ? 'Переводим звонок на ваш телефон...'.tr
+                                  : 'Не удалось перехватить звонок'.tr,
+                            ),
+                          ),
+                        );
+                      },
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF16A34A),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        minimumSize: const Size(0, 30),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      icon: const Icon(Icons.phone_forwarded, size: 14),
+                      label: Text(
+                        'Перехватить'.tr,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ),
                 if (canRetryAi && !isRetrying)
                   TextButton(
                     onPressed: () => _retryAi(call),

@@ -569,5 +569,22 @@ test('auto follow-up SMS is sent after intake and on a dropped real call, and ur
   });
   await webhook(api.aiRelayComplete, { CallSid: droppedSid, CallStatus: 'completed' });
   assert.equal(call(droppedSid).autoSmsSent, 'dropped');
+
+  // 3. Повторный звонок через минуту после обрыва подхватывает контекст, а перехват у Сары уводит звонок на SIM мастера.
+  routeMode('auto');
+  const retrySid = `CA${'e'.repeat(32)}`;
+  await webhook(api.incomingCall, { CallSid: retrySid, From: CALLER, To: '+14165550100' });
+  // Представим, что первый звонок (intakeSid) оборвался без итогового autoSmsSent='intake'.
+  apply(`${COMPANY}/calls/${intakeSid}`, { autoSmsSent: 'dropped', startTime: new Date() });
+  await webhook(api.dialAction, { CallSid: retrySid, DialCallStatus: 'no-answer' });
+  assert.match(call(retrySid).aiReception.recentCallNote, /Amelia/);
+  assert.equal(call(retrySid).aiReception.extracted.client_name, 'Amelia');
+
+  const takeRes = response();
+  await api.moveCallToCell(request({ callSid: retrySid, takeOver: true }), takeRes);
+  assert.equal(takeRes.body.moved, true);
+  assert.equal(takeRes.body.takenOver, true);
+  assert.equal(call(retrySid).answeredBy, 'master');
+  assert.match(twilioUpdates.at(-1).twiml, /connecting you to the technician now/);
 });
 

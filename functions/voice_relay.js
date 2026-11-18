@@ -485,7 +485,7 @@ Caller phone (do not ask): ${session.fromNumber || 'unknown'}
 Today (Toronto): ${today}
 Known client: ${session.clientName || 'new'}
 Known address: ${session.knownAddress || 'none'}
-${session.openJobBrief || 'Caller schedule is not loaded. Do not guess whether there is a booking.'}
+${session.recentCallNote ? `Recent interrupted call context (do NOT re-ask what they already told you): ${session.recentCallNote}\n` : ''}${session.openJobBrief || 'Caller schedule is not loaded. Do not guess whether there is a booking.'}
 Visits: ${visitDays}, ${hours} Toronto. ${closedDays}
 ${profile.priceLine || ''}
 ${area ? `Service area: ${area}` : 'Service area map is not set — do not refuse from memory.'}
@@ -1916,9 +1916,12 @@ function greetLive(session) {
   // session.greeting остался только для ситуативных строк (мастер снял трубку
   // и передал звонок ИИ на ходу) — тогда смысл строки сохраняем.
   const greeting = String(session.greeting || '').trim();
+  const recentNote = String(session.recentCallNote || '').trim();
   const body = greeting
     ? `Use an easy conversational rhythm, not a recording or a call-centre announcement. Keep the meaning of this opening, not its exact wording: ${greeting}`
-    : 'Do not recite a set line: no memorized slogan, no call-centre announcement, nothing that sounds read from a script. Sound like someone who works here and just picked up the phone. Mention the shop (FixApplianceCA) naturally, and phrase it a little differently on every call.';
+    : recentNote
+      ? `This caller just spoke with you a moment ago and the call got cut off (${recentNote}). Greet them warmly in your own words acknowledging we got disconnected and pick up right where you left off without re-asking what they already gave you.`
+      : 'Do not recite a set line: no memorized slogan, no call-centre announcement, nothing that sounds read from a script. Sound like someone who works here and just picked up the phone. Mention the shop (FixApplianceCA) naturally, and phrase it a little differently on every call.';
   sendPrompt(session, [
     {
       role: 'user',
@@ -3057,6 +3060,7 @@ async function hydrateCall(session, callSid, fromNumber) {
       })
     : '';
   session.extracted = reception.extracted || {};
+  session.recentCallNote = String(reception.recentCallNote || '').trim();
   session.history = Array.isArray(reception.history) ? reception.history : [];
   session.transcription = data.transcription || '';
   session.language = reception.language || 'en';

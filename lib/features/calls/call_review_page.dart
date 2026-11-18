@@ -553,6 +553,42 @@ class _CallReviewBodyState extends State<_CallReviewBody> {
       children: [
         // Заявку заводит мастер — сама она со звонка не появляется.
         // Когда заявка уже есть, её открывает значок в шапке.
+        if (call.canTakeOverFromAi) ...[
+          ElevatedButton.icon(
+            onPressed: () async {
+              final ok = await TwilioService.takeOverAiCall(call.callSid);
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    ok
+                        ? context.tr(
+                            'Переводим живой звонок на ваш телефон (нажмите 1 при ответе)...',
+                            'Transferring live call to your phone (press 1 when answering)...',
+                          )
+                        : context.tr(
+                            'Не удалось перехватить звонок',
+                            'Could not take over the call',
+                          ),
+                  ),
+                ),
+              );
+            },
+            icon: const Icon(Icons.phone_forwarded),
+            label: Text(
+              context.tr(
+                'Перехватить звонок у Сары',
+                'Take over call from Sarah',
+              ),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1565C0),
+              foregroundColor: Colors.white,
+              minimumSize: const Size.fromHeight(52),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
         if (!hasLinkedJob) ...[
           ElevatedButton.icon(
             onPressed: () => _convertToJob(context),

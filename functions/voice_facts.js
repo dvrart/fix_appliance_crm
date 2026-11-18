@@ -1153,6 +1153,27 @@ function isUrgentCall(extracted, history, extraText) {
   return URGENT_CALL_RE.test(text);
 }
 
+/**
+ * Короткая подсказка на английском, где именно искать наклейку с моделью
+ * на конкретном приборе клиента (для авто-СМС после разговора с секретарём).
+ */
+function modelStickerHint(applianceType) {
+  const t = String(applianceType || '').toLowerCase();
+  if (/fridge|refrigerator|freezer|холодильник|морозил/.test(t)) {
+    return "on a fridge or freezer it's usually on the inside wall of the fridge compartment";
+  }
+  if (/washer|washing|dryer|dishwasher|стирал|сушил|посудомой/.test(t)) {
+    return "on a washer, dryer, or dishwasher it's usually on the door edge or around the door frame";
+  }
+  if (/stove|oven|range|cooktop|плит|духовк|варочн/.test(t)) {
+    return "on an oven or stove it's usually on the frame behind the oven door or bottom drawer";
+  }
+  if (/microwave|микроволн/.test(t)) {
+    return "on a microwave it's usually inside on the door frame or side wall";
+  }
+  return "it's usually around the door frame or inside wall of the appliance";
+}
+
 function hasCallSubstance(extracted, history, extraText) {
   const e = extracted && typeof extracted === 'object' ? extracted : {};
   if (
@@ -1584,6 +1605,7 @@ module.exports = {
   looksLikeWrongNumber,
   hasCallSubstance,
   isUrgentCall,
+  modelStickerHint,
   missingVisitDetails,
   askedForVisitTime,
   askedForAddress,

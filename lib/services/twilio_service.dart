@@ -111,6 +111,8 @@ class CallRecord {
 
   bool get isIncoming => direction == 'inbound';
   bool get answeredByAi => answeredBy == 'ai';
+  bool get canTakeOverFromAi =>
+      isIncoming && answeredByAi && status == 'in-progress';
   bool get hasRecording =>
       (storageUrl ?? '').trim().isNotEmpty ||
       (recordingUrl ?? '').trim().isNotEmpty;
@@ -770,13 +772,19 @@ class TwilioService {
     return ok;
   }
 
-  static Future<bool> _requestMoveToCell(String callSid) async {
+  static Future<bool> _requestMoveToCell(
+    String callSid, {
+    bool takeOver = false,
+  }) async {
     try {
       final response = await http
           .post(
             Uri.parse('$kFirebaseFunctionsUrl/moveCallToCell'),
             headers: await AuthService.headers(),
-            body: json.encode({'callSid': callSid}),
+            body: json.encode({
+              'callSid': callSid,
+              if (takeOver) 'takeOver': true,
+            }),
           )
           .timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) return false;
@@ -787,6 +795,11 @@ class TwilioService {
       debugPrint('TwilioService: moveCallToCell: $e');
       return false;
     }
+  }
+
+  /// Перехватить живой разговор у телефонного секретаря (Сары) на сотовый мастера.
+  static Future<bool> takeOverAiCall(String callSid) {
+    return _requestMoveToCell(callSid.trim(), takeOver: true);
   }
 
   /// Позвонить клиенту через обычную сотовую связь: телефон набирает номер

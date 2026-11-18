@@ -1586,7 +1586,7 @@ Payments, discounts, parts, and warranty:
 - Payment methods & invoices: we accept debit and credit cards, e-Transfer, and cash. By arrangement we can also consider a payment plan (installments). Invoices and receipts are sent by email and SMS.
 - Cash discount / cheaper for cash: say warmly that we always try to work with the customer and meet them halfway, and the technician can go over that on site.
 - Discounts, multiple appliances, rural trips & second opinions: yes, we do have discounts; if there are several appliances to look at on the same visit, it is still just one service call fee. Rural or country properties inside our service area do not cost extra — our service call fee is a flat rate. There is no fee for cancelling or rescheduling a visit. We gladly come out for second opinions — other companies often overcharge, whereas we offer the best prices in Ontario and focus on genuinely helping the customer.
-- Care Plan subscription: yes, we have a Care Plan membership for $10 a month, which is a great value for our customers.
+- Care Plan subscription: yes, we have a Care Plan membership for $10 a month, which is a great value for our customers. If the caller mentions an older appliance (10+ years) or more than one appliance, at the end of the call (after taking the repair details), briefly mention in one warm sentence that we also have a $10/month Care Plan and the technician can tell them more on site.
 - Free estimate, error codes & if they decline repair: our technician can give some free advice over the phone, and sometimes can give a rough idea from an error code, though every case is different and an error code can point to one thing while the real issue is something else — so for an exact repair cost he has to come out in person and run a diagnostic. If they ask "what if the tech says it's not worth fixing — do I only pay $99?", explain that the technician won't tell them not to fix it — he simply gives the diagnosis and the repair price, and the decision is theirs (if they choose not to repair, only the service call fee applies).
 - Safety (burning smell, gas smell, active leak, tripping breaker): yes — tell them right away to unplug the appliance or shut off the water or gas supply until the technician arrives.
 - Official written reports: yes, we provide official written diagnostic reports and assessments on company letterhead for insurance companies or landlords.
@@ -3172,16 +3172,83 @@ function liveEngineName(profile) {
     : 'openai-realtime';
 }
 
+async function findRecentInterruptedCallContext(phone, currentCallSid = '') {
+  const from = String(phone || '').trim();
+  if (!from) return null;
+  try {
+    const millis = (value) =>
+      value && typeof value.toMillis === 'function'
+        ? value.toMillis()
+        : value instanceof Date
+          ? value.getTime()
+          : 0;
+    const now = Date.now();
+    const snapshot = await callsRef.where('fromNumber', '==', from).limit(15).get();
+    const rows = snapshot.docs
+      .filter((doc) => doc.id !== currentCallSid)
+      .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+      .filter((row) => {
+        if (row.deletedAt || row.serviceDeclined) return false;
+        if (row.autoSmsSent === 'intake') return false;
+        const startMs = millis(row.startTime) || millis(row.createdAt);
+        return startMs > 0 && now - startMs <= 15 * 60 * 1000;
+      })
+      .sort((a, b) => (millis(b.startTime) || 0) - (millis(a.startTime) || 0));
+    for (const row of rows) {
+      const rec = row.aiReception || {};
+      const ext = { ...(row.extractedData || {}), ...(rec.extracted || {}) };
+      const bits = [];
+      const name = voiceFacts.usableClientName(ext.client_name || '');
+      if (name) bits.push(`name: ${name}`);
+      if (ext.appliance_type || ext.brand) {
+        bits.push(`appliance: ${[ext.brand, ext.appliance_type].filter(Boolean).join(' ')}`);
+      }
+      if (ext.problem_description) bits.push(`problem: ${ext.problem_description}`);
+      if (ext.address || ext.city) {
+        bits.push(`location: ${[ext.address, ext.city].filter(Boolean).join(', ')}`);
+      }
+      if (ext.preferred_time) bits.push(`preferred time: ${ext.preferred_time}`);
+      const userLines = (Array.isArray(rec.history) ? rec.history : [])
+        .filter((h) => h && h.role === 'user' && String(h.text || '').trim())
+        .map((h) => String(h.text).trim())
+        .slice(-3);
+      if (bits.length || userLines.length) {
+        const note = [
+          bits.length ? `Facts from their call a moment ago: ${bits.join('; ')}` : '',
+          userLines.length ? `Caller said: "${userLines.join(' / ')}"` : '',
+        ]
+          .filter(Boolean)
+          .join('. ');
+        return { extracted: ext, note };
+      }
+    }
+  } catch (error) {
+    console.warn('findRecentInterruptedCallContext:', error.message);
+  }
+  return null;
+}
+
 async function completeAiPickup(callSid, data, greeting, { live = false, engine = 'gemini-live' } = {}) {
+  const recentCtx = await findRecentInterruptedCallContext(data && data.fromNumber, callSid);
   if (live) {
     const ref = callsRef.doc(callSid);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       const latest = snap.exists ? snap.data() || {} : {};
+      const prevRec = latest.aiReception || {};
       tx.set(ref, {
         status: voiceFacts.settledCallStatus(latest.status, 'in-progress'),
         answeredBy: 'ai',
-        aiReception: { engine },
+        aiReception: {
+          ...prevRec,
+          engine,
+          ...(recentCtx
+            ? {
+                extracted: { ...(recentCtx.extracted || {}), ...(prevRec.extracted || {}) },
+                recentCallNote: recentCtx.note,
+              }
+            : {}),
+        },
       }, { merge: true });
     });
     return;
@@ -3191,9 +3258,9 @@ async function completeAiPickup(callSid, data, greeting, { live = false, engine 
     existingClient ? existingClient.fullName || existingClient.name || '' : ''
   );
   const knownAddress = voiceFacts.clientAddressFrom(existingClient);
-  const extracted = {};
-  if (clientName) extracted.client_name = clientName;
-  if (knownAddress) extracted.address = knownAddress;
+  const extracted = { ...(recentCtx ? recentCtx.extracted : {}) };
+  if (clientName && !extracted.client_name) extracted.client_name = clientName;
+  if (knownAddress && !extracted.address) extracted.address = knownAddress;
   const ref = callsRef.doc(callSid);
   await db.runTransaction(async (tx) => {
     const latestSnap = await tx.get(ref);
@@ -3207,6 +3274,7 @@ async function completeAiPickup(callSid, data, greeting, { live = false, engine 
       aiReception: {
         ...reception, history,
         extracted: { ...extracted, ...(reception.extracted || {}) },
+        ...(recentCtx ? { recentCallNote: recentCtx.note } : {}),
         language: reception.language || 'en',
         turns: Number(reception.turns || 0),
         knownClient: Boolean(existingClient), knownAddress,
@@ -3214,9 +3282,6 @@ async function completeAiPickup(callSid, data, greeting, { live = false, engine 
       transcription: appendTranscript(latest.transcription || data.transcription, `AI: ${greeting}`),
     }, { merge: true });
   });
-  // «ИИ взял звонок» в шторку не шлём. Оно приходило в начале каждого звонка,
-  // до того как что-то известно, и дублировало итог. Владельцу нужен результат:
-  // заявка или пропущенный. Запись о звонке в базе остаётся.
 }
 
 // Реклама, роботы и «ошиблись номером» — это не заявка и не отказ по услуге.
@@ -3420,8 +3485,9 @@ async function finishAiReception(req, res, callSid, callData, say, language, ext
           callData.fromNumber &&
           typeof visitSms.sendTwilioSms === 'function'
         ) {
+          const stickerHint = voiceFacts.modelStickerHint(extracted.appliance_type || '');
           const smsBody = smsText.fillName(
-            'Hi, {name}! Thanks for calling FixApplianceCA. Our technician will contact you shortly to confirm the time. Feel free to reply here with a photo of the model sticker.',
+            `Hi, {name}! Thanks for calling FixApplianceCA. Our technician will contact you shortly to confirm the time. Feel free to reply here with a photo of the model sticker (${stickerHint}).`,
             extracted.client_name || ''
           );
           const sentSms = await visitSms
@@ -3778,7 +3844,7 @@ async function handleCallStage(stage, req, res) {
  * Twilio перенаправить не дал, отметку снимаем: перевод сделает dialAction,
  * когда закончится гудок в приложение.
  */
-async function moveLiveCallToCell(req, callSid) {
+async function moveLiveCallToCell(req, callSid, { takeOver = false } = {}) {
   const routing = await getCallRouting();
   if (!routing.cell) return { moved: false, reason: 'no-cell' };
   if (!client) return { moved: false, reason: 'no-twilio' };
@@ -3787,6 +3853,18 @@ async function moveLiveCallToCell(req, callSid) {
     const snap = await tx.get(ref);
     const current = snap.exists ? snap.data() || {} : {};
     if (current.direction && current.direction !== 'inbound') return null;
+    const isAiTakeover = Boolean(takeOver || current.answeredBy === 'ai');
+    if (isAiTakeover) {
+      if (current.takenOverByMasterAt) return null;
+      tx.set(ref, {
+        moveToCellRequested: true,
+        movedToCellAt: FieldValue.serverTimestamp(),
+        movedToCellBy: 'takeover',
+        takenOverByMasterAt: FieldValue.serverTimestamp(),
+        answeredBy: 'master',
+      }, { merge: true });
+      return { ...current, _isAiTakeover: true };
+    }
     if (current.movedToCellAt) return null;
     tx.set(ref, {
       moveToCellRequested: true,
@@ -3797,14 +3875,25 @@ async function moveLiveCallToCell(req, callSid) {
   });
   if (!data) return { moved: false, reason: 'already' };
   try {
+    const dialTwiml = twimlDialMasterCell(req, data.fromNumber, routing, callSid, CELL_MOVE_RING_SECONDS);
+    let twimlStr = dialTwiml.toString();
+    if (data._isAiTakeover) {
+      twimlStr = twimlStr.replace(
+        '<Response>',
+        '<Response><Say voice="Polly.Joanna-Neural" language="en-US">One moment please, connecting you to the technician now.</Say>'
+      );
+    }
     await client.calls(callSid).update({
-      twiml: twimlDialMasterCell(req, data.fromNumber, routing, callSid, CELL_MOVE_RING_SECONDS).toString(),
+      twiml: twimlStr,
     });
-    return { moved: true };
+    return data._isAiTakeover ? { moved: true, takenOver: true } : { moved: true };
   } catch (error) {
     await ref.set({
       movedToCellAt: FieldValue.delete(),
       movedToCellBy: FieldValue.delete(),
+      ...(data._isAiTakeover
+        ? { takenOverByMasterAt: FieldValue.delete(), answeredBy: 'ai' }
+        : {}),
       moveToCellError: String((error && error.message) || error).slice(0, 300),
     }, { merge: true });
     return { moved: false, reason: 'twilio' };
@@ -3820,12 +3909,13 @@ exports.moveCallToCell = functions.https.onRequest(async (req, res) => {
   setCors(res);
   if (!(await requireAppUser(req, res))) return;
   const callSid = String((req.body && req.body.callSid) || '').trim();
+  const takeOver = Boolean(req.body && req.body.takeOver);
   if (!/^CA[0-9a-fA-F]{32}$/.test(callSid)) {
     res.status(400).json({ error: 'callSid required' });
     return;
   }
   try {
-    const result = await moveLiveCallToCell(req, callSid);
+    const result = await moveLiveCallToCell(req, callSid, { takeOver });
     console.log(`moveCallToCell ${callSid}: ${JSON.stringify(result)}`);
     res.json(result);
   } catch (error) {
@@ -4152,6 +4242,11 @@ exports.aiRelayComplete = functions.https.onRequest(voiceAiRuntime, async (req, 
   try {
     const snap = await callsRef.doc(callSid).get();
     let data = snap.exists ? snap.data() || {} : {};
+    if (data.takenOverByMasterAt) {
+      console.log(`aiRelayComplete: ${callSid} taken over by master, ignoring stream end`);
+      sendTwiml(res, new twilio.twiml.VoiceResponse());
+      return;
+    }
     const liveFailed = Boolean(data.aiReception && data.aiReception.liveFailed);
     // Релей сам закрыл поток: после «I can't hear you — call back or text»
     // 30 секунд никто не говорил (решение FIX). Поток не поднимаем заново, а
