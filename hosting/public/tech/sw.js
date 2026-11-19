@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fix-tech-pwa-v1';
+const CACHE_NAME = 'fix-tech-pwa-v2';
 const SHELL_ASSETS = [
   '/tech/',
   '/tech/index.html',

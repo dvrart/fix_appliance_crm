@@ -39,6 +39,7 @@ function main() {
     'assets',
     'test',
     'third_party',
+    path.join('hosting', 'public', 'tech'),
     path.join('android', 'app', 'src', 'main', 'kotlin'),
     path.join('android', 'app', 'src', 'test', 'kotlin'),
   ];

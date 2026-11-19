@@ -163,6 +163,7 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
         final total = Job.documentTotal(row.doc);
         final paid = Job.documentPaid(row.doc);
         final due = (total - paid).clamp(0.0, double.infinity);
+        final sideAmount = !row.isEstimate && paid > 0.009 ? paid : total;
         final number = row.doc['number'];
         final title = number == null
             ? '${row.doc['type'] ?? 'Invoice'} #${row.index + 1}'
@@ -251,28 +252,15 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
                                       const RegularClientStar(size: 16),
                                   ],
                                 ),
-                                const SizedBox(height: 4),
-                                Row(
-                                  children: [
-                                    Text(
-                                      Formatters.formatCurrency(total),
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.w900,
-                                        fontSize: 17,
-                                        color: AppColors.primaryOnCard,
-                                      ),
-                                    ),
-                                    if (mark.isNotEmpty) ...[
-                                      const SizedBox(width: 8),
-                                      _PayChip(
-                                        mark: mark,
-                                        look: look,
-                                        due: due,
-                                        paid: paid,
-                                      ),
-                                    ],
-                                  ],
-                                ),
+                                if (mark.isNotEmpty) ...[
+                                  const SizedBox(height: 4),
+                                  _PayChip(
+                                    mark: mark,
+                                    look: look,
+                                    due: due,
+                                    paid: paid,
+                                  ),
+                                ],
                                 if (mark.isNotEmpty && !row.isEstimate) ...[
                                   const SizedBox(height: 4),
                                   _PayMethodsLines(doc: row.doc),
@@ -280,6 +268,18 @@ class _DocumentsListScreenState extends State<DocumentsListScreen> {
                               ],
                             ),
                           ),
+                          const SizedBox(width: 8),
+                          Text(
+                            Formatters.formatCurrency(sideAmount),
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 17,
+                              color: mark == 'paid'
+                                  ? const Color(0xFF15803D)
+                                  : AppColors.primaryOnCard,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
                           const Icon(Icons.chevron_right, color: Colors.grey),
                         ],
                       ),

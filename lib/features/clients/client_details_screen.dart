@@ -994,6 +994,9 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         final dateLabel = nextVisit == null
             ? 'Дата не указана'.tr
             : DateFormat('dd.MM.yyyy').format(nextVisit);
+        final jobAmount = job.paidTotal > 0.009
+            ? job.paidTotal
+            : job.invoicedTotal;
         final notes = [
           if (nextVisit != null) _ago(nextVisit),
           if (job.isUnpaid) 'Неоплачено'.tr,
@@ -1047,6 +1050,17 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
+                                if (jobAmount > 0.009)
+                                  Text(
+                                    Formatters.formatCurrency(jobAmount),
+                                    style: TextStyle(
+                                      color: job.isUnpaid
+                                          ? const Color(0xFFB91C1C)
+                                          : const Color(0xFF15803D),
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
                                 Text(
                                   dateLabel,
                                   style: TextStyle(
@@ -1201,7 +1215,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         final mark = row.isEstimate ? '' : Job.documentPayMark(row.doc);
         final look = _clientDocPayLook(mark, estimate: row.isEstimate);
         var chipText = look.label;
-        if (mark == 'deposit' && paid > 0.009) {
+        if ((mark == 'paid' || mark == 'deposit') && paid > 0.009) {
           chipText = '${look.label} · ${Formatters.formatCurrency(paid)}';
         } else if (mark == 'unpaid' && due > 0.009) {
           chipText = '${look.label} · ${Formatters.formatCurrency(due)}';

@@ -362,10 +362,8 @@ function hasOwnTax(profile) {
 function jobApplianceSummary(job) {
   const apps = Array.isArray(job?.appliances) ? job.appliances : [];
   if (apps.length > 0) {
-    return apps
-      .map((a) => [a.type, a.brand, a.model].filter(Boolean).join(' '))
-      .filter(Boolean)
-      .join(', ');
+    const a = apps[0];
+    return [a.type, a.brand, a.model].filter(Boolean).join(' ') || tr('Техника', 'Appliance');
   }
   return [job?.applianceType, job?.brand, job?.model].filter(Boolean).join(' ') || tr('Техника', 'Appliance');
 }
@@ -859,9 +857,14 @@ function showVisitModal(job) {
   );
 }
 
-function showApplianceModal(job, index = -1) {
+function showApplianceModal(job) {
   const apps = Array.isArray(job.appliances) ? [...job.appliances] : [];
-  const existing = index >= 0 ? apps[index] || {} : {};
+  const existing = apps[0] || {
+    type: job.applianceType || '',
+    brand: job.brand || '',
+    model: job.model || '',
+    serialNumber: job.serialNumber || '',
+  };
   const types = [
     'Холодильник',
     'Стиральная машина',
@@ -875,7 +878,7 @@ function showApplianceModal(job, index = -1) {
 
   openModal(
     `
-    <h3>${index >= 0 ? tr('Редактировать технику', 'Edit appliance') : tr('Добавить технику', 'Add appliance')}</h3>
+    <h3>${tr('Редактировать технику', 'Edit appliance')}</h3>
     <div class="field">
       <label>${tr('Тип техники', 'Appliance type')}</label>
       <input list="appTypesList" id="apType" class="input" value="${esc(existing.type || '')}" placeholder="${tr('Например: Стиральная машина', 'e.g. Washer')}" />
@@ -910,17 +913,11 @@ function showApplianceModal(job, index = -1) {
           model: root.querySelector('#apModel').value.trim(),
           serialNumber: root.querySelector('#apSerial').value.trim(),
         };
-        if (index >= 0) {
-          apps[index] = entry;
-        } else {
-          apps.push(entry);
-        }
-        const first = apps[0] || {};
         await updateDoc(doc(db, 'companies', COMPANY_ID, 'jobs', job.id), {
-          appliances: apps,
-          applianceType: first.type || '',
-          brand: first.brand || '',
-          model: first.model || '',
+          appliances: [entry],
+          applianceType: entry.type || '',
+          brand: entry.brand || '',
+          model: entry.model || '',
         });
         closeModal();
         toast(tr('Техника сохранена', 'Appliance saved'));
@@ -1351,9 +1348,9 @@ function renderJobCardRow(job, visit = null) {
   const payBadge =
     payout.invoicedTotal > 0.009
       ? payout.unpaidClientBalance <= 0.009
-        ? `<span class="badge" style="background:#22C55E22;color:#16A34A">${tr('Оплачено', 'Paid')}</span>`
+        ? `<span class="badge" style="background:#22C55E22;color:#16A34A">${tr('Оплачено', 'Paid')} · ${money(payout.paidExTips > 0.009 ? payout.paidExTips : payout.invoicedTotal)}</span>`
         : payout.paidExTips > 0.009
-          ? `<span class="badge" style="background:#FFB30022;color:#B45309">${tr('Депозит', 'Deposit')}</span>`
+          ? `<span class="badge" style="background:#FFB30022;color:#B45309">${tr('Депозит', 'Deposit')} · ${money(payout.paidExTips)}</span>`
           : `<span class="badge" style="background:#E539351F;color:#E53935">${money(payout.invoicedTotal)}</span>`
       : '';
 
@@ -1744,16 +1741,16 @@ function renderJobDetailOverlay(job) {
 
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div style="font-weight:800">${tr('Техника', 'Appliances')}</div>
-          <button type="button" class="btn btn-outline btn-sm" id="addApplianceBtn">+ ${tr('Добавить', 'Add')}</button>
+          <div style="font-weight:800">${tr('Техника', 'Appliance')}</div>
+          <button type="button" class="btn btn-outline btn-sm" id="addApplianceBtn">${tr('Изменить', 'Edit')}</button>
         </div>
         ${
           apps.length === 0
-            ? `<div style="font-size:13.5px;color:var(--muted)">${esc(jobApplianceSummary(job))}</div>`
-            : apps
+            ? `<div data-edit-app="0" style="font-size:13.5px;color:var(--muted);cursor:pointer">${esc(jobApplianceSummary(job))}</div>`
+            : [apps[0]]
                 .map(
-                  (a, idx) => `
-                <div data-edit-app="${idx}" style="padding:8px 0;border-top:${idx > 0 ? '1px solid var(--border)' : 'none'};cursor:pointer">
+                  (a) => `
+                <div data-edit-app="0" style="padding:8px 0;cursor:pointer">
                   <div style="font-weight:800">${esc([a.type, a.brand].filter(Boolean).join(' · '))}</div>
                   <div style="font-size:12.5px;color:var(--muted)">
                     ${a.model ? `Model: ${esc(a.model)}` : ''} ${a.serialNumber || a.serial ? `· S/N: ${esc(a.serialNumber || a.serial)}` : ''}
@@ -2259,9 +2256,9 @@ function bindJobDetailEvents(root, job) {
     btn.addEventListener('click', () => callClientViaBridge(job, btn.getAttribute('data-call-phone')));
   });
 
-  root.querySelector('#addApplianceBtn')?.addEventListener('click', () => showApplianceModal(job, -1));
+  root.querySelector('#addApplianceBtn')?.addEventListener('click', () => showApplianceModal(job));
   root.querySelectorAll('[data-edit-app]').forEach((el) => {
-    el.addEventListener('click', () => showApplianceModal(job, Number(el.getAttribute('data-edit-app'))));
+    el.addEventListener('click', () => showApplianceModal(job));
   });
 
   root.querySelector('#saveNotesBtn')?.addEventListener('click', async () => {
