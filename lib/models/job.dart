@@ -1073,9 +1073,8 @@ class Job {
   /// Тип техники для отображения
   String get applianceType => primaryAppliance?.type ?? 'Техника';
 
-  /// Тип для картинки/иконки: если приборов несколько — общая картинка «Техника»
-  String get appliancePictureType =>
-      appliances.length > 1 ? 'Техника' : applianceType;
+  /// Тип для картинки/иконки
+  String get appliancePictureType => applianceType;
 
   /// Бренд техники для отображения
   String get applianceBrand => primaryAppliance?.brand ?? '';

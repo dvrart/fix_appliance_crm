@@ -1192,6 +1192,7 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
         final total = Job.documentTotal(row.doc);
         final paid = Job.documentPaid(row.doc);
         final due = (total - paid).clamp(0.0, double.infinity);
+        final sideAmount = !row.isEstimate && paid > 0.009 ? paid : total;
         final number = row.doc['number'];
         final title = number == null
             ? '${row.doc['type'] ?? 'Invoice'} #${row.index + 1}'
@@ -1263,44 +1264,42 @@ class _ClientDetailsScreenState extends State<ClientDetailsScreen>
                                     fontSize: 13,
                                   ),
                                 ),
-                                const SizedBox(height: 4),
-                                Row(
-                                  children: [
-                                    Text(
-                                      Formatters.formatCurrency(total),
+                                if (mark.isNotEmpty || row.isEstimate) ...[
+                                  const SizedBox(height: 4),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 3,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: look.chipBg,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      chipText,
                                       style: TextStyle(
-                                        fontWeight: FontWeight.w900,
-                                        fontSize: 17,
-                                        color: AppColors.primaryOnCard,
+                                        color: look.chipFg,
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 12,
                                       ),
                                     ),
-                                    if (mark.isNotEmpty || row.isEstimate) ...[
-                                      const SizedBox(width: 8),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 3,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: look.chipBg,
-                                          borderRadius:
-                                              BorderRadius.circular(8),
-                                        ),
-                                        child: Text(
-                                          chipText,
-                                          style: TextStyle(
-                                            color: look.chipFg,
-                                            fontWeight: FontWeight.w800,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ],
                             ),
                           ),
+                          const SizedBox(width: 8),
+                          Text(
+                            Formatters.formatCurrency(sideAmount),
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 17,
+                              color: mark == 'paid'
+                                  ? const Color(0xFF15803D)
+                                  : AppColors.primaryOnCard,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
                           const Icon(
                             Icons.chevron_right,
                             color: Colors.grey,

@@ -1728,30 +1728,8 @@ class _DetailsTabState extends State<DetailsTab> {
     );
   }
 
-  Widget _applianceCountBadge(int count) {
-    return Container(
-      width: 17,
-      height: 17,
-      decoration: BoxDecoration(
-        color: AppColors.primary,
-        shape: BoxShape.circle,
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        '$count',
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.w800,
-          height: 1.1,
-        ),
-      ),
-    );
-  }
-
   Widget _buildApplianceHero() {
     final appliance = _applianceSummary();
-    final appliances = _applianceList();
     final model = appliance.model;
     return Material(
       color: AppColors.card,
@@ -1768,19 +1746,9 @@ class _DetailsTabState extends State<DetailsTab> {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           child: Center(
-            child: Stack(
-              children: [
-                AppliancePicture(
-                  type: appliances.length > 1 ? 'Техника' : appliance.type,
-                  size: 56,
-                ),
-                if (appliances.length > 1)
-                  Positioned(
-                    top: 0,
-                    right: 0,
-                    child: _applianceCountBadge(appliances.length),
-                  ),
-              ],
+            child: AppliancePicture(
+              type: appliance.type,
+              size: 56,
             ),
           ),
         ),

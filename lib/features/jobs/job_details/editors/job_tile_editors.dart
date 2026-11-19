@@ -371,6 +371,7 @@ Future<void> openApplianceEditor(
         'serialNumber': (item['serialNumber'] ?? '').toString(),
         'issue': (item['issue'] ?? '').toString(),
       });
+      break;
     }
   }
   if (initial.isEmpty) {
@@ -1773,8 +1774,11 @@ class _ApplianceEditorPageState extends State<_ApplianceEditorPage> {
   @override
   void initState() {
     super.initState();
-    _items = [for (final item in widget.initial) _ApplianceEditItem(item)];
-    if (_items.isEmpty) _items.add(_ApplianceEditItem.empty());
+    _items = [
+      widget.initial.isNotEmpty
+          ? _ApplianceEditItem(widget.initial.first)
+          : _ApplianceEditItem.empty(),
+    ];
     for (final item in _items) {
       _attach(item);
     }
@@ -1818,18 +1822,6 @@ class _ApplianceEditorPageState extends State<_ApplianceEditorPage> {
       }
     }
     return false;
-  }
-
-  void _add() {
-    final item = _ApplianceEditItem.empty();
-    _attach(item);
-    setState(() => _items.add(item));
-  }
-
-  void _remove(int index) {
-    final item = _items[index];
-    setState(() => _items.removeAt(index));
-    item.dispose();
   }
 
   Future<void> _pickType(_ApplianceEditItem item) async {
@@ -1937,26 +1929,6 @@ class _ApplianceEditorPageState extends State<_ApplianceEditorPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  '${'Аппарат'.tr} ${index + 1}',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.primaryOnCard,
-                  ),
-                ),
-                if (_items.length > 1)
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline, color: Colors.red),
-                    onPressed: () => _remove(index),
-                    constraints: const BoxConstraints(),
-                    padding: EdgeInsets.zero,
-                  ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
@@ -2015,22 +1987,6 @@ class _ApplianceEditorPageState extends State<_ApplianceEditorPage> {
         children: [
           for (var index = 0; index < _items.length; index++)
             _applianceCard(index),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _add,
-              icon: const Icon(Icons.add),
-              label: Text('Добавить еще технику'.tr),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFF14557F),
-                side: const BorderSide(color: Color(0xFF14557F)),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-          ),
         ],
       ),
     );

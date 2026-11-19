@@ -257,21 +257,9 @@ class JobAgendaCard extends StatelessWidget {
                     const SizedBox(width: 4),
                     SizedBox(
                       width: 96,
-                      child: Stack(
-                        children: [
-                          AppliancePicture(
-                            type: job.appliancePictureType,
-                            fillSlot: true,
-                          ),
-                          if (job.appliances.length > 1)
-                            Positioned(
-                              top: 4,
-                              right: 4,
-                              child: _applianceCountBadge(
-                                job.appliances.length,
-                              ),
-                            ),
-                        ],
+                      child: AppliancePicture(
+                        type: job.appliancePictureType,
+                        fillSlot: true,
                       ),
                     ),
                   ],
@@ -385,27 +373,6 @@ class JobAgendaCard extends StatelessWidget {
           color: Colors.white,
           fontWeight: FontWeight.w800,
           fontSize: 11,
-          height: 1.1,
-        ),
-      ),
-    );
-  }
-
-  Widget _applianceCountBadge(int count) {
-    return Container(
-      width: 18,
-      height: 18,
-      decoration: BoxDecoration(
-        color: AppColors.primary,
-        shape: BoxShape.circle,
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        '$count',
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.w800,
           height: 1.1,
         ),
       ),

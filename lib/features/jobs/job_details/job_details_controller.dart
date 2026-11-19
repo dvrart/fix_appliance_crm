@@ -1466,6 +1466,7 @@ class JobDetailsController extends ChangeNotifier {
       };
       if (normalized['type']!.isEmpty) continue;
       list.add(normalized);
+      break;
     }
     if (list.isEmpty) return;
     final first = list.first;

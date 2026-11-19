@@ -248,22 +248,6 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
     }
   }
 
-  void _addAppliance() {
-    final item = ApplianceFormItem();
-    item.typeController.addListener(_markDirty);
-    item.brandController.addListener(_markDirty);
-    item.modelController.addListener(_markDirty);
-    item.serialController.addListener(_markDirty);
-    item.issueController.addListener(_markDirty);
-    setState(() => _appliances.add(item));
-    _markDirty();
-  }
-
-  void _removeAppliance(int index) {
-    setState(() => _appliances.removeAt(index));
-    _markDirty();
-  }
-
   Future<bool> _allowLeave() async {
     if (!_dirty || _isSaving) return true;
     if (!mounted) return true;
@@ -1263,9 +1247,7 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            ..._appliances.asMap().entries.map((entry) {
-              int idx = entry.key;
-              ApplianceFormItem item = entry.value;
+            ..._appliances.map((item) {
               return Card(
                 margin: const EdgeInsets.only(bottom: 16),
                 elevation: 0,
@@ -1278,29 +1260,6 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            '${'Аппарат'.tr} ${idx + 1}',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.primaryOnCard,
-                            ),
-                          ),
-                          if (_appliances.length > 1)
-                            IconButton(
-                              icon: const Icon(
-                                Icons.delete_outline,
-                                color: Colors.red,
-                              ),
-                              onPressed: () => _removeAppliance(idx),
-                              constraints: const BoxConstraints(),
-                              padding: EdgeInsets.zero,
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
                       Row(
                         children: [
                           Expanded(
@@ -1346,23 +1305,6 @@ class _CreateJobScreenState extends State<CreateJobScreen> {
                 ),
               );
             }),
-
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _addAppliance,
-                icon: const Icon(Icons.add),
-                label: Text('Добавить еще технику'.tr),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.primaryOnCard,
-                  side: BorderSide(color: AppColors.primaryOnCard),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-            ),
             const Divider(height: 32),
 
             Text(
